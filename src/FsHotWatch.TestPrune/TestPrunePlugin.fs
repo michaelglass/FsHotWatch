@@ -178,6 +178,93 @@ type ReportVerificationFormat =
     /// (force-off; e.g. a custom runner that would error on `--report-ctrf`).
     | Disabled
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTOMATION-125 — a run may clear ONLY what it covered.
+//
+// The disease (same as AUTOMATION-95/99/112, arrived at by another road): "no
+// failures reported by THIS run" was being read as "no failures". A full run failed
+// project X; a queued impact-filtered re-run then executed a NARROWER selection,
+// passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never
+// re-ran and never passed, yet the gate went green.
+//
+// The cure is structural, not a rule to remember: a run carries the SELECTION it was
+// launched against, a completed run's COVERAGE is derived from that selection
+// intersected with what actually executed, and clearing is a total function OVER that
+// coverage. "Clear everything" is not a thing a filtered run can express — there is
+// no wholesale clear left to reach for. A red therefore survives every run that did
+// not execute it, and dies the moment one that did executes it green.
+//
+// (Types here; the functions over them live below `isZeroMatchResult`, which
+// `RunCoverage.ofRun` reads.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What a run was LAUNCHED against, per test project — captured at dispatch
+/// (`TestRunLaunch.Selection`), never re-derived at completion, because by then the
+/// selection inputs have moved on. A project ABSENT from the selection map was not
+/// launched at all: impact analysis skipped it (and `executeTests` records the skip
+/// as `TestsPassed("", filtered, 0)`, a pass that proves precisely nothing).
+type ProjectSelection =
+    /// Launched with no class filter — every test in the project was asked to run.
+    | ProjectInFull
+    /// Launched under a class filter — only these classes were asked to run.
+    | ProjectClasses of Set<string>
+
+/// What a completed run may VINDICATE in one project — the honest reach of the
+/// evidence it produced. Absent from `RunCoverage` ⇒ this run says nothing at all
+/// about the project (it was skipped, it never ran, or it ran under a filter whose
+/// reach we cannot know).
+type ProjectCoverage =
+    /// The project executed with NO filter: its green speaks for every test in it,
+    /// so it may clear any red the project holds.
+    | CoveredWholeProject
+    /// The project executed only these classes: its green speaks for them and
+    /// nothing else.
+    | CoveredClasses of Set<string>
+
+/// What a completed run is entitled to clear, keyed by test project.
+type RunCoverage = Map<string, ProjectCoverage>
+
+/// A file the symbol analyser could not read (AUTOMATION-113), retained until it
+/// analyses cleanly. Carries everything its ledger entry needs, because the entry has
+/// to be RE-REPORTED after every test run: the run's ledger rewrite clears this
+/// plugin's whole slice, and a warning erased by a cycle that never addressed it is
+/// the same defect as a red erased by a run that never executed it (AUTOMATION-125).
+/// Before this, the first test run after an analysis failure silently dropped the
+/// warning — the file kept forcing full-suite runs, but nothing told anyone, and
+/// AUTOMATION-113's "this must deny the check a green verdict" quietly stopped holding.
+type UnanalyzableFile =
+    {
+        /// Repo-relative path — what the diagnostic names.
+        RelPath: string
+        /// Absolute path — the ledger key.
+        File: string
+        /// Why analysis failed (the FCS/parse error), carried into the diagnostic.
+        Reason: string
+    }
+
+/// A red this plugin still OWES the user: a test failure (or a project that produced
+/// no verdict at all) that no run COVERING it has passed since.
+///
+/// The shared `ErrorLedger` is a pure projection of the outstanding list — the
+/// `TestsFinished` handler rewrites it wholesale each cycle (`ClearAllErrors` +
+/// re-report the whole set) — so `fshw errors` shows exactly what is outstanding:
+/// never a superseded red (the AUTOMATION-95 "Issue 2" accumulation), and never a
+/// laundered one (AUTOMATION-125).
+type OutstandingFailure =
+    {
+        /// The test project the red belongs to.
+        Project: string
+        /// The failing test CLASS when the runner named one; `None` for a
+        /// project-level red (unparseable failure output, timeout, errored,
+        /// deferred). A project-level red is only clearable by a run that executed
+        /// the project in FULL.
+        Class: string option
+        /// The ledger key: the class's source file, or the synthetic
+        /// `<tests/Project>` bucket when no source file is known.
+        File: string
+        Entry: ErrorLedger.ErrorEntry
+    }
+
 /// Configuration for a test project to run.
 type TestConfig =
     {
@@ -273,10 +360,15 @@ type TestPruneState =
         /// project, in full), because "I cannot analyse this file" means the gate
         /// cannot know what to select, and a superset is safe where a gap is not.
         ///
-        /// A file leaves the set as soon as it analyses cleanly, so the fallback is
+        /// A file leaves the map as soon as it analyses cleanly, so the fallback is
         /// self-clearing and costs nothing on a healthy tree. NOT persisted: every
-        /// file is re-checked on a cold scan, which repopulates the set from scratch.
-        UnanalyzableFiles: Set<string>
+        /// file is re-checked on a cold scan, which repopulates the map from scratch.
+        ///
+        /// Keyed by repo-relative path; the value carries what the ledger entry needs,
+        /// so every `TestsFinished` can RE-REPORT the diagnostic after clearing the
+        /// plugin's slice (AUTOMATION-125). It used to be a bare `Set<string>` and the
+        /// warning was simply lost to the first test run that followed.
+        UnanalyzableFiles: Map<string, UnanalyzableFile>
         /// `run-tests` force-runs that arrived while another run held the
         /// "tests" slot (AUTOMATION-99). A force-run is OWED work — `test-rerun`
         /// is the explicit "prove it ran" verb, so a busy slot must QUEUE the
@@ -287,6 +379,26 @@ type TestPruneState =
         /// bounds that wait (`waitSec`), so an entry stranded by daemon
         /// teardown cannot hang the client.
         QueuedCommandRuns: (TestConfig list * string option * Tasks.TaskCompletionSource<string>) list
+        /// The reds no COVERING run has passed since (AUTOMATION-125). Rewritten on
+        /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
+        /// it passes. The shared error ledger is a projection of this list, so a
+        /// narrower run can no longer erase a failure it never ran.
+        ///
+        /// Session-scoped by design (not persisted). A daemon restart has no baseline
+        /// (`LastResults = None`), so its first run is the FULL suite — which re-runs
+        /// the failing test and re-establishes (or genuinely clears) the red from
+        /// evidence. Persisting it would buy nothing and could only wedge a red that
+        /// no longer exists.
+        OutstandingFailures: OutstandingFailure list
+        /// What the last completed run actually COVERED — the receipt that goes with
+        /// `LastResults` (which says what it FOUND). The two are read together: a green
+        /// result means "nothing failed IN WHAT THIS COVERED", never "nothing failed".
+        ///
+        /// Kept in state, not just in the `TestsFinished` closure, so a consumer OUTSIDE
+        /// the handler — an IPC command, a verdict writer — can ask what the last run
+        /// covered instead of inventing a parallel notion of scope that could drift from
+        /// the one the ledger clears by. Empty until the first run completes.
+        LastCoverage: RunCoverage
     }
 
 /// Custom message posted from the async test runner back to the synchronous
@@ -309,9 +421,17 @@ type TestPruneState =
 /// queue only when EVERY project covering it passed. A symbol with NO covering
 /// projects (empty set) is committed unconditionally at flush time — there's
 /// nothing to wait for. `Symbols` empty for the degenerate zero-affected skip.
+///
+/// `Selection` is the run's SCOPE (AUTOMATION-125): what it was launched against,
+/// per project. It is the input to `RunCoverage.ofRun`, and therefore decides what
+/// this run's green is allowed to CLEAR. A project absent from it was never
+/// launched — no matter what its result says (an impact-skip is recorded as a
+/// filtered PASS), it vindicates nothing. Empty for the zero-affected skip and the
+/// aborted-run lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     { Symbols: Set<string>
-      CoveringProjectsBySymbol: Map<string, Set<string>> }
+      CoveringProjectsBySymbol: Map<string, Set<string>>
+      Selection: Map<string, ProjectSelection> }
 
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
@@ -653,6 +773,132 @@ let internal classifyRunScope (configs: TestConfig list) (lastResults: TestResul
             RanEverything total
         else
             RanSubset(ran, total)
+
+/// The single answer to "what did this run actually cover?" — PUBLIC because it is
+/// load-bearing outside this handler too: a verdict writer must be able to ask it, per
+/// project and per suite, what a run executed, rather than maintain a parallel notion
+/// of scope that can drift from the one the ledger clears by.
+module RunCoverage =
+
+    /// Nothing was executed, so nothing may be cleared. The verdict of an aborted
+    /// run, and of the zero-affected skip (which runs no tests at all).
+    let none: RunCoverage = Map.empty
+
+    /// The projects this run executed at all (in full, or a class subset of).
+    let coveredProjects (coverage: RunCoverage) : Set<string> = coverage |> Map.keys |> Set.ofSeq
+
+    /// Did this run execute EVERY configured project, each in FULL? The only scope
+    /// from which a whole-suite claim can be made — and the question a merge gate is
+    /// really asking. A run that filtered ANY project, or skipped one, covered less
+    /// than the suite, whatever its result counts say. An empty project list is not a
+    /// covered suite (there is no evidence in a run of nothing).
+    let coversWholeSuite (projects: string list) (coverage: RunCoverage) : bool =
+        not projects.IsEmpty
+        && projects
+           |> List.forall (fun p ->
+               match Map.tryFind p coverage with
+               | Some CoveredWholeProject -> true
+               | Some(CoveredClasses _)
+               | None -> false)
+
+    /// Does this run's evidence reach the given red? `cls = None` is a
+    /// PROJECT-level red (unparseable failure output, a timeout, an errored or
+    /// deferred project): no class-filtered run can speak for it — only a run that
+    /// executed the whole project can.
+    let covers (project: string) (cls: string option) (coverage: RunCoverage) : bool =
+        match Map.tryFind project coverage, cls with
+        | None, _ -> false
+        | Some CoveredWholeProject, _ -> true
+        | Some(CoveredClasses _), None -> false
+        | Some(CoveredClasses classes), Some c -> Set.contains c classes
+
+    /// Derive the coverage of a completed run: what it was LAUNCHED against
+    /// (`selection`), intersected with what it actually EXECUTED (`results`).
+    ///
+    /// Per project, in order:
+    ///   * no result / deferred / errored / zero-match-under-filter → NO coverage.
+    ///     Nothing ran, so nothing is vindicated (a deferred project's `wasFiltered`
+    ///     is `true` by convention and its output is empty — neither is evidence).
+    ///   * `wasFiltered = false` → the runner executed the project with no filter,
+    ///     whatever the selection asked for (a project with selected classes but no
+    ///     `filterTemplate` runs in FULL) → `CoveredWholeProject`. The RESULT, not
+    ///     the request, is the receipt.
+    ///   * `wasFiltered = true` and the selection named classes → `CoveredClasses`.
+    ///   * `wasFiltered = true` otherwise → NO coverage. This is the `run-tests
+    ///     --filter <raw>` passthrough: an arbitrary filter string whose reach we
+    ///     cannot compute, so we claim nothing for it. Conservative in the safe
+    ///     direction — a red it did clear stays red until an unfiltered run
+    ///     (`dotnet fshw test-rerun`) proves it, which is one command away.
+    let ofRun (selection: Map<string, ProjectSelection>) (results: Map<string, TestResult>) : RunCoverage =
+        results
+        |> Map.toList
+        |> List.choose (fun (project, result) ->
+            let ran =
+                match result with
+                | TestsDeferred _
+                | TestsErrored _ -> false
+                | _ -> not (isZeroMatchResult result)
+
+            if not ran then
+                None
+            elif not (TestResult.wasFiltered result) then
+                Some(project, CoveredWholeProject)
+            else
+                match Map.tryFind project selection with
+                | Some(ProjectClasses classes) when not (Set.isEmpty classes) -> Some(project, CoveredClasses classes)
+                | Some(ProjectClasses _)
+                | Some ProjectInFull
+                | None -> None)
+        |> Map.ofList
+
+module internal OutstandingFailure =
+
+    /// Identity for de-duplication: the same class failing the same way twice is one
+    /// red, not two. (`Entry` is compared by message only — the detail is the full
+    /// runner output, which differs by timing/ordering between otherwise identical
+    /// failures.)
+    let private identity (f: OutstandingFailure) =
+        f.Project, f.Class, f.File, f.Entry.Message
+
+    /// The reds a run CARRIES: prior failures it did not cover, and so cannot speak
+    /// for. These are what deny an otherwise-passing run its green verdict.
+    ///
+    /// `configured` prunes reds for projects the daemon no longer runs (a project
+    /// removed from `tests.projects` could otherwise never be covered again, and its
+    /// red would wedge the gate forever — the AUTOMATION-99 stuck-red, rebuilt). Empty
+    /// ⇒ analysis-only, nothing to prune by.
+    let carriedOver
+        (configured: Set<string>)
+        (coverage: RunCoverage)
+        (prior: OutstandingFailure list)
+        : OutstandingFailure list =
+        let stillConfigured (f: OutstandingFailure) =
+            Set.isEmpty configured || Set.contains f.Project configured
+
+        prior
+        |> List.filter (fun f -> stillConfigured f && not (RunCoverage.covers f.Project f.Class coverage))
+
+    /// The outstanding set after a run: what it carried, plus what it found. A red the
+    /// run COVERED is not carried — if it failed again, `found` re-adds it from THIS
+    /// run's evidence; if it passed, it is gone, which is the whole point (no permanent
+    /// stuck-red). Defined in terms of `carriedOver` so the status verdict and the
+    /// ledger can never disagree about what is still red.
+    let carry
+        (configured: Set<string>)
+        (coverage: RunCoverage)
+        (found: OutstandingFailure list)
+        (prior: OutstandingFailure list)
+        : OutstandingFailure list =
+        carriedOver configured coverage prior @ found |> List.distinctBy identity
+
+    /// Human-readable "what is still red that this run did not look at", for the
+    /// status verdict. Names the projects, not every class — the ledger has the detail.
+    let summarize (failures: OutstandingFailure list) : string =
+        failures
+        |> List.map (fun f -> f.Project)
+        |> List.distinct
+        |> List.sort
+        |> String.concat ", "
 
 /// The ledger diagnostic for a file the symbol analyser could not read. LOUD by
 /// construction: it is a WARNING (so it surfaces in `fshw check` output and, under
@@ -1181,53 +1427,102 @@ let parseFailedTests (output: string) : (string * string * string) list =
             None)
     |> Array.toList
 
-/// Report test failures to the error ledger grouped by source file.
-/// Falls back to a synthetic "<tests>" path for tests without a known source file.
-let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<string, string>) (results: TestResults) =
-    // Collect all failure entries grouped by file
-    let entriesByFile =
-        results.Results
-        |> Map.toList
-        |> List.collect (fun (project, result) ->
-            match result with
-            | TestsFailed(output, _, _)
-            | TestsTimedOut(output, _, _, _) ->
-                let parsed = parseFailedTests output
+/// The reds a completed run FOUND, as outstanding failures (AUTOMATION-125). Pure:
+/// the same run always yields the same set, so the ledger projection is a function
+/// of the evidence and nothing else.
+///
+/// A red is attributed to a CLASS only when the runner named one AND the result is a
+/// genuine test failure. A TIMEOUT is deliberately project-level (`Class = None`)
+/// even when its output names tests: a project killed for being stuck is a fact
+/// about the PROJECT, and a later class-filtered green must not be allowed to
+/// vindicate it. Deferred/errored projects are project-level for the same reason —
+/// nothing about them was verified.
+let internal failuresOf (classFiles: Map<string, string>) (results: TestResults) : OutstandingFailure list =
+    let synthetic (project: string) = $"<tests/%s{project}>"
 
-                if parsed.IsEmpty then
-                    [ $"<tests/%s{project}>",
-                      ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output ]
-                else
-                    parsed
-                    |> List.map (fun (className, _methodName, line) ->
-                        let file =
-                            classFiles
-                            |> Map.tryFind className
-                            |> Option.defaultValue $"<tests/%s{project}>"
+    results.Results
+    |> Map.toList
+    |> List.collect (fun (project, result) ->
+        let projectLevel (entry: ErrorLedger.ErrorEntry) =
+            { Project = project
+              Class = None
+              File = synthetic project
+              Entry = entry }
 
-                        file, ErrorLedger.ErrorEntry.errorWithDetail line output)
-            | TestsDeferred reason ->
-                // Issue 1: NOT a test failure — surface an honest "waiting on
-                // build / did not run" diagnostic so the verdict is non-green
-                // (nothing was verified) WITHOUT claiming a test failed.
-                [ $"<tests/%s{project}>",
+        match result with
+        | TestsFailed(output, _, _)
+        | TestsTimedOut(output, _, _, _) ->
+            // A timeout is never attributable to one class (see above).
+            let isTimeout = TestResult.isTimedOut result
+            let parsed = parseFailedTests output
+
+            if parsed.IsEmpty then
+                [ projectLevel (ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output) ]
+            else
+                parsed
+                |> List.map (fun (className, _methodName, line) ->
+                    let file =
+                        classFiles |> Map.tryFind className |> Option.defaultValue (synthetic project)
+
+                    { Project = project
+                      Class = (if isTimeout then None else Some className)
+                      File = file
+                      Entry = ErrorLedger.ErrorEntry.errorWithDetail line output })
+        | TestsDeferred reason ->
+            // Issue 1: NOT a test failure — surface an honest "waiting on
+            // build / did not run" diagnostic so the verdict is non-green
+            // (nothing was verified) WITHOUT claiming a test failed.
+            [ projectLevel (
                   ErrorLedger.ErrorEntry.errorWithDetail
                       $"%s{project}: waiting on build — %s{reason}"
-                      $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure." ]
-            | TestsErrored reason ->
-                // NOT a test failure (no test was shown to fail) and NOT a pass
-                // (nothing was verified) — an honest "errored" diagnostic so the
-                // verdict is non-green without the misleading "Tests failed in X".
-                [ $"<tests/%s{project}>",
+                      $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure."
+              ) ]
+        | TestsErrored reason ->
+            // NOT a test failure (no test was shown to fail) and NOT a pass
+            // (nothing was verified) — an honest "errored" diagnostic so the
+            // verdict is non-green without the misleading "Tests failed in X".
+            [ projectLevel (
                   ErrorLedger.ErrorEntry.errorWithDetail
                       $"%s{project}: errored — %s{reason}"
-                      $"The %s{project} test host exited non-zero but wrote no parseable test report, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass; re-run (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green." ]
-            | TestsPassed _ -> [])
-        |> List.groupBy fst
-        |> List.map (fun (file, entries) -> file, entries |> List.map snd)
+                      $"The %s{project} test host exited non-zero but wrote no parseable test report, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass; re-run (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green."
+              ) ]
+        | TestsPassed _ -> [])
 
-    for (file, entries) in entriesByFile do
-        ctx.ReportErrors file entries
+/// Rewrite this plugin's whole slice of the error ledger to be exactly what is still
+/// OUTSTANDING (AUTOMATION-125).
+///
+/// `ClearAllErrors` (== `ClearPlugin "test-prune"`) is still how the slate is wiped —
+/// but it is now always paired with a re-report of EVERYTHING the plugin still owes:
+///
+///   * every outstanding red, including the ones carried from earlier runs that this
+///     one did not cover. The previous code cleared the slate and re-reported only
+///     THIS run's failures, so a narrower run that passed erased reds it had never
+///     executed;
+///   * every unanalysable-file warning (AUTOMATION-113). The clear wiped those too, so
+///     the first test run after an analysis failure silently dropped the warning that
+///     is supposed to deny the check its green verdict — the same defect, on a
+///     different diagnostic.
+///
+/// Clearing-and-re-reporting is the ONLY path to the ledger, so an entry can disappear
+/// only by leaving the outstanding set: a red needs a run that COVERED it, a warning
+/// needs the file to analyse cleanly.
+let private reportOutstanding
+    (ctx: PluginCtx<TestPruneMsg>)
+    (unanalyzable: Map<string, UnanalyzableFile>)
+    (outstanding: OutstandingFailure list)
+    =
+    ctx.ClearAllErrors()
+
+    let failureEntries = outstanding |> List.map (fun f -> f.File, f.Entry)
+
+    let unanalyzableEntries =
+        unanalyzable
+        |> Map.toList
+        |> List.map (fun (_, u) -> u.File, unanalyzableFileDiagnostic u.RelPath u.Reason)
+
+    failureEntries @ unanalyzableEntries
+    |> List.groupBy fst
+    |> List.iter (fun (file, entries) -> ctx.ReportErrors file (entries |> List.map snd))
 
 /// Execute test configs with optional affected classes for filtering.
 /// Handles beforeRun, coveragePaths, process execution, result storage.
@@ -1980,6 +2275,19 @@ let internal cacheKeyFor
     // hitting; only a gate's key differs. A second gate over the same tree still hits
     // its OWN entry and replays a run that genuinely was full-suite — sound and fast.
     (gateScopeHash: unit -> string option)
+    // AUTOMATION-125. True while a failure no covering run has passed is outstanding.
+    // While it is, this plugin does not participate in the task cache AT ALL:
+    //   * no REPLAY — a cached green served on a BuildCompleted would skip the handler,
+    //     skip the run, and hand back exactly the laundered verdict this ticket is
+    //     about (the same reasoning that makes a non-empty pending queue refuse);
+    //   * no WRITE — the terminal status of such a run carries a red the run itself
+    //     did not produce, and pinning that to a content merkle would let it replay on
+    //     a tree that has since been fixed (AUTOMATION-5, in reverse).
+    // Read at DISPATCH time, so on a `TestsFinished` it is the PRIOR outstanding set —
+    // which is the sound one to gate on: `allPassed` with an empty prior set implies an
+    // empty post-run set, so a genuinely green run is still cacheable, and a run that
+    // CLEARS a red merely forgoes one cache write.
+    (hasOutstandingFailures: unit -> bool)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
     let optionalEntry (name: string) (value: string option) =
@@ -2026,9 +2334,15 @@ let internal cacheKeyFor
         // gets its chance to drain.
         //
         // The empty-queue green fast-path (the case the cache exists for) is untouched.
-        match pendingQueueHash () with
-        | Some _ -> None
-        | None -> Some(outcomeKey "succeeded")
+        //
+        // An outstanding failure (AUTOMATION-125) refuses participation for the same
+        // reason: replaying a cached green while a failing test has never re-passed IS
+        // the laundered verdict, arrived at through the cache instead of through a
+        // filtered run.
+        match pendingQueueHash (), hasOutstandingFailures () with
+        | Some _, _
+        | _, true -> None
+        | None, false -> Some(outcomeKey "succeeded")
     | Custom(TestsFinished(_, completed, _)) ->
         // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be served from
         // cache as a current verdict. Unlike BuildPlugin — whose result is a pure
@@ -2055,7 +2369,16 @@ let internal cacheKeyFor
             | Aborted _ -> false
             | Normal -> true
 
-        if allPassed && notAborted && (pendingQueueHash ()).IsNone then
+        // AUTOMATION-125 adds the third condition: a run that passed everything IT ran
+        // while an earlier, uncovered failure is still outstanding is NOT green (its
+        // terminal status is a Failed carrying the carried-over red), so it is not a
+        // "safe to skip" verdict and must never be replayed as one.
+        if
+            allPassed
+            && notAborted
+            && (pendingQueueHash ()).IsNone
+            && not (hasOutstandingFailures ())
+        then
             Some(outcomeKey "succeeded")
         else
             None
@@ -2179,6 +2502,18 @@ let create
                 Logging.warn
                     "test-prune"
                     $"failed to persist pending-verification queue after commit: %s{ex.Message}; in-memory queue still updated"
+
+    /// The reds no covering run has passed since (AUTOMATION-125), mirrored out of
+    /// the mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on
+    /// another thread, and so cannot read the state. Same closure-local + `Volatile`
+    /// shape as `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
+    ///
+    /// While it is non-empty the plugin does not participate in the task cache AT ALL
+    /// (no replay, no write — see `cacheKeyFor`): a cached green must never be served
+    /// while a failing test is outstanding, and a red carried on a status must never be
+    /// written to disk where a later, genuinely-fixed tree could replay it
+    /// (AUTOMATION-5's stale-red-on-a-green-tree, in reverse).
+    let mutable outstandingFailuresRef: OutstandingFailure list = []
 
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
@@ -2376,8 +2711,10 @@ let create
           PriorProjectFingerprints = Map.empty
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = false
-          UnanalyzableFiles = Set.empty
-          QueuedCommandRuns = [] }
+          UnanalyzableFiles = Map.empty
+          QueuedCommandRuns = []
+          OutstandingFailures = []
+          LastCoverage = RunCoverage.none }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -2420,8 +2757,13 @@ let create
             //    selection made without them cannot be trusted.
             let gateScopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
 
+            // The coarse fallback only needs to know WHICH files are unanalysable; the
+            // map's values exist so the ledger projection can re-report their
+            // diagnostics (AUTOMATION-125).
+            let unanalyzablePaths = state.UnanalyzableFiles |> Map.keys |> Set.ofSeq
+
             let forceRunProjects =
-                let widened = coarseFallbackProjects configs state.UnanalyzableFiles fanoutProjects
+                let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
 
                 if gateScopeIsFullSuite then
                     Set.union widened (fullSuiteProjects configs)
@@ -2433,12 +2775,12 @@ let create
                     "test-prune"
                     "Scope: FULL SUITE (merge gate) — impact filtering is disabled for this run; every configured test project runs in full"
 
-            if not (Set.isEmpty state.UnanalyzableFiles) then
-                let names = state.UnanalyzableFiles |> Set.toList |> String.concat ", "
+            if not (Set.isEmpty unanalyzablePaths) then
+                let names = unanalyzablePaths |> Set.toList |> String.concat ", "
 
                 Logging.warn
                     "test-prune"
-                    $"%d{Set.count state.UnanalyzableFiles} file(s) could not be analysed (%s{names}) — their symbols are missing from the impact graph, so this run falls back to EVERY test project in full rather than trusting a selection made without them"
+                    $"%d{Set.count unanalyzablePaths} file(s) could not be analysed (%s{names}) — their symbols are missing from the impact graph, so this run falls back to EVERY test project in full rather than trusting a selection made without them"
 
             // The queue snapshot this run is LAUNCHED against — the durable
             // queue UNION the in-memory hot view. Captured here (not read from
@@ -2471,10 +2813,6 @@ let create
                         s, projs)
                     |> Map.ofList
 
-                let launch =
-                    { Symbols = launchedSymbols
-                      CoveringProjectsBySymbol = coveringProjectsBySymbol }
-
                 // Extension-contributed edges were already written to the DB by
                 // flushAndQueryAffected, so state.AffectedTests already includes tests
                 // reachable through extension edges (sql, sql-hydra, falco, etc.).
@@ -2500,6 +2838,34 @@ let create
                 let affectedByProject =
                     forceRunProjects
                     |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
+
+                /// AUTOMATION-125 — the run's SCOPE, in the same shape `executeTests`
+                /// will actually honour, captured on the launch so the completion
+                /// handler knows what this run is entitled to clear.
+                ///
+                /// Mirrors `executeTests`' own reading of `affectedClassesByProject`
+                /// EXACTLY, which is why it is derived from that map and not
+                /// re-decided: an EMPTY map means "no selection" → every project runs
+                /// in full; a NON-empty map means a project present with `[]` runs in
+                /// full, a project present with classes runs filtered, and a project
+                /// ABSENT is skipped entirely (and recorded as a filtered pass that
+                /// proves nothing — the laundering vector).
+                let selection: Map<string, ProjectSelection> =
+                    if Map.isEmpty affectedByProject then
+                        configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
+                    else
+                        configs
+                        |> List.choose (fun c ->
+                            match Map.tryFind c.Project affectedByProject with
+                            | None -> None
+                            | Some [] -> Some(c.Project, ProjectInFull)
+                            | Some classes -> Some(c.Project, ProjectClasses(Set.ofList classes)))
+                        |> Map.ofList
+
+                let launch =
+                    { Symbols = launchedSymbols
+                      CoveringProjectsBySymbol = coveringProjectsBySymbol
+                      Selection = selection }
 
                 // The skip gate counts symbol-affected classes only. A pure
                 // dependency-fanout (force-run projects, zero symbol classes) must
@@ -2573,7 +2939,12 @@ let create
                           Results = Map.empty
                           RanFullSuite = true }
 
-                    return TestsFinished(started, completed, launch)
+                    // The skip EXECUTES NOTHING, so it covers nothing and may clear
+                    // nothing (AUTOMATION-125). Empty results already yield an empty
+                    // `RunCoverage`; the empty selection says so at the source too, so
+                    // the "0 affected, green, 0 ran" path can never be mistaken for
+                    // evidence about a project.
+                    return TestsFinished(started, completed, { launch with Selection = Map.empty })
                 else
                     if totalClasses = 0 then
                         Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
@@ -2612,9 +2983,12 @@ let create
                 // which may not exist if the per-symbol coverage query itself
                 // threw) with an empty covering map — an Aborted run commits
                 // nothing, so the covering map is never consulted on this path.
+                // The empty SELECTION says the same thing about the ledger: an
+                // aborted run executed nothing, so it clears nothing.
                 let launch =
                     { Symbols = launchedSymbols
-                      CoveringProjectsBySymbol = Map.empty }
+                      CoveringProjectsBySymbol = Map.empty
+                      Selection = Map.empty }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -2638,9 +3012,21 @@ let create
         (filter: string option)
         (reply: Tasks.TaskCompletionSource<string>)
         : Async<TestPruneMsg> =
+        // A force-run launches exactly `configs`, each with NO class selection (it
+        // passes `Map.empty` to `executeTests`), so each runs IN FULL — a plain
+        // `dotnet fshw test-rerun` is therefore the unfiltered run that can clear ANY
+        // outstanding red (AUTOMATION-125's escape hatch, and the reason the rule
+        // cannot wedge into a permanent stuck-red).
+        //
+        // A `--filter` passthrough is a different matter: `RunCoverage.ofRun` sees
+        // `wasFiltered = true` on the results and declines to claim coverage for a
+        // filter string whose reach it cannot compute. Projects NOT in `configs`
+        // (`--only-failed`, `--projects`) are absent from the selection and so are
+        // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
             { Symbols = Set.empty
-              CoveringProjectsBySymbol = Map.empty }
+              CoveringProjectsBySymbol = Map.empty
+              Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList }
 
         async {
             try
@@ -2872,11 +3258,21 @@ let create
                                 // Resolve configs or produce an error
                                 let lastResults = state.LastResults
 
+                                // AUTOMATION-125. "Failed" is the OUTSTANDING set, not
+                                // merely the last run's results: after an impact-filtered
+                                // run the failing project is not in `LastResults` at all
+                                // (it wasn't selected), and `--only-failed` would have
+                                // re-run nothing — "no matching test projects" — while a
+                                // red sat there. The outstanding ledger is what still owes
+                                // a re-run, so it is what this verb must re-run.
+                                let outstandingProjects =
+                                    state.OutstandingFailures |> List.map (fun f -> f.Project) |> Set.ofList
+
                                 let configsResult =
                                     if onlyFailed then
-                                        match lastResults with
-                                        | Some prev ->
-                                            let failedNames =
+                                        let lastRunFailed =
+                                            match lastResults with
+                                            | Some prev ->
                                                 prev.Results
                                                 |> Map.toList
                                                 |> List.choose (fun (name, r) ->
@@ -2891,9 +3287,14 @@ let create
                                                     | TestsErrored _ -> Some name
                                                     | _ -> None)
                                                 |> Set.ofList
+                                            | None -> Set.empty
 
+                                        let failedNames = Set.union lastRunFailed outstandingProjects
+
+                                        if lastResults.IsNone && Set.isEmpty failedNames then
+                                            Error "no previous results — cannot determine failed projects"
+                                        else
                                             Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
-                                        | None -> Error "no previous results — cannot determine failed projects"
                                     else
                                         match projectFilter with
                                         | Some names ->
@@ -2990,7 +3391,13 @@ let create
                         )
 
                         { state with
-                            UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
+                            UnanalyzableFiles =
+                                Map.add
+                                    relPath
+                                    { RelPath = relPath
+                                      File = fileStr
+                                      Reason = detail }
+                                    state.UnanalyzableFiles }
 
                     try
                         // Canonical project identity. For real .fsproj files, FCS
@@ -3171,9 +3578,12 @@ let create
                                     // The file analysed cleanly, so it is back in the impact
                                     // graph and no longer owes the coarse fallback. The
                                     // framework already cleared this plugin's ledger entries
-                                    // for the file when the FileChecked arrived, so the
-                                    // warning disappears with it.
-                                    UnanalyzableFiles = Set.remove relPath state.UnanalyzableFiles }
+                                    // for the file when the FileChecked arrived, and dropping
+                                    // it here means the next test run's ledger rewrite stops
+                                    // re-reporting the warning (AUTOMATION-125): the entry
+                                    // leaves the ledger because the CONDITION cleared, which
+                                    // is the only reason any entry may leave it.
+                                    UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
 
                             // Keep the mutable snapshot in sync for the cache key function
                             Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
@@ -3505,20 +3915,49 @@ let create
                         { Results = completed.Results
                           Elapsed = completed.TotalElapsed }
 
-                    // Issue 2: clear this plugin's prior-cycle diagnostics
-                    // UNCONDITIONALLY before re-reporting, so `fshw errors` /
-                    // the aggregate verdict reflects ONLY the most recent
-                    // completed cycle. Previously the clear only happened on the
-                    // all-passed branch; when a later cycle had a different set
-                    // of failing projects, the superseded reds from the prior
-                    // cycle were never cleared and accumulated as stale entries.
-                    // ClearAllErrors == ClearPlugin "test-prune" (see
-                    // PluginFramework), so this replaces the whole plugin ledger
-                    // rather than only the all-pass case.
-                    ctx.ClearAllErrors()
+                    // AUTOMATION-125 — a run may clear ONLY what it COVERED.
+                    //
+                    // Issue 2 (AUTOMATION-95) established that the ledger must be
+                    // REWRITTEN each cycle rather than appended to, so a superseded red
+                    // can't linger. It rewrote it from THIS run's failures alone — which
+                    // meant a narrower run's green erased reds it had never executed
+                    // (observed live: full run fails project X → queued impact-filtered
+                    // re-run passes 2 symbols → X's red gone, X never re-ran).
+                    //
+                    // Both properties hold once the rewrite is from the OUTSTANDING set:
+                    // what this run found, PLUS every earlier red it did not cover. The
+                    // coverage is derived from the run's own launch selection — so a red
+                    // dies only to evidence that actually executed it, and dies the
+                    // moment such evidence exists (no stuck-red: cf. AUTOMATION-99).
+                    let coverage = RunCoverage.ofRun launch.Selection completed.Results
+                    let foundFailures = failuresOf state.TestClassFiles testResults
 
-                    if not (testResults.Results |> Map.forall (fun _ r -> TestResult.isPassed r)) then
-                        reportTestErrors ctx state.TestClassFiles testResults
+                    let carriedFailures =
+                        OutstandingFailure.carriedOver runnableProjects coverage state.OutstandingFailures
+
+                    let outstandingFailures =
+                        OutstandingFailure.carry runnableProjects coverage foundFailures state.OutstandingFailures
+
+                    if not carriedFailures.IsEmpty then
+                        Logging.info
+                            "test-prune"
+                            $"%d{carriedFailures.Length} failure(s) from an earlier run were NOT covered by this one (%s{OutstandingFailure.summarize carriedFailures}) — they stay RED until a run that executes them passes"
+
+                    // The ONLY path to the ledger: clear the slate, re-report the whole
+                    // outstanding set. There is no wholesale clear a filtered run can
+                    // reach for.
+                    reportOutstanding ctx state.UnanalyzableFiles outstandingFailures
+                    Volatile.Write(&outstandingFailuresRef, outstandingFailures)
+
+                    // Carried into EVERY return branch below (rerun-drain, queued
+                    // force-run, idle) by rebinding here — a branch that forgot would
+                    // silently resurrect the laundering bug. `LastCoverage` rides along
+                    // as the receipt of what this run covered, for consumers outside the
+                    // handler.
+                    let state =
+                        { state with
+                            OutstandingFailures = outstandingFailures
+                            LastCoverage = coverage }
 
                     // Outcome-conditional, per-project green-commit. A launched
                     // symbol leaves the needs-testing queue ONLY when the run
@@ -3574,6 +4013,19 @@ let create
                     let recordRunOutcome (results: TestResults) =
                         let total = results.Results.Count
 
+                        // AUTOMATION-125. Reds this run did not cover are still RED —
+                        // they must deny it a green verdict exactly as its own failures
+                        // would, or `check` exits 0 with a failing test outstanding
+                        // (the whole defect). Named in every non-green message below so
+                        // the reason a passing run is not green is never a mystery.
+                        let carriedCount = carriedFailures.Length
+
+                        let carriedNote =
+                            if carriedCount = 0 then
+                                ""
+                            else
+                                $" (+%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures})"
+
                         // §3a — verdict hardening: consult completed.Outcome FIRST.
                         // An Aborted run (beforeRun threw, runner crashed, run
                         // cancelled) MUST be non-green regardless of result counts —
@@ -3592,8 +4044,8 @@ let create
                         | Some reason ->
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
-                                    $"test run aborted (tests did not run): %s{reason}"
-                                    $"test run aborted: %s{reason}"
+                                    $"test run aborted (tests did not run): %s{reason}%s{carriedNote}"
+                                    $"test run aborted: %s{reason}%s{carriedNote}"
                                     results.Elapsed
                             )
                         | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
@@ -3602,8 +4054,8 @@ let create
                             // deferred (never-ran) project.
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
-                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
-                                    "0 projects ran; symbols still awaiting verification"
+                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                    $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
                                     results.Elapsed
                             )
                         | None ->
@@ -3669,8 +4121,8 @@ let create
 
                                 ctx.ReportStatus(
                                     PluginStatus.failedNow
-                                        $"%d{timedOutProjects.Length} timed out: %s{names}"
-                                        $"%d{timedOutProjects.Length} timed out: %s{names}"
+                                        $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
+                                        $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
                                         results.Elapsed
                                 )
                             else
@@ -3681,9 +4133,23 @@ let create
                                 // `runSummary` + measured duration — on the status
                                 // itself. There is no separate summary channel left to
                                 // forget or contradict (AUTOMATION-99).
-                                if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                                if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit && carriedCount = 0 then
                                     ctx.ReportStatus(
                                         Completed(DateTime.UtcNow, RunVerdict.create runSummary results.Elapsed)
+                                    )
+                                elif failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                                    // AUTOMATION-125. Everything this run RAN passed, the
+                                    // queue is drained — and yet an earlier failure it did
+                                    // not execute is still outstanding. A narrower run
+                                    // cannot vindicate a test it never ran, so this is
+                                    // NON-green: the red survives until a run that COVERS
+                                    // it passes (`dotnet fshw test-rerun` runs every
+                                    // project unfiltered and will clear it if it is fixed).
+                                    ctx.ReportStatus(
+                                        PluginStatus.failedNow
+                                            $"%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures}"
+                                            $"%s{runSummary}%s{carriedNote}"
+                                            results.Elapsed
                                     )
                                 elif failed = 0 && deferred = 0 then
                                     // Everything that RAN passed, but the pending queue
@@ -3693,8 +4159,8 @@ let create
                                     // the next BuildCompleted re-selects and runs them.
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
-                                            runSummary
+                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
+                                            $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
                                 elif failed = 0 then
@@ -3705,8 +4171,8 @@ let create
 
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{deferred} waiting on build (tests did not run): %s{names}"
-                                            runSummary
+                                            $"%d{deferred} waiting on build (tests did not run): %s{names}%s{carriedNote}"
+                                            $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
                                 else
@@ -3721,8 +4187,8 @@ let create
 
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{failed} failed: %s{names}%s{deferredNote}"
-                                            runSummary
+                                            $"%d{failed} failed: %s{names}%s{deferredNote}%s{carriedNote}"
+                                            $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
 
@@ -3940,7 +4406,12 @@ let create
                 else
                     None
 
-            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash gateScopeHash event
+            // AUTOMATION-125: no cache participation while a red no covering run has
+            // passed is outstanding.
+            let hasOutstandingFailures () =
+                not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
+
+            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash gateScopeHash hasOutstandingFailures event
 
         Some cacheKey
       Teardown = None }

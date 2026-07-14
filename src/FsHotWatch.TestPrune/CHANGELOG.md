@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- fix!: **a run may clear only what it COVERED.** (AUTOMATION-125) A full run failed
+  project X; a queued impact-filtered re-run then executed a *narrower* selection,
+  passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never
+  re-ran and never passed, yet `check` went green. Same disease as AUTOMATION-95/99/112:
+  "no failures reported by THIS run" read as "no failures". The merge gate was protected
+  (a filtered green is `UnearnedScope`); the inner loop was not, so a developer or agent
+  saw red → made an unrelated edit → saw green and concluded they had fixed it.
+
+  A run now carries the SELECTION it was launched against (`TestRunLaunch.Selection`),
+  a completed run's `RunCoverage` is derived from that selection intersected with what
+  actually executed, and the ledger is rewritten from the OUTSTANDING set — this run's
+  failures plus every earlier red it did not cover. "Clear everything" is not something
+  a filtered run can express. A red therefore survives every run that did not execute
+  it, and dies the moment one that did executes it green (`dotnet fshw test-rerun` runs
+  every project unfiltered and clears anything that is genuinely fixed — no stuck-red).
+  Precise beyond project granularity: a class-filtered green clears only the classes it
+  ran, and a timed-out / errored / deferred project needs a WHOLE-project pass. While a
+  red is outstanding the plugin does not participate in the task cache at all — no
+  replay of a cached green over a failing test, no write of a carried red to disk.
+  `run-tests --only-failed` now re-runs the outstanding set, not merely the last run's
+  results (after a filtered run the failing project isn't in them at all).
+
+  `RunCoverage` is PUBLIC (`ofRun`, `covers`, `coveredProjects`, `coversWholeSuite`) and
+  the last run's coverage is carried in state (`LastCoverage`) beside `LastResults`:
+  results say what a run FOUND, coverage says what it COVERED, and a verdict writer must
+  read the second. One notion of scope in the system — the same one the ledger clears
+  by — rather than a parallel one that can drift from it.
+
+- fix: an unanalysable-file warning (AUTOMATION-113) no longer disappears at the first
+  test run after the analysis failure. The `TestsFinished` ledger rewrite cleared this
+  plugin's whole slice, so the file went on forcing full-suite runs while nothing told
+  anyone — and the warning that is supposed to deny `check` its green verdict quietly
+  stopped doing so. The warning is now re-reported from state on every rewrite and
+  leaves the ledger only when the file analyses cleanly.
+
 - fix!: **a force-run refused the slot is QUEUED, never declined.** (AUTOMATION-99)
   Routing `run-tests` through the mailbox left one hole: if a run was already in flight
   the handler replied `busy` and ran nothing — and the CLI mapped that to exit 0. A
