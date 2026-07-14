@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- fix: **the terminal-status ownership guard is now ATOMIC against a run-slot claim**
+  (AUTOMATION-118). A design review alleged the shipped AUTOMATION-95/99 guard was
+  "a narrowing, not a cure", and it was right about the mechanism: `liveRunOwnsStatus`
+  read the run slots under `runSlotsLock` and the caller reported the status *after*
+  releasing it. A `RunExclusive` claim landing in that window publishes `Running`, and
+  the stale terminal — a cache replay, a `FileChecked` completion, a `safeUpdate`
+  crash-net stamp — then lands **on top of the live run**: the "content-free ✓ while
+  tests are still running" signature (`started:` with no `elapsed:`) that AUTOMATION-99
+  exists to make impossible. This reproduces against the real framework.
+  - It was **not reachable from any shipped plugin**: every `ctx.RunExclusive` and
+    `ctx.ReportStatus` call in all eight plugins is lexically inside `Update`, and the
+    agent loop awaits each `Update` before dequeuing the next event — so the check, the
+    claim and the report were totally ordered on one logical thread. But `PluginCtx` is
+    a record of closures; nothing in the type system confines it to the mailbox. That
+    was soundness by **convention**, and any plugin claiming a slot from a `work` async
+    or a spawned task — a legal use of the API — reopened the window.
+  - The ownership *decision* and the *report* are now one critical section under a new
+    per-handler `statusLock`, which `runExclusive` also holds across [claim slot +
+    report `Running`]. A terminal therefore either wins the race (published while no run
+    is genuinely live) or loses it (the claim is already visible and it is suppressed) —
+    never both. Lock order is always `statusLock` → `runSlotsLock` and never the reverse,
+    and nothing reachable from `services.ReportStatus` re-enters the framework
+    (`PluginHost.setStatus` is a dictionary write plus a non-blocking `MailboxProcessor.Post`),
+    so no cycle exists.
+
 - feat!: **the daemon records its own binary identity, so a new CLI can never
   silently talk to an old daemon.** (AUTOMATION-147) On startup the daemon writes
   `.fshw/daemon.identity` — its assembly version **and a content hash of its binary** —

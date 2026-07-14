@@ -1693,3 +1693,202 @@ let ``cache path: only an EARNED terminal is written — every other shape is sk
     test <@ (cachedFor "/failed-then-run").IsNone @>
 
     openAndDrain gate reg
+
+// --- AUTOMATION-118: is the terminal-status guard ATOMIC against a slot claim? ---
+//
+// The guard reads the run slots under `runSlotsLock` and (before the fix) reported
+// the status AFTER releasing it. A design review alleged that made it "a narrowing,
+// not a cure": a `RunExclusive` claim landing between the check and the report
+// publishes `Running`, and the stale terminal then lands ON TOP of the live run —
+// the "content-free ✓ while tests are still running" signature (`started:` with no
+// `elapsed:`) that AUTOMATION-95/99 exist to make impossible.
+//
+// These two tests settle it against the REAL framework — real `registerHandler`,
+// real guard, real `runExclusive` — not a model of it. Both PARK the mailbox thread
+// inside the host's `ReportStatus` for the stale terminal, which is a faithful
+// widening of a window that genuinely exists (it does not invent one), and then race
+// a slot claim into it. They differ ONLY in where the claim comes from, which is
+// exactly the variable that decides the verdict:
+//
+//   * from a FOREIGN thread — legal (`PluginCtx` is a record of closures; nothing
+//     confines it to the mailbox). Before the fix this REPRODUCED the race.
+//   * from the MAILBOX — the production shape. Cannot reach the window at all,
+//     because the mailbox is parked inside the report and cannot dequeue the claim.
+//
+// Both must now be green: the guard is atomic against claims, so the property holds
+// regardless of which thread the claim comes from.
+
+type private A118Msg = A118Done
+
+/// Outcome of one race: every status the host observed, plus any terminal it was
+/// handed WHILE a run slot was held — the invariant under test:
+///
+///     no terminal may reach the host while an exclusive run is in flight.
+///
+/// `IsRunning` is the framework's OWN view of the slot, so the check cannot drift
+/// from what the guard is guarding.
+type private A118Result =
+    { Statuses: PluginStatus list
+      Violations: string list }
+
+/// Park the mailbox inside the host's `ReportStatus` for the first TERMINAL status
+/// this plugin reports, run `raceTheClaim` while it is parked, then unpark.
+/// `raceTheClaim` is handed the captured ctx, the registration, and the work async
+/// the run must execute — the SAME work on both paths, so neither can pass by
+/// quietly failing to start a run.
+let private runA118Rig (raceTheClaim: PluginCtx<A118Msg> -> RegisteredPlugin -> Async<A118Msg> -> unit) =
+    let statuses = ResizeArray<PluginStatus>()
+    let violations = ResizeArray<string>()
+    let statusesLock = obj ()
+
+    let windowOpen = new System.Threading.ManualResetEventSlim(false)
+    let unpark = new System.Threading.ManualResetEventSlim(false)
+    let workEntered = new System.Threading.ManualResetEventSlim(false)
+    let workGate = new System.Threading.ManualResetEventSlim(false)
+
+    let mutable ctxRef: PluginCtx<A118Msg> option = None
+    let mutable parked = false
+
+    // The run the claim launches. Holds the slot until the test releases `workGate`,
+    // so the run is unambiguously LIVE while we assert.
+    let rigWork =
+        async {
+            workEntered.Set()
+            workGate.Wait(20000) |> ignore
+            return A118Done
+        }
+
+    let services =
+        { defaultServices with
+            ReportStatus =
+                fun _name s ->
+                    // Park ONLY the first terminal — the stale one. This is the instant
+                    // the guard has decided "no run owns the status" and is committing.
+                    if PluginStatus.isTerminal s && not parked then
+                        parked <- true
+                        windowOpen.Set()
+                        unpark.Wait(20000) |> ignore
+
+                    let runLive =
+                        match ctxRef with
+                        | Some c -> c.IsRunning "tests"
+                        | None -> false
+
+                    lock statusesLock (fun () ->
+                        statuses.Add s
+
+                        if PluginStatus.isTerminal s && runLive then
+                            violations.Add $"terminal %A{s} landed while the 'tests' run slot was HELD") }
+
+    let handler: PluginHandler<int, A118Msg> =
+        { Name = PluginName.create "a118"
+          Init = 0
+          Update =
+            fun ctx state event ->
+                async {
+                    ctxRef <- Some ctx
+
+                    match event with
+                    // The STALE terminal. Models exactly the illegitimate terminals the
+                    // guard exists to drop: a cache replay, a FileChecked per-file
+                    // completion, a `safeUpdate` crash-net stamp. Reported through the
+                    // plugin-facing funnel, like all of them.
+                    | FileChanged _ ->
+                        ctx.ReportStatus(
+                            PluginStatus.completedNow "stale per-file terminal" (System.TimeSpan.FromSeconds 1.0)
+                        )
+
+                        return state
+                    // The CLAIM, made from the mailbox — the production shape.
+                    | BuildCompleted _ ->
+                        match ctx.RunExclusive "tests" rigWork with
+                        | Claimed
+                        | SlotBusy -> ()
+
+                        return state
+                    | _ -> return state
+                }
+          Commands = [ "get", fun _ctx s _ -> async { return string s } ]
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    let reg = registerHandler services handler
+
+    // Dispatch the stale terminal. The mailbox parks inside the host's ReportStatus.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
+    windowOpen.Wait(20000) |> ignore
+
+    // The window is now OPEN: the guard has checked (no slot held) and is committing
+    // the report. Race a claim into it.
+    raceTheClaim ctxRef.Value reg rigWork
+
+    // Hold the window open long enough for the claim to land in it. This pins a real
+    // window; it does not create one.
+    System.Threading.Thread.Sleep 400
+
+    unpark.Set()
+
+    // The run must actually go live — otherwise these assertions would be vacuous.
+    workEntered.Wait(20000) |> ignore
+    System.Threading.Thread.Sleep 300
+
+    let result =
+        lock statusesLock (fun () ->
+            { Statuses = List.ofSeq statuses
+              Violations = List.ofSeq violations })
+
+    // Release the run and let the plugin settle.
+    workGate.Set()
+    waitUntil (fun () -> not (reg.IsBusy())) 20000
+
+    result
+
+/// The shared assertions. `isRunning` proves the race was REAL — the claim was made
+/// and the slot went live — so a green result can never be vacuous.
+let private assertNoTerminalOnLiveRun (result: A118Result) =
+    let isRunning s =
+        match s with
+        | Running _ -> true
+        | _ -> false
+
+    // Anti-vacuity: the run genuinely started. Without this a rig that silently
+    // failed to claim would "pass".
+    test <@ result.Statuses |> List.exists isRunning @>
+
+    // THE INVARIANT: no terminal may reach the host while an exclusive run is live.
+    // Unquote reduces the expression, so a failure still prints the offending terminals.
+    test <@ List.isEmpty result.Violations @>
+
+    // And the plugin must not be left LOOKING finished while its run is still going:
+    // the last thing the host saw must be the live run, not a verdict nobody earned.
+    test <@ result.Statuses |> List.tryLast |> Option.map PluginStatus.isTerminal = Some false @>
+
+[<Fact(Timeout = 60000)>]
+let ``AUTOMATION-118: a claim from a FOREIGN thread cannot land a stale terminal on the live run`` () =
+    // The claim arrives on a thread that is NOT the plugin's mailbox — the shape the
+    // design review modelled, and a legal use of the framework API. Before the
+    // `statusLock` fix this reproduced the race: the guard checked "no run is live",
+    // the foreign claim then published `Running`, and the parked terminal landed on
+    // top of it.
+    runA118Rig (fun ctx _reg work ->
+        System.Threading.Tasks.Task.Run(fun () ->
+            match ctx.RunExclusive "tests" work with
+            | Claimed
+            | SlotBusy -> ())
+        |> ignore
+
+        // Give the claim time to reach the framework while the window is open.
+        System.Threading.Thread.Sleep 150)
+    |> assertNoTerminalOnLiveRun
+
+[<Fact(Timeout = 60000)>]
+let ``AUTOMATION-118: a claim from the MAILBOX cannot enter the guard's window at all`` () =
+    // The production shape, and the structural reason the shipped daemon never hit
+    // this: EVERY `ctx.RunExclusive` and `ctx.ReportStatus` call in all eight shipped
+    // plugins is lexically inside `Update`, and the agent loop awaits each `Update`
+    // before dequeuing the next event — so the check, the claim and the report are
+    // totally ordered on one logical thread. Here the mailbox is parked INSIDE the
+    // report, so the claim event cannot even be dequeued until the report has landed.
+    runA118Rig (fun _ctx reg _work -> reg.Dispatch(DispatchBuildCompleted BuildSucceeded))
+    |> assertNoTerminalOnLiveRun
