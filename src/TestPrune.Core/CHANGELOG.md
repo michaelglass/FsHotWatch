@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **BREAKING**: `TestPrune.Coverage.ingestCobertura` and `fileCoverageSummary` now return
+  named records (`CoverageIngestSummary` = `{ Ingested; Skipped }`, `FileCoverageSummary` =
+  `{ Covered; Total }`) instead of anonymous records. Callers that bound the result and read
+  its fields need no change; callers that constructed or annotated the anonymous type do.
+  Found by turning TestPrune's own `TP001` analyzer on TestPrune: an
+  anonymous record has no stable cross-build name, so impact analysis could not see a
+  caller's coupling to these public return shapes — the exact blind spot the analyzer ships
+  to warn consumers about.
+
 ## 6.0.0 - 2026-07-13
 
 - fix: **directory walks no longer follow symlinks, and no longer hang forever.**

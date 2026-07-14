@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **TP001 is now dogfooded: TestPrune runs this analyzer against TestPrune**.
+  The package was published but never loaded against its own repo, so nothing proved the rule
+  still fired — an analyzer that reports nothing and an analyzer that never loaded produce
+  byte-identical output. It is now loaded by the `fshw` gate (`.fshw.json` `analyzers.paths`)
+  in `mise run ci` and in GitHub Actions, and a violation fails both. Turning it on found 6
+  real TP001 sites in TestPrune's own source (fixed; see the TestPrune.Core and TestPrune
+  changelogs). No behavior change to the analyzer itself.
+
 ## 0.1.0-alpha.3 - 2026-06-25
 
 - chore(deps): recompile against FSharp.Analyzers.SDK 0.37.2 (FCS 43.12.201). TP001 (`TestPrune.AnonymousRecord`) diagnostic behavior unchanged.

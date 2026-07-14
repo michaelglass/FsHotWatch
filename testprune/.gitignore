@@ -64,6 +64,10 @@ TODO.md
 .ionide/
 .fake
 
+# FsHotWatch daemon state (impact DB, check cache, test history).
+# `.fshw.json` (the committed gate config) is deliberately NOT matched by this.
+.fshw/
+
 # Benchmark results
 benchmarks/results/
 

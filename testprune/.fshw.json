@@ -1,0 +1,26 @@
+{
+  "build": {
+    "command": "dotnet",
+    "args": "build"
+  },
+  "format": true,
+  "lint": false,
+  "exclude": [".workspaces/", "artifacts/", "output/", "examples/SampleSolution/"],
+  "analyzers": {
+    "paths": ["src/TestPrune.Analyzers/bin/Debug/net10.0/"],
+    "failOnSeverity": "warning"
+  },
+  "tests": {
+    "beforeRun": "dotnet build",
+    "projects": [
+      {
+        "project": "TestPrune.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/TestPrune.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "default"
+      }
+    ]
+  }
+}
