@@ -348,8 +348,13 @@ let create
                             let outcome = verifyAndDemote rawOutcome
 
                             match outcome, result with
-                            | BuildOutputFailed _, TimedOut(after, _) ->
-                                let summary = $"timed out after %d{int after.TotalSeconds}s"
+                            | BuildOutputFailed _, TimedOut(after, _, kill) ->
+                                // The full diagnostic already rides in `entries` (via
+                                // `outputOf`); this is the one-liner, so it gets the short
+                                // marker — a build tree we could not kill still holds the
+                                // obj/ locks the next build is about to trip over.
+                                let summary = $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
+
                                 ctx.Log "Build TIMED OUT"
                                 error "build" "Build TIMED OUT"
                                 ctx.CompleteWithTimeout summary
@@ -454,8 +459,10 @@ let create
 
                                         match result with
                                         | Succeeded _ -> ()
-                                        | TimedOut(after, _) ->
-                                            let summary = $"timed out after %d{int after.TotalSeconds}s"
+                                        | TimedOut(after, _, kill) ->
+                                            let summary =
+                                                $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
+
                                             ctx.Log $"Template build TIMED OUT for %s{rootStr}"
                                             error "build" $"Template build TIMED OUT for %s{rootStr}"
                                             ctx.CompleteWithTimeout summary

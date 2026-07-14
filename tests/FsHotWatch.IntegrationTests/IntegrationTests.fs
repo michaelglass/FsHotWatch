@@ -1817,15 +1817,36 @@ let ``runProcess kills child when exceeded`` () =
     Assert.True(sw.Elapsed < TimeSpan.FromSeconds 3.0, $"took {sw.Elapsed}")
 
 [<Fact(Timeout = 10000)>]
-let ``runProcess reports TimedOut on kill`` () =
-    // The earlier variant asserted partial stdout reached the `tail` field, but
-    // capturing pre-kill stdout races subprocess startup under load. The
-    // contract worth pinning is just that we get the TimedOut tag — the tail is
-    // best-effort drain.
+let ``runProcess reports TimedOut on kill, carrying the child's pre-kill stdout`` () =
+    // AUTOMATION-149. This assertion USED to check that `partial` reached the tail.
+    // It was weakened to `| TimedOut _ -> ()` on the grounds that "capturing pre-kill
+    // stdout races subprocess startup under load". It did not race the subprocess. It
+    // raced the THREAD POOL: the drain's stream pumps were `task {}` continuations, so
+    // on a saturated box the reader was never scheduled, the 2s window expired having
+    // read zero bytes, and `runProcess` handed back "" — and a `string` tail could not
+    // tell "we read nothing" from "the child printed nothing".
+    //
+    // That was AUTOMATION-126. It is fixed: the pumps own dedicated threads, so a
+    // saturated pool cannot starve them, and a drain that still cannot finish says so
+    // by its own name (`DrainTimedOut`) instead of forging an empty measurement. The
+    // weakening was an accommodation made for a TOOL bug, and it is now load-bearing on
+    // nothing — so the assertion goes back to what it should always have been.
+    //
+    // The child prints `partial` and THEN sleeps 10s, so those bytes are on the pipe
+    // long before the 300ms timeout fires. A tail that lacks them is a drain that
+    // failed to measure — the whole bug — and must be RED.
     match
         runProcess "sh" "-c \"echo partial; sleep 10\"" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 300.0))
     with
-    | TimedOut _ -> ()
+    | TimedOut(_, tail, _) ->
+        // The kill tears the pipes down under the pumps, so whether they end at EOF
+        // (`Drained`) or die mid-read (`DrainTimedOut`) is a genuine OS race: the TAG is
+        // not the contract here, the CAPTURE is. Whichever way it lands, what the child
+        // printed before the kill must be in it. `ProcessOutput.text` is the deliberate,
+        // greppable act of reading a capture without demanding it be complete — and
+        // asserting that a marker is PRESENT can only ever cost a hit, never invent one,
+        // so a starved drain FAILS this test rather than sliding past it.
+        Assert.Contains("partial", ProcessOutput.text tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
 [<Fact(Timeout = 15000)>]

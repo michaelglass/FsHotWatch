@@ -6234,7 +6234,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
             (ReportRequested report)
             false
             (TimeSpan.FromSeconds 30.0)
-            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck"))
+            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck", KillOutcome.Killed))
 
     test <@ TestResult.isTimedOut result @>
 

@@ -143,10 +143,12 @@ let ``outputOf renders each outcome's capture, tagging the ones we could not fin
     Assert.Equal("boom", outputOf (Failed(2, ProcessOutput.Drained "boom")))
 
     let timedOut =
-        outputOf (TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "tail"))
+        outputOf (TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "tail", KillOutcome.Killed))
 
     Assert.Contains("timed out after 30s", timedOut)
     Assert.Contains("tail", timedOut)
+    // A tree we DID kill says nothing extra — the note is not noise on the happy path.
+    Assert.DoesNotContain("KILL FAILED", timedOut)
 
     // An empty capture we never managed to take does NOT render as an empty output.
     let unmeasured =
@@ -279,7 +281,7 @@ let ``isTimedOut is true only for TimedOut`` () =
     // FsHotWatch.IntegrationTests (kept out of the coverage suite because its
     // OS-scheduling-dependent kill/drain branches jitter); this pins the pure
     // discriminator in the unit suite.
-    Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, ProcessOutput.Drained "tail")))
+    Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, ProcessOutput.Drained "tail", KillOutcome.Killed)))
     Assert.False(isTimedOut (Succeeded(ProcessOutput.Drained "ok")))
     Assert.False(isTimedOut (Failed(1, ProcessOutput.Drained "boom")))
 
@@ -510,6 +512,103 @@ let ``isExpectedKillException rejects Win32Exception (F17)`` () =
 [<Fact(Timeout = 5000)>]
 let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
     Assert.False(isExpectedKillException (System.NullReferenceException()))
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-149 — `killTree` used to be `try proc.Kill(...) with _ -> ()`.
+//
+// The catch-all laundered an exception into a verdict: a Win32 permission failure
+// and a clean kill left exactly the same trace (none), so "I could not kill the tree"
+// was spelled identically to "I killed the tree" — and the caller was handed a
+// `TimedOut` whose docstring PROMISED the tree was dead while it went on running.
+// Same disease as AUTOMATION-126's drain: a failure to DO the work, rendered
+// indistinguishable from the work succeeding.
+//
+// `isExpectedKillException` (F17) had said since the 2026-05-02 audit which
+// exceptions are benign — and the call site that was supposed to consult it never
+// did. `classifyKill` is that policy, finally wired up, and pure so the FAILURE arm
+// is deterministic: live-firing it would need a process we are genuinely forbidden
+// to kill, which is not something a test can conjure reliably on every OS.
+//
+// RED-BEFORE-GREEN: restore `with _ -> ()` (i.e. make `classifyKill` return
+// `KillOutcome.Killed` for every input) and the two `KillFailed` tests below fail.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``classifyKill: a kill that returned killed the tree (AUTOMATION-149)`` () =
+    Assert.Equal(KillOutcome.Killed, classifyKill None)
+
+[<Fact(Timeout = 5000)>]
+let ``classifyKill: the already-exited race is benign, not a failure (AUTOMATION-149)`` () =
+    // The child exited in the gap between the timeout firing and the kill landing.
+    // Nobody had to kill it; the tree is dead either way. This is the ONLY exception
+    // the old catch-all was entitled to swallow (F17).
+    Assert.Equal(KillOutcome.AlreadyExited, classifyKill (Some(System.InvalidOperationException())))
+
+[<Fact(Timeout = 5000)>]
+let ``classifyKill: a permission failure is a kill we did NOT perform (AUTOMATION-149)`` () =
+    // THE regression. Win32Exception = we were refused. The tree is still running, and
+    // the old `with _ -> ()` reported that as success.
+    match classifyKill (Some(System.ComponentModel.Win32Exception())) with
+    | KillOutcome.KillFailed reason -> Assert.IsType<System.ComponentModel.Win32Exception>(reason) |> ignore
+    | other -> Assert.Fail $"a refused kill must not be spelled like a successful one, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``classifyKill: an unexpected exception is a kill we did NOT perform (AUTOMATION-149)`` () =
+    // Anything outside the F17 benign class is, by construction, a kill we cannot
+    // vouch for — it is NEVER quietly rounded down to "killed".
+    match classifyKill (Some(System.NullReferenceException())) with
+    | KillOutcome.KillFailed reason -> Assert.IsType<System.NullReferenceException>(reason) |> ignore
+    | other -> Assert.Fail $"an unexplained kill failure must not be spelled like a successful one, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``a kill that failed is NAMED in the output a human reads (AUTOMATION-149)`` () =
+    let leaked =
+        outputOf (
+            TimedOut(
+                TimeSpan.FromSeconds 30.0,
+                ProcessOutput.Drained "tail",
+                KillOutcome.KillFailed(System.ComponentModel.Win32Exception())
+            )
+        )
+
+    // The timeout is still reported...
+    Assert.Contains("timed out after 30s", leaked)
+    Assert.Contains("tail", leaked)
+    // ...but it can no longer be mistaken for "and the runaway is over".
+    Assert.Contains("KILL FAILED", leaked)
+    Assert.Contains("STILL RUNNING", leaked)
+
+[<Fact(Timeout = 5000)>]
+let ``renderKillBrief marks a leaked tree on a one-line status, and is silent otherwise`` () =
+    // A status line reading only "timed out after 30s" invites the wrong conclusion.
+    Assert.Contains("KILL FAILED", renderKillBrief (KillOutcome.KillFailed(System.ComponentModel.Win32Exception())))
+    Assert.Equal("", renderKillBrief KillOutcome.Killed)
+    Assert.Equal("", renderKillBrief KillOutcome.AlreadyExited)
+
+// `killTreeWith` takes the kill as a parameter precisely so these three arms are
+// reachable without an unkillable process — the failure arm included. Coverage here is
+// EARNED, not excluded: the branch that used to be `with _ -> ()` is now executed by a
+// test that watches it produce a value the caller cannot ignore.
+
+[<Fact(Timeout = 5000)>]
+let ``killTreeWith: a kill that returns reports Killed (AUTOMATION-149)`` () =
+    Assert.Equal(KillOutcome.Killed, killTreeWith (fun () -> "child") id)
+
+[<Fact(Timeout = 5000)>]
+let ``killTreeWith: a child that beat us to it reports AlreadyExited (AUTOMATION-149)`` () =
+    let kill () =
+        raise (System.InvalidOperationException())
+
+    Assert.Equal(KillOutcome.AlreadyExited, killTreeWith (fun () -> "child") kill)
+
+[<Fact(Timeout = 5000)>]
+let ``killTreeWith: a refused kill reports KillFailed, never Killed (AUTOMATION-149)`` () =
+    let boom = System.ComponentModel.Win32Exception()
+    let kill () = raise boom
+
+    match killTreeWith (fun () -> "child") kill with
+    | KillOutcome.KillFailed reason -> Assert.Same(boom, reason)
+    | other -> Assert.Fail $"a kill the OS refused must not be reported as done, got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``isExpectedDrainException accepts AggregateException (F18)`` () =
@@ -799,7 +898,7 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
     // OS race. `ProcessOutput.text` is us SAYING SO: this is the one call site in
     // the file that reads a capture without demanding it be complete, and it is a
     // deliberate, greppable act rather than a `""` we mistook for an answer.
-    | TimedOut(_, tail) -> Assert.Contains("go", ProcessOutput.text tail)
+    | TimedOut(_, tail, _) -> Assert.Contains("go", ProcessOutput.text tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
 // ---------------------------------------------------------------------------
@@ -874,3 +973,72 @@ let ``a drain that could not finish FAILS an output assertion by its true name``
     Assert.Contains("THE DRAIN DID NOT FINISH", failure.Message)
     Assert.Contains("we failed to listen", failure.Message)
     Assert.DoesNotContain("Assert.Equal() Failure", failure.Message)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-149: the failed kill must be LOUD, not merely representable.
+//
+// The value on `TimedOut` is what a CALLER cannot ignore. This is the other half:
+// what an OPERATOR — someone reading nothing but the daemon's stderr — is told when
+// a runaway tree survives us. `with _ -> ()` told them nothing at all.
+//
+// Touches Logging.logLevel + Console.Error → joins the LogGlobal serialized
+// collection (see TestHelpers).
+// ---------------------------------------------------------------------------
+[<Collection(LogGlobalCollectionName)>]
+type KillFailureIsLoudTests() =
+
+    [<Fact(Timeout = 5000)>]
+    member _.``a kill we could not perform is logged at ERROR, naming what failed and why``() =
+        let original = FsHotWatch.Logging.logLevel
+        let sb = Text.StringBuilder()
+        let writer = new IO.StringWriter(sb)
+        let prevErr = Console.Error
+
+        try
+            Console.SetError(writer)
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+
+            let boom = System.ComponentModel.Win32Exception(1, "Operation not permitted")
+            let kill () = raise boom
+
+            let outcome = killTreeWith (fun () -> "`sleep 10` (pid 4242)") kill
+
+            match outcome with
+            | KillOutcome.KillFailed _ -> ()
+            | other -> Assert.Fail $"expected KillFailed, got %A{other}"
+
+            let logged = sb.ToString()
+
+            // WHAT we failed to kill...
+            Assert.Contains("sleep 10", logged)
+            Assert.Contains("4242", logged)
+            // ...WHY...
+            Assert.Contains("Win32Exception", logged)
+            Assert.Contains("Operation not permitted", logged)
+            // ...and what it MEANS, in words that cannot be read as success.
+            Assert.Contains("FAILED to kill", logged)
+            Assert.Contains("STILL RUNNING", logged)
+        finally
+            Console.SetError(prevErr)
+            FsHotWatch.Logging.setLogLevel original
+
+    [<Fact(Timeout = 5000)>]
+    member _.``a kill that worked says nothing — the loud path is reserved for real failure``() =
+        let original = FsHotWatch.Logging.logLevel
+        let sb = Text.StringBuilder()
+        let writer = new IO.StringWriter(sb)
+        let prevErr = Console.Error
+
+        try
+            Console.SetError(writer)
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+
+            killTreeWith (fun () -> "`sleep 10` (pid 4242)") id |> ignore
+            // The already-exited race is benign: the tree is dead either way.
+            killTreeWith (fun () -> "`sleep 10` (pid 4243)") (fun () -> raise (InvalidOperationException()))
+            |> ignore
+
+            Assert.Equal("", sb.ToString().Trim())
+        finally
+            Console.SetError(prevErr)
+            FsHotWatch.Logging.setLogLevel original

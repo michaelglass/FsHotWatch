@@ -48,6 +48,34 @@ module ProcessOutput =
         | ProcessOutput.Drained text -> text
         | ProcessOutput.DrainTimedOut(captured, _) -> captured
 
+/// What happened when we tried to tear down a timed-out child's process tree
+/// (AUTOMATION-149).
+///
+/// "I could not kill it" must never be spelled the same way as "I killed it". A
+/// `TimedOut` PROMISES the tree is dead; a caller — or an operator reading a log —
+/// who believes that promise walks away from a runaway tree that is still holding a
+/// lock, a port, a pipe, or a core. `killTree` used to swallow EVERY exception
+/// (`with _ -> ()`), so a Win32 permission failure and a clean kill left exactly the
+/// same trace: none. That is the same disease as a drain that could not measure
+/// returning `""` (AUTOMATION-126) — a failure to DO the work, rendered
+/// indistinguishable from the work succeeding.
+/// `NoComparison`: this carries the failing `exn` — the real one, not a lossy
+/// rendering of it — and exceptions do not order. Equality still holds, which is all
+/// any call site (or test) asks of it.
+[<RequireQualifiedAccess; NoComparison>]
+type KillOutcome =
+    /// `Kill(entireProcessTree = true)` returned: the tree is dead.
+    | Killed
+    /// The child had ALREADY exited when the kill landed — the documented race
+    /// between the timeout firing and the child's natural exit (F17,
+    /// `isExpectedKillException`). Nobody had to kill it and the tree is dead
+    /// either way, so this is benign: a kill we did not need, NOT a kill we failed.
+    | AlreadyExited
+    /// The kill FAILED, for a reason that is not the already-exited race. As far as
+    /// we know the child — and every grandchild it spawned — is STILL RUNNING, and
+    /// we are about to stop watching it. This is the case that may never be silent.
+    | KillFailed of reason: exn
+
 /// Outcome of running an external process. Tagged so callers can tell a
 /// nonzero exit from a timeout-induced kill without parsing the output.
 ///
@@ -56,16 +84,25 @@ module ProcessOutput =
 /// could not finish does not change the case; it is carried INSIDE the output, where
 /// a caller that reads the text cannot help but see it (cf. `RunVerdict`: a terminal
 /// status must carry its evidence).
+///
+/// `NoComparison` follows from `KillOutcome`'s: outcomes are matched and compared for
+/// equality, never ordered.
+[<NoComparison>]
 type ProcessOutcome =
     /// Process exited with code 0. `output` is combined stdout+stderr (trimmed).
     | Succeeded of output: ProcessOutput
     /// Process exited with a nonzero code. `output` is combined stdout+stderr.
     | Failed of exitCode: int * output: ProcessOutput
-    /// Process did not exit within the timeout and was killed (along with its
-    /// child process tree). `tail` is whatever stdout+stderr we drained before
-    /// the kill — best-effort, and typically a `DrainTimedOut` because the kill
-    /// tears the pipes down under the pumps.
-    | TimedOut of after: TimeSpan * tail: ProcessOutput
+    /// Process did not exit within the timeout, so we killed its tree. `tail` is
+    /// whatever stdout+stderr we drained before the kill — best-effort, and
+    /// typically a `DrainTimedOut` because the kill tears the pipes down under the
+    /// pumps.
+    ///
+    /// `kill` is whether the teardown ACTUALLY happened. It rides on the value
+    /// rather than in a log line nobody reads, because "timed out, tree killed" and
+    /// "timed out, tree still running" are different facts about the world and this
+    /// case used to spell them identically.
+    | TimedOut of after: TimeSpan * tail: ProcessOutput * kill: KillOutcome
 
 /// Outcome of an in-process unit of work bounded by a wall-clock timeout.
 type WorkOutcome<'a> =
@@ -93,13 +130,46 @@ let renderOutput (output: ProcessOutput) : string =
           %d{int window.TotalSeconds}s (a grandchild is holding the pipe open, or the read died with it). The text \
           above is what we caught, not what the child said."
 
+/// The operator-facing note for a kill that did NOT happen — empty string when the
+/// tree is dead (whether we killed it or it beat us to it).
+///
+/// One sentence, one definition. Callers that render `outputOf` get it for free;
+/// callers that compose their OWN timeout message (DepsFreshness, the plugins) append
+/// it, so a leaked process tree cannot be dropped on the floor just because that call
+/// site chose to phrase the timeout itself.
+let renderKill (kill: KillOutcome) : string =
+    match kill with
+    | KillOutcome.Killed
+    | KillOutcome.AlreadyExited -> ""
+    | KillOutcome.KillFailed reason ->
+        $"\n[fshw] KILL FAILED: %s{reason.GetType().Name}: %s{reason.Message} — we could NOT tear down this process \
+          tree, so the child (and any grandchild it spawned) is STILL RUNNING and is no longer being watched. It may \
+          hold a lock, a port or a pipe; kill it by hand."
+
+/// The SHORT form of `renderKill`, for the one-line summaries and verdicts a plugin
+/// puts on a status line (`"tests: timed out after 30s"`), where the paragraph above
+/// will not fit. Empty when the tree is dead.
+///
+/// A status line that says only "timed out after 30s" invites exactly the wrong
+/// conclusion — that the runaway is over. When the kill failed, it is not over, and
+/// the line must say so even in eight words.
+let renderKillBrief (kill: KillOutcome) : string =
+    match kill with
+    | KillOutcome.Killed
+    | KillOutcome.AlreadyExited -> ""
+    | KillOutcome.KillFailed _ -> " (KILL FAILED — process tree STILL RUNNING)"
+
 /// Combined output regardless of outcome — for callers that just want the text
-/// to render in a status line. Preserves the historical message format.
+/// to render in a status line. Preserves the historical message format, except that
+/// a kill we FAILED to perform is named where the human will see it: every plugin
+/// surfaces its diagnostic through this function, so this is the one place that
+/// reaches an operator no matter which spawn leaked the tree.
 let outputOf (outcome: ProcessOutcome) : string =
     match outcome with
     | Succeeded out -> renderOutput out
     | Failed(_, out) -> renderOutput out
-    | TimedOut(after, tail) -> $"timed out after %d{int after.TotalSeconds}s\n%s{renderOutput tail}"
+    | TimedOut(after, tail, kill) ->
+        $"timed out after %d{int after.TotalSeconds}s%s{renderKill kill}\n%s{renderOutput tail}"
 
 /// F17 (audit 2026-05-02): exception classes we treat as benign on the
 /// timeout-kill path. `Process.Kill` raises InvalidOperationException only
@@ -144,6 +214,59 @@ let internal pumpReachedEof (failure: exn option) : bool =
     | None -> true
     | Some ex when isExpectedDrainException ex -> false
     | Some ex -> raise ex
+
+/// Classify the result of `Process.Kill(entireProcessTree = true)` — `None` for a
+/// kill that returned, `Some ex` for one that threw (AUTOMATION-149).
+///
+/// This is where `isExpectedKillException` (F17) finally gets USED. It has been in
+/// this file, documented and unit-tested, since the 2026-05-02 audit — stating that
+/// an `InvalidOperationException` is the benign already-exited race and that
+/// "anything else is a real problem" — while the one call site that was supposed to
+/// consult it swallowed every exception with `with _ -> ()`. The policy was written
+/// down, tested, and never wired up; a permission failure to kill a runaway tree was
+/// spelled exactly like a successful kill.
+///
+/// Pure, so all three arms — including the failure arm, which live-fire would need a
+/// process we are genuinely forbidden to kill — are covered deterministically.
+let internal classifyKill (failure: exn option) : KillOutcome =
+    match failure with
+    | None -> KillOutcome.Killed
+    | Some ex when isExpectedKillException ex -> KillOutcome.AlreadyExited
+    | Some ex -> KillOutcome.KillFailed ex
+
+/// Tear down a child's process tree and SAY what happened — the whole of the kill
+/// policy, with the actual `Process.Kill` injected (AUTOMATION-149).
+///
+/// `kill` is a parameter for exactly the reason `classifyDrain`'s EOF flags are: the
+/// arm that matters is the one where the OS REFUSES us, and no test can conjure an
+/// unkillable process reliably on every platform. Injecting the kill lets the unit
+/// suite drive all three outcomes — including the loud-log path — instead of leaving
+/// the failure arm uncovered and calling that "tested". A failure arm nobody has ever
+/// executed is precisely how `with _ -> ()` survived here for as long as it did.
+///
+/// `describe` is a thunk so the (formatting) cost is paid only when we have bad news.
+let internal killTreeWith (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
+    let outcome =
+        try
+            kill ()
+            KillOutcome.Killed
+        with ex ->
+            classifyKill (Some ex)
+
+    match outcome with
+    | KillOutcome.KillFailed reason ->
+        // Loud, and carrying the two things an operator actually needs: WHAT we failed
+        // to kill, and WHY. The returned value carries the same fact to the caller;
+        // this log is so it also reaches a human who is only reading stderr.
+        Logging.error
+            "process"
+            $"FAILED to kill the process tree for %s{describe ()}: %s{reason.GetType().Name}: %s{reason.Message}. \
+              The child and any grandchildren it spawned are STILL RUNNING, and we are about to stop tracking them — \
+              they may hold a lock, a port or a pipe. Kill them by hand."
+    | KillOutcome.Killed
+    | KillOutcome.AlreadyExited -> ()
+
+    outcome
 
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything
@@ -531,6 +654,11 @@ let runProcess
     // Register so a daemon shutdown can tear down in-flight children.
     ProcessRegistry.track proc
 
+    // Read ONCE, while the handle is certainly live: this is the identifier an
+    // operator needs to hunt down a tree we failed to kill, and it must still be
+    // reportable on the path where everything else about the child has gone wrong.
+    let pid = proc.Id
+
     // Incremental output capture via explicit stream pumps. We can NOT use the
     // event API (`BeginOutputReadLine`) here: draining it requires the
     // parameterless `WaitForExit()` (the timed overload does NOT flush the async
@@ -623,11 +751,14 @@ let runProcess
             launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
 
         // A killed tree still needs draining so partial output is reported.
-        let killTree () =
-            try
-                proc.Kill(entireProcessTree = true)
-            with _ ->
-                ()
+        //
+        // The kill's OUTCOME is returned, never discarded: a tree we could not tear
+        // down is still running, and the caller must not be told otherwise
+        // (AUTOMATION-149). The policy itself lives in `killTreeWith`, where every arm
+        // of it is unit-driven.
+        let killTree () : KillOutcome =
+            killTreeWith (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
+                proc.Kill(entireProcessTree = true))
 
         match outcome with
         | LaunchOutcome.Exited ->
@@ -638,10 +769,13 @@ let runProcess
             else
                 Failed(proc.ExitCode, out)
         | LaunchOutcome.TimedOut ->
-            killTree ()
-            TimedOut(timeout, drainPumps ())
+            let killed = killTree ()
+            TimedOut(timeout, drainPumps (), killed)
         | LaunchOutcome.Stalled ->
-            killTree ()
+            // A stall already raises below, and the exception is the diagnostic; a
+            // kill that FAILED here is still logged loudly by `killTree` itself, so
+            // the leaked tree cannot go unreported just because this arm throws.
+            killTree () |> ignore
 
             // A stall is DEFINED as "not one byte within the launch deadline", so
             // there is no capture to report and nothing a drain could tell us: we
