@@ -22,10 +22,31 @@ open FsHotWatch.Tests.TestHelpers
 
 /// An empty launch set for tests that construct `TestsFinished` directly to
 /// exercise CacheKey / status reporting without going through a real run. An
-/// empty launch commits nothing — these tests don't drive the pending queue.
+/// empty launch commits nothing — these tests don't drive the pending queue —
+/// and an empty SELECTION covers nothing, so it clears no outstanding red
+/// (AUTOMATION-125). Tests that need a run to CLEAR something use
+/// `fullSuiteLaunch` / `filteredLaunch` below.
 let private emptyLaunch: TestRunLaunch =
     { Symbols = Set.empty
-      CoveringProjectsBySymbol = Map.empty }
+      CoveringProjectsBySymbol = Map.empty
+      Selection = Map.empty }
+
+/// A launch that ran every named project UNFILTERED — the scope a full suite (or a
+/// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
+let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
+    { Symbols = Set.empty
+      CoveringProjectsBySymbol = Map.empty
+      Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList }
+
+/// A launch that ran only `classes` in each named project — an impact-filtered
+/// selection. Projects NOT named were skipped entirely.
+let private filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
+    { Symbols = Set.empty
+      CoveringProjectsBySymbol = Map.empty
+      Selection =
+        selection
+        |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
+        |> Map.ofList }
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))
@@ -868,9 +889,17 @@ let ``test failures are reported to error ledger`` () =
 [<Fact(Timeout = 20000)>]
 let ``test errors are cleared when all tests pass`` () =
     withTempDir "tp-ledger-clear" (fun tmpDir ->
-        // First run fails, second run passes
-        let mutable shouldFail = true
-
+        // First run fails, second run RE-RUNS the project and passes → the red clears.
+        //
+        // AUTOMATION-125: the second cycle is driven by `run-tests`, not by a second
+        // BuildCompleted, because a warm BuildCompleted with no changed symbols hits the
+        // zero-affected skip and runs NOTHING — and a run that ran nothing may not clear
+        // a red (that is the laundering this ticket removed; see the skip regression
+        // below). The same reason the sibling "stale failures from a prior cycle" test
+        // drives its cycles through `run-tests`. Here the change that flips the outcome
+        // is a FILE the symbol graph cannot see, so the force-run is the honest verb for
+        // it: `dotnet fshw test-rerun` runs every project unfiltered, which covers the
+        // failing project and so may clear it.
         let configs =
             [ { Project = "TestProject"
                 Command = "sh"
@@ -894,20 +923,16 @@ let ``test errors are cleared when all tests pass`` () =
         waitForPluginTerminal host "test-prune" 12.0
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-        // Remove fail flag so second run passes
+        // Remove fail flag so the re-run passes.
         File.Delete(Path.Combine(tmpDir, "fail_flag"))
-        host.EmitBuildCompleted(BuildSucceeded)
-        // Wait for second run to start (status leaves terminal from first run)
-        waitUntil
-            (fun () ->
-                match host.GetStatus("test-prune") with
-                | Some(Completed _)
-                | Some(Failed _) -> false
-                | _ -> true)
-            5000
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+        waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 12000
 
-        waitForPluginTerminal host "test-prune" 12.0
-        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"an unfiltered re-run with every test passing must be green, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
 let ``RerunQueued path records previous run outcome to history before starting rerun`` () =
@@ -3407,6 +3432,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     let mutable pendingQueueCalls = 0
     let mutable changedSymbolsCalls = 0
     let mutable gateScopeCalls = 0
+    let mutable outstandingCalls = 0
 
     let key =
         cacheKeyFor
@@ -3422,17 +3448,21 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
             (fun () ->
                 gateScopeCalls <- gateScopeCalls + 1
                 None)
+            (fun () ->
+                outstandingCalls <- outstandingCalls + 1
+                false)
             (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
     // It still produces a key — it is a pure function of THIS file.
     test <@ key.IsSome @>
 
-    // And it computed nothing else. The dependsOn one is the finding; the other two
+    // And it computed nothing else. The dependsOn one is the finding; the others
     // are pinned with it so a future edit can't quietly re-hoist a sibling instead.
     test <@ dependsOnCalls = 0 @>
     test <@ pendingQueueCalls = 0 @>
     test <@ changedSymbolsCalls = 0 @>
     test <@ gateScopeCalls = 0 @>
+    test <@ outstandingCalls = 0 @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
@@ -3451,6 +3481,7 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
                 dependsOnCalls <- dependsOnCalls + 1
                 dependsOn)
             (fun () -> None)
+            (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
     let salted = keyWith (Some "migration-hash-v1")
@@ -6161,6 +6192,7 @@ let ``cacheKeyFor: a merge gate cannot replay an impact-filtered run's cached ve
             (fun () -> None)
             (fun () -> None)
             (fun () -> gateScope)
+            (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
     let innerLoopKey = keyWithScope None
@@ -6182,6 +6214,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> None)
             (fun () -> Some "deps")
             (fun () -> None)
+            (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
     // Same inputs, hand-built without any gate-scope entry at all.
@@ -6205,6 +6238,7 @@ let ``cacheKeyFor: two merge-gate runs over the same tree DO share a key`` () =
             (fun () -> None)
             (fun () -> None)
             (fun () -> Some "full")
+            (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
     test <@ gateKey () = gateKey () @>
@@ -6563,3 +6597,571 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
             // Let the daemon-side run finish so the temp dir can be cleaned.
             File.WriteAllText(release, "")
             waitUntil (fun () -> not (host.AnyPluginBusy())) 30000)
+
+// =============================================================================
+// AUTOMATION-125 — a run may clear ONLY what it COVERED.
+//
+// Observed live (2026-07-14): a full run failed one project; a queued
+// impact-filtered re-run then executed a NARROWER selection, passed, and — via
+// `ClearAllErrors` + last-cycle-wins — SUPERSEDED the red. The failing test never
+// re-ran and never passed, yet `check` went green. Same disease as
+// AUTOMATION-95/99/112: a verdict that was not earned, "no failures reported by
+// THIS run" read as "no failures".
+//
+// These drive the plugin's REAL `Custom(TestsFinished)` handler through a
+// recording `PluginCtx` — the exact seam where the laundering happened — so the
+// sequence is the one that was observed, not an analogue of it. Both directions
+// are pinned: a disjoint filtered green must NOT clear, and a COVERING filtered
+// green MUST (no over-correction into AUTOMATION-99's permanent stuck-red).
+// =============================================================================
+
+/// Recording ctx over the TestPrune plugin: captures the terminal statuses and
+/// models the shared error ledger (ClearAllErrors wipes the plugin's whole slice,
+/// exactly as `PluginFramework` does via `ClearPlugin`).
+let private makeTestPruneRecordingCtx () =
+    let statuses = System.Collections.Generic.List<PluginStatus>()
+
+    let ledger =
+        System.Collections.Generic.Dictionary<string, FsHotWatch.ErrorLedger.ErrorEntry list>()
+
+    let ctx: FsHotWatch.PluginFramework.PluginCtx<TestPruneMsg> =
+        { ReportStatus = fun s -> statuses.Add s
+          ReportErrors = fun file entries -> ledger.[file] <- entries
+          ClearErrors = fun file -> ledger.Remove(file) |> ignore
+          ClearAllErrors = fun () -> ledger.Clear()
+          EmitBuildCompleted = fun _ -> ()
+          EmitTestRunStarted = fun _ -> ()
+          EmitTestProgress = fun _ -> ()
+          EmitTestRunCompleted = fun _ -> ()
+          EmitCommandCompleted = fun _ -> ()
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = ""
+          Post = fun _ -> ()
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = fun _ -> ()
+          Log = fun _ -> ()
+          CompleteWithTimeout = fun _ -> ()
+          RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          IsRunning = fun _ -> false
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    ctx, statuses, ledger
+
+let private a125Config (project: string) : TestConfig =
+    { Project = project
+      Command = "sh"
+      Args = "-c \"exit 0\""
+      Group = "default"
+      Environment = []
+      FilterTemplate = Some "-- --filter-class {classes}"
+      ClassJoin = "|"
+      TimeoutSec = None
+      ReportVerificationFormat = AutoDetect }
+
+/// A `TestsFinished` for a completed run: its per-project results and the SCOPE it
+/// was launched against.
+let private testsFinishedEvent (results: (string * TestResult) list) (launch: TestRunLaunch) =
+    let runId = Guid.NewGuid()
+
+    let started: TestRunStarted =
+        { RunId = runId
+          StartedAt = DateTime.UtcNow }
+
+    let completed: TestRunCompleted =
+        { RunId = runId
+          TotalElapsed = TimeSpan.FromSeconds 1.0
+          Outcome = Normal
+          Results = Map.ofList results
+          RanFullSuite = TestResult.ranFullSuite (Map.ofList results) }
+
+    Custom(TestsFinished(started, completed, launch))
+
+/// The runner's own wording for a failing test, so `parseFailedTests` attributes the
+/// red to the CLASS (`ProjATests`) exactly as it does in the field.
+let private failedProjA =
+    TestsFailed("failed FsHotWatch.Tests.ProjATests.boom (12ms)", false, TimeSpan.FromSeconds 1.0)
+
+/// What `executeTests` records for a project impact analysis SKIPPED: a pass, marked
+/// filtered, with no output and no elapsed. It proves precisely nothing — and is the
+/// value the old `ClearAllErrors` path read as "ProjA is fine now".
+let private impactSkipped = TestsPassed("", true, TimeSpan.Zero)
+
+let private passed (filtered: bool) =
+    TestsPassed("ok", filtered, TimeSpan.FromSeconds 1.0)
+
+/// Drive the plugin through a sequence of completed runs, returning the ctx
+/// recorders and the final state. Starts from the handler's own initial state, so
+/// every invariant the real plugin carries in state is carried here too.
+let private driveRuns
+    (handler: FsHotWatch.PluginFramework.PluginHandler<TestPruneState, TestPruneMsg>)
+    (runs: PluginEvent<TestPruneMsg> list)
+    =
+    let ctx, statuses, ledger = makeTestPruneRecordingCtx ()
+
+    let final =
+        runs
+        |> List.fold (fun state ev -> handler.Update ctx state ev |> Async.RunSynchronously) handler.Init
+
+    ctx, statuses, ledger, final
+
+let private lastStatus (statuses: System.Collections.Generic.List<PluginStatus>) : PluginStatus =
+    test <@ statuses.Count > 0 @>
+    statuses.[statuses.Count - 1]
+
+let private ledgerFilesOf
+    (ledger: System.Collections.Generic.Dictionary<string, FsHotWatch.ErrorLedger.ErrorEntry list>)
+    : string list =
+    ledger
+    |> Seq.filter (fun kv -> not kv.Value.IsEmpty)
+    |> Seq.map (fun kv -> kv.Key)
+    |> Seq.toList
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed project's red`` () =
+    // The observed sequence, exactly: full run fails ProjA → a queued impact-filtered
+    // re-run selects only ProjB (ProjA is SKIPPED, and recorded as a filtered pass) →
+    // ProjA must still be RED, and the plugin must NOT report a green terminal.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    // The narrower re-run: only ProjB's tests were selected. ProjA never executed.
+    let filteredRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; filteredRun ]
+
+    // The red survives the green that never ran it.
+    test <@ final.OutstandingFailures |> List.exists (fun f -> f.Project = "ProjA") @>
+    test <@ ledgerFilesOf ledger |> List.exists (fun f -> f.Contains("ProjA")) @>
+
+    // And the verdict is non-green: `check` cannot exit 0 with a failing test
+    // outstanding (a failing ledger entry alone would already deny it, but the
+    // plugin's own status must not claim a green it did not earn either).
+    match lastStatus statuses with
+    | PluginStatus.Failed(msg, _, _) -> test <@ msg.Contains("ProjA") @>
+    | other -> Assert.Fail($"a filtered green that never ran ProjA must not produce a green terminal, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no stuck-red)`` () =
+    // The other direction — the over-correction guard (cf. AUTOMATION-99's stuck-RED
+    // half). A filtered run that DID execute the failing class and passed it is real
+    // evidence, and must clear the red. A gate that can never go green again is not a
+    // fix, it is a different bug.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    // This time the selection COVERS the failing class (ProjATests) — and it passes.
+    let coveringRun =
+        testsFinishedEvent
+            [ "ProjA", passed true; "ProjB", impactSkipped ]
+            (filteredLaunch [ "ProjA", [ "ProjATests" ] ])
+
+    let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; coveringRun ]
+
+    test <@ List.isEmpty final.OutstandingFailures @>
+    test <@ List.isEmpty (ledgerFilesOf ledger) @>
+
+    match lastStatus statuses with
+    | PluginStatus.Completed _ -> ()
+    | other -> Assert.Fail($"a filtered run that executed the failing class green must clear it, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: an unfiltered re-run (test-rerun) clears an outstanding red`` () =
+    // The escape hatch the rule leans on: `dotnet fshw test-rerun` runs every project
+    // UNFILTERED, which covers everything and so may clear anything. Without this the
+    // rule would be a wedge.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let rerun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; rerun ]
+
+    test <@ List.isEmpty final.OutstandingFailures @>
+    test <@ List.isEmpty (ledgerFilesOf ledger) @>
+
+    match lastStatus statuses with
+    | PluginStatus.Completed _ -> ()
+    | other -> Assert.Fail($"an unfiltered all-green re-run must clear the red, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: a filtered green over a DIFFERENT class in the same project does not clear it`` () =
+    // Project granularity is not enough. A run that selected ProjA but filtered to a
+    // class OTHER than the failing one executed the project without executing the
+    // failure — "ProjA passed" is true of that run and says nothing about the red.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", failedProjA ] (fullSuiteLaunch [ "ProjA" ])
+
+    let otherClassRun =
+        testsFinishedEvent [ "ProjA", passed true ] (filteredLaunch [ "ProjA", [ "SomeOtherTests" ] ])
+
+    let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; otherClassRun ]
+
+    test <@ final.OutstandingFailures |> List.exists (fun f -> f.Class = Some "ProjATests") @>
+
+    match lastStatus statuses with
+    | PluginStatus.Failed _ -> ()
+    | other -> Assert.Fail($"a filtered green over a different class must not clear the red, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: the zero-affected skip (0 ran, green) cannot launder an outstanding red`` () =
+    // The likeliest laundering path in practice: after the failing run, the next build
+    // changes nothing relevant, so the skip gate completes "green, 0 ran". It executed
+    // NOTHING, so it may clear nothing.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", failedProjA ] (fullSuiteLaunch [ "ProjA" ])
+
+    // The degenerate skip lifecycle: empty results, empty selection, Normal outcome.
+    let skipRun = testsFinishedEvent [] emptyLaunch
+
+    let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; skipRun ]
+
+    test <@ final.OutstandingFailures |> List.exists (fun f -> f.Project = "ProjA") @>
+    test <@ ledgerFilesOf ledger |> List.exists (fun f -> f.Contains("ProjA")) @>
+
+    match lastStatus statuses with
+    | PluginStatus.Failed _ -> ()
+    | other -> Assert.Fail($"a run that executed nothing must not go green over an outstanding red, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not a class-filtered one`` () =
+    // A project killed for being stuck is a fact about the PROJECT: no class-filtered
+    // green may vindicate it (`Class = None`), and only a run that executed the project
+    // in full can clear it.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let timedOut =
+        testsFinishedEvent
+            [ "ProjA",
+              TestsTimedOut(
+                  "failed FsHotWatch.Tests.ProjATests.slow (1ms)",
+                  TimeSpan.FromSeconds 60.0,
+                  false,
+                  TimeSpan.FromSeconds 60.0
+              ) ]
+            (fullSuiteLaunch [ "ProjA" ])
+
+    let classFilteredGreen =
+        testsFinishedEvent [ "ProjA", passed true ] (filteredLaunch [ "ProjA", [ "ProjATests" ] ])
+
+    let _ctx, _statuses, _ledger, afterFiltered =
+        driveRuns handler [ timedOut; classFilteredGreen ]
+
+    // The timeout is project-level: even a green over the very class named in the
+    // timeout output does not clear it.
+    test
+        <@
+            afterFiltered.OutstandingFailures
+            |> List.exists (fun f -> f.Project = "ProjA" && f.Class = None)
+        @>
+
+    // A whole-project pass does.
+    let wholeProjectGreen =
+        testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+
+    let _ctx2, statuses2, _ledger2, afterFull =
+        driveRuns handler [ timedOut; classFilteredGreen; wholeProjectGreen ]
+
+    test <@ List.isEmpty afterFull.OutstandingFailures @>
+
+    match lastStatus statuses2 with
+    | PluginStatus.Completed _ -> ()
+    | other -> Assert.Fail($"a whole-project pass must clear a timeout red, got %A{other}")
+
+// --- RunCoverage: what a run is ENTITLED to clear (unit) ---
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: an impact-SKIPPED project (filtered pass, absent from the selection) covers nothing`` () =
+    // The laundering vector in one assertion: the skip sentinel is a PASS, and reading
+    // it as evidence is exactly the bug.
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjB", ProjectClasses(Set.ofList [ "ProjBTests" ]) ])
+            (Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ])
+
+    test <@ not (RunCoverage.covers "ProjA" (Some "ProjATests") coverage) @>
+    test <@ not (RunCoverage.covers "ProjA" None coverage) @>
+    test <@ RunCoverage.covers "ProjB" (Some "ProjBTests") coverage @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: an UNFILTERED result covers the whole project whatever the selection asked for`` () =
+    // A project with selected classes but no `filterTemplate` runs in FULL. The RESULT
+    // is the receipt, not the request — so it covers everything in the project.
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectClasses(Set.ofList [ "OneClass" ]) ])
+            (Map.ofList [ "ProjA", passed false ])
+
+    test <@ RunCoverage.covers "ProjA" (Some "AnyOtherClass") coverage @>
+    test <@ RunCoverage.covers "ProjA" None coverage @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: a class-filtered pass covers ONLY the classes it ran`` () =
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectClasses(Set.ofList [ "Alpha" ]) ])
+            (Map.ofList [ "ProjA", passed true ])
+
+    test <@ RunCoverage.covers "ProjA" (Some "Alpha") coverage @>
+    test <@ not (RunCoverage.covers "ProjA" (Some "Beta") coverage) @>
+    // ... and never a project-level red (an unparseable failure, a timeout).
+    test <@ not (RunCoverage.covers "ProjA" None coverage) @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: deferred, errored and zero-match results cover nothing — they ran no tests`` () =
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull; "ProjC", ProjectInFull ])
+            (Map.ofList
+                [ "ProjA", TestsDeferred "apphost not produced"
+                  "ProjB", TestsErrored "no parseable report"
+                  "ProjC", TestsPassed(ZeroMatchMarker + "no tests matched", true, TimeSpan.Zero) ])
+
+    test <@ not (RunCoverage.covers "ProjA" None coverage) @>
+    test <@ not (RunCoverage.covers "ProjB" None coverage) @>
+    test <@ not (RunCoverage.covers "ProjC" None coverage) @>
+    test <@ coverage = Map.empty @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: a raw --filter passthrough claims no coverage (its reach is unknowable)`` () =
+    // `run-tests --filter <raw>` launches every project in full but hands the runner an
+    // arbitrary filter string. `wasFiltered` is true and the selection names no classes,
+    // so we claim nothing rather than guess. Conservative in the safe direction: the red
+    // survives until an unfiltered `test-rerun` proves it.
+    let coverage =
+        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull ]) (Map.ofList [ "ProjA", passed true ])
+
+    test <@ coverage = Map.empty @>
+
+// --- OutstandingFailure.carry: the ledger algebra (unit) ---
+
+let private redIn (project: string) (cls: string option) =
+    { Project = project
+      Class = cls
+      File = $"<tests/%s{project}>"
+      Entry = FsHotWatch.ErrorLedger.ErrorEntry.errorWithDetail $"%s{project} failed" "output" }
+
+[<Fact(Timeout = 10000)>]
+let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-passed one`` () =
+    let prior = [ redIn "ProjA" (Some "ProjATests"); redIn "ProjB" None ]
+
+    // A run that covered ONLY ProjB, in full, and found nothing.
+    let coverage: RunCoverage = Map.ofList [ "ProjB", CoveredWholeProject ]
+
+    let carried =
+        OutstandingFailure.carry (Set.ofList [ "ProjA"; "ProjB" ]) coverage [] prior
+
+    test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``OutstandingFailure.carry: a covered project that failed AGAIN keeps exactly one red`` () =
+    let prior = [ redIn "ProjA" (Some "ProjATests") ]
+    let coverage: RunCoverage = Map.ofList [ "ProjA", CoveredWholeProject ]
+    let found = [ redIn "ProjA" (Some "ProjATests") ]
+
+    let carried = OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage found prior
+
+    // Superseded by this run's own evidence — one entry, not two (AUTOMATION-95's
+    // "Issue 2" accumulation must not come back).
+    test <@ carried.Length = 1 @>
+
+[<Fact(Timeout = 10000)>]
+let ``OutstandingFailure.carry: a red for a project no longer configured is pruned, never wedged`` () =
+    // A project dropped from `tests.projects` can never be covered again — retaining its
+    // red would be a permanent stuck-red with no command that could clear it.
+    let prior = [ redIn "Removed" None; redIn "ProjA" None ]
+
+    let carried =
+        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) RunCoverage.none [] prior
+
+    test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
+
+// --- The task cache must not launder it either ---
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-125: no cache participation while a red is outstanding`` () =
+    // Two roads to the same laundered green. (1) BuildCompleted HITS a cached green
+    // entry → the handler is skipped → no run → the red is replayed away. (2) A run
+    // that passed everything it ran while carrying an uncovered red reports a FAILED
+    // terminal; writing that under a content merkle would replay it on a tree that has
+    // since been fixed. Both are refused by returning no key at all.
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
+
+    let allPassed =
+        Custom(
+            TestsFinished(
+                started,
+                { RunId = started.RunId
+                  TotalElapsed = TimeSpan.Zero
+                  Outcome = Normal
+                  Results = Map.ofList [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero) ]
+                  RanFullSuite = true },
+                fullSuiteLaunch [ "ProjA" ]
+            )
+        )
+
+    let keyFor (hasOutstanding: bool) (event: PluginEvent<TestPruneMsg>) =
+        cacheKeyFor
+            (fun () -> "symbols")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> hasOutstanding)
+            event
+
+    // Clean plugin: the green fast-path is untouched.
+    test <@ (keyFor false (BuildCompleted BuildSucceeded)).IsSome @>
+    test <@ (keyFor false allPassed).IsSome @>
+
+    // Outstanding red: no replay, no write — on either arm.
+    test <@ (keyFor true (BuildCompleted BuildSucceeded)).IsNone @>
+    test <@ (keyFor true allPassed).IsNone @>
+
+// --- MergeGate's UnearnedScope protection is untouched (AUTOMATION-112) ---
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-125: the merge gate still rejects a filtered green as UnearnedScope`` () =
+    // The fix must not weaken the gate it stands beside. The filtered re-run from the
+    // regression above still classifies as a SUBSET, and a merge verdict built on a
+    // subset is still `UnearnedScope` (exit 3) — never Clean.
+    let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
+
+    let filteredResults: TestResults =
+        { Results = Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ]
+          Elapsed = TimeSpan.FromSeconds 1.0 }
+
+    match classifyRunScope configs (Some filteredResults) with
+    | RanSubset(ran, total) ->
+        test <@ ran = 2 && total = 2 @>
+
+        let outcome =
+            FsHotWatch.Cli.CheckVerdict.verdict
+                FsHotWatch.Cli.CheckVerdict.MergeGate
+                false
+                FsHotWatch.Cli.IpcParsing.Complete
+                (FsHotWatch.Cli.IpcParsing.ImpactFiltered(2, 2))
+
+        test <@ FsHotWatch.Cli.CheckVerdict.exitCode outcome = 3 @>
+    | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (AUTOMATION-113)`` () =
+    // The same defect on a different diagnostic, and it was live: the `TestsFinished`
+    // ledger rewrite cleared this plugin's whole slice, so the FIRST test run after an
+    // analysis failure dropped the warning that is supposed to DENY the check its green
+    // verdict. The file kept forcing full-suite runs (state), but nothing told anyone
+    // (ledger) — a gate that quietly stopped gating. The warning now leaves the ledger
+    // only when the CONDITION clears: the file analyses cleanly.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let broken =
+        { RelPath = "src/Broken.fs"
+          File = "/tmp/src/Broken.fs"
+          Reason = "FS3520: unexpected doc comment" }
+
+    let stateWithUnanalysable =
+        { handler.Init with
+            UnanalyzableFiles = Map.ofList [ broken.RelPath, broken ] }
+
+    let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
+
+    // A full-suite run in which EVERYTHING passes — the strongest green there is.
+    let greenRun =
+        testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+
+    handler.Update ctx stateWithUnanalysable greenRun
+    |> Async.RunSynchronously
+    |> ignore
+
+    let warnings =
+        ledger
+        |> Seq.collect (fun kv -> kv.Value)
+        |> Seq.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning)
+        |> Seq.toList
+
+    test <@ ledger.ContainsKey broken.File @>
+    test <@ warnings |> List.exists (fun e -> e.Message.Contains("src/Broken.fs")) @>
+
+    // ... and it DOES go once the file analyses cleanly (the state drops it).
+    let ctx2, _statuses2, ledger2 = makeTestPruneRecordingCtx ()
+
+    handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
+
+    test <@ ledger2.Count = 0 @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage.coversWholeSuite: only every project, each in FULL, is a whole-suite claim`` () =
+    // The question a verdict writer actually asks. It is answered from what the run
+    // EXECUTED, so there is one notion of scope in the system — the same one the ledger
+    // clears by — rather than a parallel one that can drift from it.
+    let projects = [ "ProjA"; "ProjB" ]
+
+    let everything: RunCoverage =
+        Map.ofList [ "ProjA", CoveredWholeProject; "ProjB", CoveredWholeProject ]
+
+    let oneFiltered: RunCoverage =
+        Map.ofList [ "ProjA", CoveredWholeProject; "ProjB", CoveredClasses(Set.ofList [ "X" ]) ]
+
+    let oneMissing: RunCoverage = Map.ofList [ "ProjA", CoveredWholeProject ]
+
+    test <@ RunCoverage.coversWholeSuite projects everything @>
+    // A filtered project covered LESS than the suite, whatever its result said.
+    test <@ not (RunCoverage.coversWholeSuite projects oneFiltered) @>
+    // So did a skipped one.
+    test <@ not (RunCoverage.coversWholeSuite projects oneMissing) @>
+    // And a run of nothing is never evidence of everything.
+    test <@ not (RunCoverage.coversWholeSuite projects RunCoverage.none) @>
+    test <@ not (RunCoverage.coversWholeSuite [] everything) @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage.coveredProjects: names exactly what the run executed`` () =
+    let coverage: RunCoverage =
+        Map.ofList [ "ProjA", CoveredWholeProject; "ProjB", CoveredClasses(Set.ofList [ "X" ]) ]
+
+    test <@ RunCoverage.coveredProjects coverage = Set.ofList [ "ProjA"; "ProjB" ] @>
+    test <@ Set.isEmpty (RunCoverage.coveredProjects RunCoverage.none) @>
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict writer's receipt)`` () =
+    // `LastResults` says what the run FOUND; `LastCoverage` says what it COVERED. A
+    // consumer outside the handler must be able to read the second, or it will invent
+    // its own answer to "what did this run cover?" and the two will drift.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let filteredRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let _ctx, _statuses, _ledger, final = driveRuns handler [ filteredRun ]
+
+    // Every project produced a "passed" result — and yet the run covered only ProjB's
+    // one class. That gap is the whole ticket, and it is now legible from state.
+    test <@ final.LastResults.IsSome @>
+    test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
+    test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
