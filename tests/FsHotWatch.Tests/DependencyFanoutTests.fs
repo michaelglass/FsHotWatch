@@ -97,6 +97,105 @@ module ``computeProjectFingerprint`` =
             Directory.Delete(dir, true)
 
     [<Fact>]
+    let ``a referenced project whose DLL will not RESOLVE is folded in, never dropped`` () =
+        // `List.choose graph.GetCanonicalDllPath` DROPPED any project the graph could not
+        // give a DLL path for. A dropped project contributes nothing to the fingerprint,
+        // so the fingerprint never moves when it changes — and a dependency bump inside it
+        // never fans out. That is UNDER-SELECTION: the exact failure DependencyFanout
+        // exists to prevent, rebuilt inside it.
+        //
+        // ContentHash names this as unsafe answer #1: "SKIP the file — the hash matches,
+        // and the claim silently covers a file nobody looked at."
+        let dir, testFsproj = writeTempProject "<Project></Project>"
+        let known = Path.Combine(dir, "Known.fsproj")
+        let knownDll = Path.Combine(dir, "Known.dll")
+        let opaque = Path.Combine(dir, "Opaque.fsproj")
+
+        for p in [ known; opaque ] do
+            File.WriteAllText(p, "<Project></Project>")
+
+        File.WriteAllBytes(knownDll, Encoding.UTF8.GetBytes "known-binary")
+
+        try
+            // Same resolvable reference in both. The ONLY difference is a second
+            // referenced project whose DLL path the graph cannot resolve.
+            let withoutOpaque =
+                { ProjectGraphAccessor.none with
+                    GetProjectReferences = fun p -> if p = testFsproj then [ known ] else []
+                    GetCanonicalDllPath = fun p -> if p = known then Some knownDll else None }
+
+            let withOpaque =
+                { ProjectGraphAccessor.none with
+                    GetProjectReferences = fun p -> if p = testFsproj then [ known; opaque ] else []
+                    GetCanonicalDllPath = fun p -> if p = known then Some knownDll else None }
+
+            test
+                <@
+                    computeProjectFingerprint withoutOpaque testFsproj
+                    <> computeProjectFingerprint withOpaque testFsproj
+                @>
+        finally
+            Directory.Delete(dir, true)
+
+    [<Fact>]
+    let ``an unresolvable DLL and a missing DLL are ONE value — the repo-wide unhashable sentinel`` () =
+        // `DaemonIdentity` states the claim out loud: "one value for I-could-not-read-it,
+        // repo-wide". This module had its own two ("missing", "unreadable"), which made
+        // that claim false as written. Both ways of not having a DLL now hash to
+        // `ContentHash.UnhashableContent`, so the two fingerprints agree.
+        let dir, testFsproj = writeTempProject "<Project></Project>"
+        let lib = Path.Combine(dir, "Lib.fsproj")
+        File.WriteAllText(lib, "<Project></Project>")
+
+        try
+            let missingDll =
+                { ProjectGraphAccessor.none with
+                    GetProjectReferences = fun p -> if p = testFsproj then [ lib ] else []
+                    GetCanonicalDllPath =
+                        fun p ->
+                            if p = lib then
+                                Some(Path.Combine(dir, "never-built.dll"))
+                            else
+                                None }
+
+            let unresolvableDll =
+                { ProjectGraphAccessor.none with
+                    GetProjectReferences = fun p -> if p = testFsproj then [ lib ] else []
+                    GetCanonicalDllPath = fun _ -> None }
+
+            test
+                <@
+                    computeProjectFingerprint missingDll testFsproj = computeProjectFingerprint
+                        unresolvableDll
+                        testFsproj
+                @>
+        finally
+            Directory.Delete(dir, true)
+
+    [<Fact>]
+    let ``a DLL that appears where none was flips the fingerprint exactly once`` () =
+        // The sentinel must NOT collide with a real digest: missing -> present has to be a
+        // change, or the "rebuilt" signal is lost and the fanout never fires.
+        let dir, testFsproj = writeTempProject "<Project></Project>"
+        let lib = Path.Combine(dir, "Lib.fsproj")
+        File.WriteAllText(lib, "<Project></Project>")
+        let dll = Path.Combine(dir, "Lib.dll")
+
+        let graph =
+            { ProjectGraphAccessor.none with
+                GetProjectReferences = fun p -> if p = testFsproj then [ lib ] else []
+                GetCanonicalDllPath = fun p -> if p = lib then Some dll else None }
+
+        try
+            let beforeBuild = computeProjectFingerprint graph testFsproj
+            File.WriteAllBytes(dll, Encoding.UTF8.GetBytes "freshly-built")
+            let afterBuild = computeProjectFingerprint graph testFsproj
+            test <@ beforeBuild <> afterBuild @>
+            test <@ afterBuild = computeProjectFingerprint graph testFsproj @>
+        finally
+            Directory.Delete(dir, true)
+
+    [<Fact>]
     let ``the test project's own direct PackageReference version is folded in`` () =
         let dir, testFsproj =
             writeTempProject

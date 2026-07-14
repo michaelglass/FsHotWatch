@@ -91,7 +91,7 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetStatus()
-    let parsed = parsePluginStatuses json
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses json
 
     test <@ parsed.ContainsKey("worker") @>
     let w = parsed.["worker"]
@@ -117,7 +117,7 @@ let ``GetStatus payload preserves multi-line failure error`` () =
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetStatus()
-    let parsed = parsePluginStatuses json
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses json
 
     let b = parsed.["breaker"]
 

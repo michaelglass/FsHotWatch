@@ -20,21 +20,8 @@
 /// bump on the test project itself is caught even before its DLL is observed.
 module FsHotWatch.TestPrune.DependencyFanout
 
-open System.IO
 open System.Xml.Linq
 open FsHotWatch.PluginFramework
-
-/// Content hash of a file, or a stable sentinel when it can't be read (missing
-/// DLL pre-first-build, locked, etc.). A missing→present transition flips the
-/// hash exactly once, which is the desired "rebuilt" signal.
-let private fileContentHash (path: string) : string =
-    try
-        if File.Exists path then
-            FsHotWatch.CheckCache.sha256Hex (System.Convert.ToBase64String(File.ReadAllBytes path))
-        else
-            "missing"
-    with _ ->
-        "unreadable"
 
 /// Direct `<PackageReference>` (name, version) pairs declared inline in a
 /// `.fsproj`. CPM references (no inline `Version`) contribute their name with an
@@ -82,11 +69,25 @@ let internal computeProjectFingerprint (graph: ProjectGraphAccessor) (testFsproj
 
     let referenced = collectRefs Set.empty (graph.GetProjectReferences testFsproj)
 
+    // `List.map`, NOT `List.choose`. A project whose DLL path the graph cannot resolve
+    // used to be DROPPED — and a dropped project contributes nothing to the
+    // fingerprint, so the fingerprint never moves when it changes, so a dependency bump
+    // inside it never fans out and its tests are never selected. That is
+    // UNDER-SELECTION: the exact failure this module exists to prevent, rebuilt inside
+    // it. `ContentHash` names it as unsafe answer #1 — "SKIP the file — the hash
+    // matches, and the claim silently covers a file nobody looked at."
+    //
+    // So an unresolvable DLL hashes to `UnhashableContent`, exactly as an unreadable one
+    // does: ONE value for I-could-not-read-it, repo-wide (`DaemonIdentity`'s words), and
+    // one that can never collide with a real digest — so missing→present still flips the
+    // fingerprint exactly once, which is the "rebuilt" signal.
     let dllHashes =
         referenced
         |> Set.toList
-        |> List.choose graph.GetCanonicalDllPath
-        |> List.map fileContentHash
+        |> List.map (fun proj ->
+            match graph.GetCanonicalDllPath proj with
+            | Some dll -> FsHotWatch.ContentHash.ofFile dll
+            | None -> FsHotWatch.ContentHash.UnhashableContent)
         |> List.sort
 
     let pkgEntries =
@@ -95,7 +96,7 @@ let internal computeProjectFingerprint (graph: ProjectGraphAccessor) (testFsproj
     let combined =
         String.concat "\n" ((dllHashes |> List.map (fun h -> $"dll:%s{h}")) @ pkgEntries)
 
-    FsHotWatch.CheckCache.sha256Hex combined
+    FsHotWatch.ContentHash.ofText combined
 
 /// Given the prior per-project fingerprints and the current ones, the set of test
 /// projects whose fingerprint CHANGED (a project with no prior fingerprint is NOT
