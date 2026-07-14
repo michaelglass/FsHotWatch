@@ -14,6 +14,11 @@
         "platform": "linux"
       }
     ],
+    "ArtifactFreshness.fs": {
+      "line": 100,
+      "branch": 97,
+      "reason": "honest floor at the achieved value for the AUTOMATION-122 closure-scoped freshness gate: 100% line, 97.1% branch (33/34). Every real arm is covered by ArtifactFreshness tests in TestPrunePluginTests - both closure directions (out-of-closure edit => fresh; in-closure edit => stale), the content/fixture copy check, the fail-closed InputsUndeterminable arms (unparseable fsproj at the root and deep in the closure, ProjectReference with no Include, ProjectReference to a missing project), reference cycles, unbuilt/uncopied dependencies, multi-TFM, and the SafeWalk symlink regressions. The single uncovered branch is coverlet's lambda-closure artifact on the per-TFM Array.map, not a reachable arm - left honest rather than hidden with ExcludeFromCodeCoverage."
+    },
     "BuildDiagnostics.fs": [
       {
         "line": 94,

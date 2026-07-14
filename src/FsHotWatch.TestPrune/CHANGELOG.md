@@ -37,6 +37,38 @@
   stopped doing so. The warning is now re-reported from state on every rewrite and
   leaves the ledger only when the file analyses cleanly.
 
+- fix!: **the freshness gate judged a test project against the whole repo — so it
+  condemned projects no build could absolve, and missed the fixtures it should have
+  caught.** (AUTOMATION-122) `apphostStale` compared the test project's DLL against
+  the newest source mtime found ANYWHERE IN THE REPO. Two failures fell out of that
+  one comparison:
+
+  - **It cried wolf.** An edit to any project condemned every project outside that
+    edit's dependency closure — and the accusation could not be answered: an
+    incremental `dotnet build` is correctly a no-op for an unaffected project, so its
+    DLL never caught up with the repo-wide watermark. The only escape was
+    `dotnet build -t:Rebuild` — a relink forced purely to move a timestamp. (Observed:
+    a change touching only `Intelligence.Build.Dev` wedged `Intelligence.Tests.Integration`.)
+  - **It let a red main through.** It looked at `.fs`/`.cs` only, so a changed test
+    FIXTURE copied in from a shared project was invisible: the run read the OLD copy
+    still sitting in `bin/` and PASSED (intelligence, `dsa-scope-4.json` — a fake green
+    that merged and left main red for hours).
+
+  Freshness is now decided over the test project's **own transitive `ProjectReference`
+  closure**, in terms of the only two things a build does to an output tree: it
+  COMPILES each project's sources into that project's own assembly
+  (`AssemblyOlderThanSource`), and it COPIES files — dependency assemblies and
+  content/fixture items, transitively — into the test project's output dir
+  (`CopyOlderThanOrigin`). Both are exactly what a plain `dotnet build` fixes, and
+  nothing else is asserted: a file outside the closure cannot make the gate fire, and
+  a file the build never copies has no destination to be compared against, so the
+  content check cannot become a new wolf-cry. Every verdict now names the offending
+  file pair instead of "older than newest source". The real hole stays closed — a
+  source in the project's own closure newer than the assembly built from it still
+  blocks the `--no-build` run.
+
+  `newestSourceMtime`/`apphostStale` are replaced by the `ArtifactFreshness` module.
+
 - fix!: **a force-run refused the slot is QUEUED, never declined.** (AUTOMATION-99)
   Routing `run-tests` through the mailbox left one hole: if a run was already in flight
   the handler replied `busy` and ran nothing — and the CLI mapped that to exit 0. A

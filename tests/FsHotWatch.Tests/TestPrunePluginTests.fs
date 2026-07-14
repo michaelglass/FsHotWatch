@@ -4853,151 +4853,145 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
 
 // =============================================================================
-// Freshness gate (TDD). `tryApphostPresent`/`detectApphostMissing` only fired
-// on a FAILED launch (post-exit), so a PRESENT-but-STALE apphost that exits 0
-// reported a false GREEN — `--no-build` ran OLD bits and "passed". The gate now
-// runs PRE-launch, independent of exit code: a compiled artifact older than the
-// newest source DEFERS as "waiting on build" exactly like a missing one, so
-// stale bits can never produce a verdict. Mirrors BuildPlugin.verifyArtifactsFresh
-// (ADR-008): mtime is the right *temporal* "rebuilt after the source?" signal.
+// Freshness gate. `tryApphostPresent`/`detectApphostMissing` only fired on a
+// FAILED launch (post-exit), so a PRESENT-but-STALE apphost that exits 0
+// reported a false GREEN — `--no-build` ran OLD bits and "passed". The gate runs
+// PRE-launch, independent of exit code: build output that predates its inputs
+// DEFERS as "waiting on build" exactly like a missing apphost, so stale bits can
+// never produce a verdict. Mirrors BuildPlugin.verifyArtifactsFresh (ADR-008).
+//
+// AUTOMATION-122 rebuilt WHAT it compares. The first cut compared the test DLL
+// against the newest source ANYWHERE IN THE REPO, which (a) condemned every
+// project outside an edit's dependency closure, and (b) could not be cleared:
+// an incremental `dotnet build` is correctly a no-op for an unaffected project,
+// so its DLL never caught up with the repo-wide watermark and only
+// `-t:Rebuild` — a relink forced purely to move a timestamp — escaped. It also
+// looked at `.fs`/`.cs` only, so a changed test FIXTURE copied in from a shared
+// project was invisible: the run read the OLD copy out of `bin/` and passed
+// (intelligence, `dsa-scope-4.json`, 2026-07-14 — a fake green that left main
+// red for hours).
+//
+// Both directions are pinned below: an out-of-closure edit is FRESH, an
+// in-closure one is STALE — and content items are judged by the COPY the run
+// would actually read.
 // =============================================================================
 
-[<Fact(Timeout = 15000)>]
-let ``newestSourceMtime is None when there are no sources`` () =
-    withTempDir "tp-nsm-empty" (fun tmpDir -> test <@ newestSourceMtime tmpDir = None @>)
+/// Production call shape: derive the target from the runner args exactly as
+/// `executeTests` does, then ask the gate. A fresh `Cache` per call (the memo is
+/// per-run in production).
+let private staleOf (args: string) (repoRoot: string) : ArtifactFreshness.StaleInput option =
+    deriveProjectBin args repoRoot
+    |> Option.bind (ArtifactFreshness.stale (ArtifactFreshness.Cache()))
+
+/// A synthetic repo mirroring the real MSBuild output layout:
+///
+///   Leaf/     — an unrelated project. NOT referenced by Tests: out of closure.
+///   Common/   — a library with a content fixture, referenced by Tests.
+///   Tests/    — the test project. Its output dir holds COPIES of Common's DLL
+///               and of Common's fixture.
+///
+/// Copies carry their ORIGIN's mtime, because that is what MSBuild's `File.Copy`
+/// leaves behind — the property the gate's copy check rests on. Everything is
+/// "built" at `builtAt`; sources are older. Each test then moves ONE mtime.
+type private Synth =
+    { Root: string
+      TestsDir: string
+      TestsSrc: string
+      TestsDll: string
+      TestsOutDir: string
+      CommonSrc: string
+      CommonFixture: string
+      CommonDll: string
+      CommonDllCopy: string
+      FixtureCopy: string
+      LeafSrc: string
+      BuiltAt: DateTime }
+
+let private writeAt (path: string) (contents: string) (mtime: DateTime) =
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, contents)
+    File.SetLastWriteTimeUtc(path, mtime)
+
+let private p (parts: string list) = Path.Combine(List.toArray parts)
+
+let private synth (root: string) : Synth =
+    let builtAt = DateTime.UtcNow.AddHours(-1.0)
+    let sourcedAt = builtAt.AddMinutes(-10.0)
+
+    let leafDir = p [ root; "Leaf" ]
+    let commonDir = p [ root; "Common" ]
+    let testsDir = p [ root; "Tests" ]
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+
+    // Leaf — no reference to it from anywhere: the out-of-closure project.
+    writeAt (p [ leafDir; "Leaf.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+    writeAt (p [ leafDir; "Leaf.fs" ]) "module Leaf" sourcedAt
+
+    // Common — sources + a content fixture, both built/copied into its own bin.
+    writeAt (p [ commonDir; "Common.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+    writeAt (p [ commonDir; "Common.fs" ]) "module Common" sourcedAt
+    writeAt (p [ commonDir; "Fixtures"; "data.json" ]) "{ \"leaves\": 36 }" sourcedAt
+    writeAt (p [ commonOut; "Common.dll" ]) "" builtAt
+    writeAt (p [ commonOut; "Fixtures"; "data.json" ]) "{ \"leaves\": 36 }" sourcedAt
+
+    // Tests — references Common; its output holds the apphost, its own DLL, and
+    // COPIES of Common's DLL and Common's fixture.
+    writeAt
+        (p [ testsDir; "Tests.fsproj" ])
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Common/Common.fsproj\" />\n  </ItemGroup>\n</Project>"
+        sourcedAt
+
+    writeAt (p [ testsDir; "Tests.fs" ]) "module Tests" sourcedAt
+    writeAt (p [ testsOut; "Tests" ]) "" builtAt // apphost
+    writeAt (p [ testsOut; "Tests.dll" ]) "" builtAt
+    writeAt (p [ testsOut; "Common.dll" ]) "" builtAt // copy: same mtime as origin
+    writeAt (p [ testsOut; "Fixtures"; "data.json" ]) "{ \"leaves\": 36 }" sourcedAt // copy: origin's mtime
+
+    { Root = root
+      TestsDir = testsDir
+      TestsSrc = p [ testsDir; "Tests.fs" ]
+      TestsDll = p [ testsOut; "Tests.dll" ]
+      TestsOutDir = testsOut
+      CommonSrc = p [ commonDir; "Common.fs" ]
+      CommonFixture = p [ commonDir; "Fixtures"; "data.json" ]
+      CommonDll = p [ commonOut; "Common.dll" ]
+      CommonDllCopy = p [ testsOut; "Common.dll" ]
+      FixtureCopy = p [ testsOut; "Fixtures"; "data.json" ]
+      LeafSrc = p [ leafDir; "Leaf.fs" ]
+      BuiltAt = builtAt }
+
+/// The gate, asked about the synthetic repo's Tests project.
+let private synthStale (s: Synth) =
+    let fsproj = Path.Combine(s.TestsDir, "Tests.fsproj")
+    staleOf $"run --project {fsproj} --no-build --" s.Root
 
 [<Fact(Timeout = 15000)>]
-let ``newestSourceMtime returns the newest source and ignores build output`` () =
-    withTempDir "tp-nsm" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "sub")) |> ignore
-        let older = Path.Combine(tmpDir, "A.fs")
-        let newer = Path.Combine(tmpDir, "sub", "B.fs")
-        File.WriteAllText(older, "")
-        File.WriteAllText(newer, "")
-        let t = DateTime.UtcNow
-        File.SetLastWriteTimeUtc(older, t.AddMinutes(-10.0))
-        File.SetLastWriteTimeUtc(newer, t)
-
-        // A build-output .fs is newer still, but lives under bin/ so it must be
-        // ignored (a regenerated obj/ file must not masquerade as a newer source).
-        let binDir = Path.Combine(tmpDir, "bin", "Debug", "net10.0")
-        Directory.CreateDirectory(binDir) |> ignore
-        let gen = Path.Combine(binDir, "Generated.fs")
-        File.WriteAllText(gen, "")
-        File.SetLastWriteTimeUtc(gen, t.AddMinutes(10.0))
-
-        match newestSourceMtime tmpDir with
-        | Some got -> test <@ got = File.GetLastWriteTimeUtc newer @>
-        | None -> Assert.Fail "expected a source mtime")
-
-// REGRESSION (2026-07-13 wedge): the freshness scan must TERMINATE in the
-// presence of symlink cycles. The production trigger: `.devenv/profile` links
-// into /nix/store where ncurses-6.6-dev/include contains TWO self-loop
-// symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
-// bounded only by ENAMETOOLONG ⇒ ~2^90 paths. The pre-fix walk followed
-// symlinked dirs and wedged EVERY `fshw check` forever (observed 8h36m,
-// silent). On the old code this test trips its Timeout; on SafeWalk it
-// returns in milliseconds because symlinked dirs are never entered.
-[<Fact(Timeout = 15000)>]
-let ``newestSourceMtime terminates despite self-loop symlink cycles`` () =
-    if not (OperatingSystem.IsWindows()) then
-        withTempDir "tp-nsm-cycle" (fun tmpDir ->
-            let src = Path.Combine(tmpDir, "A.fs")
-            File.WriteAllText(src, "")
-
-            // Two self-loops in one directory = the exact /nix/store shape.
-            let cycleDir = Path.Combine(tmpDir, "cycle")
-            Directory.CreateDirectory cycleDir |> ignore
-            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop"), ".") |> ignore
-            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop2"), ".") |> ignore
-
-            match newestSourceMtime tmpDir with
-            | Some got -> test <@ got = File.GetLastWriteTimeUtc src @>
-            | None -> Assert.Fail "expected a source mtime")
-
-// REGRESSION (same wedge, the other half): a symlinked directory is a portal
-// OUT of the repo tree (`.devenv/profile` → the nix store). Freshness must be
-// computed from the REAL tree only — a newer source behind a symlinked dir
-// must not be counted (it is not part of this repo's sources, and following
-// it is how the walk left the repo in the first place).
-[<Fact(Timeout = 15000)>]
-let ``newestSourceMtime does not follow a symlinked directory out of the root`` () =
-    if not (OperatingSystem.IsWindows()) then
-        withTempDir "tp-nsm-outside" (fun tmpDir ->
-            let root = Path.Combine(tmpDir, "repo")
-            let outside = Path.Combine(tmpDir, "outside")
-            Directory.CreateDirectory root |> ignore
-            Directory.CreateDirectory outside |> ignore
-
-            let inRoot = Path.Combine(root, "A.fs")
-            File.WriteAllText(inRoot, "")
-            let outsideSrc = Path.Combine(outside, "Newer.fs")
-            File.WriteAllText(outsideSrc, "")
-
-            let t = DateTime.UtcNow
-            File.SetLastWriteTimeUtc(inRoot, t.AddMinutes(-10.0))
-            File.SetLastWriteTimeUtc(outsideSrc, t)
-
-            Directory.CreateSymbolicLink(Path.Combine(root, "portal"), outside) |> ignore
-
-            match newestSourceMtime root with
-            | Some got -> test <@ got = File.GetLastWriteTimeUtc inRoot @>
-            | None -> Assert.Fail "expected a source mtime")
-
-// `.devenv`/`.direnv` are excluded by NAME as well (nix/devenv tooling dirs) —
-// even a REGULAR (non-symlinked) file under them must not count as a repo
-// source for freshness purposes.
-[<Fact(Timeout = 15000)>]
-let ``newestSourceMtime ignores sources under .devenv and .direnv`` () =
-    withTempDir "tp-nsm-devenv" (fun tmpDir ->
-        let src = Path.Combine(tmpDir, "A.fs")
-        File.WriteAllText(src, "")
-
-        let devenv = Path.Combine(tmpDir, ".devenv", "gen")
-        Directory.CreateDirectory devenv |> ignore
-        let hidden = Path.Combine(devenv, "Tool.fs")
-        File.WriteAllText(hidden, "")
-
-        let t = DateTime.UtcNow
-        File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
-        File.SetLastWriteTimeUtc(hidden, t)
-
-        match newestSourceMtime tmpDir with
-        | Some got -> test <@ got = File.GetLastWriteTimeUtc src @>
-        | None -> Assert.Fail "expected a source mtime")
-
-/// Production pairing: `apphostStale` with the run-wide lazy newest-source scan
-/// (exactly how `executeTests` wires it). Tests exercise the pair so the lazy
-/// seam can't drift from the real call shape.
-let private staleOf (args: string) (repoRoot: string) : bool =
-    apphostStale args repoRoot (lazy (newestSourceMtime repoRoot))
+let ``freshness is None when args carry no --project`` () =
+    test <@ staleOf "/tmp/runner.sh" "/repo" = None @>
+    test <@ staleOf "test" "/repo" = None @>
 
 [<Fact(Timeout = 15000)>]
-let ``apphostStale is false when args carry no --project`` () =
-    test <@ not (staleOf "/tmp/runner.sh" "/repo") @>
-    test <@ not (staleOf "test" "/repo") @>
-
-[<Fact(Timeout = 15000)>]
-let ``apphostStale is false when no build output exists`` () =
+let ``freshness is None when no build output exists`` () =
     withTempDir "tp-stale-nobin" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         Directory.CreateDirectory(projDir) |> ignore
         File.WriteAllText(Path.Combine(projDir, "Foo.fs"), "module Foo")
         // No bin/Debug → absence is tryApphostPresent's job, not staleness.
-        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
-let ``apphostStale is false when there are no sources to be stale against`` () =
+let ``freshness is None when there are no sources to be stale against`` () =
     withTempDir "tp-stale-nosrc" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
-        // DLL present, no source files anywhere → nothing to be stale against.
-        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
+        // DLL present, no source files → nothing to be stale against.
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
-let ``apphostStale is false when the DLL is newer than every source`` () =
+let ``freshness is None when the DLL is newer than every source`` () =
     withTempDir "tp-stale-fresh" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
@@ -5010,29 +5004,368 @@ let ``apphostStale is false when the DLL is newer than every source`` () =
         File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(dll, t)
         // Built AFTER the source → fresh → runnable.
-        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
-let ``apphostStale is TRUE when the canonical DLL predates a source`` () =
-    withTempDir "tp-stale-stale" (fun tmpDir ->
+let ``freshness is STALE when the project's own DLL predates its own source`` () =
+    withTempDir "tp-stale-own" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         let dll = Path.Combine(tfmDir, "Unit.dll")
         File.WriteAllText(dll, "")
-
-        // A source edited AFTER the DLL was built — e.g. `--no-build` ran without
-        // a rebuild. Placed in a SIBLING dir to exercise the repo-wide scan, the
-        // production trigger where a DEPENDENCY's source was edited but the test
-        // project's output (incl. the copied dep DLL) was never re-emitted.
-        let srcDir = Path.Combine(tmpDir, "src")
-        Directory.CreateDirectory(srcDir) |> ignore
-        let src = Path.Combine(srcDir, "Dep.fs")
-        File.WriteAllText(src, "module Dep")
+        let src = Path.Combine(projDir, "Tests.fs")
+        File.WriteAllText(src, "module Tests")
         let t = DateTime.UtcNow
         File.SetLastWriteTimeUtc(dll, t.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(src, t)
-        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir @>)
+
+        match staleOf $"run --project {projDir} --no-build --" tmpDir with
+        | Some(ArtifactFreshness.AssemblyOlderThanSource(_, source, _, _)) -> test <@ source = src @>
+        | other -> Assert.Fail($"expected AssemblyOlderThanSource naming {src}, got %A{other}"))
+
+// =============================================================================
+// AUTOMATION-122, direction 1 — THE FALSE POSITIVE. An edit to a project OUTSIDE
+// the test project's dependency closure must leave it FRESH.
+//
+// This is the bug verbatim: `Intelligence.Build.Dev` (a build tool) was edited,
+// and `Intelligence.Tests.Integration` — which does not reference it — was
+// condemned as stale. MSBuild rightly refuses to relink it, so no plain build
+// could ever clear the accusation. On the pre-fix repo-wide watermark this test
+// FAILS (Leaf.fs is the newest source in the repo, and Tests.dll predates it).
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
+    withTempDir "tp-stale-outside" (fun tmpDir ->
+        let s = synth tmpDir
+
+        // Leaf is not referenced by Tests (nor by Common). Edit it: it is now the
+        // newest source in the whole repo — and irrelevant to this test binary.
+        File.SetLastWriteTimeUtc(s.LeafSrc, s.BuiltAt.AddMinutes(30.0))
+
+        test <@ synthStale s = None @>)
+
+// An out-of-closure edit that MSBuild will never answer must not be reported —
+// but the same edit inside the closure must be. Direction 2: THE REAL HOLE.
+// A dependency's source newer than the dependency's own assembly means the build
+// has not run since the edit, so the DLL sitting in the test project's output dir
+// is old code. `--no-build` must NOT run.
+[<Fact(Timeout = 15000)>]
+let ``an edit to a DEPENDENCY inside the closure is STALE`` () =
+    withTempDir "tp-stale-inside" (fun tmpDir ->
+        let s = synth tmpDir
+
+        // Common IS referenced by Tests. Edit it without rebuilding.
+        File.SetLastWriteTimeUtc(s.CommonSrc, s.BuiltAt.AddMinutes(30.0))
+
+        match synthStale s with
+        | Some(ArtifactFreshness.AssemblyOlderThanSource(project, source, _, _)) ->
+            test <@ project = "Common" @>
+            test <@ source = s.CommonSrc @>
+        | other -> Assert.Fail($"expected the dependency edit to be STALE, got %A{other}"))
+
+// The same edit, once the build HAS run (dependency DLL and its copy re-emitted
+// after the edit): fresh again. This is what proves a plain `dotnet build` — not
+// `-t:Rebuild` — clears the gate. Note the test project's own DLL is deliberately
+// NOT restamped: a private-only change to a dependency need not relink its
+// consumers (reference assemblies exist to avoid exactly that), and demanding it
+// would be the old unanswerable accusation in a smaller costume.
+[<Fact(Timeout = 15000)>]
+let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`` () =
+    withTempDir "tp-stale-rebuilt" (fun tmpDir ->
+        let s = synth tmpDir
+        let editedAt = s.BuiltAt.AddMinutes(30.0)
+        let rebuiltAt = s.BuiltAt.AddMinutes(31.0)
+
+        File.SetLastWriteTimeUtc(s.CommonSrc, editedAt)
+        // The build relinks Common and re-copies it into the consumer's output
+        // (File.Copy preserves the origin's mtime — hence the same stamp).
+        File.SetLastWriteTimeUtc(s.CommonDll, rebuiltAt)
+        File.SetLastWriteTimeUtc(s.CommonDllCopy, rebuiltAt)
+
+        test <@ synthStale s = None @>)
+
+// Only the dependency was rebuilt — its DLL is fresh in its OWN bin, but the copy
+// the test run would actually load was never refreshed. That is stale bits.
+[<Fact(Timeout = 15000)>]
+let ``a dependency DLL newer than its COPY in the test output is STALE`` () =
+    withTempDir "tp-stale-depcopy" (fun tmpDir ->
+        let s = synth tmpDir
+        File.SetLastWriteTimeUtc(s.CommonDll, s.BuiltAt.AddMinutes(30.0))
+
+        match synthStale s with
+        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+            test <@ origin = s.CommonDll @>
+            test <@ copy = s.CommonDllCopy @>
+        | other -> Assert.Fail($"expected the un-refreshed dependency copy to be STALE, got %A{other}"))
+
+// =============================================================================
+// AUTOMATION-122, second half — CONTENT FILES. This one let a RED main through.
+//
+// `tests/Intelligence.Tests.Common/Fixtures/RuleMaps/dsa-scope-4.json` changed
+// (36 → 40 leaf facts). The consuming test project's output dir still held the
+// OLD copy, so the `--no-build` run read the OLD fixture and PASSED — a fake
+// green that merged and left main red for hours. Only `-t:Rebuild` exposed it.
+//
+// A stale copy of a content/fixture item must make the run stale — exactly as a
+// stale apphost does. Reproduced here in miniature.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
+    withTempDir "tp-stale-fixture" (fun tmpDir ->
+        let s = synth tmpDir
+
+        // The dsa-scope-4 scenario: the fixture in the shared project changes …
+        File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
+        File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
+        // … and the copy in the consuming test project's output dir still holds
+        // the OLD bytes. Every compiled artifact in the repo is untouched, so the
+        // apphost/DLL checks alone see nothing wrong — and the tests would run
+        // green against 36 leaves.
+
+        match synthStale s with
+        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+            test <@ origin = s.CommonFixture @>
+            test <@ copy = s.FixtureCopy @>
+        | other -> Assert.Fail($"expected the un-copied fixture to be STALE, got %A{other}"))
+
+// The remedy a plain `dotnet build` performs: the fixture is re-copied, carrying
+// the origin's mtime (verified against real MSBuild, 2026-07-14). Gate clears.
+[<Fact(Timeout = 15000)>]
+let ``a FIXTURE re-copied by a plain build is FRESH`` () =
+    withTempDir "tp-stale-fixture-copied" (fun tmpDir ->
+        let s = synth tmpDir
+        let editedAt = s.BuiltAt.AddMinutes(30.0)
+
+        File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
+        File.SetLastWriteTimeUtc(s.CommonFixture, editedAt)
+        File.WriteAllText(s.FixtureCopy, "{ \"leaves\": 40 }")
+        File.SetLastWriteTimeUtc(s.FixtureCopy, editedAt) // File.Copy preserves mtime
+
+        test <@ synthStale s = None @>)
+
+// The test project's OWN fixtures count too — the copy is what the run reads,
+// whoever owns the origin.
+[<Fact(Timeout = 15000)>]
+let ``the test project's OWN stale fixture copy is STALE`` () =
+    withTempDir "tp-stale-own-fixture" (fun tmpDir ->
+        let s = synth tmpDir
+        let ownFixture = Path.Combine(s.TestsDir, "Fixtures", "own.json")
+        let ownCopy = Path.Combine(s.TestsOutDir, "Fixtures", "own.json")
+        writeAt ownCopy "{ \"v\": 1 }" s.BuiltAt
+        writeAt ownFixture "{ \"v\": 2 }" (s.BuiltAt.AddMinutes(30.0))
+
+        match synthStale s with
+        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+            test <@ origin = ownFixture @>
+            test <@ copy = ownCopy @>
+        | other -> Assert.Fail($"expected the test project's own stale fixture to be STALE, got %A{other}"))
+
+// The other half of "keyed on the copy": a file the build does NOT copy has no
+// destination in the output dir, so editing it can never fire the gate. Without
+// this, the content check would become a new wolf-cry — every README and .fsproj
+// edit condemning a project no build would ever clear.
+[<Fact(Timeout = 15000)>]
+let ``a file the build never copies cannot make the run stale`` () =
+    withTempDir "tp-stale-uncopied" (fun tmpDir ->
+        let s = synth tmpDir
+        // A doc in the dependency, newer than everything, copied nowhere.
+        writeAt (Path.Combine(tmpDir, "Common", "README.md")) "# notes" (s.BuiltAt.AddMinutes(30.0))
+
+        test <@ synthStale s = None @>)
+
+// The gate must be able to say WHY, naming the file pair — a guard that cries
+// "something, somewhere is stale" is a guard people learn to bypass.
+[<Fact(Timeout = 15000)>]
+let ``the stale reason names the offending file`` () =
+    withTempDir "tp-stale-describe" (fun tmpDir ->
+        let s = synth tmpDir
+        File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
+
+        match synthStale s with
+        | Some stale ->
+            let described = ArtifactFreshness.describe stale
+            test <@ described.Contains "data.json" @>
+        | None -> Assert.Fail "expected a stale verdict")
+
+// =============================================================================
+// FAIL CLOSED. A freshness gate that answers "up to date" because it COULD NOT
+// LOOK is this ticket's own bug reborn inside its fix. If the closure cannot be
+// determined — an unreadable/unparseable project file, a `ProjectReference` that
+// resolves to nothing — the run is REFUSED, and the build (which will choke on
+// the same file, loudly) gets to report the real error.
+//
+// Swallowing these into "no references" would silently shrink the closure to
+// nothing, and a stale dependency would sail straight through as fresh.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``an unparseable project file is REFUSED, not called fresh`` () =
+    withTempDir "tp-stale-badxml" (fun tmpDir ->
+        let s = synth tmpDir
+        File.WriteAllText(p [ s.TestsDir; "Tests.fsproj" ], "<Project><ItemGroup><ProjectReference </Project>")
+
+        match synthStale s with
+        | Some(ArtifactFreshness.InputsUndeterminable(project, _)) -> test <@ project = "Tests" @>
+        | other -> Assert.Fail($"an unreadable project file must fail CLOSED, got %A{other}"))
+
+[<Fact(Timeout = 15000)>]
+let ``a ProjectReference without an Include is REFUSED, not ignored`` () =
+    withTempDir "tp-stale-noinclude" (fun tmpDir ->
+        let s = synth tmpDir
+
+        File.WriteAllText(
+            p [ s.TestsDir; "Tests.fsproj" ],
+            "<Project>\n  <ItemGroup>\n    <ProjectReference />\n  </ItemGroup>\n</Project>"
+        )
+
+        match synthStale s with
+        | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
+        | other -> Assert.Fail($"an unresolvable reference must fail CLOSED, got %A{other}"))
+
+// A reference naming a project that does not exist is the same ignorance: we
+// cannot know that project's sources, so we cannot certify this run.
+[<Fact(Timeout = 15000)>]
+let ``a ProjectReference to a missing project is REFUSED, not called fresh`` () =
+    withTempDir "tp-stale-missingref" (fun tmpDir ->
+        let s = synth tmpDir
+
+        File.WriteAllText(
+            p [ s.TestsDir; "Tests.fsproj" ],
+            "<Project>\n  <ItemGroup>\n    <ProjectReference Include=\"../Ghost/Ghost.fsproj\" />\n  </ItemGroup>\n</Project>"
+        )
+
+        match synthStale s with
+        | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "Ghost" @>
+        | other -> Assert.Fail($"a reference to a missing project must fail CLOSED, got %A{other}"))
+
+// Ignorance ANYWHERE in the closure fails closed — not just at its root. A
+// dependency's project file we cannot read hides that dependency's sources.
+[<Fact(Timeout = 15000)>]
+let ``an unparseable project file DEEP in the closure is REFUSED`` () =
+    withTempDir "tp-stale-badxml-deep" (fun tmpDir ->
+        let s = synth tmpDir
+        File.WriteAllText(p [ tmpDir; "Common"; "Common.fsproj" ], "<Project> <<< not xml")
+
+        match synthStale s with
+        | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
+        | other -> Assert.Fail($"an unreadable DEPENDENCY project file must fail CLOSED, got %A{other}"))
+
+// An fsproj REFERENCE CYCLE is MSBuild's error to report — the closure walk must
+// terminate rather than hang on it.
+[<Fact(Timeout = 15000)>]
+let ``a project reference cycle terminates`` () =
+    withTempDir "tp-stale-cycle" (fun tmpDir ->
+        let s = synth tmpDir
+        // Common references Tests, which already references Common.
+        File.WriteAllText(
+            p [ tmpDir; "Common"; "Common.fsproj" ],
+            "<Project>\n  <ItemGroup>\n    <ProjectReference Include=\"../Tests/Tests.fsproj\" />\n  </ItemGroup>\n</Project>"
+        )
+
+        test <@ synthStale s = None @>
+
+        File.SetLastWriteTimeUtc(s.CommonSrc, s.BuiltAt.AddMinutes(30.0))
+        test <@ (synthStale s).IsSome @>)
+
+// A dependency that has not been built AT ALL is the build's business (and the
+// presence probe's), not staleness: there is no out-of-date artifact to refuse —
+// a build in flight may still land it. Same for a dependency assembly that has
+// not been copied into the test output yet.
+[<Fact(Timeout = 15000)>]
+let ``an unbuilt dependency is not reported stale`` () =
+    withTempDir "tp-stale-unbuilt-dep" (fun tmpDir ->
+        let s = synth tmpDir
+        Directory.Delete(p [ tmpDir; "Common"; "bin" ], true)
+
+        test <@ synthStale s = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a dependency assembly not yet copied into the test output is not reported stale`` () =
+    withTempDir "tp-stale-uncopied-dep" (fun tmpDir ->
+        let s = synth tmpDir
+        File.Delete s.CommonDllCopy
+
+        test <@ synthStale s = None @>)
+
+// A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
+// which TFM `dotnet run` selects is not knowable here, so one fresh output dir
+// means there is a fresh way to run. Conservative against false-stale — the whole
+// point of the exercise.
+[<Fact(Timeout = 15000)>]
+let ``a multi-TFM project with one FRESH output dir is not stale`` () =
+    withTempDir "tp-stale-multitfm" (fun tmpDir ->
+        let s = synth tmpDir
+        let editedAt = s.BuiltAt.AddMinutes(30.0)
+
+        // The fixture changes; net10.0's copy goes stale …
+        File.SetLastWriteTimeUtc(s.CommonFixture, editedAt)
+        test <@ (synthStale s).IsSome @>
+
+        // … but a second TFM's output dir carries the up-to-date copy.
+        let net9 = p [ s.TestsDir; "bin"; "Debug"; "net9.0" ]
+        writeAt (p [ net9; "Tests.dll" ]) "" s.BuiltAt
+        writeAt (p [ net9; "Common.dll" ]) "" s.BuiltAt
+        writeAt (p [ net9; "Fixtures"; "data.json" ]) "{ \"leaves\": 40 }" editedAt
+
+        // And a TFM dir of the DEPENDENCY that holds no assembly at all (only one
+        // of its target frameworks was built) is simply not a candidate — it must
+        // not be mistaken for a missing build.
+        Directory.CreateDirectory(p [ tmpDir; "Common"; "bin"; "Debug"; "net9.0" ])
+        |> ignore
+
+        test <@ synthStale s = None @>)
+
+// REGRESSION (2026-07-13 wedge): the freshness walk must TERMINATE in the
+// presence of symlink cycles. The production trigger: `.devenv/profile` links
+// into /nix/store where ncurses-6.6-dev/include contains TWO self-loop
+// symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
+// bounded only by ENAMETOOLONG ⇒ ~2^90 paths. The pre-SafeWalk walk followed
+// symlinked dirs and wedged EVERY `fshw check` forever (observed 8h36m,
+// silent). On a symlink-following walk this test trips its Timeout.
+[<Fact(Timeout = 15000)>]
+let ``freshness terminates despite self-loop symlink cycles`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-nsm-cycle" (fun tmpDir ->
+            let s = synth tmpDir
+
+            // Two self-loops in one directory = the exact /nix/store shape.
+            let cycleDir = Path.Combine(s.TestsDir, "cycle")
+            Directory.CreateDirectory cycleDir |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop"), ".") |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop2"), ".") |> ignore
+
+            test <@ synthStale s = None @>)
+
+// REGRESSION (same wedge, the other half): a symlinked directory is a portal OUT
+// of the tree (`.devenv/profile` → the nix store). Freshness is computed from the
+// REAL tree only — a newer file behind a symlinked dir is not an input to this
+// project, and following it is how the walk left the repo in the first place.
+[<Fact(Timeout = 15000)>]
+let ``freshness does not follow a symlinked directory out of the project`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-nsm-outside" (fun tmpDir ->
+            let s = synth tmpDir
+            let outside = Path.Combine(tmpDir, "outside")
+            Directory.CreateDirectory outside |> ignore
+            writeAt (Path.Combine(outside, "Newer.fs")) "module Newer" (s.BuiltAt.AddMinutes(30.0))
+
+            Directory.CreateSymbolicLink(Path.Combine(s.TestsDir, "portal"), outside)
+            |> ignore
+
+            test <@ synthStale s = None @>)
+
+// `.devenv`/`.direnv` are excluded by NAME as well (nix/devenv tooling dirs) —
+// even a REGULAR (non-symlinked) file under them must not count as an input.
+[<Fact(Timeout = 15000)>]
+let ``freshness ignores sources under .devenv and .direnv`` () =
+    withTempDir "tp-nsm-devenv" (fun tmpDir ->
+        let s = synth tmpDir
+        writeAt (Path.Combine(s.TestsDir, ".devenv", "gen", "Tool.fs")) "module Tool" (s.BuiltAt.AddMinutes(30.0))
+
+        test <@ synthStale s = None @>)
 
 // End-to-end: a present-but-stale apphost must DEFER (non-green, "waiting on
 // build") through the plugin, never report a passing run on stale bits. On the
