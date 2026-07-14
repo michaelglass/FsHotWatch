@@ -753,8 +753,9 @@ let ``summarize reads 0 findings when every file's entry is empty`` () =
 
     test <@ summarize 2 map = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
 
-/// Recording PluginCtx that captures CompleteWithSummary and the per-file
-/// report/clear calls (the gated ledger set, modelled as a Map).
+/// Recording PluginCtx that captures the run summaries (from the verdict each
+/// terminal status carries) and the per-file report/clear calls (the gated
+/// ledger set, modelled as a Map).
 let private makeAnalyzerRecordingCtx () =
     let summaries = System.Collections.Generic.List<string>()
     let ledger = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
@@ -783,14 +784,21 @@ let private makeAnalyzerRecordingCtx () =
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
           Log = fun _ -> ()
-          CompleteWithSummary = fun s -> summaries.Add s
           CompleteWithTimeout = fun _ -> ()
-          RunExclusive = fun _ _ -> ()
+          RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
           IsRunning = fun _ -> false
           FcsSuppressedCodes = Set.empty
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     ctx, summaries, ledger
+
+/// Minimal CommandCtx for invoking a handler's IPC commands directly in tests.
+let private nullCommandCtx: FsHotWatch.PluginFramework.CommandCtx<AnalyzersMsg> =
+    { RepoRoot = ""
+      Log = fun _ -> ()
+      Post = fun _ -> ()
+      IsRunning = fun _ -> false
+      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
 [<Fact(Timeout = 15000)>]
 let ``regression: clean cycle after a findings cycle renders 0, not the stale count`` () =
@@ -859,7 +867,7 @@ let ``diagnostics command sums findings across files in a populated state`` () =
     let (_, diagnosticsCmd) =
         handler.Commands |> List.find (fun (name, _) -> name = "diagnostics")
 
-    let json = diagnosticsCmd ctx populated [||] |> Async.RunSynchronously
+    let json = diagnosticsCmd nullCommandCtx populated [||] |> Async.RunSynchronously
 
     // The fold over the live map must report both findings on the one file.
     test <@ json.Contains("\"diagnostics\":2") @>

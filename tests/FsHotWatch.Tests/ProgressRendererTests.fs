@@ -50,7 +50,7 @@ let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : R
 [<Fact(Timeout = 15000)>]
 let ``compact Completed shows check glyph elapsed and summary`` () =
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(3.2))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(3.2))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) (Some "built 4 projects"))
@@ -72,7 +72,7 @@ let ``compact Completed with no LastRun does not display 0ms timing`` () =
     // must not display a misleading "(0ms)" timing — it should omit the
     // timing portion instead.
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = None
@@ -92,7 +92,7 @@ let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` 
     // milliseconds, not zero). Treat zero as "elapsed unknown" so the UI
     // doesn't claim a 30-second build took 0ms.
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero (Some "built 19 projects"))
@@ -108,7 +108,7 @@ let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` 
 [<Fact(Timeout = 15000)>]
 let ``verbose Completed with zero-elapsed LastRun does not display 0ms timing`` () =
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero None)
@@ -123,7 +123,7 @@ let ``verbose Completed with zero-elapsed LastRun does not display 0ms timing`` 
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with ledger errors shows warn glyph and count`` () =
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(3.2))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(3.2))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) None)
@@ -139,7 +139,7 @@ let ``compact Completed with ledger errors shows warn glyph and count`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with only warnings respects warningsAreFailures flag`` () =
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(1.0))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(1.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
@@ -157,7 +157,7 @@ let ``compact Completed with only warnings respects warningsAreFailures flag`` (
 [<Fact(Timeout = 15000)>]
 let ``compact Running with subtasks lists them`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds(72.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0))
           Subtasks =
             [ makeSubtask "A" "running A" 10.0
               makeSubtask "B" "running B" 8.0
@@ -177,7 +177,7 @@ let ``compact Running with subtasks lists them`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Running with no subtasks shows last activity line`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds(5.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(5.0))
           Subtasks = []
           ActivityTail = [ "loading rules"; "linting FileA.fs" ]
           LastRun = None
@@ -194,7 +194,7 @@ let ``compact Failed shows truncated error first line`` () =
     let multiline = "first line of error\nsecond line\nthird line"
 
     let parsed: ParsedPluginStatus =
-        { Status = Failed(multiline, now - TimeSpan.FromSeconds 6.4)
+        { Status = StatusView.Failed(multiline, now - TimeSpan.FromSeconds 6.4)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(failedRun (TimeSpan.FromSeconds 6.4) (TimeSpan.FromSeconds 6.4) multiline)
@@ -209,7 +209,7 @@ let ``compact Failed shows truncated error first line`` () =
 
     // Ultra-long single line is truncated to <= ~80 chars of error text.
     let parsedLong: ParsedPluginStatus =
-        { Status = Failed(longErr, now - TimeSpan.FromSeconds 1.0)
+        { Status = StatusView.Failed(longErr, now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) longErr)
@@ -223,7 +223,7 @@ let ``compact Failed shows truncated error first line`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Idle with history shows last-run recap`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Idle
+        { Status = StatusView.Idle
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 4.1) (Some "no issues"))
@@ -240,7 +240,7 @@ let ``compact Idle with history shows last-run recap`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Idle with no history is single line name`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Idle
+        { Status = StatusView.Idle
           Subtasks = []
           ActivityTail = []
           LastRun = None
@@ -255,7 +255,7 @@ let ``compact Idle with no history is single line name`` () =
 [<Fact(Timeout = 15000)>]
 let ``verbose Running emits header plus subtask tree plus recent`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds(72.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0))
           Subtasks =
             [ makeSubtask "FooTests" "running FooTests" 48.0
               makeSubtask "BarTests" "compiling" 62.0
@@ -286,7 +286,7 @@ let ``verbose Running preserves leading whitespace in activity tail entries (que
     // lines rather than rendering as a sibling. Renderer must NOT strip or
     // collapse the embedded leading whitespace.
     let parsed: ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds 30.0)
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds 30.0)
           Subtasks = []
           ActivityTail =
             [ "Intelligence.Build.Dev.Tests: failed"
@@ -325,7 +325,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
     let err = "FileA.fs(12,4): FS0020: ...\nFileA.fs(33,1): FS0025: ..."
 
     let parsed: ParsedPluginStatus =
-        { Status = Failed(err, now)
+        { Status = StatusView.Failed(err, now)
           Subtasks = []
           ActivityTail = [ "loading rules"; "linting FileA.fs" ]
           LastRun =
@@ -352,7 +352,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
     let startedAt = now - TimeSpan.FromSeconds 3.2
 
     let parsed: ParsedPluginStatus =
-        { Status = completedAt now
+        { Status = StatusView.Completed now
           Subtasks = []
           ActivityTail = [ "dotnet build sln" ]
           LastRun =
@@ -376,7 +376,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
     let startedAt = now - TimeSpan.FromSeconds 1.0
 
     let parsed: ParsedPluginStatus =
-        { Status = completedAt now
+        { Status = StatusView.Completed now
           Subtasks = []
           ActivityTail = []
           LastRun =
@@ -399,13 +399,13 @@ let ``renderAll concatenates per-plugin blocks`` () =
     let statuses =
         Map.ofList
             [ "Build",
-              { Status = completedAt now
+              { Status = StatusView.Completed now
                 Subtasks = []
                 ActivityTail = []
                 LastRun = Some(completedRun (TimeSpan.FromSeconds 3.0) (TimeSpan.FromSeconds 3.0) (Some "ok"))
                 Diagnostics = DiagnosticCounts.empty }
               "Lint",
-              { Status = Idle
+              { Status = StatusView.Idle
                 Subtasks = []
                 ActivityTail = []
                 LastRun = None
@@ -422,49 +422,49 @@ let ``renderAll concatenates per-plugin blocks`` () =
 
 module private AgentFixtures =
     let okStatus (summary: string option) : ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds 1.0)
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) summary)
           Diagnostics = DiagnosticCounts.empty }
 
     let failStatus (err: string) : ParsedPluginStatus =
-        { Status = Failed(err, now - TimeSpan.FromSeconds 1.0)
+        { Status = StatusView.Failed(err, now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) err)
           Diagnostics = DiagnosticCounts.empty }
 
     let runningStatus () : ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds 2.0)
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds 2.0)
           Subtasks = []
           ActivityTail = []
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
     let warnStatus () : ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds 1.0)
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
           Diagnostics = { Errors = 0; Warnings = 3 } }
 
     let idleNoHistory () : ParsedPluginStatus =
-        { Status = Idle
+        { Status = StatusView.Idle
           Subtasks = []
           ActivityTail = []
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
     let idleCompleted (summary: string option) : ParsedPluginStatus =
-        { Status = Idle
+        { Status = StatusView.Idle
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 10.0) (TimeSpan.FromSeconds 2.0) summary)
           Diagnostics = DiagnosticCounts.empty }
 
     let idleFailed (err: string) : ParsedPluginStatus =
-        { Status = Idle
+        { Status = StatusView.Idle
           Subtasks = []
           ActivityTail = []
           LastRun = Some(failedRun (TimeSpan.FromSeconds 10.0) (TimeSpan.FromSeconds 2.0) err)
@@ -683,7 +683,7 @@ let ``agent next is done when all clean`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Running prefers primary subtask label over activity tail`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Running(now - TimeSpan.FromSeconds(1.5))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(1.5))
           Subtasks = [ makeSubtask "primary" "running 3 selected tests" 1.5 ]
           ActivityTail = [ "processing bar.fs" ]
           LastRun = None
@@ -699,7 +699,7 @@ let ``compact Running prefers primary subtask label over activity tail`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Idle shows explicit summary not last log line`` () =
     let parsed: ParsedPluginStatus =
-        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = [ "processing foo.fs"; "processing bar.fs" ]
           LastRun = Some(completedRun (TimeSpan.FromSeconds 2.0) (TimeSpan.FromSeconds 2.0) (Some "5 passed, 0 failed"))
@@ -734,7 +734,7 @@ let ``agent output lines match the parseable grammar`` () =
 // ---------------- TimedOut rendering ----------------
 
 let private timedOutStatus (reason: string) : ParsedPluginStatus =
-    { Status = Failed($"timed out: {reason}", now - TimeSpan.FromSeconds 1.0)
+    { Status = StatusView.Failed($"timed out: {reason}", now - TimeSpan.FromSeconds 1.0)
       Subtasks = []
       ActivityTail = []
       LastRun = Some(timedOutRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) reason)

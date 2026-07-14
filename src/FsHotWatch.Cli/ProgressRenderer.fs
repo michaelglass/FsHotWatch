@@ -87,7 +87,7 @@ let private renderCompact
 
     let line =
         match parsed.Status with
-        | Completed _ ->
+        | StatusView.Completed _ ->
             let withIssues = DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
 
             let summary =
@@ -109,7 +109,7 @@ let private renderCompact
             let glyph = if withIssues then Glyph.warn else Glyph.check
 
             $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
-        | Failed(err, _) ->
+        | StatusView.Failed(err, _) ->
             let short = summariseError err
 
             let timingPart =
@@ -130,7 +130,7 @@ let private renderCompact
                     short
 
             $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
-        | Running since ->
+        | StatusView.Running since ->
             let elapsed = now - since
             let timingStr = UI.timing elapsed
 
@@ -156,7 +156,7 @@ let private renderCompact
                         $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
 
             $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
-        | Idle ->
+        | StatusView.Idle ->
             match parsed.LastRun with
             | Some r ->
                 let timingStr = UI.timing r.Elapsed
@@ -176,12 +176,12 @@ let private renderCompact
 
 let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
     match parsed.Status with
-    | Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
-    | Completed _ -> Glyph.check
-    | Failed _ when isTimedOut parsed -> Glyph.timeout
-    | Failed _ -> Glyph.cross
-    | Running _ -> Glyph.ellipsis
-    | Idle -> Glyph.idle
+    | StatusView.Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
+    | StatusView.Completed _ -> Glyph.check
+    | StatusView.Failed _ when isTimedOut parsed -> Glyph.timeout
+    | StatusView.Failed _ -> Glyph.cross
+    | StatusView.Running _ -> Glyph.ellipsis
+    | StatusView.Idle -> Glyph.idle
 
 let private verboseHeader
     (warningsAreFailures: bool)
@@ -193,7 +193,7 @@ let private verboseHeader
     let glyph = glyphForParsed warningsAreFailures parsed
 
     match parsed.Status with
-    | Running since ->
+    | StatusView.Running since ->
         let elapsed = now - since
         let n = List.length parsed.Subtasks
 
@@ -204,7 +204,7 @@ let private verboseHeader
                 ""
 
         $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{detail}"
-    | Completed _ ->
+    | StatusView.Completed _ ->
         let timingPart =
             match terminalTimingStr parsed with
             | Some t -> $" %s{t}"
@@ -216,14 +216,14 @@ let private verboseHeader
             | _ -> ""
 
         $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
-    | Failed(err, _) ->
+    | StatusView.Failed(err, _) ->
         let timingPart =
             match terminalTimingStr parsed with
             | Some t -> $" %s{t}"
             | None -> ""
 
         $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{summariseError err}%s{Color.reset}"
-    | Idle ->
+    | StatusView.Idle ->
         match parsed.LastRun with
         | Some r ->
             let t = clock (r.StartedAt.ToLocalTime())
@@ -263,11 +263,11 @@ let private renderVerbose
 
     let body =
         match parsed.Status with
-        | Running _ ->
+        | StatusView.Running _ ->
             let subtaskLines = renderSubtasks now parsed.Subtasks
             let recent = renderRecent parsed.ActivityTail
             subtaskLines @ recent
-        | Failed(err, _) ->
+        | StatusView.Failed(err, _) ->
             let startedLine =
                 match parsed.LastRun with
                 | Some r -> [ $"      %s{Color.dim}started: %s{clock (r.StartedAt.ToLocalTime())}%s{Color.reset}" ]
@@ -283,7 +283,7 @@ let private renderVerbose
 
             let recent = renderRecent parsed.ActivityTail
             startedLine @ errorLines @ recent
-        | Completed _ ->
+        | StatusView.Completed _ ->
             let started =
                 match parsed.LastRun with
                 | Some r ->
@@ -304,7 +304,7 @@ let private renderVerbose
 
             let recent = renderRecent parsed.ActivityTail
             started @ summary @ recent
-        | Idle -> []
+        | StatusView.Idle -> []
 
     header :: body
 
@@ -363,11 +363,11 @@ module private Agent =
             | None -> false
 
         match parsed.Status with
-        | Running _ -> Some State.Running
-        | Failed _ when timedOutLastRun () -> Some State.TimedOut
-        | Failed _ -> Some State.Fail
-        | Completed _ -> Some(okOrDiag ())
-        | Idle ->
+        | StatusView.Running _ -> Some State.Running
+        | StatusView.Failed _ when timedOutLastRun () -> Some State.TimedOut
+        | StatusView.Failed _ -> Some State.Fail
+        | StatusView.Completed _ -> Some(okOrDiag ())
+        | StatusView.Idle ->
             parsed.LastRun
             |> Option.map (fun r ->
                 match r.Outcome with
@@ -384,14 +384,14 @@ module private Agent =
             parsed.LastRun |> Option.map runSummary |> Option.bind nonEmpty
 
         match parsed.Status with
-        | Failed(err, _) ->
+        | StatusView.Failed(err, _) ->
             parsed.LastRun
             |> Option.bind (fun r -> r.Summary)
             |> Option.bind nonEmpty
             |> Option.orElseWith (fun () -> nonEmpty err)
-        | Running _ -> fromLastRun ()
-        | Completed _
-        | Idle ->
+        | StatusView.Running _ -> fromLastRun ()
+        | StatusView.Completed _
+        | StatusView.Idle ->
             DiagnosticCounts.summary parsed.Diagnostics
             |> nonEmpty
             |> Option.orElseWith fromLastRun

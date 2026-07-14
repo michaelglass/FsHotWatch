@@ -10,6 +10,7 @@ open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Ipc
 open FsHotWatch.Cli
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Events
@@ -135,7 +136,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
 
         let parsed = IpcParsing.parsePluginStatuses result
         test <@ parsed.ContainsKey("status-plugin") @>
-        test <@ parsed.["status-plugin"].Status = Idle @>
+        test <@ parsed.["status-plugin"].Status = StatusView.Idle @>
     finally
         cts.Cancel()
 
@@ -271,7 +272,9 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 
     host.RegisterHandler(
         makeStatusHandler "failed-p" (fun ctx ->
-            ctx.ReportStatus(Failed("something broke", System.DateTime(2025, 1, 3))))
+            ctx.ReportStatus(
+                Failed("something broke", System.DateTime(2025, 1, 3), FsHotWatch.Tests.TestHelpers.testVerdict)
+            ))
     )
 
     // Trigger status updates
@@ -307,19 +310,19 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses result
 
         match parsed.["idle-p"].Status with
-        | Idle -> ()
+        | StatusView.Idle -> ()
         | other -> failwithf "expected Idle, got %A" other
 
         match parsed.["running-p"].Status with
-        | Running _ -> ()
+        | StatusView.Running _ -> ()
         | other -> failwithf "expected Running, got %A" other
 
         match parsed.["completed-p"].Status with
-        | Completed _ -> ()
+        | StatusView.Completed _ -> ()
         | other -> failwithf "expected Completed, got %A" other
 
         match parsed.["failed-p"].Status with
-        | Failed(msg, _) -> test <@ msg = "something broke" @>
+        | StatusView.Failed(msg, _) -> test <@ msg = "something broke" @>
         | other -> failwithf "expected Failed, got %A" other
     finally
         cts.Cancel()
@@ -552,7 +555,8 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
 
     host.RegisterHandler(
-        makeStatusHandler "failed-test" (fun ctx -> ctx.ReportStatus(Failed("bad", System.DateTime(2025, 1, 1))))
+        makeStatusHandler "failed-test" (fun ctx ->
+            ctx.ReportStatus(Failed("bad", System.DateTime(2025, 1, 1), FsHotWatch.Tests.TestHelpers.testVerdict)))
     )
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -569,10 +573,10 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     let getParsed name =
         IpcParsing.parsePluginStatuses (target.GetPluginStatus(name))
 
-    test <@ (getParsed "idle-test").["idle-test"].Status = Idle @>
+    test <@ (getParsed "idle-test").["idle-test"].Status = StatusView.Idle @>
 
     match (getParsed "failed-test").["failed-test"].Status with
-    | Failed(msg, _) -> test <@ msg = "bad" @>
+    | StatusView.Failed(msg, _) -> test <@ msg = "bad" @>
     | other -> failwithf "expected Failed, got %A" other
 
     test <@ Map.isEmpty (getParsed "no-such") @>
@@ -885,7 +889,13 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
                 async {
                     match event with
                     | FileChanged _ ->
-                        ctx.ReportStatus(Failed("2 failed: Foo.Tests, Bar.Tests", System.DateTime(2025, 1, 1)))
+                        ctx.ReportStatus(
+                            Failed(
+                                "2 failed: Foo.Tests, Bar.Tests",
+                                System.DateTime(2025, 1, 1),
+                                FsHotWatch.Tests.TestHelpers.testVerdict
+                            )
+                        )
                     | _ -> ()
 
                     return state
@@ -915,7 +925,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     let resp = FsHotWatch.Cli.IpcParsing.parseDiagnosticsResponse json
 
     match resp.Statuses.["test-prune"].Status with
-    | Failed(msg, _) -> test <@ msg.Contains("2 failed") @>
+    | StatusView.Failed(msg, _) -> test <@ msg.Contains("2 failed") @>
     | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 20000)>]

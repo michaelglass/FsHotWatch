@@ -78,6 +78,23 @@ let private exampleAnalyzerPath =
 
         Path.Combine(dir, "bin/Debug/net10.0")
 
+// ---------------------------------------------------------------------------
+// Helper: build the repo's own convention rules (FsHotWatch.Rules) once
+// ---------------------------------------------------------------------------
+let private conventionRulesPath =
+    lazy
+        let repoRoot = findRepoRoot ()
+        let dir = Path.Combine(repoRoot, "analyzers/FsHotWatch.Rules")
+        let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
+        psi.UseShellExecute <- false
+        let proc = Process.Start(psi)
+        proc.WaitForExit()
+
+        if proc.ExitCode <> 0 then
+            failwith "FsHotWatch.Rules build failed"
+
+        Path.Combine(dir, "bin/Debug/net10.0")
+
 [<Fact(Timeout = 5000)>]
 let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
@@ -231,7 +248,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     // Verify it completed rather than failed — real analyzers should work
     match status.Value with
     | Completed _ -> () // Success — analyzers ran and produced results
-    | PluginStatus.Failed(msg, _) ->
+    | PluginStatus.Failed(msg, _, _) ->
         // G-Research analyzers may fail due to FCS version mismatch, that's OK
         // as long as the plugin handled it gracefully
         let info = sprintf "Analyzers failed gracefully: %s" msg
@@ -420,7 +437,7 @@ let x = 5
 
                 match status.Value with
                 | Completed _ -> ()
-                | PluginStatus.Failed(msg, _) ->
+                | PluginStatus.Failed(msg, _, _) ->
                     // FCS version mismatch may cause lint to fail — acceptable
                     Assert.True(true, $"Lint failed gracefully: {msg}")
                 | other -> Assert.Fail($"Unexpected lint status: %A{other}")
@@ -761,7 +778,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
 
         match status.Value with
         | Completed _ -> () // Clean code, lint completed
-        | PluginStatus.Failed(msg, _) ->
+        | PluginStatus.Failed(msg, _, _) ->
             // FCS version mismatch may cause lint to fail — acceptable
             Assert.True(true, $"Lint failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected lint status: %A{other}")
@@ -846,7 +863,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 
             match status.Value with
             | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
-            | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
+            | PluginStatus.Failed(msg, _, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
             | other -> Assert.Fail($"Unexpected status: %A{other}")
         | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
@@ -891,7 +908,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
             match status.Value with
             | Completed _ -> ()
-            | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
+            | PluginStatus.Failed(msg, _, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
             | other -> Assert.Fail($"Unexpected status: %A{other}")
         | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
@@ -910,7 +927,7 @@ let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
             let allEntries = errors |> Map.toList |> List.collect snd
             test <@ allEntries.Length > 0 @>
             test <@ allEntries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>
-        | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+        | PluginStatus.Failed(msg, _, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
 [<Fact(Timeout = 30000)>]
@@ -930,7 +947,7 @@ let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
             match fileErrors with
             | Some entries -> Assert.Fail($"Expected no warnings but got %d{entries.Length}")
             | None -> ()
-        | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+        | PluginStatus.Failed(msg, _, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1026,123 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
                 let after = findings ()
                 test <@ not (List.isEmpty after) @>
                 test <@ after |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>)))
+
+// ===========================================================================
+// FsHotWatch.Rules — the repo's own convention analyzers (FSHW-CLAIM-001 /
+// FSHW-CLOCK-001), exercised through the GENUINE load-and-run path (the same
+// AnalyzersPlugin host the gate uses, pointed at the real Rules bin). These
+// are the positive controls: an analyzer that reports nothing and an analyzer
+// that never loaded are indistinguishable, so each rule must be SEEN to fire
+// on a deliberately-violating snippet before its green is worth anything.
+// ===========================================================================
+
+let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list =
+    let repoRoot = findRepoRoot ()
+    let rulesBin = conventionRulesPath.Value
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+    let host = PluginHost.create checker repoRoot
+
+    let analyzers =
+        AnalyzersPlugin.create None [ rulesBin ] None DiagnosticSeverity.Error
+
+    // The rules DLL must actually LOAD — a zero-load here would make every
+    // assertion below vacuous.
+    test <@ analyzers.Init.LoadedCount >= 1 @>
+
+    host.RegisterHandler(analyzers)
+
+    withTempFsFile source (fun _dir tmpFile ->
+        match checkTempFile checker tmpFile with
+        | Some checkResult ->
+            // The fixture MUST parse. An offside-broken source yields an empty
+            // AST, so every analyzer reports zero findings — and a "the rule
+            // fires" assertion would fail for the wrong reason while a "stays
+            // silent" assertion would PASS for the wrong reason. Refuse the
+            // fixture rather than let it produce a meaningless verdict.
+            test <@ not checkResult.ParseResults.ParseHadErrors @>
+
+            host.EmitFileChecked(checkResult)
+            waitForTerminalStatus host "analyzers" 15000
+            host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
+        | None -> failwith "FCS failed to check temp file")
+
+/// Build an F# source file from explicit lines. NOT a `\`-continuation string:
+/// that strips the leading whitespace of each continued line, which silently
+/// produces an offside-broken source that FCS cannot parse — every analyzer
+/// then reports zero findings and a "the rule fires" test passes VACUOUSLY.
+/// (Caught exactly that way while writing these.)
+let private fsSource (lines: string list) : string = String.concat "\n" lines + "\n"
+
+/// A self-contained, type-correct stand-in for the real PluginCtx.RunExclusive
+/// seam. The rule is name-based, so a structurally identical local reproduces it.
+let private claimPreamble =
+    [ "module Test"
+      "type RunClaim ="
+      "    | Claimed"
+      "    | SlotBusy"
+      "type Ctx ="
+      "    { RunExclusive: string -> Async<int> -> RunClaim }" ]
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-CLAIM-001 fires on every discarded-RunClaim shape`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource (
+                claimPreamble
+                @ [ "let f (ctx: Ctx) (work: Async<int>) ="
+                    "    ctx.RunExclusive \"tests\" work |> ignore"
+                    "    let _ = ctx.RunExclusive \"tests\" work"
+                    "    ignore (ctx.RunExclusive \"tests\" work)"
+                    "    0" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "RunClaim is discarded")
+
+        // One finding per discard shape: |> ignore, let _ =, ignore (…).
+        test <@ findings.Length = 3 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-CLOCK-001 fires on local clock reads`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module Test"
+                  "let t = System.DateTime.Now"
+                  "let u = System.DateTimeOffset.Now" ]
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "Local clock read")
+
+        test <@ findings.Length = 2 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``convention rules stay silent on conforming code`` () =
+    withAnalyzerGate (fun () ->
+        // UTC clocks and a MATCHED claim — the negative control proving the
+        // positive controls above aren't simply firing on everything (and that
+        // the fixture genuinely PARSES: an unparseable source yields zero
+        // findings too, which would make this pass for the wrong reason).
+        let source =
+            fsSource (
+                claimPreamble
+                @ [ "let f (ctx: Ctx) (work: Async<int>) ="
+                    "    match ctx.RunExclusive \"tests\" work with"
+                    "    | Claimed -> System.DateTime.UtcNow"
+                    "    | SlotBusy -> System.DateTime.UtcNow" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e ->
+                e.Message.Contains "RunClaim is discarded"
+                || e.Message.Contains "Local clock read")
+
+        test <@ findings.IsEmpty @>)
 
 // ===========================================================================
 // BuildPlugin — success and failure
@@ -2041,7 +2175,10 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     )
 
     host.RegisterHandler(
-        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(PluginStatus.Failed("oops", System.DateTime(2025, 6, 17))))
+        makeStatusHandler "d" (fun ctx ->
+            ctx.ReportStatus(
+                PluginStatus.Failed("oops", System.DateTime(2025, 6, 17), FsHotWatch.Tests.TestHelpers.testVerdict)
+            ))
     )
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -2065,11 +2202,11 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses json
 
     match parsed.["a"].Status with
-    | Idle -> ()
+    | FsHotWatch.Cli.RunOnceOutput.StatusView.Idle -> ()
     | other -> failwithf "expected Idle, got %A" other
 
     match parsed.["d"].Status with
-    | PluginStatus.Failed(msg, _) -> test <@ msg = "oops" @>
+    | FsHotWatch.Cli.RunOnceOutput.StatusView.Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
 
 // `waitForPluginTerminalIfRunning` tests moved from FsHotWatch.Tests

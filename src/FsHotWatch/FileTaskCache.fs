@@ -51,32 +51,36 @@ let private serializeStatus (status: PluginStatus) =
         obj["at"] <- at.ToString("o")
         obj["summary"] <- verdict.Summary
         obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
-    | Failed(msg, at) ->
+    | Failed(msg, at, verdict) ->
         obj["type"] <- "failed"
         obj["message"] <- msg
         obj["at"] <- at.ToString("o")
+        obj["summary"] <- verdict.Summary
+        obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
 
     obj
+
+/// Verdict fields are REQUIRED on both terminal shapes: an entry written
+/// before RunVerdict existed (or with an empty summary — `RunVerdict.create`
+/// throws) has no evidence to replay, so it must read as a cache MISS (the
+/// throw is caught by `tryGet` and counted as a parse failure), never as a
+/// verdict-free terminal.
+let private deserializeVerdict (obj: JsonObject) : RunVerdict =
+    RunVerdict.create
+        (obj["summary"].GetValue<string>())
+        (TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()))
 
 let private deserializeStatus (obj: JsonObject) : PluginStatus =
     match obj["type"].GetValue<string>() with
     | "idle" -> Idle
     | "running" -> Running(since = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime())
     | "completed" ->
-        // Verdict fields are REQUIRED: an entry written before RunVerdict
-        // existed has no evidence to replay, so it must read as a cache MISS
-        // (the throw is caught by `tryGet` and counted as a parse failure),
-        // never as a verdict-free Completed.
-        Completed(
-            at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(),
-            verdict =
-                { Summary = obj["summary"].GetValue<string>()
-                  Elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()) }
-        )
+        Completed(at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(), verdict = deserializeVerdict obj)
     | "failed" ->
         Failed(
             error = obj["message"].GetValue<string>(),
-            at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime()
+            at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(),
+            verdict = deserializeVerdict obj
         )
     | t -> failwith $"Unknown status type: %s{t}"
 

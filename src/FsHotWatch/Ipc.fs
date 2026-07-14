@@ -83,8 +83,13 @@ let internal ambientRpcDeadline () =
 /// anyone having to remember to bound it.
 let internal RpcDeadlineGrace = TimeSpan.FromSeconds 30.0
 
-/// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
-/// the discriminated union without string parsing.
+/// Serialize PluginStatus as a tagged JSON variant so consumers can parse the
+/// state without string matching. Deliberately carries the state tag,
+/// timestamps, and the failure diagnosis ONLY — the verdict (summary +
+/// elapsed) travels exclusively in `lastRun`, which the host derives from the
+/// same verdict at the terminal transition. One channel on the wire, so the
+/// status line and the run record can never disagree (and the CLI never has
+/// to construct a `RunVerdict` from untrusted input).
 let private statusPayload (status: PluginStatus) : obj =
     match status with
     | Idle -> {| tag = "idle" |} :> obj
@@ -92,13 +97,11 @@ let private statusPayload (status: PluginStatus) : obj =
         {| tag = "running"
            since = since.ToString("O") |}
         :> obj
-    | Completed(at, verdict) ->
+    | Completed(at, _) ->
         {| tag = "completed"
-           at = at.ToString("O")
-           summary = verdict.Summary
-           elapsedMs = verdict.Elapsed.TotalMilliseconds |}
+           at = at.ToString("O") |}
         :> obj
-    | Failed(error, at) ->
+    | Failed(error, at, _) ->
         {| tag = "failed"
            error = error
            at = at.ToString("O") |}

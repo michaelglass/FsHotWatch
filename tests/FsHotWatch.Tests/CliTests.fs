@@ -575,7 +575,7 @@ let ``CLI plugin status query works against running daemon`` () =
         let parsed = IpcParsing.parsePluginStatuses result
 
         match parsed.["my-lint"].Status with
-        | Running _ -> ()
+        | RunOnceOutput.StatusView.Running _ -> ()
         | other -> failwithf "expected Running, got %A" other
     finally
         cts.Cancel()

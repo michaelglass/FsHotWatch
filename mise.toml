@@ -21,6 +21,14 @@ run = "dotnet tool restore"
 [tasks.build]
 description = "Compile the CLI binary (so --no-build daemon tasks can run)"
 run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
+depends = ["restore", "build-rules"]
+
+[tasks.build-rules]
+description = "Compile the repo's own analyzer rules (loaded by the gate via .fshw.json analyzers.paths)"
+# Anything that runs `check` needs the rules DLL present, or the gate would
+# silently run WITHOUT the house rules while looking green — an unloaded
+# analyzer and a clean one are indistinguishable from the outside.
+run = "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj"
 depends = ["restore"]
 
 [tasks.format]
@@ -68,7 +76,15 @@ dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
   --coverage-output "$PWD/coverage/coverage.cobertura.xml" \
   --coverage-settings "$PWD/coverage.settings"
 """
-depends = ["restore"]
+# depends on `compile`, not just `restore`: `mise run ci` fans out to
+# {compile, lint-project, coverage-check→test-direct} in PARALLEL, and both
+# `compile` and this task drive MSBuild over the same output directories. They
+# collided writing FsHotWatch.Cli.deps.json ("the process cannot access the
+# file … used by another process" → MSB4018, and a child node exiting
+# prematurely took the test run down with it). Ordering them behind one build
+# removes the race: a gate that can go red from its own internal contention
+# tells you nothing about the code.
+depends = ["restore", "compile"]
 
 [tasks.test-integration]
 description = "Run integration tests (FCS / analyzers / lint / format / build end-to-end). No coverage."

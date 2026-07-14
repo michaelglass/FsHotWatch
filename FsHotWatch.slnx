@@ -15,5 +15,6 @@
   </Folder>
   <Folder Name="/src/" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
+  <Project Path="analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj" />
   <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
 </Solution>

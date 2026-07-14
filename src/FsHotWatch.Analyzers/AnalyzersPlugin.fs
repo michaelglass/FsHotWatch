@@ -422,13 +422,15 @@ let internal createWithSlowHook
                                                             $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
 
                                                         ctx.EndSubtask PrimarySubtaskKey
+                                                        // Flip the recorded outcome to TimedOut; the
+                                                        // verdict carries the summary (one channel).
                                                         ctx.CompleteWithTimeout reason
 
                                                         ctx.ReportStatus(
-                                                            PluginStatus.Failed(
-                                                                $"analyzers timed out: {reason}",
-                                                                DateTime.UtcNow
-                                                            )
+                                                            PluginStatus.failedNow
+                                                                $"analyzers timed out: {reason}"
+                                                                $"analyzers timed out: {reason}"
+                                                                after
                                                         )
 
                                                         return Choice1Of3()

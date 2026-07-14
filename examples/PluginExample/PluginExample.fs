@@ -20,18 +20,20 @@ let myPlugin: PluginHandler<MyState, unit> =
             async {
                 match event with
                 | FileChecked result ->
+                    let started = DateTime.UtcNow
+
                     // result.ParseResults and result.CheckResults come from the
                     // warm FSharpChecker — no re-parsing needed.
                     printfn "Checked: %s" (AbsFilePath.value result.File)
 
-                    // A Completed status carries its verdict: what was done, and
-                    // how long it took. "Done with nothing to report" does not
-                    // typecheck — by design.
+                    // A terminal status carries its verdict: what was done, and
+                    // how long it took — MEASURED, never guessed. "Done with
+                    // nothing to report" does not typecheck (`RunVerdict.create`
+                    // rejects an empty summary) — by design.
                     ctx.ReportStatus(
                         Completed(
                             DateTime.UtcNow,
-                            { Summary = $"checked %d{state.FilesChecked + 1} files"
-                              Elapsed = TimeSpan.Zero }
+                            RunVerdict.create $"checked %d{state.FilesChecked + 1} files" (DateTime.UtcNow - started)
                         )
                     )
 
