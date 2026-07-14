@@ -2,41 +2,21 @@
 
 ## Unreleased
 
-- **BREAKING**: `TestPrune.Coverage.ingestCobertura` and `fileCoverageSummary` now return
-  named records (`CoverageIngestSummary` = `{ Ingested; Skipped }`, `FileCoverageSummary` =
-  `{ Covered; Total }`) instead of anonymous records. Callers that bound the result and read
-  its fields need no change; callers that constructed or annotated the anonymous type do.
-  Found by turning TestPrune's own `TP001` analyzer on TestPrune: an
-  anonymous record has no stable cross-build name, so impact analysis could not see a
-  caller's coupling to these public return shapes — the exact blind spot the analyzer ships
-  to warn consumers about.
-
-## 6.0.0 - 2026-07-13
-
-- fix: **directory walks no longer follow symlinks, and no longer hang forever.**
-  `discoverTestProjects` used `SearchOption.AllDirectories`, which FOLLOWS DIRECTORY
-  SYMLINKS. In a devenv/nix repo the reachable tree contains self-loop symlinks
-  (`ncurses-6.6-dev/include/{ncurses,ncursesw} -> .`), and each one DOUBLES the path
-  count per level, so a walk that reaches one is effectively non-terminating. This
-  silently wedged `fshw check` — observed at 8h36m with no output, no timeout, no
-  error and no test ever launched. Scoping the walk to a narrower root (the old
-  `discoverTestProjects` comment claimed "only scans tests/ to avoid .devenv/ symlink
-  issues") is NOT protection: `tests/*/bin` holds Playwright's Nix-store browser
-  symlinks, so the walk escapes into /nix/store from inside `tests/` anyway.
-- feat: new `TestPrune.SafeWalk` — THE one walker for every "files under this root"
-  job. Never descends a reparse-point directory (termination is structural, not
-  heuristic), prunes `bin`/`obj`/`.git`/`.jj`/`.devenv`/`.direnv`/`node_modules`
-  during traversal, and is depth-capped as a belt against cycles that could evade the
-  symlink guard. `SearchOption.AllDirectories` is banned in this codebase — route
-  every repo-scale walk through `SafeWalk.enumerateFiles`.
+- feat!: **SchemaVersion 7→8** (`route_handlers` left the core schema). This is the
+  number `TestPrune.Core` and `fshotwatch.cli` must agree on: it stamps the cache
+  database, and on a mismatch core DELETES and recreates the file. A legacy DB is
+  therefore recreated on first open — which is free, because plugin tables are
+  re-created on demand by their owner and Falco's routes are re-seeded every run.
+  Any consumer pinned to an older `TestPrune.Core` must be upgraded in lockstep.
 - feat!: drop the route concept from the public API. HTTP routes are not a core
   concept — core has no business knowing what a URL is — so `RouteHandlerEntry`
   (`AstAnalyzer`), the `route_handlers` table and its five `Database` methods
   (`RebuildRouteHandlers`, `GetAllRouteHandlers`, `GetRouteHandlersForSourceFile`,
   `GetUrlPatternsForSourceFile`, `GetAllHandlerSourceFiles`), and `RouteStore` /
   `toRouteStore` (`Ports`) are GONE. They now live in TestPrune.Falco, which owns
-  its own table. BREAKING: seed routes with `TestPrune.Falco.RouteStore(toPluginStore db)`
-  and construct `FalcoRouteExtension` with it.
+  its own table. BREAKING CHANGE: seed routes with
+  `TestPrune.Falco.RouteStore(toPluginStore db)` and construct `FalcoRouteExtension`
+  with it.
 - feat!: `Ports.PluginStore` + `Ports.toPluginStore` — the generic seam that replaces
   them. An extension whose facts are seeded from outside the AST gets a connection to
   core's cache database (`Database.OpenConnection`) and owns its tables end to end.
@@ -56,9 +36,47 @@
   reverse-walk, which the docs now say out loud.
 - feat!: `Extensions.AffectedTest` moved to TestPrune.Falco — it only ever described
   that extension's route-matched test classes; nothing in core consumed it.
-- feat!: SchemaVersion 7→8 (`route_handlers` left the core schema). A legacy DB is
-  recreated, which is free: plugin tables are re-created on demand by their owner and
-  Falco's routes are re-seeded every run.
+- feat!: `TestPrune.Coverage.ingestCobertura` and `fileCoverageSummary` now return
+  named records (`CoverageIngestSummary` = `{ Ingested; Skipped }`, `FileCoverageSummary` =
+  `{ Covered; Total }`) instead of anonymous records. BREAKING CHANGE: callers that bound
+  the result and read its fields need no change; callers that constructed or annotated
+  the anonymous type do. Found by turning TestPrune's own `TP001` analyzer on TestPrune:
+  an anonymous record has no stable cross-build name, so impact
+  analysis could not see a caller's coupling to these public return shapes — the exact
+  blind spot the analyzer ships to warn consumers about.
+- feat: new `TestPrune.SafeWalk` — THE one walker for every "files under this root"
+  job. Never descends a reparse-point directory (termination is structural, not
+  heuristic), prunes `bin`/`obj`/`.git`/`.jj`/`.devenv`/`.direnv`/`node_modules`
+  during traversal, and is depth-capped as a belt against cycles that could evade the
+  symlink guard. `SearchOption.AllDirectories` is banned in this codebase — route
+  every repo-scale walk through `SafeWalk.enumerateFiles`.
+- fix: **a file with a misplaced `///` doc comment was silently dropped from the
+  symbol graph, so editing it selected NO tests.** `extractResults` refused a file
+  whenever `FSharpParseFileResults.ParseHadErrors` was set. Under the
+  TransparentCompiler — which is how FsHotWatch's daemon builds its checker
+  (`FSharpChecker.Create(useTransparentCompiler = true)`) — FCS sets that flag for a
+  file whose ONLY parse diagnostic is **informational**: FS3520 "XML comment is not
+  placed on a valid language element" has severity `Info`, and the legacy compiler
+  leaves `ParseHadErrors` unset for the very same file. Such a file compiles cleanly
+  and its ParseTree is complete, yet it was refused wholesale — contributing no
+  symbols, so a change to it had nothing to diff, selected no tests, and the gate
+  reported green having run nothing relevant. Silent under-selection: the one failure
+  mode a test-impact tool must not have (see `EdgeEmission`). The guard now gates on
+  the diagnostics' **severity** (`Error` and nothing else), which is the honest
+  question — "is this tree trustworthy?" — rather than on a flag whose meaning varies
+  by compiler backend. A real syntax error is still refused. The old message was
+  misleading too: it printed *every* diagnostic under the heading "Parse errors",
+  which is how an `Info` came to be reported as an error in the first place.
+- fix: **directory walks no longer follow symlinks, and no longer hang forever.**
+  `discoverTestProjects` used `SearchOption.AllDirectories`, which FOLLOWS DIRECTORY
+  SYMLINKS. In a devenv/nix repo the reachable tree contains self-loop symlinks
+  (`ncurses-6.6-dev/include/{ncurses,ncursesw} -> .`), and each one DOUBLES the path
+  count per level, so a walk that reaches one is effectively non-terminating. This
+  silently wedged `fshw check` — observed at 8h36m with no output, no timeout, no
+  error and no test ever launched. Scoping the walk to a narrower root (the old
+  `discoverTestProjects` comment claimed "only scans tests/ to avoid .devenv/ symlink
+  issues") is NOT protection: `tests/*/bin` holds Playwright's Nix-store browser
+  symlinks, so the walk escapes into /nix/store from inside `tests/` anyway.
 
 ## 5.0.0 - 2026-07-11
 

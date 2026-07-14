@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## 2.1.0 - 2026-07-13
-
 - fix: **`findTestFiles` no longer hangs forever.** It scanned the integration-test
   directory with `SearchOption.AllDirectories`, which follows directory symlinks —
   and `tests/*/bin` holds Playwright's Nix-provisioned browser symlinks, so the walk
@@ -18,8 +16,8 @@
   `RouteStore` type (its own `route_handlers` table, created on demand inside
   TestPrune's cache database through core's `Ports.PluginStore` seam) live here now,
   not in TestPrune.Core — the core engine no longer carries any HTTP/route/URL
-  concept. BREAKING: seed with `RouteStore(toPluginStore db).Rebuild entries` instead
-  of `db.RebuildRouteHandlers entries`, and pass that `RouteStore` to
+  concept. BREAKING CHANGE: seed with `RouteStore(toPluginStore db).Rebuild entries`
+  instead of `db.RebuildRouteHandlers entries`, and pass that `RouteStore` to
   `FalcoRouteExtension` instead of `Ports.toRouteStore db`. `AffectedTest` (returned
   by `FindAffectedTestClasses`) also moved here from `TestPrune.Extensions`.
 - fix: an unresolvable `HandlerFunction` no longer drops a route's edges. A seed
@@ -30,6 +28,8 @@
   with; the function-scoped behaviour (and its regression tests) is unchanged.
 - feat: `RouteStore.Rebuild` is atomic — a rejected entry rolls the whole re-seed back
   rather than leaving the route table half-written.
+- chore(deps): refresh to TestPrune.Core 6.0.0 (SchemaVersion 8). Core's `route_handlers`
+  table and route API are gone; Falco now owns that table through `Ports.PluginStore`.
 
 ## 2.0.4 - 2026-07-11
 

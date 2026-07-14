@@ -19,6 +19,7 @@
     <Compile Include="DomainTests.fs" />
     <Compile Include="FcsTests.fs" />
     <Compile Include="AstAnalyzerTests.fs" />
+    <Compile Include="ParseDiagnosticSeverityTests.fs" />
     <Compile Include="DatabaseTests.fs" />
     <Compile Include="CoverageTests.fs" />
     <Compile Include="DiffParserTests.fs" />
