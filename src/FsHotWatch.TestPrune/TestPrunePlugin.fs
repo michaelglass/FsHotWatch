@@ -406,6 +406,48 @@ type TestPruneState =
         LastCoverage: RunCoverage
     }
 
+/// The slice of `TestPruneState` a test RUN reads — and nothing else.
+///
+/// The run is an `Async` handed to `RunExclusive`, and it lives for as long as the
+/// suite does: minutes, on a full run. Whatever that async closes over, it PINS for
+/// that whole time. Closing over the state RECORD pinned the entire generation —
+/// including `SymbolSnapshot` (the repo-wide symbol table) and `PendingAnalysis`,
+/// neither of which a run touches. Meanwhile the agent loop keeps folding incoming
+/// `FileChecked` events into NEW generations, and the pinned one holds down every
+/// node those newer generations replaced. The peak lands exactly when the suite is
+/// running and FCS is at its own peak — and FsHotWatch is ~85% native FCS memory.
+///
+/// So the launch copies the four references the run actually reads, and the rest of
+/// each generation dies on schedule. The type is the enforcement: a run cannot reach
+/// a field that is not in here, because it does not have the state to reach it with.
+///
+/// (`LastResults` is NOT one of them. The run's interest in it is exactly one bit —
+/// "does a baseline exist" — which the caller computes and passes as
+/// `hasCachedResults`.)
+type TestRunInputs =
+    {
+        /// The impact selection: which test classes the changed symbols reach.
+        AffectedTests: AffectedTestsState
+        /// The in-memory hot view of the pending-verification queue, unioned with the
+        /// durable queue to form the snapshot this run is launched against.
+        ChangedSymbols: string list
+        /// Every changed symbol proved to have no covering test — the "nothing to
+        /// verify" green.
+        ChangedSymbolsAllUncovered: bool
+        /// Files whose symbol analysis failed: while non-empty, the run widens to
+        /// every test project (AUTOMATION-113).
+        UnanalyzableFiles: Map<string, UnanalyzableFile>
+    }
+
+module TestRunInputs =
+    /// Project the state down to what a run reads, at LAUNCH time — the point of
+    /// the copy is that the state record itself is not carried into the run.
+    let ofState (state: TestPruneState) : TestRunInputs =
+        { AffectedTests = state.AffectedTests
+          ChangedSymbols = state.ChangedSymbols
+          ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
+          UnanalyzableFiles = state.UnanalyzableFiles }
+
 /// Custom message posted from the async test runner back to the synchronous
 /// Custom handler. Carries the lifecycle events (Started + Completed) so the
 /// handler can emit them inside the framework's per-event capture window —
@@ -2739,10 +2781,13 @@ let create
     let runTestsWithImpact
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
-        (state: TestPruneState)
-        // `hasCachedResults` (state.LastResults.IsSome) means a run already
-        // completed THIS session — i.e. a green baseline exists to be
-        // "test-equivalent" to. The zero-affected skip needs this AS WELL AS an
+        // The four fields a run reads — NOT the state record. The async this
+        // returns outlives the state generation it was launched from; see
+        // `TestRunInputs`.
+        (inputs: TestRunInputs)
+        // `hasCachedResults` (`state.LastResults.IsSome`, computed by the caller)
+        // means a run already completed THIS session — i.e. a green baseline exists
+        // to be "test-equivalent" to. The zero-affected skip needs this AS WELL AS an
         // empty queue: a cold daemon with an empty queue but no prior run has no
         // baseline yet and must run the full suite once to establish one. See
         // the skip gate below.
@@ -2775,7 +2820,7 @@ let create
             // The coarse fallback only needs to know WHICH files are unanalysable; the
             // map's values exist so the ledger projection can re-report their
             // diagnostics (AUTOMATION-125).
-            let unanalyzablePaths = state.UnanalyzableFiles |> Map.keys |> Set.ofSeq
+            let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
 
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
@@ -2807,7 +2852,7 @@ let create
             // state at completion time) because mid-run BatchChecked flushes
             // mutate both; the synchronous TestsFinished handler commits ONLY
             // these symbols and leaves mid-run arrivals queued for the rerun.
-            let launchedSymbols = Set.union pendingQueueRef (Set.ofList state.ChangedSymbols)
+            let launchedSymbols = Set.union pendingQueueRef (Set.ofList inputs.ChangedSymbols)
 
             try
                 // For each launched symbol, the set of test PROJECTS whose tests
@@ -2834,10 +2879,10 @@ let create
                     |> Map.ofList
 
                 // Extension-contributed edges were already written to the DB by
-                // flushAndQueryAffected, so state.AffectedTests already includes tests
+                // flushAndQueryAffected, so `inputs.AffectedTests` already includes tests
                 // reachable through extension edges (sql, sql-hydra, falco, etc.).
                 let affectedTestsList =
-                    match state.AffectedTests with
+                    match inputs.AffectedTests with
                     | Analyzed tests -> tests
                     | NotYetAnalyzed -> []
 
@@ -2932,7 +2977,7 @@ let create
                 //      the widening above has just forced every configured project.)
                 let baselineEquivalent = nothingOwed () && hasCachedResults
 
-                let nothingToVerify = state.ChangedSymbolsAllUncovered
+                let nothingToVerify = inputs.ChangedSymbolsAllUncovered
 
                 if
                     totalClasses = 0
@@ -3786,7 +3831,12 @@ let create
                                 match
                                     ctx.RunExclusive
                                         "tests"
-                                        (runTestsWithImpact ctx configs drainedState hasCachedResults forceRunProjects)
+                                        (runTestsWithImpact
+                                            ctx
+                                            configs
+                                            (TestRunInputs.ofState drainedState)
+                                            hasCachedResults
+                                            forceRunProjects)
                                 with
                                 | Claimed ->
                                     Logging.info "test-prune" $"BatchChecked: %s{owedDescription ()} — draining now"
@@ -3926,7 +3976,7 @@ let create
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                launchState
+                                                (TestRunInputs.ofState launchState)
                                                 hasCachedResults
                                                 forceRunProjects)
                                     with
@@ -4380,7 +4430,12 @@ let create
                                 match
                                     ctx.RunExclusive
                                         "tests"
-                                        (runTestsWithImpact ctx configs rerunState true deferredFanout)
+                                        (runTestsWithImpact
+                                            ctx
+                                            configs
+                                            (TestRunInputs.ofState rerunState)
+                                            true
+                                            deferredFanout)
                                 with
                                 | Claimed -> return rerunState
                                 | SlotBusy ->

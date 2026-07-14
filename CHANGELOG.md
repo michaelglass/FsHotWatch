@@ -216,6 +216,68 @@ assembly predates the newest source as "waiting on build" — without launching 
 artifact can never yield a passing verdict. Mirrors
 `BuildPlugin.verifyArtifactsFresh` (ADR-008).
 
+### The task cache no longer re-reads its whole directory on every write
+
+Cache entries are named `{plugin--file}@{contentHash}.json`, and the write that
+supersedes one collects its predecessors. It found them by asking the filesystem —
+`Directory.EnumerateFiles(cacheDir, prefix + "*.json")` — which is **not** a
+prefix-optimised syscall: it `readdir`s the whole directory and pattern-matches in
+managed code.
+
+A cold scan writes about **three entries per source file** (Lint, Analyzers and
+FormatCheck each carry a per-`FileChecked` cache key) into a directory that grows to
+about three entries per source file. Every write scanned the lot, so the cold scan was
+**quadratic** in the size of the repo. Measured at ~2.2 ms per scan against a
+4,500-entry directory: roughly **ten seconds of pure directory scanning** added to a
+cold scan of a 1,500-file repo — on precisely the paths that were already timing out
+(cold scan, `--run-once`, the merge gate).
+
+The writer already knows the path it just wrote, so the cache now remembers the path
+each key was last written to and deletes exactly that one. **No scan on the write
+path, at all** — a test asserts the count is zero across 200 writes. A one-time sweep
+at construction seeds that memo from whatever a previous process left on disk, so
+inherited siblings are still collected by the first write to the key that owns them.
+The guarantee is unchanged: only the newest content-hash entry for a plugin+file
+survives. Each delete is now independently guarded, too — one undeletable sibling no
+longer shields every sibling behind it.
+
+### A test run no longer pins the symbol table for its entire duration
+
+The test-run `Async` closed over the whole `TestPruneState` record, and it lives as
+long as the suite does — minutes. Whatever it closes over, it **pins** for that whole
+time: including `SymbolSnapshot` (the repo-wide symbol table) and `PendingAnalysis`,
+neither of which a run touches. Meanwhile the agent loop keeps folding incoming
+`FileChecked` events into new state generations, and the pinned generation holds down
+every node the newer ones replace. The peak lands exactly when the suite is running
+and FCS is at its own peak — and FsHotWatch is ~85% native FCS memory. Recent work had
+been widening the pinned record, not narrowing it.
+
+The run now takes a `TestRunInputs` record carrying **only the four fields it reads**
+(`AffectedTests`, `ChangedSymbols`, `ChangedSymbolsAllUncovered`, `UnanalyzableFiles`).
+The rest of each generation dies on schedule. The type is the enforcement, not a
+convention: a run cannot reach a field it was not given.
+
+### The freshness gate's memo now memoises
+
+`ArtifactFreshness.Cache` is documented "each project is walked at most **once** per
+run" and "thread-safe: test groups run in parallel". Both were true — but they were not
+the same claim, and only the second one was implemented.
+`ConcurrentDictionary.GetOrAdd(key, valueFactory)` is thread-safe (exactly one result
+is published) without being once-only: it may invoke the factory **concurrently on
+several threads** for the same key and throw the losers' work away. Test groups do run
+in parallel, and their `ProjectReference` closures overlap heavily — so the duplicated
+directory walks and `XDocument.Load` parses the memo exists to eliminate were still
+each happening N times. The memo's stated guarantee was not the one it had.
+
+It is now a `Lazy` under `ExecutionAndPublication`: exactly one execution per key, with
+every other caller blocking on it and taking its result. A test pins that from 16
+threads released together.
+
+Also in the same path: the map of "every file the build put in this output dir",
+built from a full walk of the output tree and read only by key, was an immutable F#
+`Map` — O(n log n) to build, with a heap node per file, for an ordering nothing asks
+for. It is a `Dictionary` now.
+
 ## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-24)
 
 _These narratives are all shipped. This root file is a human-readable summary that fell

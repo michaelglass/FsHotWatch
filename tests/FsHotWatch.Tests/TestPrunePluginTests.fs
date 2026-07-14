@@ -4876,6 +4876,71 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
 // would actually read.
 // =============================================================================
 
+// ---------------------------------------------------------------------------
+// The gate's memo must actually MEMOISE.
+// ---------------------------------------------------------------------------
+//
+// `ArtifactFreshness.Cache` is documented "each project is walked at most ONCE per
+// run" and "thread-safe: test groups run in parallel" — and both were true, but they
+// were not the same claim. It was built on `ConcurrentDictionary.GetOrAdd(key,
+// valueFactory)`, which is thread-SAFE (one result is published) without being
+// once-ONLY: it may invoke the factory concurrently on several threads for the same
+// key and throw the losers' work away. Test groups do run in parallel and their
+// ProjectReference closures overlap heavily, so the directory walks and
+// `XDocument.Load` parses the memo exists to eliminate could still each happen N
+// times. `OnceMemo` is the guarantee the doc comment was already making.
+//
+// RED-BEFORE-GREEN: implement `OnceMemo.GetOrAdd` as `entries.GetOrAdd(key, factory)`
+// — the shape it replaced — and this counts 16 factory runs, not 1.
+
+[<Fact(Timeout = 30000)>]
+let ``OnceMemo runs the value factory exactly ONCE per key under concurrent access`` () =
+    let memo = ArtifactFreshness.OnceMemo<string, int>()
+    let mutable factoryRuns = 0
+    let entrants = 16
+    use released = new Barrier(entrants)
+
+    let factory (_: string) =
+        Interlocked.Increment(&factoryRuns) |> ignore
+        // The real factories walk directories and parse XML. Any non-trivial factory
+        // widens the window in which a second caller finds the key still absent —
+        // which is precisely the window a plain `GetOrAdd` leaves open.
+        Thread.Sleep 100
+        42
+
+    let results = Array.zeroCreate<int> entrants
+
+    let threads =
+        [| for i in 0 .. entrants - 1 ->
+               Thread(fun () ->
+                   released.SignalAndWait()
+                   results[i] <- memo.GetOrAdd("the-one-key", factory)) |]
+
+    for t in threads do
+        t.Start()
+
+    for t in threads do
+        t.Join()
+
+    // Every caller got the value…
+    test <@ results |> Array.forall (fun r -> r = 42) @>
+    // …and it was computed ONCE. Not "once was published" — once was RUN.
+    test <@ factoryRuns = 1 @>
+
+[<Fact(Timeout = 30000)>]
+let ``OnceMemo runs the value factory once per DISTINCT key`` () =
+    let memo = ArtifactFreshness.OnceMemo<string, string>()
+    let mutable factoryRuns = 0
+
+    let factory (k: string) =
+        Interlocked.Increment(&factoryRuns) |> ignore
+        k + "!"
+
+    test <@ memo.GetOrAdd("a", factory) = "a!" @>
+    test <@ memo.GetOrAdd("b", factory) = "b!" @>
+    test <@ memo.GetOrAdd("a", factory) = "a!" @>
+    test <@ factoryRuns = 2 @>
+
 /// Production call shape: derive the target from the runner args exactly as
 /// `executeTests` does, then ask the gate. A fresh `Cache` per call (the memo is
 /// per-run in production).

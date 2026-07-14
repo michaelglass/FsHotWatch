@@ -360,8 +360,17 @@ let private compositeKeyToString (key: CompositeKey) =
 [<Struct>]
 type CacheStats = { EntryCount: int; SizeBytes: int64 }
 
-/// Delete every entry for `compositeKey` EXCEPT `keepPath` — i.e. the superseded
-/// siblings of the entry just written.
+/// The on-disk name of the key an entry file belongs to — everything before the
+/// `@{contentHash}` suffix. `LastIndexOf`, because `sanitizeKey` does not strip
+/// `@` and a source path may legitimately contain one (`/src/@types/x.fs`); the
+/// hash is always the LAST `@`-delimited segment.
+let private entryKeyOfFileName (fileName: string) =
+    match fileName.LastIndexOf('@') with
+    | i when i > 0 -> Some(fileName.Substring(0, i))
+    | _ -> None
+
+/// Delete `superseded` — the entry paths this key was known at before the write
+/// that just landed.
 ///
 /// AUTOMATION-98: entries are named `{plugin--file}@{contentHash}.json` so that
 /// "multiple versions coexist" — but nothing ever removed the predecessors, and only
@@ -375,35 +384,102 @@ type CacheStats = { EntryCount: int; SizeBytes: int64 }
 /// that are not merely cold but UNREACHABLE. Only the newest content-hash entry for
 /// a plugin+file is ever useful, so on write we collect the rest.
 ///
-/// Never propagates. A cache-hygiene failure must not fail the task whose result we
-/// just successfully wrote — and whatever this call fails to collect, the next write
-/// to the same key will.
-let internal pruneSupersededSiblings (cacheDir: string) (compositeKey: CompositeKey) (keepPath: string) : unit =
-    let prefix = sanitizeKey (compositeKeyToString compositeKey) + "@"
-
-    try
-        for f in Directory.EnumerateFiles(cacheDir, prefix + "*.json") do
-            if not (String.Equals(f, keepPath, StringComparison.Ordinal)) then
+/// The paths are HANDED to it. The first cut of this found them by re-listing the
+/// cache directory on every `set`, and `EnumerateFiles(dir, pattern)` is not a
+/// prefix-optimised syscall — it readdirs the WHOLE directory and pattern-matches in
+/// managed code. A cold scan writes ~3 entries per file (Lint, Analyzers,
+/// FormatCheck each carry a per-`FileChecked` cache key) into a directory that grows
+/// to ~3 entries per file, each write scanning the lot: quadratic, and measured at
+/// ~2.2 ms per scan against a 4,500-entry directory — roughly TEN SECONDS of pure
+/// directory scanning added to a cold scan of a 1500-file repo, on exactly the paths
+/// (cold scan, `--run-once`, the merge gate) that were already timing out. The
+/// writer already knows the path it just wrote and the cache remembers the one it
+/// wrote last, so no scan is needed to name the superseded siblings.
+///
+/// Never propagates, and each delete is independently guarded: a cache-hygiene
+/// failure must not fail the task whose result we just successfully wrote, nor stop
+/// us collecting the siblings it did not trip over. Whatever this call fails to
+/// collect, the next write to the same key will.
+let internal pruneSupersededSiblings (superseded: string list) (keepPath: string) : unit =
+    for f in superseded do
+        if not (String.Equals(f, keepPath, StringComparison.Ordinal)) then
+            try
                 File.Delete f
-    with _ ->
-        ()
+            with _ ->
+                ()
 
 /// On-disk task cache. Each entry is a JSON file in the cache directory, named
 /// `{compositeKey}@{cacheKeyHash}.json`. Only the newest hash per key survives a
 /// write (see `pruneSupersededSiblings`).
 type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
+
+    // Counts FULL-DIRECTORY enumerations performed by this instance. The write path
+    // must perform ZERO of them (see `pruneSupersededSiblings`); the constructor's
+    // two sweeps and the explicit `Clear*`/`Stats` operations are the only legitimate
+    // ones. Asserted on directly by a test — a `set` that scans is the quadratic bug.
+    let mutable directoryScanCount = 0
+
+    let enumerateEntries (pattern: string) =
+        System.Threading.Interlocked.Increment(&directoryScanCount) |> ignore
+        Directory.EnumerateFiles(cacheDir, pattern)
+
     // Sweep orphan *.tmp files left from prior process crashes mid-write.
     do
-        for f in Directory.EnumerateFiles(cacheDir, "*.tmp") do
+        for f in enumerateEntries "*.tmp" do
             try
                 File.Delete(f)
             with _ ->
                 ()
 
+    /// The entry path each key was last written to, so a write can name its own
+    /// superseded siblings without asking the filesystem.
+    ///
+    /// Seeded — ONCE, at construction, in the same shape as the `*.tmp` sweep above —
+    /// from whatever previous processes left on disk, so their leftovers are still
+    /// collected by the first write to the key that owns them. A remembered path that
+    /// something else has already deleted costs nothing: `File.Delete` on a missing
+    /// file is a no-op, so the memo is allowed to be stale, never wrong.
+    let livePathsLock = obj ()
+    let livePaths = System.Collections.Generic.Dictionary<string, string list>()
+
+    do
+        enumerateEntries "*.json"
+        |> Seq.iter (fun f ->
+            match entryKeyOfFileName (Path.GetFileName f) with
+            // Not an entry of ours — a stray `.json` with no `@{hash}` suffix. It is
+            // not reachable through any key, so it is not ours to remember, and not
+            // ours to collect either.
+            | None -> ()
+            | Some key ->
+                livePaths[key] <-
+                    match livePaths.TryGetValue key with
+                    | true, existing -> f :: existing
+                    | false, _ -> [ f ])
+
+    let entryKey (compositeKey: CompositeKey) =
+        sanitizeKey (compositeKeyToString compositeKey)
+
+    /// Make `path` the key's only live entry and return what it displaces. Atomic
+    /// against a concurrent write to the SAME key: exactly one of the two writers
+    /// sees the other's path as superseded, so a live entry can never be collected
+    /// by the writer that did not displace it.
+    let claimLatest (key: string) (path: string) : string list =
+        lock livePathsLock (fun () ->
+            let superseded =
+                match livePaths.TryGetValue key with
+                | true, existing -> existing
+                | false, _ -> []
+
+            livePaths[key] <- [ path ]
+            superseded)
+
+    let forgetAll () =
+        lock livePathsLock (fun () -> livePaths.Clear())
+
     let filePath (compositeKey: CompositeKey) cacheKey =
         let keyHash = hashCacheKey cacheKey
-        Path.Combine(cacheDir, $"%s{sanitizeKey (compositeKeyToString compositeKey)}@%s{keyHash}.json")
+        Path.Combine(cacheDir, $"%s{entryKey compositeKey}@%s{keyHash}.json")
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
@@ -431,17 +507,21 @@ type FileTaskCache(cacheDir: string) =
         let json = serializeResult result
         FsHwPaths.atomicWriteAllText path (json.ToJsonString(jsonWriteOptions))
         // AFTER the write, so a crash mid-set can never leave the key with NO entry.
-        pruneSupersededSiblings cacheDir compositeKey path
+        // The claim comes after it too: nothing may be named superseded until its
+        // successor is durable.
+        pruneSupersededSiblings (claimLatest (entryKey compositeKey) path) path
 
     let clear () =
-        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+        for f in enumerateEntries "*.json" do
             File.Delete(f)
+
+        forgetAll ()
 
     let clearPlugin (plugin: string) =
         let prefix = sanitizeKey (plugin + "--")
         let exact = sanitizeKey plugin + "@"
 
-        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+        for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
 
             if name.StartsWith(prefix) || name.StartsWith(exact) then
@@ -450,7 +530,7 @@ type FileTaskCache(cacheDir: string) =
     let clearFile (file: string) =
         let suffix = sanitizeKey ("--" + file)
 
-        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+        for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
             let atIdx = name.IndexOf('@')
 
@@ -460,7 +540,7 @@ type FileTaskCache(cacheDir: string) =
     let clearPluginFile (plugin: string) (file: string) =
         let prefix = sanitizeKey (plugin + "--" + file) + "@"
 
-        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+        for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
 
             if name.StartsWith(prefix) then
@@ -472,7 +552,7 @@ type FileTaskCache(cacheDir: string) =
         let mutable count = 0
         let mutable bytes = 0L
 
-        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+        for f in enumerateEntries "*.json" do
             count <- count + 1
             bytes <- bytes + FileInfo(f).Length
 
@@ -483,6 +563,12 @@ type FileTaskCache(cacheDir: string) =
     /// §2b measurement A: a non-zero value indicates corruption (e.g. crash mid-write
     /// before the atomic-rename change shipped) or a stale on-disk format.
     member _.ParseFailureCount = parseFailureCount
+
+    /// How many times this cache has enumerated its whole directory. The write path
+    /// must never do it: a `set` that scans the directory turns a cold scan into a
+    /// quadratic one (see `pruneSupersededSiblings`). Internal — this is a probe for
+    /// the test that holds that line, not part of the cache's contract.
+    member internal _.DirectoryScanCount = directoryScanCount
 
     /// Try to retrieve a cached result.
     member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
