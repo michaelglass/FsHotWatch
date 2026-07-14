@@ -107,6 +107,20 @@
   run, so the common case still pays for exactly one suite (`CheckVerdict.confirmNeedsFullRun`).
   - **BREAKING:** `IpcOutput.pollAndRender` takes a new `forceFullRun: unit -> unit` seam
     before `triggerScan`.
+  - **KNOWN LIMITATION — the forced run is defeated by a warm task cache.** The force
+    makes a run *happen*; it does not make that run *execute tests*. On an unchanged
+    tree whose previous result is still in `.fshw/cache/`, `test-prune` REPLAYS the
+    cached result (`… (selected: no) (cached)`) instead of running. A replay writes no
+    CTRF reports for the new `runId`, so the verdict's scope reads `NoTestsRun` and
+    `confirm` exits **3**. It fails in the SAFE direction — it refuses rather than
+    inventing a green — but the practical consequence is that a second `confirm` on an
+    unchanged tree cannot go green until the cache is cleared (`mise run cache-clear`,
+    i.e. `rm -rf .fshw/cache`). Reproduced deterministically: cold cache → exit 0
+    (tests ran, full suite); immediately re-run on the byte-identical tree → exit 3,
+    every plugin `(cached)`. **CI does not hit this**, because a CI checkout starts
+    cold — which is precisely the accident this entry warns about elsewhere, in the
+    other direction. So `confirm` does not yet run the suite it demands in every case,
+    and this entry's headline is true only of a cold cache.
 
 - fix: **`--run-once` now publishes `.fshw/verdict.json`.** (AUTOMATION-117) It never did
   — so `fshw verdict` after a CI run reported "no verdict on disk": the machine-readable
@@ -267,10 +281,6 @@
   `lastRun` — the one channel every renderer already read — so the CLI never has to
   fabricate a `RunVerdict` from untrusted input, and the two copies cannot disagree.
   The status parse stays TOTAL: a plugin can never drop out of the status map.
-
-- fix: parse the `RunVerdict` (summary + elapsed) the daemon now sends on
-  `completed` statuses (AUTOMATION-99); payloads from older daemons parse to an
-  empty verdict rather than failing the status read.
 
 - feat!: **new `fshw confirm` verb — runs the FULL test suite and refuses a green verdict
   from anything less.** `fshw check` remains the inner dev loop and keeps impact

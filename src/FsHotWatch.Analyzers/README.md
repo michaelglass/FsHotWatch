@@ -69,6 +69,48 @@ let myAnalyzer: Analyzer<CliContext> =
 Build the analyzer as a class library and point `analyzers.paths` at
 the output directory.
 
+> ### The DLL's filename must contain `Analyzer`
+>
+> **This is the one thing that will silently cost you an afternoon.** The
+> FSharp.Analyzers.SDK loader (`Client.LoadAnalyzers`) only opens assemblies whose
+> **filename** matches `*Analyzer*.dll`. A DLL without `Analyzer` in its name is
+> never scanned — it loads **zero** analyzers, and the old failure mode was for the
+> check to sail on green having run none of your rules. An unloaded analyzer and a
+> clean one look identical from the outside.
+>
+> If your project is named something else, set `<AssemblyName>` so the *output* file
+> matches, even though the project file does not:
+>
+> ```xml
+> <!-- MyCompany.Rules.fsproj -->
+> <AssemblyName>MyCompany.ConventionAnalyzers</AssemblyName>
+> ```
+>
+> FsHotWatch fails loud rather than quiet here: an `analyzers.paths` entry that
+> resolves to **0 analyzers** aborts startup with
+> `config error: Analyzer path(s) loaded 0 analyzers`. Silence is not treated as
+> success.
+
+## House rules: repo-local analyzers
+
+Analyzers do not have to be a published package. Point `analyzers.paths` at a
+project inside your own repo and you have **house rules** — conventions the type
+system cannot reach, enforced on every `check` and `confirm`.
+
+FsHotWatch does exactly this to itself. [`analyzers/FsHotWatch.Rules`](../../analyzers/FsHotWatch.Rules/)
+(assembly `FsHotWatch.ConventionAnalyzers`, per the filename rule above) is
+`IsPackable=false` — it is never shipped, because these are FsHotWatch's own
+conventions, not something to impose on consumers:
+
+| Rule | What it enforces |
+|------|------------------|
+| `FSHW-CLAIM-001` | A `RunClaim` (the result of `PluginCtx.RunExclusive`) must be handled, never discarded. `TreatWarningsAsErrors` + FS0020 already force the value to be *acknowledged*, but `\|> ignore` remains a legal escape — and silently dropping a refused claim is dropped **work**. |
+| `FSHW-CLOCK-001` | No local clocks. Every timestamp in the daemon is UTC; one stray `DateTime.Now` skewed the elapsed a human reads. |
+
+The pattern generalises: when a rule is "the type system *should* make this
+unrepresentable, but that refactor is out of scope today", an analyzer is where the
+class of bug goes to be caught in the meantime.
+
 ## CLI
 
 ```bash

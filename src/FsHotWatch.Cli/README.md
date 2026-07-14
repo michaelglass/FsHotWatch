@@ -76,6 +76,21 @@ a ticket.
 > but absent from `.fshw.json` is not run by `confirm`, and `confirm` does not claim
 > otherwise.
 
+> **Known limitation: a warm cache makes `confirm` exit 3, not 0.** On an *unchanged*
+> tree whose previous result is still in `.fshw/cache/`, the test plugin **replays**
+> the cached result instead of running (`… (cached)` in the output). A replay produces
+> no test reports for the new run, so `confirm` sees "no tests ran", refuses to call it
+> green, and exits **3**. That is the safe direction — it will not invent a verdict it
+> did not earn — but it means a second `confirm` on an unchanged tree cannot go green
+> until you clear the cache:
+>
+> ```bash
+> rm -rf .fshw/cache     # then re-run `fshw confirm`
+> ```
+>
+> A CI checkout starts cold, so CI does not hit this. Change any source file and the
+> cache misses, the suite runs, and `confirm` decides normally.
+
 ## Options
 
 | Flag | Description |

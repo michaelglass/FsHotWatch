@@ -4,6 +4,56 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+> ### ⚠️ Breaking changes, at a glance
+>
+> **If you run `fshw` in CI or from a script, read these two:**
+>
+> 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
+>    (`gate` was introduced unreleased and never appeared in a published package, so
+>    there is **no published consumer to migrate**. It still bites anyone tracking
+>    `main` or running a local pack.)
+> 2. **`fshw check --run-once` can now exit `2` where it previously exited `0`.**
+>    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
+>    so it could not report an incomplete scan. It can now, and it does. A CI job that
+>    treats "not 0" as failure will start seeing red on trees it used to pass.
+>
+> The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
+> `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
+> in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
+> state that used to be a lie is now **unrepresentable**, so the migration is the
+> compiler telling you where you were guessing.
+
+### The verdict is a FILE — `.fshw/verdict.json` and `fshw verdict`
+
+The headline of this release. Every `check` and `confirm` now publishes its result to
+`.fshw/verdict.json`, written atomically (temp + rename, so a partial read is
+impossible) — **including** the runs that fail, time out, or lose the daemon mid-run,
+which are precisely the moments the human-readable output is least sufficient and the
+temptation to scrape it is highest.
+
+**This is the surface agents and CI should read.** Not the progress display: that is
+written for a human and it will change. An orchestrator spent two days grepping
+`total:` and `elapsed:` out of it, and then wrote a 40-line unverified bash harness
+that made merge decisions.
+
+The file is content-addressed to **the tree it verified** (`treeHash`) *and* **the
+binary that verified it** (`producer.hash`). Both, because a stale daemon writes a
+verdict for an unchanged tree, the `treeHash` matches, and the verdict reads as
+current — the provenance chain had a hole in the middle. `fshw verdict` does the
+comparison for you, **contacts no daemon and triggers no run**: reading cannot perturb
+the thing being read.
+
+```bash
+fshw verdict          # stdout: a JSON envelope that always states `applies`
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+```
+
+The exit code and the file's `outcome` are two renderings of **one** `CheckOutcome`.
+There is deliberately no "agent mode" that changes what a check *means*: presentation
+may adapt to the caller; semantics may not. Schema, exit codes and the tree-hash recipe
+are in the [CLI README](src/FsHotWatch.Cli/); the reasoning is
+[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md).
+
 ### `fshw gate` is now `fshw confirm` — run the full suite and confirm `check` told the truth
 
 **Migration: `fshw gate` → `fshw confirm`.** The old verb is **removed**, not aliased —
@@ -47,6 +97,14 @@ would silently start coming from a subset.
 full-suite scope makes the next run unfiltered, but does not make a run *happen*, so a
 `confirm` on a tree whose suite had not run would refuse forever with no way to satisfy it.
 
+**Known limitation — a warm task cache still defeats that.** Forcing a run makes a run
+happen; it does not make it *execute tests*. On an unchanged tree whose result is still
+in `.fshw/cache/`, `test-prune` replays the cached result, the replay writes no reports
+for the new run, and `confirm` therefore exits **3** ("no tests ran") rather than 0. It
+refuses instead of inventing a green — the safe direction — but a second `confirm` on an
+unchanged tree cannot go green until the cache is cleared (`mise run cache-clear`). CI
+starts cold and does not hit it. So the headline above is true of a cold cache only.
+
 **Breaking (API):** `Command.Gate` → `Command.Confirm` (`Confirm of RunFlag list`);
 `CheckVerdict.CheckMode.MergeGate` → `Confirmation`; `CheckVerdict.gateNeedsFullRun` →
 `confirmNeedsFullRun`; `Verdict.Command.Gate` → `Verdict.Confirm`;
@@ -54,10 +112,6 @@ full-suite scope makes the next run unfiltered, but does not make a run *happen*
 `.fshw/verdict.json`'s `command` field reads `"confirm"` where it read `"gate"`.
 **Breaking (behaviour):** `--run-once` now writes `.fshw/verdict.json` and computes a real
 `CheckOutcome`, so `check --run-once` can exit 2 (incomplete) where it previously exited 0.
-
-"Full suite" means every test project **`.fshw.json` knows about** — today
-`FsHotWatch.Tests` alone; `FsHotWatch.IntegrationTests` is not in `.fshw.json`
-(AUTOMATION-158).
 
 ### A process tree we failed to kill is no longer reported as killed
 
@@ -230,7 +284,7 @@ about three entries per source file. Every write scanned the lot, so the cold sc
 **quadratic** in the size of the repo. Measured at ~2.2 ms per scan against a
 4,500-entry directory: roughly **ten seconds of pure directory scanning** added to a
 cold scan of a 1,500-file repo — on precisely the paths that were already timing out
-(cold scan, `--run-once`, the merge gate).
+(cold scan, `--run-once`, `confirm`).
 
 The writer already knows the path it just wrote, so the cache now remembers the path
 each key was last written to and deletes exactly that one. **No scan on the write
@@ -277,6 +331,27 @@ Also in the same path: the map of "every file the build put in this output dir",
 built from a full walk of the output tree and read only by key, was an immutable F#
 `Map` — O(n log n) to build, with a heap node per file, for an ordering nothing asks
 for. It is a `Dictionary` now.
+
+### docs: the full-pipeline example is now COMPILED, and it had rotted
+
+`examples/FullPipelineExample` was a README with an F# code block and nothing else —
+no project, nothing that compiled it. It had drifted from the API it claims to
+demonstrate, in three places at once: `Daemon.create` takes a `DaemonOptions` it did
+not pass, and `LintPlugin.create` / `AnalyzersPlugin.create` both take a leading
+`repoRoot` it did not pass. A reader following it would not have got a working daemon.
+
+It is now a real project (`examples/FullPipelineExample/FullPipelineExample.fsproj`,
+a member of `FsHotWatch.slnx`, built with `TreatWarningsAsErrors`), and the README's
+code block is **sourced from it** via a SyncDocs `src=` region — the same mechanism
+`docs/writing-plugins.md` already used for `PluginExample`. The snippet a reader
+copies is now, by construction, a snippet the compiler accepted.
+
+`mise run ci` now runs `sync-docs-check`, which it previously did not. The drift guard
+existed and worked; nothing ran it — so a guard that could not do its work was
+reporting nothing, which is the same failure this release is otherwise about.
+`examples/ExampleAnalyzer` and `examples/PluginExample` also gain
+`TreatWarningsAsErrors`, so a new DU case breaks the examples loudly instead of
+quietly leaving them teaching a stale API.
 
 ## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-24)
 

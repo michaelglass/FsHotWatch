@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- The example IS the API contract demo, so it is held to the same bar as
+         src/: a new DU case or a changed `create` signature must break THIS
+         build, loudly, before it can silently rot the README that is sourced
+         from it. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="FullPipelineExample.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+  </ItemGroup>
+</Project>

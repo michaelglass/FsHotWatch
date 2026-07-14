@@ -2,14 +2,14 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- Repo-local convention rules, loaded by the gate via `.fshw.json`
+    <!-- Repo-local convention rules, loaded by `check`/`confirm` via `.fshw.json`
          `analyzers.paths`. Never published: these are FsHotWatch's own house
          rules, not something to impose on package consumers. -->
     <IsPackable>false</IsPackable>
     <!-- LOAD-BEARING: FSharp.Analyzers.SDK's loader only opens assemblies whose
          FILENAME matches `*Analyzer*.dll` (see Client.LoadAnalyzers). A DLL
          without "Analyzer" in its name is never scanned — it loads ZERO
-         analyzers, silently, and the gate would run without the house rules
+         analyzers, silently, and the check would run without the house rules
          while still reporting green. (fshw's own fail-loud guard turns that
          into `config error: Analyzer path(s) loaded 0 analyzers`, and the
          positive-control integration tests assert LoadedCount >= 1 — both
