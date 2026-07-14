@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.0.0 - 2026-07-15
+
 - fix: **`findTestFiles` no longer hangs forever.** It scanned the integration-test
   directory with `SearchOption.AllDirectories`, which follows directory symlinks —
   and `tests/*/bin` holds Playwright's Nix-provisioned browser symlinks, so the walk

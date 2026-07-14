@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.0.0 - 2026-07-15
+
 - feat!: **SchemaVersion 7→8** (`route_handlers` left the core schema). This is the
   number `TestPrune.Core` and `fshotwatch.cli` must agree on: it stamps the cache
   database, and on a mismatch core DELETES and recreates the file. A legacy DB is

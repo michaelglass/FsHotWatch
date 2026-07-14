@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.4 - 2026-07-15
+
 - **TP001 is now dogfooded: TestPrune runs this analyzer against TestPrune**.
   The package was published but never loaded against its own repo, so nothing proved the rule
   still fired — an analyzer that reports nothing and an analyzer that never loaded produce

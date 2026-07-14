@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.0.0 - 2026-07-15
+
 - fix: `Orchestration.indexProject` built its per-file accumulator as an anonymous record
   that was a field-for-field shadow copy of the existing named `AnalysisResult` — so
   TestPrune's own impact analysis could not see the orchestrator's coupling to that type, and
