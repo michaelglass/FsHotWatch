@@ -11,8 +11,10 @@ plugin can post back to itself (use `unit` if you don't need any).
 
 <!-- This block is sourced from a real, compiled example — see
      examples/PluginExample/PluginExample.fs. Do not edit it here; edit the
-     source file and run `mise run sync-docs`. CI compiles the example and
-     `sync-docs-check` fails if this block drifts. -->
+     source file and run `mise run sync-docs`. The example is a member of
+     FsHotWatch.slnx, so the solution build (CI included) compiles it with
+     TreatWarningsAsErrors; `mise run ci` additionally runs `sync-docs-check`,
+     which fails if this block drifts from the source. -->
 <!-- sync:plugin-example:start src=examples/PluginExample/PluginExample.fs -->
 ```fsharp
 open System

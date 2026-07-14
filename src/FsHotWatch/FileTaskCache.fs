@@ -392,7 +392,7 @@ let private entryKeyOfFileName (fileName: string) =
 /// to ~3 entries per file, each write scanning the lot: quadratic, and measured at
 /// ~2.2 ms per scan against a 4,500-entry directory — roughly TEN SECONDS of pure
 /// directory scanning added to a cold scan of a 1500-file repo, on exactly the paths
-/// (cold scan, `--run-once`, the merge gate) that were already timing out. The
+/// (cold scan, `--run-once`, `confirm`) that were already timing out. The
 /// writer already knows the path it just wrote and the cache remembers the one it
 /// wrote last, so no scan is needed to name the superseded siblings.
 ///

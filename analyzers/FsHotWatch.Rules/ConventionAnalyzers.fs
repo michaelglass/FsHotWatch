@@ -1,6 +1,6 @@
-/// FsHotWatch's own convention rules, run by the gate itself (`.fshw.json`
+/// FsHotWatch's own convention rules, run by the check itself (`.fshw.json`
 /// `analyzers.paths` points at this project's bin, and `mise run ci` / the
-/// GitHub workflow's `check --run-once` load it). These enforce only the
+/// GitHub workflow's `confirm --run-once` load it). These enforce only the
 /// residue the type system cannot reach:
 ///
 ///   FSHW-CLAIM-001 — a `RunClaim` (the result of `PluginCtx.RunExclusive`)

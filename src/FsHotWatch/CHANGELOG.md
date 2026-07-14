@@ -182,8 +182,8 @@
   nothing else, so `Post` is the only expressible way for a command to cause work.
   - **BREAKING:** command handlers take `CommandCtx<'Msg>` instead of `PluginCtx<'Msg>`.
 
-- feat: repo-local convention analyzers (`analyzers/FsHotWatch.Rules`, loaded by the gate
-  via `.fshw.json`): `FSHW-CLAIM-001` (a `RunClaim` must never be discarded) and
+- feat: repo-local convention analyzers (`analyzers/FsHotWatch.Rules`, loaded by
+  `check`/`confirm` via `.fshw.json`): `FSHW-CLAIM-001` (a `RunClaim` must never be discarded) and
   `FSHW-CLOCK-001` (no `DateTime.Now` — every daemon timestamp is UTC). Both fire in CI
   and are pinned by positive *and* negative controls.
 
