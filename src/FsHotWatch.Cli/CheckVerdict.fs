@@ -108,7 +108,12 @@ let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScop
 /// convergence attempts. Complete is 0; Incomplete carries its count; Unknown
 /// is treated as the largest possible value so that an Unknown→Incomplete
 /// transition counts as progress, while Unknown→Unknown does not.
-let private uncheckedMagnitude (coverage: Coverage) : int =
+///
+/// `internal` (not `private`) so the total mapping is unit-testable directly:
+/// `converge` structurally never routes `Complete` here (a Complete read
+/// resolves to a verdict before any magnitude comparison), so the `Complete`
+/// arm is defensive totality that only a direct test can pin.
+let internal uncheckedMagnitude (coverage: Coverage) : int =
     match coverage with
     | Complete -> 0
     | Incomplete n -> n

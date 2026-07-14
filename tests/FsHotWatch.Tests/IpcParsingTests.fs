@@ -217,3 +217,62 @@ let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
     let json = """{"count":0,"files":{},"statuses":{},"unchecked":"banana"}"""
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Unknown @>
+
+// --- parseTaggedStatus: RunVerdict on completed (AUTOMATION-99) -------------
+
+[<Fact(Timeout = 15000)>]
+let ``parseTaggedStatus parses completed with its verdict`` () =
+    let el =
+        parseEl
+            """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z","summary":"6 passed, 0 failed","elapsedMs":12500.0}"""
+
+    match parseTaggedStatus el with
+    | Some(Completed(at, v)) ->
+        let year = at.Year
+        test <@ year = 2026 @>
+        test <@ v.Summary = "6 passed, 0 failed" @>
+        test <@ v.Elapsed = System.TimeSpan.FromSeconds 12.5 @>
+    | other -> failwithf "expected Completed with verdict, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``parseTaggedStatus tolerates a completed payload from an older daemon (no verdict fields)`` () =
+    // Deserialization edge: the verdict fields are absent — the status parse
+    // must still succeed, degrading to an empty verdict, never failing the
+    // whole status read.
+    let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
+
+    match parseTaggedStatus el with
+    | Some(Completed(_, v)) ->
+        test <@ v.Summary = "" @>
+        test <@ v.Elapsed = System.TimeSpan.Zero @>
+    | other -> failwithf "expected Completed with empty verdict, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``parseTaggedStatus ignores a non-numeric elapsedMs`` () =
+    let el =
+        parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z","summary":"ok","elapsedMs":"soon"}"""
+
+    match parseTaggedStatus el with
+    | Some(Completed(_, v)) ->
+        test <@ v.Summary = "ok" @>
+        test <@ v.Elapsed = System.TimeSpan.Zero @>
+    | other -> failwithf "expected Completed, got %A" other
+
+// --- TestScope.describe / parseTaggedOutcome: totality pins -----------------
+
+[<Fact(Timeout = 10000)>]
+let ``TestScope.describe names every scope`` () =
+    test <@ (TestScope.describe (FullSuite 6)).Contains "full suite" @>
+    test <@ (TestScope.describe (ImpactFiltered(2, 6))).Contains "impact-filtered" @>
+    test <@ TestScope.describe NoTestsRun = "no tests ran" @>
+    test <@ (TestScope.describe ScopeUnknown).Contains "unknown" @>
+
+[<Fact(Timeout = 10000)>]
+let ``parseTaggedOutcome parses timedOut with its reason`` () =
+    let el = parseEl """{"tag":"timedOut","reason":"620s"}"""
+    test <@ parseTaggedOutcome el = Some(TimedOut "620s") @>
+
+[<Fact(Timeout = 10000)>]
+let ``parseTaggedOutcome parses failed with its error`` () =
+    let el = parseEl """{"tag":"failed","error":"3 failed"}"""
+    test <@ parseTaggedOutcome el = Some(FailedRun "3 failed") @>

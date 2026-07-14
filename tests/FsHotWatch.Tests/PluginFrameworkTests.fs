@@ -1090,3 +1090,124 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
     cmdHandler [||] |> Async.RunSynchronously |> ignore
 
     test <@ not batchSeen @>
+
+// --- safeUpdate × exclusive runs (AUTOMATION-99) ----------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``a handler throw while an exclusive run is in flight does not stomp a terminal status over it`` () =
+    // The forced-Failed net exists for the "threw before any terminal report,
+    // nothing else will ever report one" case. While an exclusive run is in
+    // flight that premise is false — the run's completion path is guaranteed
+    // to deliver a terminal status — and stomping Failed over the live
+    // Running IS the AUTOMATION-99 manufactured-terminal lie. The crash is
+    // still logged; the status is not touched.
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    use runGate = new System.Threading.SemaphoreSlim(0, 1)
+
+    let handler: PluginHandler<unit, string> =
+        { Name = PluginName.create "throw-mid-run"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "/start" ]) ->
+                        ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
+
+                        ctx.RunExclusive
+                            "work"
+                            (async {
+                                do! runGate.WaitAsync() |> Async.AwaitTask
+                                return "run-finished"
+                            })
+
+                        return state
+                    | FileChanged _ -> return failwith "boom mid-run"
+                    | Custom _ ->
+                        // The run's earned verdict.
+                        ctx.ReportStatus(
+                            Completed(
+                                System.DateTime.UtcNow,
+                                { Summary = "run finished"
+                                  Elapsed = System.TimeSpan.Zero }
+                            )
+                        )
+
+                        return state
+                    | _ -> return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { Checker = checker
+              RepoRoot = "/tmp/repo"
+              ReportStatus = fun _ s -> statuses.Enqueue s
+              ReportErrors = fun _ _ _ -> ()
+              ClearErrors = fun _ _ -> ()
+              ClearPlugin = fun _ -> ()
+              EmitBuildCompleted = fun _ -> ()
+              EmitTestRunStarted = fun _ -> ()
+              EmitTestProgress = fun _ -> ()
+              EmitTestRunCompleted = fun _ -> ()
+              EmitCommandCompleted = fun _ -> ()
+              RegisterCommand = fun _ -> ()
+              TaskCache = None
+              StartSubtask = fun _ _ _ -> ()
+              UpdateSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> ()
+              SetNextTerminalOutcome = fun _ _ -> ()
+              FcsSuppressedCodes = Set.empty
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            handler
+
+    // Launch the gated run, then crash the handler while the run is in flight.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/boom" ]))
+
+    // The throwing dispatch has been fully processed once IsBusy drops to the
+    // run-token-only state is not observable directly; instead wait until both
+    // mailbox messages are done: the run token keeps IsBusy true, so wait on
+    // the recorded statuses instead — Running must be the LAST status seen.
+    waitUntil (fun () -> statuses.Count >= 1) 10000
+
+    // Give the throwing handler time to have been processed, then assert no
+    // terminal was stomped while the run is still in flight.
+    System.Threading.Thread.Sleep 300
+
+    test
+        <@
+            statuses
+            |> Seq.forall (fun s ->
+                match s with
+                | Failed _ -> false
+                | _ -> true)
+        @>
+
+    test <@ reg.IsBusy() @> // the run token still holds the plugin busy
+
+    // Release the run: its completion message delivers the earned verdict.
+    runGate.Release() |> ignore
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (fun s ->
+                match s with
+                | Completed(_, v) -> v.Summary = "run finished"
+                | _ -> false))
+        10000
+
+    test
+        <@
+            statuses
+            |> Seq.exists (fun s ->
+                match s with
+                | Completed(_, v) -> v.Summary = "run finished"
+                | _ -> false)
+        @>

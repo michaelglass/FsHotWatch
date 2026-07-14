@@ -1383,3 +1383,95 @@ let ``cache replay reports the original verdict marked as cached`` () =
         test <@ v.Summary = "6 passed, 0 failed in 6 projects (cached)" @>
         test <@ v.Elapsed = TimeSpan.FromSeconds 12.5 @>
     | other -> failwith $"expected Completed with verdict, got %A{other}"
+
+[<Fact(Timeout = 20000)>]
+let ``cache replay does not stack the cached marker on an already-marked verdict`` () =
+    // Idempotence pin for the replay marker: a cached verdict whose summary
+    // already carries " (cached)" (however it got there) replays unchanged —
+    // never "(cached) (cached)".
+    let cache = InMemoryTaskCache()
+
+    cache.Set(
+        ck "marked-plugin" "/src/M.fs",
+        hash "k-M",
+        { CacheKey = hash "k-M"
+          Errors = []
+          Status =
+            Completed(
+                fixedTime,
+                { Summary = "ok (cached)"
+                  Elapsed = TimeSpan.FromSeconds 1.0 }
+            )
+          EmittedEvents = [] }
+    )
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "marked-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          CacheKey = Some(fun _ -> Some(hash "k-M"))
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(dummyFileCheckResult "/src/M.fs")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("marked-plugin") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        12000
+
+    match host.GetStatus("marked-plugin") with
+    | Some(Completed(_, v)) -> test <@ v.Summary = "ok (cached)" @>
+    | other -> failwith $"expected Completed, got %A{other}"
+
+[<Fact(Timeout = 20000)>]
+let ``cache replay of a non-terminal status replays it verbatim`` () =
+    // Defensive-totality pin: the cache only ever STORES terminal statuses,
+    // but the replay mapping is total — a hand-crafted non-terminal entry
+    // replays as-is rather than being laundered into a terminal claim.
+    let cache = InMemoryTaskCache()
+
+    cache.Set(
+        ck "idle-plugin" "/src/I.fs",
+        hash "k-I",
+        { CacheKey = hash "k-I"
+          Errors =
+            [ "/src/I.fs",
+              [ { Message = "replayed-proof"
+                  Severity = DiagnosticSeverity.Warning
+                  Line = 1
+                  Column = 0
+                  Detail = None } ] ]
+          Status = Idle
+          EmittedEvents = [] }
+    )
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "idle-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          CacheKey = Some(fun _ -> Some(hash "k-I"))
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(dummyFileCheckResult "/src/I.fs")
+
+    // The replayed error proves the replay happened.
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 12000
+
+    test
+        <@
+            match host.GetStatus("idle-plugin") with
+            | Some Idle -> true
+            | _ -> false
+        @>
