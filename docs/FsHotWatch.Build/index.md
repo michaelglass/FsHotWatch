@@ -51,7 +51,7 @@ Set `"build": false` to disable the build plugin entirely.
 ## CLI
 
 ```bash
-# Run the full gate (build is part of it) and wait for it
+# Run every check (build is part of it) and wait for it
 fshw check
 
 # Check build status without triggering a run

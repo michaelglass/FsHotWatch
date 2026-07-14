@@ -477,10 +477,10 @@ module private Agent =
             | Some State.Wedged -> true
             | _ -> false
 
-        // The collapsed CLI: `check` is the only gate (it re-runs every plugin
-        // and blocks until done), `status` is the only observer. Point agents at
-        // `status <plugin>` to inspect a specific failure without triggering a
-        // run, or `check` to re-run the whole gate and block on the result.
+        // The collapsed CLI: `check` re-runs every plugin and blocks until done;
+        // `status` is the only observer. Point agents at `status <plugin>` to
+        // inspect a specific failure without triggering a run, or `check` to
+        // re-run everything and block on the result.
         if Set.contains State.Running activeStates then
             "next: fshw --agent check"
         else
@@ -551,7 +551,7 @@ let renderPlugin
 /// and none do: no check is stricter for an agent than for a human.
 module AgentHints =
 
-    /// The steering block for a completed check/gate, naming this run's files.
+    /// The steering block for a completed check/confirm, naming this run's files.
     let forVerdict (v: Verdict.Verdict) : string list =
         // NEVER print a path for a file that was not written. A hint that sends you to
         // an empty directory teaches distrust — and distrust of the tool is what drove
@@ -573,12 +573,12 @@ module AgentHints =
             match v.Command, v.Scope with
             | Verdict.Check, ImpactFiltered(ran, total) ->
                 [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — for a MERGE verdict use \
-                     `fshw gate` (unfiltered; exit 3 if the scope was not earned)" ]
+                     `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
             | Verdict.Check, (NoTestsRun | ScopeUnknown) ->
                 [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — for a MERGE \
-                     verdict use `fshw gate` (unfiltered; exit 3 if the scope was not earned)" ]
+                     verdict use `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
             | Verdict.Check, FullSuite _
-            | Verdict.Gate, _ -> []
+            | Verdict.Confirm, _ -> []
 
         [ "  AGENTS: don't parse this output. Machine-readable results:"
           $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against the \
