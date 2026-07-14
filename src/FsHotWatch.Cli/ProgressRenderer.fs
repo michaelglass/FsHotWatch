@@ -191,6 +191,11 @@ let private renderCompact
                             $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
 
                 $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
+        // A status this build could not read. Stated in words and glyphed as a failure —
+        // never a ✓, never a silent omission. (The daemon said something; we could not
+        // read it. That is not the same as the plugin being idle, and the operator is
+        // the one who needs to know which.)
+        | StatusView.Unreadable reason -> $"  %s{Glyph.cross} %s{padded} %s{Color.red}%s{reason}%s{Color.reset}"
         | StatusView.Idle ->
             match parsed.LastRun with
             | Some r ->
@@ -215,6 +220,7 @@ let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStat
     | StatusView.Completed _ -> Glyph.check
     | StatusView.Failed _ when isTimedOut parsed -> Glyph.timeout
     | StatusView.Failed _ -> Glyph.cross
+    | StatusView.Unreadable _ -> Glyph.cross
     | StatusView.Running _ -> Glyph.ellipsis
     | StatusView.Idle -> Glyph.idle
 
@@ -270,6 +276,7 @@ let private verboseHeader
             | None -> ""
 
         $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{summariseError err}%s{Color.reset}"
+    | StatusView.Unreadable reason -> $"  %s{glyph} %s{padded} %s{Color.red}%s{reason}%s{Color.reset}"
     | StatusView.Idle ->
         match parsed.LastRun with
         | Some r ->
@@ -358,6 +365,9 @@ let private renderVerbose
 
             let recent = renderRecent parsed.ActivityTail
             started @ summary @ recent
+        // The header already carries the reason; there is no body to show, because
+        // there is nothing we could read.
+        | StatusView.Unreadable _
         | StatusView.Idle -> []
 
     header :: body
@@ -411,6 +421,9 @@ module private Agent =
             |> Option.bind (fun r -> r.Summary)
             |> Option.bind nonEmpty
             |> Option.orElseWith (fun () -> nonEmpty err)
+        // The reason IS the summary — an agent reading this line must be told WHY the
+        // status could not be read, not handed a bare `fail` to guess at.
+        | StatusView.Unreadable reason -> nonEmpty reason
         | StatusView.Running _ -> fromLastRun ()
         // Fail closed: the missing run record is stated in words, never
         // left as a bare token the consumer must decode.

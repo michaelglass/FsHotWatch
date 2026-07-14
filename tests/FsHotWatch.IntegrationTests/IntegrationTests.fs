@@ -2220,7 +2220,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     test <@ json.Contains("\"tag\":\"failed\"") @>
     test <@ json.Contains("oops") @>
 
-    let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses json
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses json
 
     match parsed.["a"].Status with
     | FsHotWatch.Cli.RunOnceOutput.StatusView.Idle -> ()

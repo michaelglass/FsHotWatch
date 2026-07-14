@@ -572,7 +572,7 @@ let ``CLI plugin status query works against running daemon`` () =
 
     try
         let result = IpcClient.getPluginStatus pipeName "my-lint" |> Async.RunSynchronously
-        let parsed = IpcParsing.parsePluginStatuses result
+        let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses result
 
         match parsed.["my-lint"].Status with
         | RunOnceOutput.StatusView.Running _ -> ()

@@ -72,19 +72,11 @@ let formatDiagnosticsResponse
         sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
-/// True if a DiagnosticsResponse contains failures: any plugin Failed, or any
-/// error/warning-severity diagnostic (warnings respecting noWarnFail). This is
-/// the single source of truth for "did check find real problems"; both
-/// `exitCodeFromResponse` and the converge-then-verdict path reuse it so the two
-/// can't drift.
-let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
-    let anyPluginFailed =
-        resp.Statuses
-        |> Map.exists (fun _ parsed ->
-            match parsed.Status with
-            | StatusView.Failed _ -> true
-            | _ -> false)
-
+/// The failing entries in a DiagnosticsResponse's ledger (warnings respecting
+/// `noWarnFail`). HALF of "did check find real problems" — the other half is
+/// `CheckInputs.anyPluginFailed`, and a caller that folds in only this one is the bug
+/// this release exists to eliminate. Never used alone; see `checkInputs`.
+let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     let isFailure (e: DiagnosticEntry) =
         match e.Severity with
         | Error -> true
@@ -92,10 +84,26 @@ let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
         | Info
         | Hint -> false
 
-    let failCount =
-        resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
+    resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
 
-    anyPluginFailed || failCount > 0
+/// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
+///
+/// This is the daemon's HALF of the "one verdict, two transports" contract; the
+/// in-process half is `RunOnceCheck.checkInputs`. Neither computes a verdict; both hand
+/// over the same record, and `CheckVerdict` decides. Adding a term to `CheckInputs`
+/// breaks BOTH here and there — which is the point of it being a record.
+let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: DiagnosticsResponse) : CheckVerdict.CheckInputs =
+    { PluginStatuses = resp.Statuses
+      FailingDiagnostics = failingDiagnosticCount noWarnFail resp
+      Coverage = resp.Coverage
+      Scope = scope }
+
+/// True if a DiagnosticsResponse contains failures: any plugin Failed (or in a status
+/// this build cannot read), or any error/warning-severity diagnostic (warnings
+/// respecting noWarnFail). Both terms come from `CheckInputs.foundProblems` — THE
+/// definition — so this and the converge-then-verdict path cannot drift.
+let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
+    CheckVerdict.CheckInputs.foundProblems resp.Statuses (failingDiagnosticCount noWarnFail resp)
 
 /// Determine exit code from a DiagnosticsResponse.
 /// Returns non-zero if any plugin is Failed, or if the ledger has failing entries.
@@ -196,20 +204,25 @@ let renderIpcResult
                             0
                     | _ ->
 
-                        let parsed = parsePluginStatuses result
-                        let plain = statusOnly parsed
-                        let lines = renderStatuses parsed
-                        let output = String.concat "\n" lines
-                        eprintfn "%s" output
+                        match parsePluginStatuses result with
+                        // The daemon answered and we could not read the answer. That is
+                        // not "no plugins are failing" — it is not an answer. Exit
+                        // non-zero: a status nobody could read must never be the basis
+                        // of a zero exit code.
+                        | Result.Error reason ->
+                            UI.fail $"could not read the daemon's status: %s{reason}"
+                            1
+                        | Result.Ok parsed ->
+                            let lines = renderStatuses parsed
+                            let output = String.concat "\n" lines
+                            eprintfn "%s" output
 
-                        let hasFailed =
-                            plain
-                            |> Map.exists (fun _ s ->
-                                match s with
-                                | StatusView.Failed _ -> true
-                                | _ -> false)
-
-                        if hasFailed then 1 else 0
+                            // The SAME predicate the verdict decides on, so `fshw status`
+                            // and `fshw check` cannot disagree about whether a plugin failed.
+                            if CheckVerdict.CheckInputs.anyPluginFailed parsed then
+                                1
+                            else
+                                0
 
 /// Maximum convergence attempts for an incomplete-but-clean check. Each attempt
 /// forces a re-scan and re-reads coverage; the loop stops early on failures,
@@ -245,7 +258,12 @@ let private pollUntilSettled
 
     while not allDone do
         let statusJson = getStatus ()
-        let parsed = parsePluginStatuses statusJson
+
+        // RENDERING ONLY (see the soundness note above): an unreadable status payload
+        // renders as nothing here and decides nothing. The verdict is settled by
+        // `isSettled` and graded from `getErrors`, both of which fail closed on their
+        // own — this loop is a progress display and must not become a second opinion.
+        let parsed = parsePluginStatuses statusJson |> Result.defaultValue Map.empty
 
         if UI.isInteractive then
             let lines = renderStatuses parsed
@@ -352,21 +370,20 @@ let internal publishVerdict
             else
                 Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
 
-        let v: Verdict.Verdict =
-            { ProducedAt = DateTime.UtcNow
-              Command = Verdict.Command.ofCheckMode checkMode
-              // WHO made this claim. `treeHash` says what it is about; without this a
-              // stale binary's green over an unchanged tree reads as current.
-              Producer = Verdict.Producer.current ()
-              RunId = runReport.RunId
-              TreeHash = atWrite.Hash
-              TreeHashAlgorithm = FsHotWatch.TreeHash.Algorithm
-              TreeFileCount = atWrite.FileCount
-              Scope = runReport.Scope
-              Outcome = verdictOutcome
-              ExitCode = exitCode
-              Plugins = plugins
-              Suites = suites }
+        // `create` REFUSES a green carrying a failing plugin. It cannot fire from here —
+        // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
+        // `pluginVerdicts` renders, so a failing plugin has already made it red — and
+        // that is exactly the property worth having a guard for: the day the two drift
+        // apart again, fshw stops rather than stamping the contradiction on disk.
+        let v =
+            Verdict.create
+                (Verdict.Command.ofCheckMode checkMode)
+                runReport
+                atWrite
+                verdictOutcome
+                exitCode
+                plugins
+                suites
 
         Verdict.write repoRoot v
 
@@ -476,14 +493,14 @@ let pollAndRender
         // rescan. The scope is read from the daemon EVERY time alongside the
         // diagnostics — never carried over from an earlier read — so the verdict is
         // always computed against what the latest run actually covered.
-        let reread () : bool * Coverage * TestScope =
+        let reread () : CheckVerdict.CheckInputs =
             let resp = parseDiagnosticsResponse (getErrors ())
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
             let run = getTestRun ()
             finalStatuses.Value <- resp.Statuses
             finalRun.Value <- run
-            (hasFailures noWarnFail resp, resp.Coverage, run.Scope)
+            checkInputs noWarnFail run.Scope resp
 
         let firstRun = getTestRun ()
         finalRun.Value <- firstRun
@@ -514,7 +531,7 @@ let pollAndRender
                 // computed — and PUBLISHED — from what the forced run actually did.
                 reread ()
             else
-                (hasFailures noWarnFail firstResp, firstResp.Coverage, firstRun.Scope)
+                checkInputs noWarnFail firstRun.Scope firstResp
 
         let outcome =
             CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
