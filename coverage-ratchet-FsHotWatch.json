@@ -744,6 +744,20 @@
         "reason": "higher line coverage on Linux CI (no FSEvents)",
         "platform": "linux"
       }
+    ],
+    "RunOnceCheck.fs": [
+      {
+        "line": 70,
+        "branch": 54,
+        "reason": "honest floor at the ACHIEVED value (macOS: 72.1% line, 56.2% branch, 9/16) for the run-once check/gate orchestration shell (AUTOMATION-117). Same shape as IpcOutput.fs's pollAndRender, and left honest for the same reason: what remains uncovered is the shell that drives a REAL Daemon end to end — RunOnce (dotnet build + the whole test suite), the console/UI.fail reporting arms (Clean/FailuresFound/Incomplete/UnearnedScope), the staleness-warning arm, and the settle-failure arm. Those need a real build and a real test run, and FsHotWatch.IntegrationTests (where such a test would live) is EXCLUDED from coverage, so it could not lift this number anyway. Everything that DECIDES anything is pure and lives elsewhere at 95%+: CheckVerdict.fs (verdict/converge/gateNeedsFullRun) and IpcParsing.fs (parseTestRunReport/isFullSuite). The in-process transport this file does own — readTestRun, requestFullSuiteScope, requestFullRun, including their unknown-command and throwing arms — IS unit-tested against a real PluginHost in RunOnceOutputTests. Left uncovered rather than hidden with ExcludeFromCodeCoverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 62,
+        "branch": 37,
+        "reason": "PROVISIONAL — not yet measured on Linux. Same orchestration shell as the macOS entry; the number is extrapolated from the observed macOS→Linux gap on the sibling shell IpcOutput.fs (80/53 macOS vs 69/35 Linux), because this file could only be measured on macOS when it was written. RE-TIGHTEN FROM THE FIRST CI ARTIFACTS via `mise run loosen-from-ci` — which is how IpcOutput.fs's own Linux floor was set. If Linux comes in HIGHER than this, RAISE it: a floor below the achieved value is a floor that hides a future regression.",
+        "platform": "linux"
+      }
     ]
   }
 }

@@ -422,6 +422,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 (fun () ->
                     { IpcParsing.Scope = IpcParsing.FullSuite 1
                       IpcParsing.RunId = None })
+                ignore // forceFullRun: never fires — the scope is already full-suite
                 triggerScan)
 
     // The authoritative settle MUST have been consulted...
@@ -484,6 +485,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                 (fun () ->
                     { IpcParsing.Scope = IpcParsing.FullSuite 1
                       IpcParsing.RunId = None })
+                ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle"))
 
     test <@ exitCode = 0 @>
@@ -540,6 +542,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () ->
                     { IpcParsing.Scope = IpcParsing.FullSuite 1
                       IpcParsing.RunId = None })
+                ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
     test <@ exitCode = 2 @>
@@ -594,6 +597,102 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () ->
                     { IpcParsing.Scope = IpcParsing.FullSuite 1
                       IpcParsing.RunId = None })
+                ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
     test <@ exitCode = 2 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-117 — the gate EARNS its evidence.
+//
+// `set-scope full` makes the next test run unfiltered. It does not make a run
+// HAPPEN. On a warm daemon whose impact DB says nothing changed, the scan provokes
+// no run at all, so `gate` read the LAST (filtered) run's coverage and refused —
+// correctly (it had no whole-suite evidence) but uselessly: there was no way to
+// produce any. A gate that can only be satisfied by luck is a gate people route
+// around with a shell script, which is exactly how a 40-line unverified bash
+// harness ended up making merge decisions on this repo.
+//
+// So the gate now RUNS the suite it demands, and only then judges it.
+// ---------------------------------------------------------------------------
+
+/// A `pollAndRender` drive whose test scope starts out impact-filtered and only
+/// becomes full-suite once `forceFullRun` has actually been invoked — i.e. the
+/// daemon behaves exactly as a warm daemon with nothing to do: it reports the last
+/// filtered run until something forces a new one.
+let private driveGate (checkMode: CheckVerdict.CheckMode) : int * int =
+    let mutable forceCalls = 0
+
+    let getTestRun () : TestRunReport =
+        if forceCalls > 0 then
+            { Scope = FullSuite 1; RunId = None }
+        else
+            { Scope = ImpactFiltered(0, 1)
+              RunId = None }
+
+    let exitCode =
+        TestHelpers.withTempDir "ipcoutput-gate-force" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                checkMode
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle") // waitForScan
+                (fun () -> "idle") // waitForComplete
+                (fun () -> "{}") // getStatus
+                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                getTestRun
+                (fun () -> forceCalls <- forceCalls + 1) // forceFullRun
+                (fun () -> "idle")) // triggerScan
+
+    exitCode, forceCalls
+
+[<Fact(Timeout = 15000)>]
+let ``a merge gate with no full-suite evidence FORCES the run and then goes green`` () =
+    // RED BEFORE THE FIX: the gate never called `forceFullRun`, read the stale
+    // ImpactFiltered scope, and returned exit 3 (UnearnedScope) — with no way for the
+    // caller to ever get a different answer. GREEN AFTER: it runs the suite, re-reads
+    // what that run actually covered, and earns the verdict.
+    let exitCode, forceCalls = driveGate CheckVerdict.MergeGate
+
+    test <@ forceCalls = 1 @>
+    test <@ exitCode = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a merge gate that already has full-suite evidence does NOT run the suite twice`` () =
+    // The force is a BACKSTOP, not the mechanism. On a cold daemon the scan already
+    // provoked the unfiltered run (`set-scope full` was sent first), so the scope reads
+    // full-suite here and the gate must pay for exactly ONE suite. A gate that re-ran
+    // the world every time would be a gate people turn off.
+    let mutable forceCalls = 0
+
+    let exitCode =
+        TestHelpers.withTempDir "ipcoutput-gate-noforce" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.MergeGate
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                (fun () -> { Scope = FullSuite 1; RunId = None })
+                (fun () -> forceCalls <- forceCalls + 1)
+                (fun () -> "idle"))
+
+    test <@ forceCalls = 0 @>
+    test <@ exitCode = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``the inner loop NEVER forces a full suite`` () =
+    // `check` is the fast loop. An impact-filtered green is precisely the answer it
+    // wants, and a fast loop that secretly runs the whole suite is not a fast loop.
+    let exitCode, forceCalls = driveGate CheckVerdict.InnerLoop
+
+    test <@ forceCalls = 0 @>
+    test <@ exitCode = 0 @>

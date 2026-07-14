@@ -1291,6 +1291,15 @@ type Daemon
         let registered = pipeline.GetAllRegisteredFiles()
         registered.Length, registered |> List.filter (host.IsFileChecked >> not) |> List.length
 
+    /// The live completeness signal as `(registered, unchecked)`.
+    ///
+    /// THE SAME `liveCoverage` the IPC `GetUncheckedCount` closure serves to `fshw
+    /// check` — exposed, not re-derived, so the daemon-backed check and the in-process
+    /// `--run-once` check answer "did we actually check every file?" from ONE
+    /// computation. A second implementation here is a second thing that can disagree,
+    /// and the whole point of the verdict is that its inputs cannot.
+    member _.LiveCoverage() : int * int = liveCoverage ()
+
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
 
@@ -1355,15 +1364,24 @@ type Daemon
         async {
             do! this.ScanAll()
 
-            do!
-                // The in-process scan-settling path tolerates an all-Idle host
-                // (plugins with no work this cycle); it must never hang on a
-                // legitimately never-run plugin (requireVerdict=false).
-                waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
-                |> Async.AwaitTask
+            do! this.Settle()
 
             return host.GetAllStatuses()
         }
+
+    /// Block until every plugin reaches a terminal state — the settle half of
+    /// `RunOnce`, WITHOUT the scan.
+    ///
+    /// Exposed for the run-once merge gate (AUTOMATION-117), which forces a full test
+    /// run through the plugin host after the scan has already settled and must then
+    /// wait out THAT run — a second `RunOnce` would re-scan and rebuild the world just
+    /// to wait for a run that is already in flight.
+    ///
+    /// Tolerates an all-Idle host (plugins with no work this cycle) — it must never
+    /// hang on a legitimately never-run plugin (`requireVerdict=false`).
+    member _.Settle() =
+        waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
+        |> Async.AwaitTask
 
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =

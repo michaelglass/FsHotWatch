@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- feat!: **`fshw gate --run-once` — the merge verdict, without a daemon.** (AUTOMATION-117)
+  `gate` existed only on the daemon IPC path, and `--run-once` bypasses the daemon
+  entirely — which is what CI uses. So **CI could not invoke the gate it is supposed to
+  be gated by**, and ran `check --run-once` instead. That looked fine only by accident: a
+  CI checkout starts with a COLD impact DB, and a cold DB selects everything. Cache the
+  `.fshw` state between runs, restore the DB, or optimise CI at all, and the same green
+  would silently start coming from a **subset**, with nothing in the output to say so.
+  `gate --run-once` makes the full-suite scope a checked precondition of the exit code
+  instead of a lucky side effect. This repo's own CI (`lint-cmd`) and `mise run ci` now
+  run it.
+  - **BREAKING:** `Gate` now carries `RunFlag list` (`Gate of RunFlag list`), so it can
+    take `--run-once` like `check` and `format`.
+
+- feat!: **the gate RUNS the suite it demands.** (AUTOMATION-117) `set-scope full` makes
+  the next test run unfiltered; it does not make a run **happen**. A gate asked "may I
+  merge this?" on a tree whose suite has not run — a fresh CI checkout, or a warm daemon
+  whose impact DB says nothing changed — refused for want of evidence while offering no
+  way to produce any. That refusal was *correct* and *useless*: **a gate nobody can
+  satisfy is one people route around with a shell script**, which is exactly how a
+  40-line unverified bash harness ended up making merge decisions on this repo. `gate`
+  now forces a full run (`run-tests`, unfiltered) when the settled scope is not already
+  full-suite, then re-reads what that run actually covered and judges *that*. It is a
+  **backstop, not the mechanism** — a cold daemon's scan already provokes the unfiltered
+  run, so the common case still pays for exactly one suite (`CheckVerdict.gateNeedsFullRun`).
+  - **BREAKING:** `IpcOutput.pollAndRender` takes a new `forceFullRun: unit -> unit` seam
+    before `triggerScan`.
+
+- fix: **`--run-once` now publishes `.fshw/verdict.json`.** (AUTOMATION-117) It never did
+  — so `fshw verdict` after a CI run reported "no verdict on disk": the machine-readable
+  answer was missing from the one place a machine was reading. The run-once path also
+  never computed a `CheckOutcome` at all; it counted failing diagnostics and returned
+  0/1, silently skipping the completeness check (exit 2) and the scope check (exit 3)
+  that the daemon path had enforced since AUTOMATION-112. It now shares the daemon path's
+  verdict, convergence, verdict file, and exit codes — `RunOnceCheck` differs from the
+  daemon only in its transport (`PluginHost.RunCommand` in-process instead of a socket).
+  **`check --run-once` can therefore now exit 2** where it previously exited 0, if the
+  scan left files unchecked.
+
+- fix: **`fshw verdict` no longer claims "a DIFFERENT tree" when the tree is identical.**
+  `Report.Stale` carries a *reason* — it says which provenance link broke, a different tree
+  **or** a different fshw binary — but the renderer printed that whole sentence under a
+  `current tree` label (a paragraph where a hash belongs) and asserted a tree mismatch
+  regardless. A stale *binary* over an unchanged tree now says so.
+
+- **Note on "full suite":** the gate asserts that every test project **`.fshw.json` knows
+  about** ran unfiltered — today, `FsHotWatch.Tests` alone. `FsHotWatch.IntegrationTests`
+  is in the solution but not in `.fshw.json`, so the gate does not run it (AUTOMATION-158).
+
 - feat!: **fshw self-heals a stale or wedged daemon instead of handing you a ritual.**
   (AUTOMATION-147) Before running work, the CLI compares the running daemon's recorded
   binary identity against its own. A different binary — or a daemon that recorded **no**
