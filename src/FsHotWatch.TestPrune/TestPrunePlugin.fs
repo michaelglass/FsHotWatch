@@ -185,7 +185,7 @@ type ReportVerificationFormat =
 // failures reported by THIS run" was being read as "no failures". A full run failed
 // project X; a queued impact-filtered re-run then executed a NARROWER selection,
 // passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never
-// re-ran and never passed, yet the gate went green.
+// re-ran and never passed, yet the check went green.
 //
 // The cure is structural, not a rule to remember: a run carries the SELECTION it was
 // launched against, a completed run's COVERAGE is derived from that selection
@@ -362,7 +362,7 @@ type TestPruneState =
         /// to the impact graph — an edit to one has nothing to diff and selects
         /// nothing on its own (AUTOMATION-113). While this set is non-empty the run
         /// falls back to the coarse selection (`coarseFallbackProjects`: every test
-        /// project, in full), because "I cannot analyse this file" means the gate
+        /// project, in full), because "I cannot analyse this file" means the SELECTOR
         /// cannot know what to select, and a superset is safe where a gap is not.
         ///
         /// A file leaves the map as soon as it analyses cleanly, so the fallback is
@@ -703,7 +703,7 @@ let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
 /// `buildFilterArgs` reads as "no filter, run this project in full". This is the
 /// unfiltered scope: the whole suite, no selection, nothing chosen.
 ///
-/// Used by the two callers that may not trust a selection: the merge gate
+/// Used by the two callers that may not trust a selection: `fshw confirm`
 /// (AUTOMATION-112 — impact filtering is a latency optimization for the inner loop,
 /// never the basis of a correctness claim) and the unanalysable-file fallback
 /// (AUTOMATION-113 — a file the analyser cannot read has no symbols to select by).
@@ -715,7 +715,7 @@ let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
 /// A file whose analysis FAILED contributes no symbols. The impact graph therefore
 /// cannot see it, the symbol diff finds nothing changed in it, and the selection it
 /// deserves is EMPTY — so an edit to such a file used to select zero tests and the
-/// gate went green having run nothing relevant. That is silent UNDER-selection: "the
+/// check went green having run nothing relevant. That is silent UNDER-selection: "the
 /// one failure mode a test-impact tool must not have" (`TestPrune.EdgeEmission`).
 ///
 /// The honest reading of an unanalysable file is not "nothing is affected" — it is
@@ -753,7 +753,7 @@ module RunCoverage =
     let coveredProjects (coverage: RunCoverage) : Set<string> = coverage |> Map.keys |> Set.ofSeq
 
     /// Did this run execute EVERY configured project, each in FULL? The only scope
-    /// from which a whole-suite claim can be made — and the question a merge gate is
+    /// from which a whole-suite claim can be made — and the question `fshw confirm` is
     /// really asking. A run that filtered ANY project, or skipped one, covered less
     /// than the suite, whatever its result counts say. An empty project list is not a
     /// covered suite (there is no evidence in a run of nothing).
@@ -816,12 +816,12 @@ module RunCoverage =
                 | None -> None)
         |> Map.ofList
 
-/// The SCOPE a merge gate reads, as a pure PROJECTION of `RunCoverage`.
+/// The SCOPE `fshw confirm` reads, as a pure PROJECTION of `RunCoverage`.
 ///
-/// It is deliberately not an independent derivation. Until AUTOMATION-129 the gate's
+/// It is deliberately not an independent derivation. Until AUTOMATION-129 the caller's
 /// scope came from `classifyRunScope` (over `LastResults`) while the ledger decided
 /// what a run could CLEAR from `RunCoverage` — two answers to one question, with
-/// nothing making them agree. A gate could therefore go green on a scope the ledger
+/// nothing making them agree. `confirm` could therefore go green on a scope the ledger
 /// would never have granted. There is one source of truth now, and this is a view of
 /// it.
 type internal ScopeReport =
@@ -859,7 +859,7 @@ module internal OutstandingFailure =
     ///
     /// `configured` prunes reds for projects the daemon no longer runs (a project
     /// removed from `tests.projects` could otherwise never be covered again, and its
-    /// red would wedge the gate forever — the AUTOMATION-99 stuck-red, rebuilt). Empty
+    /// red would wedge the verdict forever — the AUTOMATION-99 stuck-red, rebuilt). Empty
     /// ⇒ analysis-only, nothing to prune by.
     let carriedOver
         (configured: Set<string>)
@@ -2202,19 +2202,20 @@ let internal cacheKeyFor
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
-    // AUTOMATION-112. `Some "full"` while the merge gate has asked for the whole
+    // AUTOMATION-112. `Some "full"` while the caller has asked for the whole
     // suite; `None` for the impact-filtered inner loop.
     //
-    // Load-bearing: without it, the FIRST thing a gate does on an unchanged tree is
+    // Load-bearing: without it, the FIRST thing `confirm` does on an unchanged tree is
     // HIT the cache entry written by an earlier impact-filtered run and replay its
     // verdict — a filtered green, laundered into a merge verdict, with no test
     // process ever starting. That is the whole bug, arrived at by a different road.
     //
     // Keeping it `None` (rather than "impact") for the inner loop leaves the ordinary
     // key byte-identical to the pre-feature one, so existing on-disk caches keep
-    // hitting; only a gate's key differs. A second gate over the same tree still hits
-    // its OWN entry and replays a run that genuinely was full-suite — sound and fast.
-    (gateScopeHash: unit -> string option)
+    // hitting; only a full-suite request's key differs. A second such run over the same
+    // tree still hits its OWN entry and replays a run that genuinely was full-suite —
+    // sound and fast.
+    (fullSuiteScopeHash: unit -> string option)
     // AUTOMATION-125. True while a failure no covering run has passed is outstanding.
     // While it is, this plugin does not participate in the task cache AT ALL:
     //   * no REPLAY — a cached green served on a BuildCompleted would skip the handler,
@@ -2253,7 +2254,7 @@ let internal cacheKeyFor
               "build-outcome", buildOutcome ]
             @ optionalEntry "pending-queue" (pendingQueueHash ())
             @ optionalEntry "depends-on" (dependsOnHash ())
-            @ optionalEntry "gate-scope" (gateScopeHash ())
+            @ optionalEntry "full-suite-scope" (fullSuiteScopeHash ())
         )
 
     match event with
@@ -2478,18 +2479,18 @@ let create
                     $"failed to persist pending-verification queue%s{context}: %s{ex.Message}; in-memory queue still updated"
 
     /// AUTOMATION-112. When set, every test run this plugin launches is UNFILTERED —
-    /// every configured project, in full. Requested by `fshw gate` (the merge gate)
-    /// through the `set-scope` command BEFORE it triggers the scan, so the run the
-    /// scan provokes is already full-suite and the gate never pays for two runs.
+    /// every configured project, in full. Requested by `fshw confirm` through the
+    /// `set-scope` command BEFORE it triggers the scan, so the run the scan provokes
+    /// is already full-suite and `confirm` never pays for two runs.
     ///
     /// Deliberately one-way within a daemon session in the safe direction: `fshw
-    /// check` does not reset it. A gate followed by an inner-loop check is merely
-    /// slower; the reverse — a filtered run silently satisfying a gate — is the whole
+    /// check` does not reset it. A `confirm` followed by an inner-loop check is merely
+    /// slower; the reverse — a filtered run silently satisfying a `confirm` — is the whole
     /// bug. To go back to impact filtering, ask for it explicitly (`set-scope impact`)
     /// or restart the daemon.
     ///
     /// Note this only makes the run unfiltered. It does NOT let the CLI *claim* a
-    /// full-suite verdict: the gate reads back what the run actually covered
+    /// full-suite verdict: `confirm` reads back what the run actually covered
     /// (`test-scope` → a projection of `RunCoverage`) and refuses anything less.
     /// The flag is a request; the scope report is the evidence.
     let mutable fullSuiteScopeRef = false
@@ -2536,7 +2537,7 @@ let create
     /// IntegrationTests, which the daemon never runs) can never be proven green: its
     /// covering project never executes, so it never appears in a run's results, so the
     /// symbol never commits — and it sits in the pending queue FOREVER, re-selecting
-    /// tests that pass while the verdict stays red. That is a permanently stuck gate.
+    /// tests that pass while the verdict stays red. That is a permanently stuck red.
     ///
     /// Observed live: two full suites ran and PASSED back-to-back, yet the queue kept
     /// 2 symbols and `check` exited 1 — because those symbols were covered by
@@ -2634,7 +2635,7 @@ let create
         // runnable tests yet the queue would never empty → permanent non-green). A
         // symbol is "covered" iff it has at least one covering test IN A PROJECT THIS
         // DAEMON RUNS (see `runnableCoveringTests` — AUTOMATION-99: a symbol covered
-        // only by an unconfigured project is unverifiable here and wedged the gate).
+        // only by an unconfigured project is unverifiable here and wedged the verdict).
         // Only ever REMOVES from the queue, so it cannot under-test.
         let uncovered =
             symbols
@@ -2760,7 +2761,7 @@ let create
             // than at each call site, so no future launch path can forget one and
             // quietly reintroduce a filtered run where an unfiltered one was owed.
             //
-            //  * AUTOMATION-112 — merge-gate scope: run EVERY project, unfiltered.
+            //  * AUTOMATION-112 — full-suite scope: run EVERY project, unfiltered.
             //  * AUTOMATION-113 — unanalysable files: run every project, because a
             //    selection made without them cannot be trusted.
             //  * AUTOMATION-150 — an UNREADABLE pending-verification ledger: run every
@@ -2768,7 +2769,7 @@ let create
             //    made without it cannot be trusted either. Same shape as 113: the
             //    missing input is a SAFETY input, so its absence widens rather than
             //    narrows.
-            let gateScopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
+            let scopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
             let ledgerUnreadable = Volatile.Read(&ledgerRecoveryOutstandingRef)
 
             // The coarse fallback only needs to know WHICH files are unanalysable; the
@@ -2779,15 +2780,15 @@ let create
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
 
-                if gateScopeIsFullSuite || ledgerUnreadable then
+                if scopeIsFullSuite || ledgerUnreadable then
                     Set.union widened (fullSuiteProjects configs)
                 else
                     widened
 
-            if gateScopeIsFullSuite then
+            if scopeIsFullSuite then
                 Logging.info
                     "test-prune"
-                    "Scope: FULL SUITE (merge gate) — impact filtering is disabled for this run; every configured test project runs in full"
+                    "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
 
             if ledgerUnreadable then
                 Logging.warn
@@ -3146,8 +3147,8 @@ let create
               } ]
 
     // run-tests / scope commands (only if testConfigs are provided). The scope verbs
-    // live behind the same gate on purpose: a repo with no test projects has no suite
-    // to run in full, so `fshw gate` finds no `set-scope` command, cannot establish
+    // live behind the same condition on purpose: a repo with no test projects has no suite
+    // to run in full, so `fshw confirm` finds no `set-scope` command, cannot establish
     // the full-suite scope, and refuses to produce a merge verdict — rather than
     // silently issuing a green one it never earned.
     let allCommands =
@@ -3157,7 +3158,7 @@ let create
             @ [ "set-scope",
                 fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
                     async {
-                        // AUTOMATION-112. `fshw gate` calls this BEFORE triggering its
+                        // AUTOMATION-112. `fshw confirm` calls this BEFORE triggering its
                         // scan, so the test run the scan provokes is already unfiltered.
                         let requested =
                             let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
@@ -3197,7 +3198,7 @@ let create
                         // What the last completed run ACTUALLY covered — the evidence a
                         // merge verdict is computed from. Never a restatement of what was
                         // requested: `set-scope full` is a request, this is the receipt.
-                        // A run still in flight reports `running`, which the gate treats
+                        // A run still in flight reports `running`, which `confirm` treats
                         // as "no verdict yet" rather than as a scope.
                         // The reply carries the RUN ID as well as the scope, so the CLI
                         // can DECLARE which CTRF reports belong to this run
@@ -3677,7 +3678,7 @@ let create
                         | Error msg ->
                             // AUTOMATION-113. This branch used to `return state` — the file
                             // was DROPPED: it contributed no symbols, a change to it diffed
-                            // against nothing and selected NO tests, and the gate reported
+                            // against nothing and selected NO tests, and the check reported
                             // green having run nothing relevant. Silent under-selection:
                             // the one failure mode a test-impact tool must not have. See
                             // `markUnanalysable` for the treatment.
@@ -4497,10 +4498,10 @@ let create
                 | "" -> None
                 | h -> Some h
 
-            // AUTOMATION-112: a merge gate must never REPLAY an impact-filtered run's
+            // AUTOMATION-112: a full-suite run must never REPLAY an impact-filtered run's
             // cached verdict. Salting the key with the requested scope makes that
             // impossible rather than merely unlikely.
-            let gateScopeHash () =
+            let fullSuiteScopeHash () =
                 if Volatile.Read(&fullSuiteScopeRef) then
                     Some "full"
                 else
@@ -4511,7 +4512,13 @@ let create
             let hasOutstandingFailures () =
                 not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
 
-            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash gateScopeHash hasOutstandingFailures event
+            cacheKeyFor
+                changedSymbolsHash
+                pendingQueueHash
+                dependsOnHash
+                fullSuiteScopeHash
+                hasOutstandingFailures
+                event
 
         Some cacheKey
       Teardown = None }

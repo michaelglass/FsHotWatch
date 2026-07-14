@@ -4,26 +4,56 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-### The merge gate is reachable without a daemon — and CI now runs it
+### `fshw gate` is now `fshw confirm` — run the full suite and confirm `check` told the truth
 
-`fshw gate` (the unforgeable merge verdict: full-suite scope, `UnearnedScope` → exit 3)
-existed **only** on the daemon IPC path. `--run-once` bypasses the daemon entirely, and
-`--run-once` is what CI uses — so our own CI could not invoke the gate it is supposed to
-be gated by, and ran `check --run-once` instead.
+**Migration: `fshw gate` → `fshw confirm`.** The old verb is **removed**, not aliased —
+one name for one thing. (`gate` never appeared in a published package; this only affects
+anyone tracking `main` or a local pack.)
+
+`gate` named what the verb *blocks*, so it got built as a bouncer — pass/fail — and the
+most valuable thing it produces was discarded as a side-effect. Its real job is to **run
+the full suite and confirm that `check` told the truth.**
+
+Running an unfiltered suite next to an impact-filtered `check` is a **comparison**, and
+every disagreement between the two is a **bug in one of them**:
+
+- *failed under `confirm`, never selected by `check`* → the selector **MISSED** a test.
+  An impact-analysis bug, not a test bug.
+- *passed under `confirm`, but `check` says red* → a stale red, a flake, or a
+  **test-isolation defect**: a test that only passes *with company*, because another test
+  sets up the state it depends on. There, `check` is the honest one and the full suite is
+  the liar.
+
+Nobody built that comparison because the name did not suggest there was one to make.
+Reporting it is the next change; this one makes it obvious it is owed.
+
+**"Full suite"** means every test project **`.fshw.json` knows about** — today,
+`FsHotWatch.Tests` alone. `FsHotWatch.IntegrationTests` is in the solution but not in
+`.fshw.json`, so `confirm` does not run it (AUTOMATION-158). It does **not** claim to run
+every test in the solution.
+
+### `confirm` is reachable without a daemon — and CI now runs it
+
+The verb existed **only** on the daemon IPC path. `--run-once` bypasses the daemon
+entirely, and `--run-once` is what CI uses — so our own CI could not invoke the very check
+it is supposed to be judged by, and ran `check --run-once` instead.
 
 That was fine only by accident. In CI the impact DB starts **cold**, and a cold DB
 selects everything, so the full suite ran anyway. Warm that cache and the same green
 would silently start coming from a subset.
 
-`fshw gate --run-once` closes it, and CI (`lint-cmd`) plus `mise run ci` now use it.
-The gate also **runs the suite it demands** rather than merely asking for it: setting
+`fshw confirm --run-once` closes it, and CI (`lint-cmd`) plus `mise run ci` now use it.
+`confirm` also **runs the suite it demands** rather than merely asking for it: setting
 full-suite scope makes the next run unfiltered, but does not make a run *happen*, so a
-gate on a tree whose suite had not run would refuse forever with no way to satisfy it.
+`confirm` on a tree whose suite had not run would refuse forever with no way to satisfy it.
 
-**Breaking (API):** `Gate of RunFlag list`; `IpcOutput.pollAndRender` gains a
-`forceFullRun` seam. **Breaking (behaviour):** `--run-once` now writes
-`.fshw/verdict.json` and computes a real `CheckOutcome`, so `check --run-once` can exit
-2 (incomplete) where it previously exited 0.
+**Breaking (API):** `Command.Gate` → `Command.Confirm` (`Confirm of RunFlag list`);
+`CheckVerdict.CheckMode.MergeGate` → `Confirmation`; `CheckVerdict.gateNeedsFullRun` →
+`confirmNeedsFullRun`; `Verdict.Command.Gate` → `Verdict.Confirm`;
+`IpcOutput.pollAndRender` gains a `forceFullRun` seam. **Breaking (wire):**
+`.fshw/verdict.json`'s `command` field reads `"confirm"` where it read `"gate"`.
+**Breaking (behaviour):** `--run-once` now writes `.fshw/verdict.json` and computes a real
+`CheckOutcome`, so `check --run-once` can exit 2 (incomplete) where it previously exited 0.
 
 "Full suite" means every test project **`.fshw.json` knows about** — today
 `FsHotWatch.Tests` alone; `FsHotWatch.IntegrationTests` is not in `.fshw.json`

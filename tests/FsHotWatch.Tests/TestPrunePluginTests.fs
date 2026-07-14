@@ -3441,7 +3441,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     let mutable dependsOnCalls = 0
     let mutable pendingQueueCalls = 0
     let mutable changedSymbolsCalls = 0
-    let mutable gateScopeCalls = 0
+    let mutable fullSuiteScopeCalls = 0
     let mutable outstandingCalls = 0
 
     let key =
@@ -3456,7 +3456,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
                 dependsOnCalls <- dependsOnCalls + 1
                 Some "depends")
             (fun () ->
-                gateScopeCalls <- gateScopeCalls + 1
+                fullSuiteScopeCalls <- fullSuiteScopeCalls + 1
                 None)
             (fun () ->
                 outstandingCalls <- outstandingCalls + 1
@@ -3471,7 +3471,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     test <@ dependsOnCalls = 0 @>
     test <@ pendingQueueCalls = 0 @>
     test <@ changedSymbolsCalls = 0 @>
-    test <@ gateScopeCalls = 0 @>
+    test <@ fullSuiteScopeCalls = 0 @>
     test <@ outstandingCalls = 0 @>
 
 [<Fact(Timeout = 10000)>]
@@ -4835,7 +4835,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
         else
             // Issue 1 regression: a persistently-missing apphost means the tests
             // NEVER RAN — it must be DEFERRED, which is NON-GREEN (nothing was
-            // verified; a CI gate must not silent-green it), with an honest
+            // verified; a CI check must not silent-green it), with an honest
             // "waiting on build" diagnostic rather than a "test failed" one.
             // On pre-Issue-1 code this returned TestsPassed → a false green.
             test <@ host.HasFailingReasons(warningsAreFailures = true) @>
@@ -5769,7 +5769,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
 
 [<Fact(Timeout = 15000)>]
 let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, not a swallowed error`` () =
-    // AUTOMATION-68 — the gate-trust hole. The manual `run-tests` command ran
+    // AUTOMATION-68 — the verdict-trust hole. The manual `run-tests` command ran
     // `executeTests` inside a try/with that, on a `beforeRun` throw, returned a
     // command-level JSON error and posted NOTHING back — leaving the plugin
     // status at its prior (possibly green) value. A concurrent `fshw check` then
@@ -6338,7 +6338,7 @@ let ``detectCtrfCapable: None when no project can be derived from the args`` () 
     test <@ detectCtrfCapable "test --no-build" "/tmp" = None @>
 
 // =============================================================================
-// AUTOMATION-95 / AUTOMATION-99 — the gate must CONVERGE, never rest on a
+// AUTOMATION-95 / AUTOMATION-99 — the check must CONVERGE, never rest on a
 // verdict nobody earned.
 //
 // One defect, two polarities. The pending-verification queue used to have
@@ -6567,7 +6567,9 @@ let ``AUTOMATION-150: a genuinely EMPTY ledger stays a fast no-op (not a widened
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the gate red`` () =
+let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the verdict red``
+    ()
+    =
     // The permanent wedge. The symbol DB indexes test methods from EVERY project it
     // analyzed — which is NOT the same set as the projects fshw is configured to run.
     // A symbol covered only by an unconfigured project can never be proven green: its
@@ -6614,10 +6616,10 @@ let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ not (queue.Contains("Lib.orphan")) @>
 
-        // And the gate is NOT stuck red on a symbol no configured test can ever prove.
+        // And the verdict is NOT stuck red on a symbol no configured test can ever prove.
         match host.GetStatus("test-prune") with
         | Some(PluginStatus.Failed(msg, _, _)) ->
-            Assert.Fail($"gate wedged red on a symbol no runnable test covers: %s{msg}")
+            Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
         | _ -> ())
 
 [<Fact(Timeout = 20000)>]
@@ -6680,7 +6682,7 @@ let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verd
 // A file whose symbol analysis fails contributes NO symbols. Before this fix the
 // plugin's `Error` branch simply `return state`d — the file was dropped, the impact
 // graph never saw it, a change to it diffed against nothing and selected NO tests,
-// and the gate went green having run nothing relevant. Completely silent.
+// and the check went green having run nothing relevant. Completely silent.
 //
 // The contract now: an unanalysable file forces the COARSE selection (every test
 // project, in full), and says so loudly. Safe over-selection beats silent
@@ -6740,7 +6742,7 @@ let ``a non-empty coarse fallback disables the zero-affected skip gate`` () =
     // run when there are no affected classes AND no force-run projects. An
     // unanalysable file must never be able to reach that verdict — which is exactly
     // what a non-empty force-run set guarantees, so assert the emptiness predicate the
-    // gate actually reads.
+    // `confirm` actually reads.
     let forceRun =
         coarseFallbackProjects threeProjects (Set.ofList [ "src/Lib/Broken.fs" ]) Set.empty
 
@@ -6764,36 +6766,36 @@ let ``an unanalysable file is reported LOUDLY, naming the file and the reason`` 
     let detail = entry.Detail |> Option.defaultValue ""
     test <@ detail.Contains "INVISIBLE to the impact graph" @>
 
-// --- AUTOMATION-112: the merge gate's scope is part of the §2a cache key ---
+// --- AUTOMATION-112: the full-suite scope is part of the §2a cache key ---
 
 [<Fact(Timeout = 10000)>]
-let ``cacheKeyFor: a merge gate cannot replay an impact-filtered run's cached verdict`` () =
+let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdict`` () =
     // The subtlest road to the bug. Everything else about the tree is identical — same
     // symbols, empty queue, same deps — so WITHOUT the scope in the key, the first
-    // thing `fshw gate` does on an unchanged tree is HIT the entry an earlier
+    // thing `fshw confirm` does on an unchanged tree is HIT the entry an earlier
     // impact-filtered `fshw check` wrote, replay its green, and never start a test
     // process. A filtered verdict, laundered into a merge verdict, with no run at all.
-    let keyWithScope (gateScope: string option) =
+    let keyWithScope (fullSuiteScope: string option) =
         cacheKeyFor
             (fun () -> "same-symbols")
             (fun () -> None)
             (fun () -> None)
-            (fun () -> gateScope)
+            (fun () -> fullSuiteScope)
             (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
     let innerLoopKey = keyWithScope None
-    let mergeGateKey = keyWithScope (Some "full")
+    let fullSuiteKey = keyWithScope (Some "full")
 
     test <@ innerLoopKey.IsSome @>
-    test <@ mergeGateKey.IsSome @>
-    test <@ innerLoopKey <> mergeGateKey @>
+    test <@ fullSuiteKey.IsSome @>
+    test <@ innerLoopKey <> fullSuiteKey @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
     // `None` (not "impact") for the inner loop keeps the merkle entry OMITTED, so the
     // ordinary key stays byte-identical to the pre-feature one and every existing
-    // on-disk cache entry keeps hitting. The gate pays the cost of its own scope; the
+    // on-disk cache entry keeps hitting. `confirm` pays the cost of its own scope; the
     // fast loop pays nothing.
     let withScopeThunk =
         cacheKeyFor
@@ -6804,7 +6806,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
-    // Same inputs, hand-built without any gate-scope entry at all.
+    // Same inputs, hand-built without any full-suite-scope entry at all.
     let expected =
         FsHotWatch.TaskCache.merkleCacheKey
             [ "plugin-version", "test-prune-merkle-v2"
@@ -6816,10 +6818,10 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
     test <@ withScopeThunk = Some expected @>
 
 [<Fact(Timeout = 10000)>]
-let ``cacheKeyFor: two merge-gate runs over the same tree DO share a key`` () =
-    // The gate is not gratuitously cache-hostile: a second gate over an unchanged tree
+let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
+    // `confirm` is not gratuitously cache-hostile: a second `confirm` over an unchanged tree
     // replays a run that genuinely WAS full-suite. Sound, and fast.
-    let gateKey () =
+    let fullSuiteKey () =
         cacheKeyFor
             (fun () -> "same")
             (fun () -> None)
@@ -6828,14 +6830,14 @@ let ``cacheKeyFor: two merge-gate runs over the same tree DO share a key`` () =
             (fun () -> false)
             (BuildCompleted BuildSucceeded)
 
-    test <@ gateKey () = gateKey () @>
+    test <@ fullSuiteKey () = fullSuiteKey () @>
 
-// --- AUTOMATION-129: the gate's scope is a PROJECTION of RunCoverage ---
+// --- AUTOMATION-129: `confirm`'s scope is a PROJECTION of RunCoverage ---
 //
 // These replace the `classifyRunScope` suite (AUTOMATION-112). That function derived
-// the gate's scope INDEPENDENTLY, from `LastResults`, while the ledger decided what a
+// `confirm`'s scope INDEPENDENTLY, from `LastResults`, while the ledger decided what a
 // run may CLEAR from `RunCoverage` (AUTOMATION-125) — two answers to one question,
-// with nothing making them agree, so a gate could go green on a scope the ledger would
+// with nothing making them agree, so `confirm` could go green on a scope the ledger would
 // never have granted. `scopeOf` is a VIEW of the ledger's own value; they cannot
 // disagree by construction. Every behaviour the old suite pinned is pinned here.
 
@@ -6869,7 +6871,7 @@ let ``scopeOf: an unfiltered run that SKIPPED a project is a subset`` () =
 let ``scopeOf: the zero-affected skip's empty green is NO SCOPE, not a full suite`` () =
     // The trap, carried over verbatim from the suite this replaces: a run whose
     // coverage is EMPTY verified nothing. `RanFullSuite` is vacuously true for an empty
-    // map, which is exactly what a merge gate must not swallow. It is `ScopeNone` — and
+    // map, which is exactly what `confirm` must not swallow. It is `ScopeNone` — and
     // the CLI refuses to call that green in EITHER mode (AUTOMATION-129).
     test <@ scopeOf [ "Alpha.Tests" ] RunCoverage.none = ScopeNone 1 @>
 
@@ -6880,8 +6882,8 @@ let ``scopeOf: a repo with no test projects is not a covered suite`` () =
 
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-99 — a test run the daemon cannot SEE is a gate that cannot
-// gate. The `run-tests` IPC command used to call `executeTests` directly on
+// AUTOMATION-99 — a test run the daemon cannot SEE is evidence it cannot
+// judge. The `run-tests` IPC command used to call `executeTests` directly on
 // the IPC thread: no `RunExclusive "tests"` slot, no `Running` status, no
 // busy accounting. During such a run the daemon's whole model read "at
 // rest" — `fshw check` could exit 0 while the test process was literally
@@ -7321,7 +7323,7 @@ let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed p
 let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no stuck-red)`` () =
     // The other direction — the over-correction guard (cf. AUTOMATION-99's stuck-RED
     // half). A filtered run that DID execute the failing class and passed it is real
-    // evidence, and must clear the red. A gate that can never go green again is not a
+    // evidence, and must clear the red. A check that can never go green again is not a
     // fix, it is a different bug.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
@@ -7609,10 +7611,10 @@ let ``AUTOMATION-125: no cache participation while a red is outstanding`` () =
     test <@ (keyFor true (BuildCompleted BuildSucceeded)).IsNone @>
     test <@ (keyFor true allPassed).IsNone @>
 
-// --- MergeGate's UnearnedScope protection is untouched (AUTOMATION-112) ---
+// --- Confirmation's UnearnedScope protection is untouched (AUTOMATION-112) ---
 
 [<Fact(Timeout = 10000)>]
-let ``AUTOMATION-125: the merge gate still rejects a filtered green as UnearnedScope`` () =
+let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` () =
     // The fix must not weaken the gate it stands beside. The filtered re-run from the
     // regression above still classifies as a SUBSET, and a merge verdict built on a
     // subset is still `UnearnedScope` (exit 3) — never Clean.
@@ -7635,7 +7637,7 @@ let ``AUTOMATION-125: the merge gate still rejects a filtered green as UnearnedS
 
         let outcome =
             FsHotWatch.Cli.CheckVerdict.verdict
-                FsHotWatch.Cli.CheckVerdict.MergeGate
+                FsHotWatch.Cli.CheckVerdict.Confirmation
                 false
                 FsHotWatch.Cli.IpcParsing.Complete
                 (FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total))
@@ -7662,10 +7664,10 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
 
     test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeNone 2 @>
 
-    // NoTestsRun → UnearnedScope → exit 3, in the inner loop as well as the gate.
-    let gate =
+    // NoTestsRun → UnearnedScope → exit 3, in the inner loop as well as `confirm`.
+    let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict
-            FsHotWatch.Cli.CheckVerdict.MergeGate
+            FsHotWatch.Cli.CheckVerdict.Confirmation
             false
             FsHotWatch.Cli.IpcParsing.Complete
             FsHotWatch.Cli.IpcParsing.NoTestsRun
@@ -7677,7 +7679,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
             FsHotWatch.Cli.IpcParsing.Complete
             FsHotWatch.Cli.IpcParsing.NoTestsRun
 
-    test <@ FsHotWatch.Cli.CheckVerdict.exitCode gate = 3 @>
+    test <@ FsHotWatch.Cli.CheckVerdict.exitCode confirmed = 3 @>
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode inner = 3 @>
 
 [<Fact(Timeout = 20000)>]
@@ -7686,7 +7688,7 @@ let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (A
     // ledger rewrite cleared this plugin's whole slice, so the FIRST test run after an
     // analysis failure dropped the warning that is supposed to DENY the check its green
     // verdict. The file kept forcing full-suite runs (state), but nothing told anyone
-    // (ledger) — a gate that quietly stopped gating. The warning now leaves the ledger
+    // (ledger) — a check that quietly stopped checking. The warning now leaves the ledger
     // only when the CONDITION clears: the file analyses cleanly.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []

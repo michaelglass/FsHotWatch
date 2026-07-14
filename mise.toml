@@ -12,9 +12,9 @@ description = "Restore local dotnet tools"
 run = "dotnet tool restore"
 
 # === Daemon-backed tasks ===
-# `check` is the single daemon-backed gate (build + lint + analyze + test +
+# `check` is the single daemon-backed inner loop (build + lint + analyze + test +
 # format-check folded into one). The old per-plugin verbs (build/test/lint/
-# errors/format-check) were retired — use `fshw check` to gate and `fshw status`
+# errors/format-check) were retired — use `fshw check` to verify and `fshw status`
 # to observe. `build` here just compiles the CLI binary so the `--no-build`
 # daemon-backed tasks below have something to run.
 
@@ -24,8 +24,8 @@ run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
 depends = ["restore", "build-rules"]
 
 [tasks.build-rules]
-description = "Compile the repo's own analyzer rules (loaded by the gate via .fshw.json analyzers.paths)"
-# Anything that runs `check` needs the rules DLL present, or the gate would
+description = "Compile the repo's own analyzer rules (loaded by the check via .fshw.json analyzers.paths)"
+# Anything that runs `check` needs the rules DLL present, or the check would
 # silently run WITHOUT the house rules while looking green — an unloaded
 # analyzer and a clean one are indistinguishable from the outside.
 run = "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj"
@@ -82,7 +82,7 @@ dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
 # collided writing FsHotWatch.Cli.deps.json ("the process cannot access the
 # file … used by another process" → MSB4018, and a child node exiting
 # prematurely took the test run down with it). Ordering them behind one build
-# removes the race: a gate that can go red from its own internal contention
+# removes the race: a check that can go red from its own internal contention
 # tells you nothing about the code.
 depends = ["restore", "compile"]
 
@@ -164,15 +164,15 @@ run = "dotnet build"
 depends = ["restore"]
 
 [tasks.ci]
-description = "Run the merge gate (single pass, no daemon) — the same command GitHub Actions runs"
-# `gate`, not `check`: the full suite runs UNFILTERED and a green verdict is refused
+description = "Run the full-suite confirm (single pass, no daemon) — the same command GitHub Actions runs"
+# `confirm`, not `check`: the full suite runs UNFILTERED and a green verdict is refused
 # (exit 3) from anything less. `check` keeps impact filtering, which is a latency
 # optimization for the inner loop and not the basis for a merge decision.
 #
 # This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml. A local `ci` that
 # runs a different command from the real CI is a local `ci` that can go green on work
 # CI will reject — the drift is the bug (AUTOMATION-117).
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- gate --run-once"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
 depends = ["compile", "lint-project", "coverage-check"]
 
 [tasks.run]

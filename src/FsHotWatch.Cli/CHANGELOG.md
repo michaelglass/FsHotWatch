@@ -2,30 +2,62 @@
 
 ## Unreleased
 
-- feat!: **`fshw gate --run-once` — the merge verdict, without a daemon.** (AUTOMATION-117)
-  `gate` existed only on the daemon IPC path, and `--run-once` bypasses the daemon
-  entirely — which is what CI uses. So **CI could not invoke the gate it is supposed to
-  be gated by**, and ran `check --run-once` instead. That looked fine only by accident: a
+- feat!: **`fshw gate` is now `fshw confirm`.** (AUTOMATION-160)
+
+  **Migration: `fshw gate` → `fshw confirm`.** The old verb is **removed**, not aliased.
+  (`gate` was added in AUTOMATION-112 and never appeared in a *published* package, so this
+  only affects anyone tracking `main` or a local pack. The entries below describe the verb
+  by the name it actually ships under.)
+
+  `gate` named what the verb *blocks*. So it got built as a bouncer — pass/fail — and the
+  most valuable thing it produces was thrown away as a side-effect. The verb's real job is
+  to **run the full suite and confirm that `check` told the truth**.
+
+  That reframing matters because running an unfiltered suite next to an impact-filtered
+  `check` is a **comparison**, and every disagreement between the two is a **bug in one of
+  them**:
+
+  - *failed under `confirm`, never selected by `check`* → the selector **MISSED** a test.
+    An impact-analysis bug, not a test bug.
+  - *passed under `confirm`, but `check` says red* → a stale red, a flake, or a
+    **test-isolation defect**: a test that only passes *with company*, because another
+    test sets up the state it depends on. There, `check` is the honest one and the full
+    suite is the liar.
+
+  Nobody built that comparison because the name did not suggest there was one to make.
+  Reporting it is the next change; this one makes it obvious it is owed.
+  - **BREAKING:** `Command.Gate` → `Command.Confirm`; `CheckVerdict.CheckMode.MergeGate` →
+    `Confirmation`; `CheckVerdict.gateNeedsFullRun` → `confirmNeedsFullRun`;
+    `Verdict.Command.Gate` → `Verdict.Confirm`.
+  - **BREAKING (wire):** `.fshw/verdict.json`'s `command` field now reads `"confirm"`
+    where it read `"gate"`. A verdict written by an older fshw parses as `check` — but a
+    verdict from an older binary is already refused by the `producer.hash` rule, so no
+    consumer can act on the downgrade.
+
+- feat!: **`fshw confirm --run-once` — the merge verdict, without a daemon.** (AUTOMATION-117)
+  The verb existed only on the daemon IPC path, and `--run-once` bypasses the daemon
+  entirely — which is what CI uses. So **CI could not invoke the very check it is supposed
+  to be judged by**, and ran `check --run-once` instead. That looked fine only by accident: a
   CI checkout starts with a COLD impact DB, and a cold DB selects everything. Cache the
   `.fshw` state between runs, restore the DB, or optimise CI at all, and the same green
   would silently start coming from a **subset**, with nothing in the output to say so.
-  `gate --run-once` makes the full-suite scope a checked precondition of the exit code
+  `confirm --run-once` makes the full-suite scope a checked precondition of the exit code
   instead of a lucky side effect. This repo's own CI (`lint-cmd`) and `mise run ci` now
   run it.
-  - **BREAKING:** `Gate` now carries `RunFlag list` (`Gate of RunFlag list`), so it can
+  - **BREAKING:** `Confirm` carries `RunFlag list` (`Confirm of RunFlag list`), so it can
     take `--run-once` like `check` and `format`.
 
-- feat!: **the gate RUNS the suite it demands.** (AUTOMATION-117) `set-scope full` makes
-  the next test run unfiltered; it does not make a run **happen**. A gate asked "may I
+- feat!: **`confirm` RUNS the suite it demands.** (AUTOMATION-117) `set-scope full` makes
+  the next test run unfiltered; it does not make a run **happen**. A verb asked "may I
   merge this?" on a tree whose suite has not run — a fresh CI checkout, or a warm daemon
   whose impact DB says nothing changed — refused for want of evidence while offering no
-  way to produce any. That refusal was *correct* and *useless*: **a gate nobody can
+  way to produce any. That refusal was *correct* and *useless*: **a demand nobody can
   satisfy is one people route around with a shell script**, which is exactly how a
-  40-line unverified bash harness ended up making merge decisions on this repo. `gate`
+  40-line unverified bash harness ended up making merge decisions on this repo. `confirm`
   now forces a full run (`run-tests`, unfiltered) when the settled scope is not already
   full-suite, then re-reads what that run actually covered and judges *that*. It is a
   **backstop, not the mechanism** — a cold daemon's scan already provokes the unfiltered
-  run, so the common case still pays for exactly one suite (`CheckVerdict.gateNeedsFullRun`).
+  run, so the common case still pays for exactly one suite (`CheckVerdict.confirmNeedsFullRun`).
   - **BREAKING:** `IpcOutput.pollAndRender` takes a new `forceFullRun: unit -> unit` seam
     before `triggerScan`.
 
@@ -46,9 +78,10 @@
   `current tree` label (a paragraph where a hash belongs) and asserted a tree mismatch
   regardless. A stale *binary* over an unchanged tree now says so.
 
-- **Note on "full suite":** the gate asserts that every test project **`.fshw.json` knows
+- **Note on "full suite":** `confirm` asserts that every test project **`.fshw.json` knows
   about** ran unfiltered — today, `FsHotWatch.Tests` alone. `FsHotWatch.IntegrationTests`
-  is in the solution but not in `.fshw.json`, so the gate does not run it (AUTOMATION-158).
+  is in the solution but not in `.fshw.json`, so `confirm` does not run it (AUTOMATION-158).
+  `confirm` does **not** claim to run every test in the solution.
 
 - feat!: **fshw self-heals a stale or wedged daemon instead of handing you a ritual.**
   (AUTOMATION-147) Before running work, the CLI compares the running daemon's recorded
@@ -131,10 +164,10 @@
   that was not written: when nothing ran it says so, in words.
 
 - feat!: **the verdict is a FILE, content-addressed to the tree it verified.** (AUTOMATION-129,
-  ADR-013) Every `check` and `gate` now publishes `.fshw/verdict.json` — written
+  ADR-013) Every `check` and `confirm` now publishes `.fshw/verdict.json` — written
   atomically (temp + rename, so a partial read is impossible), carrying the outcome,
   the scope, per-plugin results, pointers to THIS run's CTRF reports, and a `treeHash`.
-  Published on every terminal path, including a failing gate, a wedged plugin and a
+  Published on every terminal path, including a failing `confirm`, a wedged plugin and a
   daemon that dies mid-run — those are exactly the moments the human-readable output is
   least sufficient and the temptation to scrape it is highest.
   - **The consumer's rule is total:** read the file; if `treeHash` ≠ hash(current tree),
@@ -149,33 +182,33 @@
 
 - feat: **`fshw verdict`** — read the last verdict and report whether it still applies to
   the tree on disk. Contacts no daemon, triggers no run: **reading cannot perturb.** (The
-  `test-rerun` calls an orchestrator made *because the gate looked untrustworthy* were
+  `test-rerun` calls an orchestrator made *because the verdict looked untrustworthy* were
   themselves what corrupted the daemon's busy accounting — the act of measuring created
   the defect being measured, AUTOMATION-99.) stdout is a JSON envelope that always states
   `applies`, so a stale green can never be mistaken for a current one. Exits 0/1/2/3 as
   the verdict itself, plus **4** (STALE) and **5** (no usable verdict).
 
 - feat: **the output points at the machine-readable results.** (AUTOMATION-129) In non-TTY
-  output — that is when a machine is reading — `check`, `gate` and `status` print the
+  output — that is when a machine is reading — `check`, `confirm` and `status` print the
   verdict path and the ACTUAL CTRF paths for THIS run, and an impact-scoped `check` says
-  so and names `fshw gate`. Real paths, not a generic pointer: a hint that makes you go
+  so and names `fshw confirm`. Real paths, not a generic pointer: a hint that makes you go
   and find the file is a hint you will ignore. The CTRF reports already existed; nothing
   ever told the reader where to look, and an orchestrator spent two days grepping
   `total:` and `elapsed:` out of a progress display built for a human.
 
-- fix!: **`fshw gate` could never go green.** (AUTOMATION-129) `readTestScope` and
+- fix!: **`fshw confirm` could never go green.** (AUTOMATION-129) `readTestScope` and
   `requestFullSuiteScope` called `RunCommand` with the PLUGIN name (`test-prune`) in the
   command slot and the real command name stuffed into the args. The host looked up a
   command called `test-prune`, found none, and returned the unknown-command sentinel —
-  which `parseTestScope` correctly, and silently, read as `ScopeUnknown`, which the merge
-  gate correctly, and silently, treats as "not full-suite". So `gate` exited 3 ("unearned
+  which `parseTestScope` correctly, and silently, read as `ScopeUnknown`, which `confirm`
+  correctly, and silently, treats as "not full-suite". So it exited 3 ("unearned
   scope") on every repo, forever, **including one whose entire suite had just run
   unfiltered**. (`set-scope`'s payload was not valid JSON either, so even a routed call
   would have set IMPACT.) It failed in the safe direction, which is why nothing caught
-  it: a gate that always refuses is never wrong — it is merely useless, and the
-  workaround for a useless gate is a bash harness making merge decisions. An
+  it: a check that always refuses is never wrong — it is merely useless, and the
+  workaround for a useless check is a bash harness making merge decisions. An
   unknown-command reply is now WARNED about rather than folded silently into
-  `ScopeUnknown`; safe-and-mute is how a gate stays broken for its whole life.
+  `ScopeUnknown`; safe-and-mute is how a broken check stays broken for its whole life.
 
 - fix!: **`test-rerun` can no longer exit 0 without running.** (AUTOMATION-99) A `busy`
   reply — the force-run produced no result within its budget — now exits NON-ZERO. It
@@ -192,27 +225,27 @@
   `completed` statuses (AUTOMATION-99); payloads from older daemons parse to an
   empty verdict rather than failing the status read.
 
-- feat!: **new `fshw gate` verb — the merge gate, which runs the FULL test suite and
-  refuses a green verdict from anything less.** `fshw check` remains the inner dev
-  loop and keeps impact filtering, which is what filtering is genuinely good for.
-  `fshw gate` runs the same checks (build, format, lint, analyzers, coverage) but puts
+- feat!: **new `fshw confirm` verb — runs the FULL test suite and refuses a green verdict
+  from anything less.** `fshw check` remains the inner dev loop and keeps impact
+  filtering, which is what filtering is genuinely good for.
+  `fshw confirm` runs the same checks (build, format, lint, analyzers, coverage) but puts
   the daemon in full-suite scope BEFORE it triggers its scan — so the test run the
-  scan provokes is already unfiltered, and the gate never pays for two runs.
+  scan provokes is already unfiltered, and `confirm` never pays for two runs.
 
   The enforcement is in the TYPE, not in a docs note: `CheckVerdict.verdict` now takes
-  a `CheckMode` (`InnerLoop` | `MergeGate`) and a `TestScope` (what the run actually
-  covered), and `MergeGate` has **no branch that reaches `Clean` without a
+  a `CheckMode` (`InnerLoop` | `Confirmation`) and a `TestScope` (what the run actually
+  covered), and `Confirmation` has **no branch that reaches `Clean` without a
   `FullSuite`** scope. An impact-filtered run, a run that executed no tests, and a
   scope the daemon could not report (old daemon, no test-prune plugin, transport
   fault) all land on the new `CheckOutcome.UnearnedScope` — **exit 3**, distinct from
-  failure (1) and incompleteness (2), because "the gate has no verdict" is a different
-  event from "the gate found a problem", and an autonomous caller must be able to tell
+  failure (1) and incompleteness (2), because "there is no verdict" is a different
+  event from "a problem was found", and an autonomous caller must be able to tell
   them apart. Failing closed on an unknown scope is the safe direction by
-  construction: a gate goes green only on a scope it positively established.
+  construction: `confirm` goes green only on a scope it positively established.
 
   Why enforce it structurally at all: "remember to also run an unfiltered `test-rerun`
-  before merging" is exactly the discipline that has already failed. A gate that
-  depends on someone remembering is not a gate. (AUTOMATION-112)
+  before merging" is exactly the discipline that has already failed. A check that
+  depends on someone remembering confirms nothing. (AUTOMATION-112)
 
 - fix!: **the `beforeRun` hook ran with an INFINITE timeout** — the single most
   dangerous spawn in the daemon. It executes INSIDE the `RunExclusive "tests"`

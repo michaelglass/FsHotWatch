@@ -1,10 +1,10 @@
 /// The verdict as a FILE — `.fshw/verdict.json`.
 ///
-/// An agent should learn the gate's verdict by READING STATE, not by spawning a
+/// An agent should learn the verdict by READING STATE, not by spawning a
 /// CLI, not by grepping a progress display written for a human, and above all not
 /// by an act of measurement that can corrupt the thing being measured. That last
 /// one is the decisive argument and it is not hypothetical: the `fshw test-rerun`
-/// calls an orchestrator made *because the gate looked untrustworthy* were
+/// calls an orchestrator made *because the verdict looked untrustworthy* were
 /// themselves what corrupted the daemon's busy accounting, which is what made the
 /// next `check` stamp a content-free green (AUTOMATION-99). The act of measuring
 /// created the defect being measured. A file read cannot do that. It also costs
@@ -153,7 +153,7 @@ type SuiteVerdict =
     }
 
 /// The verdict itself. `Incomplete` is the honest third answer: nothing is known
-/// to be broken, and nothing is known to be sound either — a merge gate that ran
+/// to be broken, and nothing is known to be sound either — a `confirm` that ran
 /// impact-filtered tests lands here, and so does a check whose coverage could not
 /// be confirmed. It is NEVER laundered into a green.
 type Outcome =
@@ -224,22 +224,22 @@ module Producer =
         && String.Equals(a.Version, b.Version, StringComparison.Ordinal)
 
 /// Which verb produced the verdict, and therefore what it is allowed to claim.
-/// `check` is the inner loop (impact-scoped, honest that it is); `gate` is the
-/// merge gate (unfiltered, evidence-required).
+/// `check` is the inner loop (impact-scoped, honest that it is); `confirm` runs the
+/// full suite to confirm `check` told the truth (unfiltered, evidence-required).
 type Command =
     | Check
-    | Gate
+    | Confirm
 
 module Command =
     let token (c: Command) : string =
         match c with
         | Check -> "check"
-        | Gate -> "gate"
+        | Confirm -> "confirm"
 
     let ofCheckMode (mode: CheckVerdict.CheckMode) : Command =
         match mode with
         | CheckVerdict.InnerLoop -> Check
-        | CheckVerdict.MergeGate -> Gate
+        | CheckVerdict.Confirmation -> Confirm
 
 /// The on-disk verdict.
 type Verdict =
@@ -557,8 +557,8 @@ let read (repoRoot: string) : Reading =
                                 | _ -> None)
                             |> Option.defaultValue DateTime.MinValue
                           Command =
-                            (if tryString root "command" = Some "gate" then
-                                 Gate
+                            (if tryString root "command" = Some "confirm" then
+                                 Confirm
                              else
                                  Check)
                           Producer =
@@ -657,7 +657,7 @@ let reportExitCode (r: Report) : int =
 let report (repoRoot: string) (excludePatterns: string list) : Report =
     match read repoRoot with
     | Reading.Missing ->
-        Report.NoVerdict $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw gate` for a merge)"
+        Report.NoVerdict $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for a merge)"
     | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}"
     | Reading.Found v ->
         let currentTree = TreeHash.compute repoRoot excludePatterns

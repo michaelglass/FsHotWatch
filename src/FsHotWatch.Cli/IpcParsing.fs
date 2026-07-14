@@ -43,11 +43,11 @@ type DiagnosticsResponse =
 
 /// What the last completed test run actually COVERED (AUTOMATION-112).
 ///
-/// Impact filtering is a latency optimization for the inner dev loop. A merge gate is
+/// Impact filtering is a latency optimization for the inner dev loop. A merge decision is
 /// a correctness claim. An impact-filtered green means "your change didn't break
 /// anything I chose to look at" — NOT "the suite is green". Those are different claims
 /// and reading one as the other is how 35 tests sat red on `main` for an unknown period
-/// while the gate stayed green: they were never selected, so nothing ever ran them.
+/// while every run stayed green: they were never selected, so nothing ever ran them.
 ///
 /// So the scope is a VALUE the verdict is a total function over, not an assumption a
 /// caller is trusted to make. `ScopeUnknown` is the cross-version / parse-gap backstop
@@ -75,8 +75,8 @@ module TestScope =
     /// Is this scope the EVIDENCE a merge verdict is made of?
     ///
     /// The ONE predicate. `CheckVerdict.verdict` decides what a scope is WORTH; this
-    /// decides whether the gate must still go and EARN one, and both must agree on
-    /// what "full suite" means or the gate would demand evidence it then refuses (or,
+    /// decides whether `confirm` must still go and EARN one, and both must agree on
+    /// what "full suite" means or `confirm` would demand evidence it then refuses (or,
     /// far worse, accept evidence it never demanded). Every non-`FullSuite` case is
     /// listed, so a new scope defaults to "not evidence" only by an explicit edit here.
     ///
@@ -90,15 +90,15 @@ module TestScope =
         | NoTestsRun
         | ScopeUnknown -> false
 
-/// The test-prune plugin commands the merge gate speaks.
+/// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
 /// and resolves to nothing. Passing `"test-prune"` here is precisely the bug
 /// AUTOMATION-129 fixed: the host found no such command, returned the unknown-command
-/// sentinel, and the gate read it as `ScopeUnknown` → exit 3 on every repo, forever.
+/// sentinel, and `confirm` read it as `ScopeUnknown` → exit 3 on every repo, forever.
 ///
 /// They live HERE, next to the parser of their replies, because there are now FOUR
-/// callers — `gate` and `gate --run-once`, over two different transports — and a
+/// callers — `confirm` and `confirm --run-once`, over two different transports — and a
 /// literal that four call sites can spell independently is a literal three of them can
 /// spell wrong.
 [<Literal>]
@@ -108,13 +108,13 @@ let TestScopeCommand = "test-scope"
 let SetScopeCommand = "set-scope"
 
 /// The `run-tests` command, with no filter and no project selection: run EVERY
-/// configured test project. This is how the gate FORCES the run it demands rather
+/// configured test project. This is how `confirm` FORCES the run it demands rather
 /// than merely asking for it (see `RunOnceCheck` / `IpcOutput.pollAndRender`).
 [<Literal>]
 let RunTestsCommand = "run-tests"
 
 /// The `set-scope` payload that turns impact filtering OFF for the rest of the
-/// session. A REQUEST, never evidence: the gate reads back what actually ran
+/// session. A REQUEST, never evidence: `confirm` reads back what actually ran
 /// (`TestScopeCommand`) and refuses anything less.
 [<Literal>]
 let FullSuiteScopeArgs = """{"scope":"full"}"""

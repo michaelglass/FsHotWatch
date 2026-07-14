@@ -1894,19 +1894,19 @@ let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
     test <@ restarts = 0 @>
 
 // ---------------------------------------------------------------------------
-// The merge gate's daemon commands (AUTOMATION-129)
+// `confirm`'s daemon commands (AUTOMATION-129)
 //
-// `RunCommand` dispatches on the COMMAND name. The gate used to call it with the
+// `RunCommand` dispatches on the COMMAND name. `confirm` used to call it with the
 // PLUGIN name — `RunCommand "test-prune" "test-scope"` — so the host looked up a
 // command called `test-prune`, found none, and returned the unknown-command
 // sentinel. `parseTestScope` then correctly, and SILENTLY, read that as
-// `ScopeUnknown`, which the merge gate correctly, and SILENTLY, treats as "not
-// full-suite". Result: `fshw gate` had NO PATH TO A GREEN on any repo, ever — it
+// `ScopeUnknown`, which `confirm` correctly, and SILENTLY, treats as "not
+// full-suite". Result: `fshw confirm` had NO PATH TO A GREEN on any repo, ever — it
 // exited 3 even when the whole suite had just run unfiltered.
 //
-// It failed in the safe direction, which is why nothing caught it. A gate that
+// It failed in the safe direction, which is why nothing caught it. A check that
 // always refuses is never WRONG; it is merely useless, and the workaround for a
-// useless gate is a hand-rolled bash harness making merge decisions.
+// useless check is a hand-rolled bash harness making merge decisions.
 //
 // These tests pin the WIRE NAMES, which is the thing that was broken.
 // ---------------------------------------------------------------------------
@@ -1933,7 +1933,7 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
     test <@ run.Scope = IpcParsing.FullSuite 6 @>
 
 [<Fact(Timeout = 15000)>]
-let ``an unknown-command reply is ScopeUnknown — a gate never goes green on a scope it did not establish`` () =
+let ``an unknown-command reply is ScopeUnknown — `confirm` never goes green on a scope it did not establish`` () =
     let ipc =
         { fakeIpc () with
             RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
@@ -1945,7 +1945,7 @@ let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} pa
     // Doubly broken before: the command name was wrong AND the args were
     // `set-scope {"scope":"full"}`, which is not JSON — so even if it had been
     // routed, the handler's `JsonDocument.Parse` would have thrown and defaulted
-    // to IMPACT. The gate would have asked for a full suite and been given a
+    // to IMPACT. `confirm` would have asked for a full suite and been given a
     // filtered one.
     let mutable seen: (string * string) list = []
 
