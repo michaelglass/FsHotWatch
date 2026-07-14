@@ -284,6 +284,76 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
     let runSlotsLock = obj ()
 
+    /// True when this plugin holds ANY exclusive run slot — i.e. real work
+    /// (a test run, a build) is executing in the background right now, even
+    /// though the mailbox is idle and the handler that launched it has already
+    /// returned. Keyless because the framework does not know a plugin's slot
+    /// names — any busy slot means "not at rest".
+    let anyRunSlotBusy () =
+        lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
+
+    /// Serialises "decide whether a live run owns the status" + "publish it"
+    /// against "claim a run slot" + "publish the `Running` that claim earns".
+    ///
+    /// AUTOMATION-118. The ownership guard used to be a check-then-act: it read
+    /// the run slots under `runSlotsLock`, then reported the status AFTER
+    /// releasing it. A claim landing in that window publishes `Running`, and the
+    /// stale terminal then lands ON TOP of the live run — the "content-free ✓
+    /// while tests are still running" signature (`started:` with no `elapsed:`)
+    /// that AUTOMATION-95/99 exist to make impossible.
+    ///
+    /// That window was REAL and reproduced against this code. The only thing that
+    /// closed it was that every shipped plugin happens to call `ctx.RunExclusive`
+    /// and `ctx.ReportStatus` from inside `Update`, which the agent loop runs one
+    /// at a time — so the check, the claim and the report were totally ordered on
+    /// one logical thread. But `PluginCtx` is a record of closures: nothing in the
+    /// type system confines it to the mailbox. That was soundness by CONVENTION,
+    /// and a plugin claiming a slot from a `work` async or a spawned task — a
+    /// legal use of the API — reopened it.
+    ///
+    /// With `statusLock` the ownership DECISION and the REPORT are ONE critical
+    /// section, so a terminal either wins the race (published while genuinely no
+    /// run is live, before the claim) or loses it (the claim is already visible
+    /// and the terminal is suppressed). Never both.
+    ///
+    /// Lock ordering, proven sound: `statusLock` is ALWAYS acquired before
+    /// `runSlotsLock`, and NEVER from inside it. `runSlotsLock` is otherwise only
+    /// ever taken alone (`isRunning`, `anyRunSlotBusy`, `runOne`'s release), so no
+    /// cycle exists. Nothing reachable from `services.ReportStatus` re-enters this
+    /// framework: the host's implementation (`PluginHost.setStatus`) is a
+    /// dictionary write plus a deliberately NON-BLOCKING `MailboxProcessor.Post`.
+    /// And `runSlotsLock` is released before the report at both call sites below,
+    /// so a host callback that reads `IsRunning` cannot self-deadlock either.
+    let statusLock = obj ()
+
+    /// Publish `s` unless a live exclusive run owns this plugin's status; returns
+    /// whether it was published. ATOMIC against `runExclusive`'s claim.
+    ///
+    /// While an exclusive run is in flight the run OWNS this plugin's status: it
+    /// was reported `Running` at the claim and its completion path is guaranteed
+    /// to deliver the earned terminal (the completion handler on success,
+    /// `runOne`'s forced `Failed` on a faulted work async) — so any OTHER terminal
+    /// stamped mid-run is a verdict nobody earned. Applied at the ONE funnel every
+    /// plugin-originated status passes through, plus the cache-replay and
+    /// `safeUpdate` crash-net paths: the property is universal, not a per-plugin
+    /// convention.
+    let reportUnlessRunOwns (onSuppressed: unit -> unit) (s: PluginStatus) : bool =
+        lock statusLock (fun () ->
+            if PluginStatus.isTerminal s && anyRunSlotBusy () then
+                onSuppressed ()
+                false
+            else
+                services.ReportStatus handler.Name s
+                true)
+
+    /// Publish `s` WITHOUT the ownership check, still serialised against claims
+    /// and guarded reports. The framework's own forced terminal in `runOne` is the
+    /// live run's OWN verdict — its slot is still held — so the ownership rule
+    /// must not suppress it; but it must not interleave with a concurrent claim or
+    /// guarded report either.
+    let reportBypassingGuard (s: PluginStatus) =
+        lock statusLock (fun () -> services.ReportStatus handler.Name s)
+
     // Forward reference to the agent so `post` and `runOne` can route completion
     // messages back without an inbox closure. Set immediately after Start returns;
     // any access before then is impossible by construction (no caller can invoke
@@ -351,15 +421,15 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     // loud verdict instead. The framework KNOWS when this run started
                     // (it claimed the slot), so the verdict carries a measured
                     // elapsed — never a fabricated zero-length run.
-                    services.ReportStatus
-                        handler.Name
-                        (PluginStatus.Failed(
+                    reportBypassingGuard (
+                        PluginStatus.Failed(
                             $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
                             DateTime.UtcNow,
                             RunVerdict.create
                                 $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
                                 (DateTime.UtcNow - startedAt)
-                        ))
+                        )
+                    )
             finally
                 // Release order matters (AUTOMATION-99):
                 //   1. free the slot — the completion handler may itself launch
@@ -385,32 +455,45 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         }
 
     let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
-        let shouldStart =
-            lock runSlotsLock (fun () ->
-                match runSlots.TryGetValue(key) with
-                | true, true -> false
-                | _ ->
-                    runSlots.[key] <- true
-                    true)
+        // The claim and the `Running` it publishes are ONE critical section under
+        // `statusLock` (AUTOMATION-118), so no terminal can slip between "no run
+        // is live" and "a run is live" and land on top of the run. `runSlotsLock`
+        // is released before the report; `Async.Start` happens after the lock so
+        // no plugin work ever runs under it.
+        let claimedAt =
+            lock statusLock (fun () ->
+                let shouldStart =
+                    lock runSlotsLock (fun () ->
+                        match runSlots.TryGetValue(key) with
+                        | true, true -> false
+                        | _ ->
+                            runSlots.[key] <- true
+                            true)
 
-        if shouldStart then
-            // The framework — not the plugin — reports Running at the claim
-            // instant. A launched run nobody can see as Running is thereby
-            // unrepresentable: CoveragePlugin shipped exactly that gap (no
-            // Running before its claim), which (a) rendered ✓ while it ran and
-            // (b) starved `bumpGenerationIfStarting`, so the host's
-            // generation-based terminal wait could NEVER be satisfied while
-            // coverage was registered (AUTOMATION-99 review, finding 4).
-            let startedAt = DateTime.UtcNow
-            services.ReportStatus handler.Name (Running(since = startedAt))
+                if shouldStart then
+                    // The framework — not the plugin — reports Running at the claim
+                    // instant. A launched run nobody can see as Running is thereby
+                    // unrepresentable: CoveragePlugin shipped exactly that gap (no
+                    // Running before its claim), which (a) rendered ✓ while it ran and
+                    // (b) starved `bumpGenerationIfStarting`, so the host's
+                    // generation-based terminal wait could NEVER be satisfied while
+                    // coverage was registered (AUTOMATION-99 review, finding 4).
+                    let startedAt = DateTime.UtcNow
+                    services.ReportStatus handler.Name (Running(since = startedAt))
 
-            // Work token: counts this exclusive run in `inflightCount` from
-            // claim until after its completion message is posted (released in
-            // `runOne`'s finally). See the counter's doc comment.
-            System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
+                    // Work token: counts this exclusive run in `inflightCount` from
+                    // claim until after its completion message is posted (released in
+                    // `runOne`'s finally). See the counter's doc comment.
+                    System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
+                    ValueSome startedAt
+                else
+                    ValueNone)
+
+        match claimedAt with
+        | ValueSome startedAt ->
             Async.Start(runOne key startedAt work)
             Claimed
-        else
+        | ValueNone ->
             // AUTOMATION-15 (item 5): exclusion-slot contention. The run is NOT
             // started; the caller receives `SlotBusy` and MUST decide (skip or
             // queue). The debug line keeps "why didn't my edit re-run this
@@ -427,41 +510,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             | true, running -> running
             | _ -> false)
 
-    /// True when this plugin holds ANY exclusive run slot — i.e. real work
-    /// (a test run, a build) is executing in the background right now, even
-    /// though the mailbox is idle and the handler that launched it has already
-    /// returned. Keyless because the framework does not know a plugin's slot
-    /// names — any busy slot means "not at rest".
-    let anyRunSlotBusy () =
-        lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
-
-    /// AUTOMATION-95/99 ownership rule, enforced at the ONE funnel every
-    /// plugin-originated status passes through: while an exclusive run is in
-    /// flight, the run OWNS this plugin's status. It was reported Running at
-    /// the claim and its completion path is guaranteed to deliver the earned
-    /// terminal (the completion handler on success, `runOne`'s forced Failed
-    /// on a faulted work async) — so any OTHER terminal stamped mid-run is a
-    /// verdict nobody earned (the observed "✓ with started: but no elapsed:"
-    /// signature). Sound because `runOne` frees the slot BEFORE posting the
-    /// completion message: every legitimate terminal (a completion handler's
-    /// report) fires with no slot held and passes untouched, while the
-    /// framework's own forced Failed goes via `services.ReportStatus`
-    /// directly, bypassing this plugin-facing guard by construction. Also
-    /// applied to cache replays and the `safeUpdate` crash net below — the
-    /// property is universal, not a per-plugin convention.
-    let liveRunOwnsStatus (s: PluginStatus) =
-        PluginStatus.isTerminal s && anyRunSlotBusy ()
-
-    /// The plugin-facing status reporter: drops a terminal stamped while a
-    /// live run owns the status (see `liveRunOwnsStatus`), forwards everything
-    /// else.
+    /// The plugin-facing status reporter: drops a terminal stamped while a live
+    /// run owns the status (see `reportUnlessRunOwns`), forwards everything else.
     let reportStatusGuarded (s: PluginStatus) =
-        if liveRunOwnsStatus s then
-            debug
-                (PluginName.value handler.Name)
-                "suppressing terminal status — an exclusive run is in flight and owns the status"
-        else
-            services.ReportStatus handler.Name s
+        reportUnlessRunOwns
+            (fun () ->
+                debug
+                    (PluginName.value handler.Name)
+                    "suppressing terminal status — an exclusive run is in flight and owns the status")
+            s
+        |> ignore
 
     // Standard ctx — used inside the agent loop (via Update). IPC command
     // handlers get the far narrower CommandCtx instead (see its doc).
@@ -608,12 +666,13 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // replay — only the status claim is suppressed. Same
                                 // ownership rule as `reportStatusGuarded`, kept explicit
                                 // here for the replay-specific diagnostic.
-                                if liveRunOwnsStatus replayStatus then
-                                    FsHotWatch.Logging.debug
-                                        (PluginName.value handler.Name)
-                                        "cache replay: suppressing cached terminal status — an exclusive run is in flight"
-                                else
-                                    services.ReportStatus handler.Name replayStatus
+                                reportUnlessRunOwns
+                                    (fun () ->
+                                        FsHotWatch.Logging.debug
+                                            (PluginName.value handler.Name)
+                                            "cache replay: suppressing cached terminal status — an exclusive run is in flight")
+                                    replayStatus
+                                |> ignore
 
                                 // Replay emitted events. Cached test-lifecycle events carry the
                                 // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
@@ -672,12 +731,13 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                             (DateTime.UtcNow - handlerStarted)
                                     )
 
-                                if liveRunOwnsStatus forcedFailed then
-                                    FsHotWatch.Logging.debug
-                                        (PluginName.value handler.Name)
-                                        "handler fault: suppressing forced Failed status — an exclusive run is in flight and owns the status"
-                                else
-                                    services.ReportStatus handler.Name forcedFailed
+                                reportUnlessRunOwns
+                                    (fun () ->
+                                        FsHotWatch.Logging.debug
+                                            (PluginName.value handler.Name)
+                                            "handler fault: suppressing forced Failed status — an exclusive run is in flight and owns the status")
+                                    forcedFailed
+                                |> ignore
 
                                 return state
                         }
@@ -707,14 +767,19 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                         fun s ->
                                             // Guard BEFORE capture: a terminal the live run
                                             // suppressed was never observable, so it must
-                                            // not become a cached result either.
-                                            if liveRunOwnsStatus s then
-                                                FsHotWatch.Logging.debug
-                                                    (PluginName.value handler.Name)
-                                                    "suppressing terminal status — an exclusive run is in flight and owns the status"
-                                            else
+                                            // not become a cached result either. `capturedStatus`
+                                            // is set only when the report actually landed, and
+                                            // is read after this Update completes on the same
+                                            // mailbox thread — so it stays outside the lock.
+                                            if
+                                                reportUnlessRunOwns
+                                                    (fun () ->
+                                                        FsHotWatch.Logging.debug
+                                                            (PluginName.value handler.Name)
+                                                            "suppressing terminal status — an exclusive run is in flight and owns the status")
+                                                    s
+                                            then
                                                 capturedStatus <- Some s
-                                                services.ReportStatus handler.Name s
                                       ReportErrors =
                                         fun file entries ->
                                             capturedErrors.Add(file, entries)
