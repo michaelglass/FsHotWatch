@@ -512,7 +512,7 @@
       {
         "line": 95,
         "branch": 100,
-        "reason": "stable floor: kill-on-timeout drain race-handling (~lines 157-196: Kill catch arm, post-kill Task.WaitAll drain catch, stdout/stderr IsCompletedSuccessfully else-branches) is intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. Observed stable 93.1% line across runs; pinned 1pp below with jitter margin",
+        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. AUTOMATION-126 pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative",
         "platform": "macos"
       },
       {

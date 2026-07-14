@@ -2287,7 +2287,10 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
 [<Fact(Timeout = 15000)>]
 let ``isZeroTestsUnderFilter true for filtered run with MTP zero-tests exit code`` () =
     let outcome =
-        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(zeroTestsExitCode, "Test run summary: Zero tests ran")
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+            zeroTestsExitCode,
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained "Test run summary: Zero tests ran"
+        )
 
     test <@ isZeroTestsUnderFilter true outcome @>
 
@@ -2298,7 +2301,8 @@ let ``isZeroTestsUnderFilter true for filtered run whose output reports zero tes
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
             1,
-            "...\nZero tests ran - Foo.Tests.dll (net10.0|arm64)\n  total: 0"
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained
+                "...\nZero tests ran - Foo.Tests.dll (net10.0|arm64)\n  total: 0"
         )
 
     test <@ isZeroTestsUnderFilter true outcome @>
@@ -2308,7 +2312,10 @@ let ``isZeroTestsUnderFilter false for UNFILTERED run even with zero-tests exit`
     // An unfiltered project that runs zero tests is a real problem (empty suite,
     // misconfigured runner) and must still surface — not be silently skipped.
     let outcome =
-        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(zeroTestsExitCode, "Zero tests ran")
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+            zeroTestsExitCode,
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained "Zero tests ran"
+        )
 
     test <@ not (isZeroTestsUnderFilter false outcome) @>
 
@@ -2317,7 +2324,8 @@ let ``isZeroTestsUnderFilter false for a genuine test failure under filter`` () 
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
             2,
-            "failed Foo.Bar\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained
+                "failed Foo.Bar\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
         )
 
     test <@ not (isZeroTestsUnderFilter true outcome) @>
@@ -2325,8 +2333,10 @@ let ``isZeroTestsUnderFilter false for a genuine test failure under filter`` () 
 [<Fact(Timeout = 15000)>]
 let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
     let outcome =
-        FsHotWatch.ProcessHelper.ProcessOutcome.Succeeded
-            "Test run summary: Passed!\n  total: 4\n  failed: 0\n  succeeded: 4"
+        FsHotWatch.ProcessHelper.ProcessOutcome.Succeeded(
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained
+                "Test run summary: Passed!\n  total: 4\n  failed: 0\n  succeeded: 4"
+        )
 
     test <@ not (isZeroTestsUnderFilter true outcome) @>
 
@@ -5772,7 +5782,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
             (ReportRequested report)
             false
             TimeSpan.Zero
-            (ProcessOutcome.Failed(7, "host crashed during shutdown"))
+            (ProcessOutcome.Failed(7, ProcessOutput.Drained "host crashed during shutdown"))
 
     test <@ TestResult.isPassed result @>
 
@@ -5781,7 +5791,11 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
     let report = Some(rep 3 2 1 0 0)
 
     let result =
-        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Succeeded "")
+        classifyTestOutcome
+            (ReportRequested report)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained ""))
 
     test <@ isFailed result @>
 
@@ -5790,14 +5804,22 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
     let report = Some(rep 3 2 0 0 1)
 
     let result =
-        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Failed(2, ""))
+        classifyTestOutcome
+            (ReportRequested report)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(2, ProcessOutput.Drained ""))
 
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
     let result =
-        classifyTestOutcome (ReportRequested None) false TimeSpan.Zero (ProcessOutcome.Failed(7, "aborted"))
+        classifyTestOutcome
+            (ReportRequested None)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(7, ProcessOutput.Drained "aborted"))
 
     test <@ TestResult.isErrored result @>
     test <@ not (isFailed result) @>
@@ -5807,14 +5829,22 @@ let ``classify: non-zero exit with NO report from a capable runner is ERRORED, n
 let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED (no regression)`` () =
     // NoReportRequested → exit code is the only signal → behave as before.
     let result =
-        classifyTestOutcome NoReportRequested false TimeSpan.Zero (ProcessOutcome.Failed(1, "boom"))
+        classifyTestOutcome
+            NoReportRequested
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(1, ProcessOutput.Drained "boom"))
 
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: clean exit with no report is PASSED`` () =
     let result =
-        classifyTestOutcome (ReportRequested None) false TimeSpan.Zero (ProcessOutcome.Succeeded "ok")
+        classifyTestOutcome
+            (ReportRequested None)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
     test <@ TestResult.isPassed result @>
 
@@ -5823,7 +5853,11 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
     let report = Some(rep 0 0 0 0 0)
 
     let result =
-        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Failed(8, "Zero tests ran"))
+        classifyTestOutcome
+            (ReportRequested report)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(8, ProcessOutput.Drained "Zero tests ran"))
 
     test <@ isFailed result @>
 
@@ -5836,7 +5870,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
             (ReportRequested report)
             false
             (TimeSpan.FromSeconds 30.0)
-            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, "stuck"))
+            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck"))
 
     test <@ TestResult.isTimedOut result @>
 

@@ -706,7 +706,11 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
     wasFiltered
     && match outcome with
        | ProcessOutcome.Failed(code, _) when code = zeroTestsExitCode -> true
-       | ProcessOutcome.Failed(_, output) -> output.Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
+       | ProcessOutcome.Failed(_, output) ->
+           // A text SEARCH for a marker: a capture cut short by an unfinished drain
+           // can only cost us the hit (falling back to the exit code above), never
+           // invent one. Sound to search the untagged text.
+           (ProcessOutput.text output).Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
        | _ -> false
 
 /// Build the human-readable error lines for a FAILED test project run, parsed
@@ -810,7 +814,7 @@ let internal classifyTestOutcome
     | ProcessOutcome.TimedOut(after, output) ->
         // A timeout KILL is a real "stuck" signal; a partial report it may have
         // flushed must not override it. Keep it distinct (unchanged).
-        TestsTimedOut(output, after, wasFiltered, elapsed)
+        TestsTimedOut(renderOutput output, after, wasFiltered, elapsed)
     | _ ->
         let output = outputOf outcome
         let succeeded = isSucceeded outcome
@@ -1505,7 +1509,8 @@ let private executeTests
                                     | None ->
                                         // Not derivable — fall back to the text sniff.
                                         match outcome with
-                                        | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing out
+                                        | ProcessOutcome.Failed(_, out) ->
+                                            looksLikeApphostMissing (ProcessOutput.text out)
                                         | _ -> false
 
                             // Issue 1/2: cold-start apphost-missing retry. The

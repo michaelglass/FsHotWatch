@@ -4,6 +4,49 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A process whose output we failed to read no longer reports an empty output
+
+**Breaking (API):** `ProcessOutcome`'s three cases now carry a `ProcessOutput`
+rather than a `string` — `Succeeded of ProcessOutput`, `Failed of int *
+ProcessOutput`, `TimedOut of TimeSpan * ProcessOutput`. Use `outputOf` /
+`renderOutput` (rendered for humans, and it names an incomplete read) or
+`ProcessOutput.text` (raw bytes, for text-searching) to get a `string` back.
+
+Once a spawned child exits, its redirected stdout/stderr are drained for a
+bounded 2 s window — bounded because a *grandchild* that inherited the pipe (an
+MSBuild node, a Playwright driver) can hold it open long after the child is gone,
+and an unbounded wait on that pipe is the 16 h wedge. When that window expired,
+`runProcess` handed back whatever it had captured as a plain `string`. An empty
+capture was therefore indistinguishable from a child that printed nothing.
+
+They are not the same fact, and the difference bit. The stream pumps were
+`ReadAsync` continuations scheduled on the **thread pool**, so on a saturated box
+— a full-suite `check`, exactly when a spawn's output matters most — the reader
+was never scheduled at all, the window expired having read zero bytes, and the
+child's output came back `""`. The 2 s clock was measuring the *thread pool*, not
+the process. Reproduced 5/5 under a saturated pool: a child that printed `hello`
+reported an empty stdout.
+
+Two fixes, because one alone would only have made the silence rarer:
+
+- The pumps now own **dedicated threads** and read synchronously, so a saturated
+  pool can no longer starve them (the same `LongRunning` remedy
+  `runWithCancellableTimeout` already used). The drain window now measures the
+  pipe, which is the thing it names.
+- "I did not finish draining" is now a **distinguishable value**, not an empty
+  string: `ProcessOutput.Drained text` (both streams reached EOF — the child's
+  complete output, the only capture you may assert against) versus
+  `ProcessOutput.DrainTimedOut (captured, window)` (we stopped listening while a
+  stream was still open — `""` here means "we read nothing", never "the child
+  printed nothing"). A caller that renders text says so; a caller that decides
+  anything must handle the timed-out case explicitly. Human-facing renderings
+  (`fshw errors`, plugin status, a build's silent-failure diagnostic) now NAME an
+  incomplete read instead of presenting it as the child's output.
+
+This also fixes an intermittent `ProcessHelperTests` failure on loaded boxes,
+where a starved drain was asserted against as though an empty stdout had been
+measured — including, in the env-strip tests, *passing* for the wrong reason.
+
 ### A compile-item-only project-file edit can no longer wedge the deps-freshness gate red
 
 The deps-freshness gate uses an mtime fast-path to notice when a project's

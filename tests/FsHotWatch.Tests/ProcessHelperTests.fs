@@ -1,8 +1,8 @@
 module FsHotWatch.Tests.ProcessHelperTests
 
 open System
-open System.Threading.Tasks
 open Xunit
+open Xunit.Sdk
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Tests.TestHelpers
 
@@ -21,32 +21,142 @@ let private runProcess command args workDir env =
 let private runProcessBounded command args bounds =
     FsHotWatch.ProcessHelper.runProcess command args "." [] bounds
 
-// --- drainedOrEmpty: post-kill drain tail (internal, via InternalsVisibleTo) ---
-// The timeout-kill call sites are exercised end-to-end in
-// FsHotWatch.IntegrationTests; these deterministic unit tests pin both arms so
-// the pure decision (completed -> value, anything else -> "") stays covered in
-// the unit metric without depending on OS scheduling.
+// ---------------------------------------------------------------------------
+// AUTOMATION-126 — THE DISEASE, IN OUR OWN TEST ASSERTIONS.
+//
+// Every stdout assertion in this file used to be shaped like
+//
+//     match runProcess "sh" (echoEnv key) "." [] with
+//     | Succeeded out -> Assert.Equal(expected, out)
+//
+// and `out` was a plain `string`. On a loaded box the 2 s post-exit drain window
+// expired before the thread-pool-scheduled reader ever ran, so `out` came back
+// `""` — and the assertion compared against it AS IF IT HAD MEASURED AN EMPTY
+// OUTPUT. Three sightings on 2026-07-14. When `expected` was `""` (the env-strip
+// tests!) it PASSED, proving nothing; when it wasn't, it failed with a mismatch
+// that named the wrong culprit.
+//
+// That is the same failure as a `top` that cannot sample reporting a healthy box,
+// or a gate that cannot run tests reporting no failures: a measurement that could
+// not be taken, reported as a measurement of nothing. The cure is not a longer
+// window — it is that "I never finished draining" and "the child printed nothing"
+// are now DIFFERENT VALUES (`ProcessOutput.DrainTimedOut` vs `Drained ""`), and
+// only the second can be asserted against.
+//
+// `expectStdout` below is the one door every stdout assertion goes through, and it
+// slams on the first.
+// ---------------------------------------------------------------------------
+
+let private expectStdout (expected: string) (outcome: ProcessOutcome) =
+    match outcome with
+    | Succeeded(ProcessOutput.Drained text) -> Assert.Equal(expected, text)
+    | Succeeded(ProcessOutput.DrainTimedOut(captured, window)) ->
+        Assert.Fail
+            $"THE DRAIN DID NOT FINISH within %d{int window.TotalSeconds}s, so the child's output was never \
+              measured and CANNOT be compared to %A{expected}. What we caught before giving up: %A{captured} — \
+              which is not the same fact as 'the child printed that'. Cause: the reader was starved, or a \
+              grandchild is holding the pipe open. This test is not red because the child misbehaved; it is red \
+              because we failed to listen."
+    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+// --- pumpReachedEof: did a stopped pump stop AT EOF? (internal, via InternalsVisibleTo) ---
+// The live arms need a pipe torn down mid-read (exercised end-to-end in
+// FsHotWatch.IntegrationTests); these pin the pure decision deterministically.
 
 [<Fact(Timeout = 5000)>]
-let ``drainedOrEmpty returns the value of a completed task`` () =
-    Assert.Equal("hello", drainedOrEmpty (Task.FromResult "hello"))
+let ``pumpReachedEof: a read loop that ended with no failure reached EOF`` () = Assert.True(pumpReachedEof None)
 
 [<Fact(Timeout = 5000)>]
-let ``drainedOrEmpty returns empty for a never-completing task`` () =
-    let tcs = TaskCompletionSource<string>()
-    Assert.Equal("", drainedOrEmpty tcs.Task)
+let ``pumpReachedEof: an expected drain failure did NOT reach EOF`` () =
+    // F18: the timeout-kill tears the pipe down under the pump. The read DIED, so
+    // the capture is not provably complete — false, never "EOF with no more bytes".
+    Assert.False(pumpReachedEof (Some(IO.IOException "pipe broken after kill")))
+    Assert.False(pumpReachedEof (Some(ObjectDisposedException "stream")))
 
 [<Fact(Timeout = 5000)>]
-let ``drainedOrEmpty returns empty for a faulted task`` () =
-    let tcs = TaskCompletionSource<string>()
-    tcs.SetException(InvalidOperationException "boom")
-    Assert.Equal("", drainedOrEmpty tcs.Task)
+let ``pumpReachedEof: an UNEXPECTED failure is re-raised, never laundered into a verdict`` () =
+    // A read that failed for a reason we do not understand must not be quietly
+    // downgraded to "not drained" — that would hide a real bug inside an outcome
+    // the caller is trained to tolerate. It escapes.
+    Assert.Throws<NullReferenceException>(fun () -> pumpReachedEof (Some(NullReferenceException())) |> ignore)
+    |> ignore
+
+// --- classifyDrain: the capture is only complete if BOTH pumps ended at EOF ---
+
+/// An EOF thunk that must never be forced: forcing it would mean reading
+/// `Task.Result` on a pump that is still running — the block this design forbids.
+let private mustNotBeForced () : bool =
+    failwith "classifyDrain forced an EOF flag before the wait proved the pump had stopped — this would BLOCK"
+
+[<Fact(Timeout = 5000)>]
+let ``classifyDrain: a wait that did not return is a timed-out drain, and never touches Task.Result`` () =
+    match classifyDrain false mustNotBeForced mustNotBeForced "partial" (TimeSpan.FromSeconds 2.0) with
+    | ProcessOutput.DrainTimedOut(captured, window) ->
+        Assert.Equal("partial", captured)
+        Assert.Equal(TimeSpan.FromSeconds 2.0, window)
+    | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``classifyDrain: a stdout pump that died short of EOF is a timed-out drain`` () =
+    match classifyDrain true (fun () -> false) mustNotBeForced "partial" (TimeSpan.FromSeconds 2.0) with
+    | ProcessOutput.DrainTimedOut(captured, _) -> Assert.Equal("partial", captured)
+    | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``classifyDrain: a stderr pump that died short of EOF is a timed-out drain`` () =
+    // stdout reached EOF but stderr did not — STILL not a complete measurement.
+    match classifyDrain true (fun () -> true) (fun () -> false) "partial" (TimeSpan.FromSeconds 2.0) with
+    | ProcessOutput.DrainTimedOut(captured, _) -> Assert.Equal("partial", captured)
+    | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``classifyDrain: both pumps at EOF inside the window is the child's complete output`` () =
+    match classifyDrain true (fun () -> true) (fun () -> true) "all of it" (TimeSpan.FromSeconds 2.0) with
+    | ProcessOutput.Drained text -> Assert.Equal("all of it", text)
+    | other -> Assert.Fail $"expected Drained, got %A{other}"
+
+// --- ProcessOutput.text / renderOutput: the two ways to read a capture ---
+
+[<Fact(Timeout = 5000)>]
+let ``ProcessOutput.text hands back the captured bytes, untagged, either way`` () =
+    // For text-SEARCHING (a marker either present or not), where a short capture
+    // can only cost a hit, never invent one.
+    Assert.Equal("hi", ProcessOutput.text (ProcessOutput.Drained "hi"))
+    Assert.Equal("hi", ProcessOutput.text (ProcessOutput.DrainTimedOut("hi", TimeSpan.FromSeconds 2.0)))
+
+[<Fact(Timeout = 5000)>]
+let ``renderOutput leaves a fully-drained capture exactly as the child said it`` () =
+    Assert.Equal("hello", renderOutput (ProcessOutput.Drained "hello"))
+
+[<Fact(Timeout = 5000)>]
+let ``renderOutput NAMES an incomplete drain so no human reads the silence as the child's`` () =
+    let rendered =
+        renderOutput (ProcessOutput.DrainTimedOut("half a line", TimeSpan.FromSeconds 2.0))
+
+    Assert.Contains("half a line", rendered)
+    Assert.Contains("OUTPUT INCOMPLETE", rendered)
+    Assert.Contains("2s", rendered)
+
+[<Fact(Timeout = 5000)>]
+let ``outputOf renders each outcome's capture, tagging the ones we could not finish`` () =
+    Assert.Equal("ok", outputOf (Succeeded(ProcessOutput.Drained "ok")))
+    Assert.Equal("boom", outputOf (Failed(2, ProcessOutput.Drained "boom")))
+
+    let timedOut =
+        outputOf (TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "tail"))
+
+    Assert.Contains("timed out after 30s", timedOut)
+    Assert.Contains("tail", timedOut)
+
+    // An empty capture we never managed to take does NOT render as an empty output.
+    let unmeasured =
+        outputOf (Succeeded(ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0)))
+
+    Assert.Contains("OUTPUT INCOMPLETE", unmeasured)
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess returns Succeeded when fast`` () =
-    match runProcess "echo" "hi" "." [] with
-    | Succeeded out -> Assert.Equal("hi", out.Trim())
-    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    runProcess "echo" "hi" "." [] |> expectStdout "hi"
 
 [<Fact(Timeout = 20000)>]
 let ``runWithTimeout returns WorkCompleted when work completes in time`` () =
@@ -142,9 +252,7 @@ let ``runWithCancellableTimeout cancelled unit releases its lock so the next uni
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess succeeds for echo`` () =
-    match runProcess "echo" "hello" "." [] with
-    | Succeeded out -> Assert.Equal("hello", out.Trim())
-    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    runProcess "echo" "hello" "." [] |> expectStdout "hello"
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess reports nonzero exit as Failed`` () =
@@ -171,9 +279,9 @@ let ``isTimedOut is true only for TimedOut`` () =
     // FsHotWatch.IntegrationTests (kept out of the coverage suite because its
     // OS-scheduling-dependent kill/drain branches jitter); this pins the pure
     // discriminator in the unit suite.
-    Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, "tail")))
-    Assert.False(isTimedOut (Succeeded "ok"))
-    Assert.False(isTimedOut (Failed(1, "boom")))
+    Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, ProcessOutput.Drained "tail")))
+    Assert.False(isTimedOut (Succeeded(ProcessOutput.Drained "ok")))
+    Assert.False(isTimedOut (Failed(1, ProcessOutput.Drained "boom")))
 
 [<Fact(Timeout = 15000)>]
 let ``isDotnetCommand matches dotnet basename`` () =
@@ -210,10 +318,12 @@ let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
 let private echoEnv (var: string) =
     sprintf "-c \"printf %%s \\\"$%s\\\"\"" var
 
-let private expectStdout (expected: string) (outcome: ProcessOutcome) =
-    match outcome with
-    | Succeeded out -> Assert.Equal(expected, out)
-    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+// NOTE every assertion below expects the EMPTY string — these are the strip tests,
+// and an empty stdout is exactly what they are here to prove. They are therefore
+// the tests a starved drain could silently fake: pre-AUTOMATION-126 a reader that
+// never ran produced `""`, they all went green, and the strip contract they claim
+// to guard was never actually exercised. `expectStdout` now demands a MEASURED
+// empty output and rejects an unmeasured one.
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess inherits the parent process environment (no scrubbing)`` () =
@@ -621,14 +731,11 @@ let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
 [<Fact(Timeout = 20000)>]
 let ``runProcess streaming: a fast normal process returns Succeeded`` () =
     // A progressing, quickly-exiting process is never launch-killed.
-    match
-        runProcessBounded
-            "echo"
-            "hi"
-            (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
-    with
-    | Succeeded out -> Assert.Equal("hi", out.Trim())
-    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    runProcessBounded
+        "echo"
+        "hi"
+        (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
+    |> expectStdout "hi"
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess streaming: a real failing test with output stays Failed`` () =
@@ -639,8 +746,10 @@ let ``runProcess streaming: a real failing test with output stays Failed`` () =
             "-c \"echo boom; exit 3\""
             (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
     with
-    | Failed(3, out) -> Assert.Contains("boom", out)
-    | other -> Assert.Fail $"expected Failed 3, got %A{other}"
+    // A child with no grandchild reaches EOF the instant it exits, so its failure
+    // output is a MEASURED capture — `Drained`, not a partial we hope contains "boom".
+    | Failed(3, ProcessOutput.Drained out) -> Assert.Contains("boom", out)
+    | other -> Assert.Fail $"expected Failed 3 with a fully-drained output, got %A{other}"
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess streaming: a nonzero exit with NO output is Failed, not a stall`` () =
@@ -685,7 +794,12 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
             "-c \"echo go; sleep 30\""
             (ProcessBounds.streaming (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 10.0))
     with
-    | TimedOut(_, tail) -> Assert.Contains("go", tail)
+    // The kill-path tail is EXPLICITLY a best-effort capture — the kill tears the
+    // pipes down under the pumps, so whether they end at EOF or die mid-read is an
+    // OS race. `ProcessOutput.text` is us SAYING SO: this is the one call site in
+    // the file that reads a capture without demanding it be complete, and it is a
+    // deliberate, greppable act rather than a `""` we mistook for an answer.
+    | TimedOut(_, tail) -> Assert.Contains("go", ProcessOutput.text tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
 // ---------------------------------------------------------------------------
@@ -708,19 +822,28 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
 // RED-BEFORE-GREEN: restore `Task.WaitAll(stdoutTask, stderrTask)` (no timeout) on
 // the Exited arm and this test hangs until the xUnit timeout kills it.
 // ---------------------------------------------------------------------------
+/// A child that exits at once while an orphaned grandchild keeps the inherited
+/// stdout pipe open for 30 s. EOF therefore CANNOT arrive inside the 2 s drain
+/// window — this is a real, fully deterministic drain that cannot finish, and it is
+/// the fixture both tests below stand on.
+let private spawnWithPipeHoldingGrandchild () =
+    runProcessBounded "sh" "-c \"( sleep 30 & ) ; echo done\"" (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+
 [<Fact(Timeout = 15000)>]
 let ``runProcess does not wait for a grandchild that inherited the stdout pipe`` () =
     let sw = System.Diagnostics.Stopwatch.StartNew()
-
-    let outcome =
-        runProcessBounded "sh" "-c \"( sleep 30 & ) ; echo done\"" (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
-
+    let outcome = spawnWithPipeHoldingGrandchild ()
     sw.Stop()
 
-    // Classified by the child's EXIT CODE, not by stream EOF.
+    // Classified by the child's EXIT CODE, not by stream EOF — a grandchild holding
+    // the pipe cannot turn a clean exit into a failure. But the capture is honestly
+    // marked: we bailed on a stream that never reached EOF, so what we have is what
+    // we caught, NOT a measurement of what the child said.
     match outcome with
-    | Succeeded out -> Assert.Contains("done", out)
-    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    | Succeeded(ProcessOutput.DrainTimedOut(captured, window)) ->
+        Assert.Contains("done", captured)
+        Assert.Equal(TimeSpan.FromSeconds 2.0, window)
+    | other -> Assert.Fail $"expected Succeeded with a DrainTimedOut capture, got %A{other}"
 
     // The grandchild holds the pipe for 30 s; we must be long gone by then.
     Assert.True(
@@ -728,3 +851,26 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
         $"post-exit drain was not bounded: took %.1f{sw.Elapsed.TotalSeconds}s waiting on a \
           grandchild-held pipe for a child that had already exited"
     )
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-126, THE REGRESSION TEST: a drain that could not finish must FAIL an
+// output assertion, loudly and by its true name — never be silently compared
+// against as if it were the child's output.
+//
+// RED-BEFORE-GREEN: revert `ProcessOutput` to a plain `string` and this test cannot
+// even be written — `expectStdout` would receive `"done"` (or, with a starved
+// reader, `""`) and assert against it, exactly as it did on 2026-07-14.
+// ---------------------------------------------------------------------------
+[<Fact(Timeout = 15000)>]
+let ``a drain that could not finish FAILS an output assertion by its true name`` () =
+    let outcome = spawnWithPipeHoldingGrandchild ()
+
+    let failure = Assert.Throws<FailException>(fun () -> expectStdout "done" outcome)
+
+    // It is red for the RIGHT reason: it names the unfinished drain, and it does NOT
+    // pretend to have compared two strings. (Note the child really did print "done":
+    // even a capture that happens to hold what we wanted is not evidence we heard
+    // all of it, so it is refused all the same.)
+    Assert.Contains("THE DRAIN DID NOT FINISH", failure.Message)
+    Assert.Contains("we failed to listen", failure.Message)
+    Assert.DoesNotContain("Assert.Equal() Failure", failure.Message)

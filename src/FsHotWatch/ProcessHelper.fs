@@ -6,17 +6,66 @@ open System.Text
 open System.Threading
 open System.Threading.Tasks
 
+/// What a spawned child ACTUALLY said — tagged with whether we managed to hear all
+/// of it (AUTOMATION-126).
+///
+/// A child's output is read by stream pumps that end at EOF. When the drain window
+/// closes with a pump still open, whatever we captured is NOT a measurement of the
+/// child's output: an empty capture then means "we read nothing", which is a
+/// different fact from "the child printed nothing" — and the two used to be the
+/// same `string`. A test asserting `Assert.Equal("hi", out)` against a starved
+/// drain saw `""` and reported an empty output as if it had observed one; that is
+/// the same disease as a `top` that cannot sample reporting a healthy box.
+///
+/// So the two facts are now different VALUES. A caller that only renders text says
+/// so (`ProcessOutput.text`); a caller that decides anything must match and handle
+/// `DrainTimedOut` explicitly. Unrepresentable beats detected; detected beats silent.
+[<RequireQualifiedAccess>]
+type ProcessOutput =
+    /// Both pumps reached EOF inside the drain window: `text` is the child's
+    /// COMPLETE stdout+stderr (trimmed). The only capture you may assert against.
+    | Drained of text: string
+    /// We never saw EOF on both streams — either the drain window elapsed with a
+    /// pump still blocked on a pipe a GRANDCHILD holds open (the 16 h-wedge shape,
+    /// see `PostExitDrainWindow`), or a pump's read DIED on a pipe torn down by the
+    /// timeout-kill. `captured` is whatever bytes had arrived by then. It is not a
+    /// measurement: `""` here means "we read nothing", NEVER "the child printed
+    /// nothing".
+    | DrainTimedOut of captured: string * window: TimeSpan
+
+[<RequireQualifiedAccess>]
+module ProcessOutput =
+
+    /// The captured bytes, untagged — for callers that only SEARCH the text for a
+    /// marker they either find or don't (a runner's "Zero tests ran" line), where a
+    /// short capture can only ever cost a hit, never invent one.
+    ///
+    /// Do NOT use this to conclude something from an ABSENCE. If the emptiness (or
+    /// the exact value) of the output is the thing you are deciding on, match the
+    /// `ProcessOutput` and treat `DrainTimedOut` as the non-answer that it is.
+    let text (output: ProcessOutput) : string =
+        match output with
+        | ProcessOutput.Drained text -> text
+        | ProcessOutput.DrainTimedOut(captured, _) -> captured
+
 /// Outcome of running an external process. Tagged so callers can tell a
 /// nonzero exit from a timeout-induced kill without parsing the output.
+///
+/// The VERDICT rides on the exit code, never on stream EOF — a child that exits 0
+/// while a grandchild holds its stdout pipe has still succeeded. So a drain that
+/// could not finish does not change the case; it is carried INSIDE the output, where
+/// a caller that reads the text cannot help but see it (cf. `RunVerdict`: a terminal
+/// status must carry its evidence).
 type ProcessOutcome =
     /// Process exited with code 0. `output` is combined stdout+stderr (trimmed).
-    | Succeeded of output: string
+    | Succeeded of output: ProcessOutput
     /// Process exited with a nonzero code. `output` is combined stdout+stderr.
-    | Failed of exitCode: int * output: string
+    | Failed of exitCode: int * output: ProcessOutput
     /// Process did not exit within the timeout and was killed (along with its
     /// child process tree). `tail` is whatever stdout+stderr we drained before
-    /// the kill — best-effort, may be empty.
-    | TimedOut of after: TimeSpan * tail: string
+    /// the kill — best-effort, and typically a `DrainTimedOut` because the kill
+    /// tears the pipes down under the pumps.
+    | TimedOut of after: TimeSpan * tail: ProcessOutput
 
 /// Outcome of an in-process unit of work bounded by a wall-clock timeout.
 type WorkOutcome<'a> =
@@ -33,13 +82,24 @@ let isTimedOut =
     | TimedOut _ -> true
     | _ -> false
 
+/// Render a capture for a HUMAN — a log line, a plugin status, an error entry. An
+/// incomplete drain is NAMED in the rendered text, so nobody reads a silence here
+/// and trusts it. (`ProcessOutput.text` is the untagged form for text-searching.)
+let renderOutput (output: ProcessOutput) : string =
+    match output with
+    | ProcessOutput.Drained text -> text
+    | ProcessOutput.DrainTimedOut(captured, window) ->
+        $"%s{captured}\n[fshw] OUTPUT INCOMPLETE: the child exited but its streams never reached EOF within \
+          %d{int window.TotalSeconds}s (a grandchild is holding the pipe open, or the read died with it). The text \
+          above is what we caught, not what the child said."
+
 /// Combined output regardless of outcome — for callers that just want the text
 /// to render in a status line. Preserves the historical message format.
 let outputOf (outcome: ProcessOutcome) : string =
     match outcome with
-    | Succeeded out -> out
-    | Failed(_, out) -> out
-    | TimedOut(after, tail) -> $"timed out after %d{int after.TotalSeconds}s\n%s{tail}"
+    | Succeeded out -> renderOutput out
+    | Failed(_, out) -> renderOutput out
+    | TimedOut(after, tail) -> $"timed out after %d{int after.TotalSeconds}s\n%s{renderOutput tail}"
 
 /// F17 (audit 2026-05-02): exception classes we treat as benign on the
 /// timeout-kill path. `Process.Kill` raises InvalidOperationException only
@@ -64,14 +124,45 @@ let isExpectedDrainException (ex: exn) : bool =
     | :? ObjectDisposedException -> true
     | _ -> false
 
-/// Result of a read task after the bounded post-kill drain: its value if it
-/// completed successfully, otherwise "". A task that is still running, faulted,
-/// or cancelled when the drain window elapses yields "" — we never block on
-/// `.Result` here. Extracted so the else-arm is deterministically covered by a
-/// unit test; the real call sites are reached only on the OS-scheduling-
-/// sensitive timeout-kill path (covered end-to-end in IntegrationTests).
-let internal drainedOrEmpty (t: Task<string>) : string =
-    if t.IsCompletedSuccessfully then t.Result else ""
+/// Did a stream pump that has STOPPED reading do so at EOF?
+///
+/// `None` — the read loop ran to EOF: the stream is exhausted, nothing more will
+/// ever arrive from it, and what we captured from it is complete.
+///
+/// `Some ex` — the read DIED. On the timeout-kill path that is expected (F18: the
+/// kill tears the pipe down under the pump), and it means the capture is NOT
+/// provably complete, so the pump reports `false` and the drain is classified as
+/// timed-out rather than drained. Anything OUTSIDE the expected classes is a real
+/// bug: it is re-raised on the pump's task and surfaces through the drain wait,
+/// because a read that failed for a reason we do not understand must never be
+/// laundered into "the child printed nothing".
+///
+/// Pure so all three arms are covered deterministically — the live paths need a
+/// torn-down pipe (exercised end-to-end in FsHotWatch.IntegrationTests).
+let internal pumpReachedEof (failure: exn option) : bool =
+    match failure with
+    | None -> true
+    | Some ex when isExpectedDrainException ex -> false
+    | Some ex -> raise ex
+
+/// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
+/// only if the wait returned inside the window AND both pumps ended at EOF; anything
+/// else is a capture we cannot vouch for.
+///
+/// The EOF flags are THUNKS because they are backed by `Task.Result`, which blocks
+/// on a pump that is still running: they may only be forced once `waitReturned`
+/// proves both pumps are done. `&&` short-circuits, so the types enforce the order.
+let internal classifyDrain
+    (waitReturned: bool)
+    (stdoutReachedEof: unit -> bool)
+    (stderrReachedEof: unit -> bool)
+    (captured: string)
+    (window: TimeSpan)
+    : ProcessOutput =
+    if waitReturned && stdoutReachedEof () && stderrReachedEof () then
+        ProcessOutput.Drained captured
+    else
+        ProcessOutput.DrainTimedOut(captured, window)
 
 /// True when the command will spawn `dotnet` (matching `dotnet`, `dotnet.exe`,
 /// or paths ending in either). Used to inject MSBUILDDISABLENODEREUSE.
@@ -343,8 +434,17 @@ let resolveLaunchDeadline (overrideSec: string option) : TimeSpan =
 /// 16 h machine-sleep wedge. So we drain only for a bounded window, then proceed
 /// with whatever output was captured; the verdict rides on the exit code, not on
 /// stream EOF.
-[<Literal>]
-let private PostExitDrainMs = 2000
+///
+/// AUTOMATION-126: a wall clock is the RIGHT bound here and the only sound one —
+/// a pipe a grandchild holds open has no "work" left to wait for, so no
+/// work-completion signal can ever arrive and only a clock can end the wait. What
+/// was wrong was not the clock but what it was measuring: the pumps used to be
+/// `task {}` continuations on the THREAD POOL, so on a saturated box the reader
+/// was never scheduled and the window expired having read nothing — the clock was
+/// measuring the pool, not the pipe. The pumps now own dedicated threads (below),
+/// so this window once again measures the thing it names; and when it does expire,
+/// it says so (`ProcessOutput.DrainTimedOut`) instead of handing back `""`.
+let internal PostExitDrainWindow = TimeSpan.FromSeconds 2.0
 
 /// The bounds ONE spawned child runs under. Construct only via
 /// `ProcessBounds.streaming` / `ProcessBounds.silent` — the fields are private
@@ -435,29 +535,51 @@ let runProcess
     // event API (`BeginOutputReadLine`) here: draining it requires the
     // parameterless `WaitForExit()` (the timed overload does NOT flush the async
     // handlers), and that overload is exactly the unbounded, grandchild-pipe-
-    // wedging wait we must avoid. Direct `ReadAsync` gives us Task handles we can
-    // bound-wait AND flips a latch on the FIRST byte — the "alive & progressing"
-    // signal the launch deadline keys off (`ReadToEndAsync` only completes at
+    // wedging wait we must avoid. A chunk-at-a-time `Read` loop gives us a Task
+    // handle we can bound-wait AND flips a latch on the FIRST byte — the "alive &
+    // progressing" signal the launch deadline keys off (`ReadToEnd` only returns at
     // EOF, which a wedged launch never reaches).
     let output = StringBuilder()
     let outputLock = obj ()
     let mutable sawOutput = 0
 
-    let pump (reader: IO.StreamReader) : Task =
-        task {
-            let buf = Array.zeroCreate<char> 4096
-            let mutable go = true
+    // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
+    //
+    // AUTOMATION-126: it used to be a `task {}` over `ReadAsync`, whose every
+    // continuation is scheduled on the thread pool. Under a saturated pool — a
+    // `check` running the full suite in parallel, exactly when a spawn's output
+    // matters most — the reader simply never ran, the 2 s drain window expired
+    // having read zero bytes, and the child's output came back as `""`. The clock
+    // was measuring the POOL, not the process. `runWithCancellableTimeout` below
+    // already learned this lesson (its work runs `LongRunning` for the same
+    // reason); the pumps had not. A reader that cannot be scheduled cannot read,
+    // and a read that cannot happen must not be reported as a read of nothing.
+    //
+    // Returns TRUE iff the loop ended at EOF — i.e. the stream is exhausted and
+    // what we captured from it is all there ever was. See `pumpReachedEof`.
+    let pump (reader: IO.StreamReader) : Task<bool> =
+        Task.Factory.StartNew(
+            (fun () ->
+                let mutable failure = None
 
-            while go do
-                let! n = reader.ReadAsync(buf.AsMemory())
+                try
+                    let buf = Array.zeroCreate<char> 4096
+                    let mutable go = true
 
-                if n = 0 then
-                    go <- false
-                else
-                    Volatile.Write(&sawOutput, 1)
-                    lock outputLock (fun () -> output.Append(buf, 0, n) |> ignore)
-        }
-        :> Task
+                    while go do
+                        let n = reader.Read(buf, 0, buf.Length)
+
+                        if n = 0 then
+                            go <- false
+                        else
+                            Volatile.Write(&sawOutput, 1)
+                            lock outputLock (fun () -> output.Append(buf, 0, n) |> ignore)
+                with ex ->
+                    failure <- Some ex
+
+                pumpReachedEof failure),
+            TaskCreationOptions.LongRunning
+        )
 
     let stdoutTask = pump proc.StandardOutput
     let stderrTask = pump proc.StandardError
@@ -468,11 +590,20 @@ let runProcess
     // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
     // instant it exits (returns in ms); only a grandchild holding the pipe makes
     // this block, and then only for the window — never forever.
-    let drainPumps () =
-        try
-            Task.WaitAll([| stdoutTask; stderrTask |], PostExitDrainMs) |> ignore
-        with _ ->
-            () // a faulted pump (pipe torn down on kill) is expected — drain best-effort
+    //
+    // The window expiring is a FACT ABOUT THE MEASUREMENT, not a fact about the
+    // child, so it rides out on the value: `DrainTimedOut` can never be mistaken
+    // for a child that said nothing.
+    let drainPumps () : ProcessOutput =
+        let waitReturned =
+            Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
+
+        classifyDrain
+            waitReturned
+            (fun () -> stdoutTask.Result)
+            (fun () -> stderrTask.Result)
+            (drainedOutput ())
+            PostExitDrainWindow
 
     let pollMs = 250
 
@@ -500,8 +631,7 @@ let runProcess
 
         match outcome with
         | LaunchOutcome.Exited ->
-            drainPumps ()
-            let out = drainedOutput ()
+            let out = drainPumps ()
 
             if proc.ExitCode = 0 then
                 Succeeded out
@@ -509,11 +639,16 @@ let runProcess
                 Failed(proc.ExitCode, out)
         | LaunchOutcome.TimedOut ->
             killTree ()
-            drainPumps ()
-            TimedOut(timeout, drainedOutput ())
+            TimedOut(timeout, drainPumps ())
         | LaunchOutcome.Stalled ->
             killTree ()
-            drainPumps ()
+
+            // A stall is DEFINED as "not one byte within the launch deadline", so
+            // there is no capture to report and nothing a drain could tell us: we
+            // run it only to let the pumps close their pipes, and discard the
+            // (necessarily empty) result deliberately. The diagnostic is the
+            // exception, not the text.
+            drainPumps () |> ignore
 
             raise (
                 LaunchStalledException(

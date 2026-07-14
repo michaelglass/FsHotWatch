@@ -357,10 +357,16 @@ let create
                                 ctx.Log "Build FAILED"
                                 error "build" "Build FAILED"
 
-                                let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
+                                let parsedCount =
+                                    BuildDiagnostics.parseMSBuildDiagnostics (ProcessOutput.text output)
+                                    |> List.length
 
                                 if parsedCount = 0 then
-                                    let detail = formatSilentFailureDiagnostic exitCode output
+                                    // "Build FAILED / 0 diagnostics" is precisely the shape an
+                                    // unfinished drain fakes — so this diagnostic renders the
+                                    // capture, which NAMES the incomplete read rather than
+                                    // letting a silence we never heard read as a silent build.
+                                    let detail = formatSilentFailureDiagnostic exitCode (renderOutput output)
                                     ctx.Log detail
                                     error "build" detail
                             | BuildOutputFailed _, _ ->

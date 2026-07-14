@@ -395,10 +395,14 @@ let ``depRelevantSignature: unparseable fsproj folds a sentinel and re-arms on f
 let private sigZero (_: string) = "sig-0"
 let private assetsYes (_: string) = true
 let private assetsNo (_: string) = false
-let private succeedingRunner: RestoreRunner = fun _ -> Succeeded "restored"
+// These fakes stand in for a REAL restore whose output we fully drained — hence
+// `ProcessOutput.Drained`. A fake may never hand back a capture it claims to have
+// measured but did not; that is the conflation AUTOMATION-126 removed.
+let private succeedingRunner: RestoreRunner =
+    fun _ -> Succeeded(ProcessOutput.Drained "restored")
 
 let private failingRunner: RestoreRunner =
-    fun _ -> Failed(1, "NU1101: package not found")
+    fun _ -> Failed(1, ProcessOutput.Drained "NU1101: package not found")
 
 [<Fact(Timeout = 5000)>]
 let ``evaluateProject: fresh project proceeds without restore`` () =
@@ -407,7 +411,7 @@ let ``evaluateProject: fresh project proceeds without restore`` () =
     let runner: RestoreRunner =
         fun _ ->
             ran <- true
-            Succeeded ""
+            Succeeded(ProcessOutput.Drained "")
 
     let tracker = RecoveryTracker()
 
@@ -461,7 +465,7 @@ let ``evaluateProject: still-stale second cycle does not re-run restore (no loop
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Failed(1, "still broken")
+            Failed(1, ProcessOutput.Drained "still broken")
 
     let tracker = RecoveryTracker()
     let proj = "P.fsproj"
@@ -484,7 +488,7 @@ let ``evaluateProject: a new dep bump re-arms recovery`` () =
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Failed(1, "broken")
+            Failed(1, ProcessOutput.Drained "broken")
 
     // Signature changes between the two attempts (a fresh bump).
     let sigs = System.Collections.Generic.Queue<string>([ "sig-1"; "sig-2" ])
@@ -512,7 +516,7 @@ let ``evaluateProject: mtime-Fresh but content signature drifted -> restores (no
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Succeeded "restored"
+            Succeeded(ProcessOutput.Drained "restored")
 
     // Two cycles: cycle 1 establishes the fresh baseline; cycle 2 has the SAME
     // mtime-Fresh probe verdict but a DIFFERENT content signature (preserved-mtime
@@ -541,7 +545,7 @@ let ``evaluateProject: mtime-Fresh with unchanged content signature stays Procee
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Succeeded "restored"
+            Succeeded(ProcessOutput.Drained "restored")
 
     let signatureOf (_: string) = "stable-sig"
     let tracker = RecoveryTracker()
@@ -569,7 +573,7 @@ let ``evaluateProject: mtime-Stale but dep signature matches baseline -> Proceed
     let runner: RestoreRunner =
         fun _ ->
             ran <- true
-            Succeeded "restored"
+            Succeeded(ProcessOutput.Drained "restored")
 
     let sigStable (_: string) = "dep-sig-stable"
     let tracker = RecoveryTracker()
@@ -596,7 +600,7 @@ let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not s
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Succeeded "restored"
+            Succeeded(ProcessOutput.Drained "restored")
 
     // Cycle 1 fresh baseline at dep-A; cycle 2 has a real dep change to dep-B.
     let sigs = System.Collections.Generic.Queue<string>([ "dep-A"; "dep-B" ])
@@ -623,7 +627,7 @@ let ``evaluateProject: Stale on first sighting (no baseline) still restores`` ()
     let runner: RestoreRunner =
         fun _ ->
             runs <- runs + 1
-            Succeeded "restored"
+            Succeeded(ProcessOutput.Drained "restored")
 
     let tracker = RecoveryTracker()
 
