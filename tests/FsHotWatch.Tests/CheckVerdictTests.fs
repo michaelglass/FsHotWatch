@@ -304,3 +304,14 @@ let ``parseTestScope: a full reply that did not actually cover every project is 
     // counts are the evidence, the label is not.
     test <@ parseTestScope """{"scope":"full","ranProjects":2,"totalProjects":4}""" = ScopeUnknown @>
     test <@ parseTestScope """{"scope":"full","ranProjects":0,"totalProjects":0}""" = ScopeUnknown @>
+
+// --- uncheckedMagnitude: defensive totality, pinned directly ---------------
+// `converge` structurally never routes `Complete` into the magnitude
+// comparison (a Complete read resolves to a verdict first), so the Complete
+// arm is reachable only through a direct test of the total mapping.
+
+[<Fact(Timeout = 10000)>]
+let ``uncheckedMagnitude: Complete is zero, Incomplete carries its count, Unknown is maximal`` () =
+    test <@ uncheckedMagnitude Complete = 0 @>
+    test <@ uncheckedMagnitude (Incomplete 7) = 7 @>
+    test <@ uncheckedMagnitude Unknown = System.Int32.MaxValue @>
