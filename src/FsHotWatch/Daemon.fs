@@ -876,14 +876,10 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
     }
 
 /// Format elapsed as human-readable "5m 3s" / "45s" / "1h 12m". Public so
-/// consumers + tests can share the same cadence.
-let formatElapsed (ts: System.TimeSpan) =
-    if ts.TotalHours >= 1.0 then
-        $"%d{int ts.TotalHours}h %d{ts.Minutes}m"
-    elif ts.TotalMinutes >= 1.0 then
-        $"%d{int ts.TotalMinutes}m %d{ts.Seconds}s"
-    else
-        $"%d{ts.Seconds}s"
+/// consumers + tests can share the same cadence. Delegates to
+/// `PluginWedge.formatElapsed` — ONE definition, so the daemon's wait logs and
+/// the wedge wording can never drift apart.
+let formatElapsed (ts: System.TimeSpan) = PluginWedge.formatElapsed ts
 
 /// Pure formatter for "Waiting for plugins" log line. Includes plugin elapsed
 /// time + each active subtask's label + elapsed, so a stuck daemon is
@@ -1239,19 +1235,27 @@ type Daemon
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
         idleExitMin: int option,
-        pressureIdleFloorMin: int option
+        pressureIdleFloorMin: int option,
+        // Per-daemon process registry. Plugin-spawned children (test runners,
+        // playwright drivers, file-command processes) register against it, and
+        // Dispose kills everything still tracked — that is how `fshw stop` and
+        // the wedge self-heal reap in-flight children instead of orphaning them.
+        //
+        // It is CONSTRUCTED AND INSTALLED BY `createWith`, BEFORE the PluginHost
+        // and the scan/change mailboxes exist — NOT here (AUTOMATION-147). The
+        // registry is scoped by an `AsyncLocal`, and an AsyncLocal set is only
+        // seen by ExecutionContexts captured AFTER it. Installing in this
+        // constructor was too late: the mailboxes that later DISPATCH to plugins
+        // had already captured their contexts, so a plugin's child resolved NO
+        // registry, `ProcessRegistry.track` silently dropped it (`| None -> ()`),
+        // and `KillAll` reaped nothing. Proven on a live daemon: `track pid=69166
+        // -> NO REGISTRY (dropped)` / `KillAll: 0 tracked`, with the child left
+        // reparented to init. Taking it as a parameter is what makes the correct
+        // ordering the ONLY constructible one.
+        processRegistry: ProcessRegistry.Registry
     ) =
 
     let mutable disposed = false
-
-    // Per-daemon process registry. Installed as AsyncLocal current on construction
-    // so plugin-spawned children (test runners, playwright drivers, etc.) register
-    // against this daemon's registry. Dispose kills everything still tracked —
-    // that's how `dotnet fshw stop` reaps in-flight test runners.
-    // The install IDisposable is intentionally discarded: the daemon owns this
-    // registry for its full lifetime.
-    let processRegistry = ProcessRegistry.Registry()
-    do ProcessRegistry.install processRegistry |> ignore
 
     // Expose a read-only view of the live project graph to plugins (via
     // PluginCtx.ProjectGraph) BEFORE DaemonConfig.registerPlugins runs, so the
@@ -1535,6 +1539,44 @@ type Daemon
                         // No-op disposable when idle-exit is off.
                         { new IDisposable with
                             member _.Dispose() = () }
+
+                // Plugin-wedge monitor (AUTOMATION-147). A plugin that reported
+                // Running and posts no completion past the bound is BY DEFINITION
+                // wedged; before this, the daemon knew and said nothing (the
+                // AUTOMATION-92 hang was silent for 8h36m, and the operator's
+                // only wedge detector was grepping for a MISSING `elapsed:`
+                // field). The monitor logs escalating "still running … (no
+                // completion posted)" lines every 5 min so a silent log can
+                // never be mistaken for a healthy idle daemon, and past the
+                // bound it names the wedge, writes the last-wedge breadcrumb
+                // (the next CLI command prints what happened), and gracefully
+                // restarts the daemon via the SAME `cts.Cancel()` path as
+                // `fshw stop` — child processes reaped, SQLite never killed
+                // mid-write, no `kill -9` ritual. The bound sits above the
+                // verdict deadline plus grace so a client blocked on
+                // WaitForComplete gets its own, more specific TimeoutException
+                // first and a healthy long run is never restarted.
+                use _wedgeMonitor: IDisposable =
+                    PluginWedge.createMonitor
+                        { Bound = PluginWedge.ambientBound ()
+                          EscalateEvery = PluginWedge.DefaultEscalateEvery
+                          Now = fun () -> System.DateTime.UtcNow
+                          RunningPlugins =
+                            fun () ->
+                                host.GetAllStatuses()
+                                |> Map.toList
+                                |> List.choose (fun (name, s) ->
+                                    match s with
+                                    | Running since -> Some(name, since)
+                                    | _ -> None)
+                          AnyBusy = fun () -> host.AnyPluginBusy()
+                          LastActivityAt = host.LastActivityAt
+                          Log = Logging.info "wedge"
+                          OnWedged =
+                            fun message ->
+                                Logging.error "wedge" message
+                                PluginWedge.writeBreadcrumb repoRoot message
+                                cts.Cancel() }
 
                 cancellationTokenRef.Value <- cts.Token
                 ready.Set()
@@ -1853,6 +1895,25 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
+        // AUTOMATION-147 — this MUST be the first thing that happens.
+        //
+        // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
+        // value is only visible to ExecutionContexts captured AFTER it is set.
+        // Everything below captures a context: the PluginHost's agents, the
+        // change/scan mailboxes, the plugin handlers registered later. Whichever
+        // of them eventually DISPATCHES to a plugin decides the context that
+        // plugin's `runProcess` runs in — so installing the registry any later
+        // (it used to happen in the `Daemon` constructor, after all of these
+        // existed) meant a plugin's spawned child resolved NO registry,
+        // `ProcessRegistry.track` dropped it silently, `KillAll` reaped nothing,
+        // and a wedged plugin's process outlived the daemon as an init-reparented
+        // orphan. That is the mess the operator was cleaning up with `kill -9`.
+        //
+        // Installing here, before any context is captured, is what makes
+        // `fshw stop` and the wedge self-heal actually reap their children.
+        let processRegistry = ProcessRegistry.Registry()
+        ProcessRegistry.install processRegistry |> ignore
+
         let cacheBackend = opts.CacheBackend
         let cacheKeyProvider = opts.CacheKeyProvider
 
@@ -2085,7 +2146,8 @@ module Daemon =
                 Some formatAllViaAgent,
                 excludePatterns,
                 opts.IdleExitMin,
-                opts.PressureIdleFloorMin
+                opts.PressureIdleFloorMin,
+                processRegistry
             )
         with _ ->
             lifetime.Dispose()

@@ -33,6 +33,9 @@
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="IdleExitTests.fs" />
+    <Compile Include="DaemonIdentityTests.fs" />
+    <Compile Include="PluginWedgeTests.fs" />
+    <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />

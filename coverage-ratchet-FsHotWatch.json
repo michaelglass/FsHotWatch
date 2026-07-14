@@ -655,6 +655,34 @@
         "reason": "higher line coverage on Linux CI (no FSEvents)",
         "platform": "linux"
       }
+    ],
+    "PluginWedge.fs": [
+      {
+        "line": 92,
+        "branch": 87,
+        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
+        "platform": "macos"
+      },
+      {
+        "line": 92,
+        "branch": 87,
+        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "platform": "linux"
+      }
+    ],
+    "DaemonIdentity.fs": [
+      {
+        "line": 100,
+        "branch": 71,
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 71,
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "platform": "linux"
+      }
     ]
   }
 }

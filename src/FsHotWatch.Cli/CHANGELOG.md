@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- feat!: **fshw self-heals a stale or wedged daemon instead of handing you a ritual.**
+  (AUTOMATION-147) Before running work, the CLI compares the running daemon's recorded
+  binary identity against its own. A different binary — or a daemon that recorded **no**
+  identity, i.e. any build predating the handshake — is stopped, replaced, and the
+  command continues. It says which it found (`The running daemon was started from a
+  different fshw binary (0.9.0) — restarting it with this one...`) and then just works.
+  - **A HEALTHY daemon is never restarted.** Restart happens only on a genuine identity
+    mismatch, a genuine wedge, or a `.fshw.json` change — the warm FCS cache is the
+    entire point of the daemon.
+  - **BREAKING:** `decideDaemonAction` is replaced by `decideRunningDaemonAction`, which
+    takes an `IdentityVerdict` and returns a `RunningDaemonAction`. The not-running case
+    is no longer representable: there is no decision to encode.
+  - `computeConfigHashWith` no longer takes an exe path. It hashes `.fshw.json` and
+    nothing else. It used to smuggle the binary in as `Environment.ProcessPath`'s mtime,
+    which for a `dotnet`-hosted invocation tracked the **dotnet muxer**, not the fshw
+    dll — and could not have caught a same-mtime repack anyway. Binary drift is the
+    identity handshake's job now; the two signals are honest and separate.
+
+- feat: **a corrupted IPC reply restarts the daemon and retries — automatically.**
+  (AUTOMATION-147) The `OutOfMemoryException` whose own code comment conceded it *"is
+  misleading because the machine isn't actually out of memory"* used to tell the human to
+  run `fshw stop` then `fshw start`. If that is the correct recovery, the tool performs
+  it. The retry happens exactly once, and only for the corrupted-pipe family (`OOM` /
+  `Overflow`) — a timeout does not restart a daemon that is merely busy.
+
+- feat: **an incomplete plugin is NEVER rendered `✓`** (AUTOMATION-147). A plugin running
+  past the wedge bound renders `⚠ analyzers  WEDGED: started 11:38:39, no completion in
+  12m` — in compact, verbose, and agent mode (a new `wedged` token, which steers `next:`
+  to `status`). A `Completed` status carrying no run record can no longer render as a bare
+  `✓` either: it warns, in words. And the `elapsed:` line is now **always** printed —
+  its *absence* was the home-made wedge detector the operator had to invent, and a tool
+  must never require its user to detect a fault by noticing what isn't printed.
+
+- feat: `fshw status` **names a stale-binary daemon** rather than presenting its output as
+  current, and prints what the daemon did if it restarted itself over a wedge:
+  `⚠ daemon was wedged on 'analyzers' ... — restarted it`.
+
+- fix: **a `daemon.pid` whose process is dead is cleaned up on the next command.**
+  Unknowns lean ALIVE (a missing, unparseable, or unreadable pidfile is never deleted),
+  so a live daemon's pidfile is never eaten out from under `fshw stop`.
+
 - fix!: **`test-rerun` can no longer exit 0 without running.** (AUTOMATION-99) A `busy`
   reply — the force-run produced no result within its budget — now exits NON-ZERO. It
   stays distinct from "Tests failed" (nothing is known to be broken), but `test-rerun` is

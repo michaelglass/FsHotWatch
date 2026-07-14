@@ -7,6 +7,7 @@ open System.Text
 open System.Text.Json
 open System.Threading
 open CommandTree
+open FsHotWatch
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Daemon
@@ -220,7 +221,6 @@ type FileOps =
       ReadAllText: string -> string
       WriteAllText: string -> string -> unit
       DeleteFile: string -> unit
-      GetLastWriteTimeUtc: string -> DateTime
       CreateDirectory: string -> unit }
 
 /// Default file system operations.
@@ -229,7 +229,6 @@ let defaultFileOps: FileOps =
       ReadAllText = File.ReadAllText
       WriteAllText = fun path content -> File.WriteAllText(path, content)
       DeleteFile = File.Delete
-      GetLastWriteTimeUtc = fun path -> File.GetLastWriteTimeUtc(path)
       CreateDirectory = fun path -> Directory.CreateDirectory(path) |> ignore }
 
 /// Injectable process operations for testability.
@@ -304,32 +303,41 @@ let rec unwrapIpcException (ex: exn) : exn =
     | :? AggregateException as agg when agg.InnerException <> null -> unwrapIpcException agg.InnerException
     | _ -> ex
 
+/// The corrupted-pipe fault family (AUTOMATION-147). StreamJsonRpc reads a
+/// Content-Length header then allocates a buffer of that size; garbage framing
+/// (commonly: two daemons sharing the same pipe, or a leaky daemon emitting
+/// malformed frames) makes the length nonsensical and surfaces as either
+/// `OutOfMemoryException` (the buffer alloc — misleading, the machine isn't
+/// out of memory) or `OverflowException` (Content-Length overflowing Int32
+/// arithmetic — observed in production, fshw 0.10.0-stresstest4, on a daemon
+/// at ~7.8 GB RSS). Both lie about themselves; both are cured by a forced
+/// daemon restart, which `runIpcWithSelfHeal` performs automatically instead
+/// of handing the `fshw stop`/`fshw start` ritual to the operator.
+let isCorruptedPipeFault (inner: exn) : bool =
+    match inner with
+    | :? OutOfMemoryException
+    | :? OverflowException -> true
+    | _ -> false
+
 /// Map an unwrapped IPC exception to a user-actionable hint, or None if the
 /// exception type isn't one we have a known recovery story for. Pure so it can
 /// be unit-tested without round-tripping through a real pipe.
+///
+/// The corrupted-pipe family only reaches this hint AFTER `runIpcWithSelfHeal`
+/// already tried the automatic restart-and-retry — so the hint describes what
+/// was attempted and where to look next, never a manual ritual.
 let ipcErrorHint (inner: exn) : string option =
     match inner with
-    // StreamJsonRpc reads a Content-Length header then allocates a buffer of
-    // that size. A corrupted/garbage header (commonly: two daemons sharing the
-    // same pipe, or a leftover stale daemon from an older version) makes the
-    // length nonsensical, and the buffer alloc throws OutOfMemoryException —
-    // which is misleading because the machine isn't actually out of memory.
     | :? OutOfMemoryException ->
         Some
             "The IPC pipe returned a corrupted message — usually caused by another \
-             daemon (possibly an older version) writing to the same pipe. Try: \
-             `dotnet fshw stop` then `dotnet fshw start`."
-    // Same pipe-corruption family as OOM, but a different .NET path: when the
-    // Content-Length parses to a value that overflows downstream Int32 arithmetic
-    // (or stream-position bookkeeping wraps on a long-running socket carrying
-    // huge payloads), StreamJsonRpc surfaces an OverflowException with
-    // "Arithmetic operation resulted in an overflow." Observed in production
-    // during the Intelligence stress test (fshw 0.10.0-stresstest4), where a
-    // daemon at ~7.8 GB RSS started returning malformed frames.
+             daemon writing to the same pipe. fshw already restarted the daemon and \
+             retried; since it recurred, check `logs/daemon.log` for a second daemon \
+             or a crash loop."
     | :? OverflowException ->
         Some
             "The IPC pipe returned a corrupted or oversized message — usually a stale/leaky \
-             daemon. Try: `dotnet fshw stop` then `dotnet fshw start`. If it recurs, \
+             daemon. fshw already restarted the daemon and retried; since it recurred, \
              check `logs/daemon.log` for runaway memory growth."
     | :? TimeoutException -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
     | _ -> None
@@ -345,8 +353,48 @@ let reportDaemonError (ex: exn) : unit =
     | Some h -> eprintfn "  hint: %s" h
     | None -> ()
 
-/// Wrap an IPC call with connection error handling.
-let private withIpc (action: unit -> int) : int =
+/// Run one IPC action with corrupted-pipe self-healing (AUTOMATION-147).
+/// A corrupted-pipe fault means the daemon (or a rogue sibling sharing the
+/// pipe) is emitting garbage frames, and the known cure is `fshw stop` +
+/// `fshw start` — which used to be a manual ritual the human was expected to
+/// know. The tool now performs it: force-restart the daemon (announcing what
+/// it is doing), retry the action ONCE, and only then fail through `onFailure`.
+/// Every other fault goes straight to `onFailure`, unchanged. Internal so the
+/// heal-and-retry contract is unit-testable without a real pipe.
+let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> int) (action: unit -> int) : int =
+    try
+        action ()
+    with ex ->
+        let inner = unwrapIpcException ex
+
+        if isCorruptedPipeFault inner then
+            eprintfn
+                "⚠ the daemon returned a corrupted IPC reply (%s) — restarting the daemon and retrying..."
+                (inner.GetType().Name)
+
+            if forceRestart () then
+                try
+                    action ()
+                with retryEx ->
+                    onFailure retryEx
+            else
+                onFailure ex
+        else
+            onFailure ex
+
+/// Wrap an IPC call with connection error handling and corrupted-pipe
+/// self-healing (`forceRestart` is the executeCommand-scoped restart).
+let private withIpc (forceRestart: unit -> bool) (action: unit -> int) : int =
+    runIpcWithSelfHeal
+        forceRestart
+        (fun ex ->
+            reportDaemonError ex
+            1)
+        action
+
+/// Like `withIpc` but with NO self-heal — for `stop`, where restarting a
+/// daemon in order to stop it would be absurd.
+let private withIpcNoHeal (action: unit -> int) : int =
     try
         action ()
     with ex ->
@@ -370,14 +418,16 @@ type DaemonReadiness =
 /// ("completeness unachievable"), NEVER exit 1 (which a programmatic consumer
 /// reads as "the daemon ran and found failures"). Reports the connection error
 /// plus a pointer to the daemon log so the failure is actionable, never a bare
-/// non-zero that an autonomous loop misreads as diagnostics.
-let private withCheckIpc (action: unit -> int) : int =
-    try
-        action ()
-    with ex ->
-        reportDaemonError ex
-        eprintfn "  The check could not complete — see logs/daemon.log."
-        2
+/// non-zero that an autonomous loop misreads as diagnostics. Corrupted-pipe
+/// faults get the same self-heal-and-retry as `withIpc` before failing.
+let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : int =
+    runIpcWithSelfHeal
+        forceRestart
+        (fun ex ->
+            reportDaemonError ex
+            eprintfn "  The check could not complete — see logs/daemon.log."
+            2)
+        action
 
 /// Ensure daemon, poll for progress, render colored output.
 /// Ask the test-prune plugin what the last completed run actually covered.
@@ -422,6 +472,7 @@ let private ensureAndQueryErrors
     (noWarnFail: bool)
     (ensureDaemon: unit -> bool)
     (waitReady: unit -> DaemonReadiness)
+    (forceRestart: unit -> bool)
     (ipc: IpcOps)
     (pipeName: string)
     (pluginFilter: string)
@@ -457,7 +508,7 @@ let private ensureAndQueryErrors
             if checkMode = CheckVerdict.MergeGate then
                 requestFullSuiteScope ipc pipeName
 
-            withCheckIpc (fun () ->
+            withCheckIpc forceRestart (fun () ->
                 IpcOutput.pollAndRender
                     mode
                     checkMode
@@ -491,8 +542,14 @@ let private ensureAndQueryErrors
                         ipc.Scan pipeName |> Async.RunSynchronously |> ignore
                         ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
 
-/// Compute a hash of the config file + CLI binary for staleness detection (injectable).
-let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =
+/// Compute a hash of the `.fshw.json` config content for restart-on-config-change
+/// detection (injectable). The CLI BINARY is deliberately NOT part of this hash
+/// any more: it used to be smuggled in as `Environment.ProcessPath`'s mtime,
+/// which tracked the WRONG file for `dotnet`-hosted invocations (the dotnet
+/// muxer, not the fshw dll) and could not catch a same-mtime repack anyway.
+/// Binary staleness is the DaemonIdentity handshake's job (AUTOMATION-147):
+/// assembly version + content hash, recorded by the daemon, compared by the CLI.
+let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     let configContent =
@@ -501,33 +558,58 @@ let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string
         else
             ""
 
-    let exeModTime =
-        if fileOps.FileExists exePath then
-            fileOps.GetLastWriteTimeUtc(exePath).Ticks.ToString()
-        else
-            ""
-
     let hash =
-        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent + exeModTime))
+        Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent))
 
     Convert.ToHexStringLower(hash).Substring(0, 16)
 
-/// Compute a hash of the config file + CLI binary for staleness detection.
+/// Compute a hash of the config file for staleness detection.
 let private computeConfigHash (repoRoot: string) =
-    computeConfigHashWith defaultFileOps repoRoot Environment.ProcessPath
+    computeConfigHashWith defaultFileOps repoRoot
 
-/// What action ensureDaemon should take.
-type DaemonAction =
+/// What `ensureDaemon` should do with a daemon KNOWN to be listening. The
+/// not-running case is deliberately NOT representable here — `ensureDaemon`
+/// always starts fresh in that case, so there is no decision to encode.
+type RunningDaemonAction =
     | Reuse
-    | Restart
-    | StartFresh
+    /// The running daemon's recorded binary identity is not this CLI's —
+    /// a different binary, or no record at all (a build that predates the
+    /// handshake). Restart it with THIS binary. (AUTOMATION-147: a new CLI
+    /// must never silently talk to an old daemon.)
+    | RestartStaleBinary of DaemonIdentity.StaleReason
+    /// `.fshw.json` changed since the daemon started — restart to load it.
+    | RestartConfigChanged
 
-/// Determine what daemon action is needed based on current state.
-let decideDaemonAction (isRunning: bool) (storedHash: string) (currentHash: string) : DaemonAction =
-    if isRunning then
-        if storedHash = currentHash then Reuse else Restart
-    else
-        StartFresh
+/// Decide what to do with a listening daemon. Identity is checked FIRST: a
+/// stale binary must restart even when the config hash happens to match,
+/// because every answer that daemon gives comes from the wrong code.
+let decideRunningDaemonAction
+    (identity: DaemonIdentity.IdentityVerdict)
+    (storedHash: string)
+    (currentHash: string)
+    : RunningDaemonAction =
+    match identity with
+    | DaemonIdentity.IdentityVerdict.Stale reason -> RestartStaleBinary reason
+    | DaemonIdentity.IdentityVerdict.Match ->
+        if storedHash = currentHash then
+            Reuse
+        else
+            RestartConfigChanged
+
+/// The one-line reason printed when `ensureDaemon` restarts a running daemon —
+/// the tool says WHAT it found and WHAT it is doing, never a bare restart.
+let restartReasonLine (action: RunningDaemonAction) : string option =
+    match action with
+    | Reuse -> None
+    | RestartStaleBinary DaemonIdentity.StaleReason.NotRecorded ->
+        Some
+            "  The running daemon has no recorded binary identity (an fshw build that \
+             predates the identity handshake) — restarting it with this binary..."
+    | RestartStaleBinary(DaemonIdentity.StaleReason.DifferentBinary recorded) ->
+        Some
+            $"  The running daemon was started from a different fshw binary \
+               (%s{recorded.Version}) — restarting it with this one..."
+    | RestartConfigChanged -> Some "  Daemon config changed — restarting..."
 
 /// Kill a stale daemon process by PID file (injectable).
 let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: string) =
@@ -609,30 +691,37 @@ let private ensureDaemon
     let stateDir = Path.Combine(repoRoot, ".fshw")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
-    let isRunning = ipc.IsRunning pipeName
 
-    let storedHash =
-        if File.Exists hashPath then
-            File.ReadAllText(hashPath).Trim()
-        else
-            ""
-
-    match decideDaemonAction isRunning storedHash currentHash with
-    | Reuse -> true
-    | Restart ->
-        eprintfn "  Daemon config changed — restarting..."
-
-        try
-            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-            Thread.Sleep(1000)
-        with ex ->
-            eprintfn "  Shutdown request failed: %s" ex.Message
-
+    if not (ipc.IsRunning pipeName) then
         killStaleDaemon repoRoot
         startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
-    | StartFresh ->
-        killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+    else
+        let storedHash =
+            if File.Exists hashPath then
+                File.ReadAllText(hashPath).Trim()
+            else
+                ""
+
+        // The identity handshake (AUTOMATION-147): compare the running daemon's
+        // recorded binary identity (assembly version + content hash, written by
+        // the daemon at startup) against this CLI's own. The comparison is
+        // UNILATERAL — an old daemon that never recorded an identity needs no
+        // cooperation to be found stale; it simply reads as `NotRecorded`,
+        // which restarts it. This is what protects the very next repin: a new
+        // CLI can never silently "verify" anything through an old daemon.
+        match decideRunningDaemonAction (DaemonIdentity.verdictFor repoRoot) storedHash currentHash with
+        | Reuse -> true
+        | restart ->
+            restartReasonLine restart |> Option.iter (eprintfn "%s")
+
+            try
+                ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                Thread.Sleep(1000)
+            with ex ->
+                eprintfn "  Shutdown request failed: %s" ex.Message
+
+            killStaleDaemon repoRoot
+            startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate (AUTOMATION-66).
@@ -718,6 +807,49 @@ let daemonProcessAliveWith (fileOps: FileOps) (repoRoot: string) : bool =
             with
             | :? ArgumentException -> false // no process with that id — proven dead
             | _ -> true // any other probe error — assume alive rather than false-crash
+
+/// Stale pidfile hygiene (AUTOMATION-147): delete `.fshw/daemon.pid` when the
+/// process it names is PROVABLY dead — cleaned up on the next command, not
+/// left for an external reaper. Uses the SAME liveness read as the readiness
+/// gate (`daemonProcessAliveWith`), whose unknowns all lean ALIVE — so a
+/// missing, unparseable, or undecidable pidfile is never deleted (it might
+/// belong to a live daemon). Returns true iff a stale pidfile was removed,
+/// and says so on stderr: hygiene the user can see, not infer.
+let cleanStalePidfileWith (fileOps: FileOps) (repoRoot: string) : bool =
+    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
+
+    if fileOps.FileExists pidPath && not (daemonProcessAliveWith fileOps repoRoot) then
+        try
+            fileOps.DeleteFile pidPath
+            eprintfn "  Cleaned up a stale daemon.pid (its process is gone)."
+            true
+        with ex ->
+            FsHotWatch.Logging.debug
+                "cli-hygiene"
+                $"could not delete stale daemon.pid: %s{ex.GetType().Name}: %s{ex.Message}"
+
+            false
+    else
+        false
+
+let private cleanStalePidfile (repoRoot: string) : unit =
+    cleanStalePidfileWith defaultFileOps repoRoot |> ignore
+
+/// The words `fshw status` prints when the running daemon's binary is not this
+/// CLI's (AUTOMATION-147): the fault is NAMED — status output computed by the
+/// wrong binary must never be presented silently as current. Status itself
+/// does not restart (it is a read-only observer and a fresh daemon would have
+/// nothing to report); the work-triggering verbs do, automatically.
+let staleIdentityStatusWarning (reason: DaemonIdentity.StaleReason) : string =
+    let what =
+        match reason with
+        | DaemonIdentity.StaleReason.NotRecorded ->
+            "has no recorded binary identity (an fshw build that predates the identity handshake)"
+        | DaemonIdentity.StaleReason.DifferentBinary recorded ->
+            $"was started from a different fshw binary (%s{recorded.Version})"
+
+    $"⚠ the running daemon %s{what} — this status reflects THAT build; \
+      the next check/gate/format/scan command restarts it automatically"
 
 /// Effectful readiness gate. Probes the daemon with a lightweight RPC until it
 /// answers (`Ready`), the daemon process is proven gone (`Crashed`), or the
@@ -854,6 +986,19 @@ let executeCommand
     let mode = pickMode opts.AgentMode opts.CompactMode
     let noWarnFail = opts.NoWarnFail
 
+    // State-dir hygiene BEFORE any daemon decision (AUTOMATION-147):
+    //   1. A `daemon.pid` whose process is provably dead is deleted NOW — the
+    //      leftover of a crash or a kill, cleaned on the next command instead
+    //      of accumulating for an external reaper.
+    //   2. If the daemon restarted ITSELF over a wedge, say what it did — the
+    //      last-wedge breadcrumb is the recovery notice the daemon could not
+    //      print to a terminal it never had. Printed once, then consumed.
+    cleanStalePidfile repoRoot
+
+    match PluginWedge.consumeBreadcrumb repoRoot with
+    | Some message -> eprintfn "⚠ %s" message
+    | None -> ()
+
     // Fail-fast on misconfiguration BEFORE starting (or polling for) a daemon
     // for any project-requiring command. The daemon's `start` path performs
     // the same check internally and exits 2; if we reached `ensureDaemon`
@@ -903,12 +1048,54 @@ let executeCommand
         let waitReadyFn () =
             waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
 
+        // Forced restart for corrupted-pipe self-healing (AUTOMATION-147): stop
+        // EVERYTHING answering on the pipe (a corrupted reply usually means two
+        // daemons share it, so one Shutdown is not enough), reap the pidfile,
+        // start fresh. Unlike `ensureDaemonFn` this never reuses — the whole
+        // point is that the current pipe occupant is emitting garbage.
+        let forceRestartDaemon () : bool =
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+
+            while ipc.IsRunning pipeName && sw.Elapsed < TimeSpan.FromSeconds(10.0) do
+                try
+                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                with ex ->
+                    FsHotWatch.Logging.debug
+                        "cli-heal"
+                        $"shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
+
+                Thread.Sleep(200)
+
+            killStaleDaemon repoRoot
+
+            startFreshDaemon
+                ipc
+                repoRoot
+                pipeName
+                (computeConfigHash repoRoot)
+                opts.DaemonExtraArgs
+                config.LogDir
+                startupTimeoutSeconds
+
+        // Shadow the module-level wrapper with the heal-capable one so every
+        // IPC call site in this scope self-heals a corrupted pipe.
+        let withIpc = withIpc forceRestartDaemon
+
         let queryPluginIn
             (checkMode: CheckVerdict.CheckMode)
             (mode: ProgressRenderer.RenderMode)
             (filter: string)
             : int =
-            ensureAndQueryErrors mode checkMode noWarnFail ensureDaemonFn waitReadyFn ipc pipeName filter
+            ensureAndQueryErrors
+                mode
+                checkMode
+                noWarnFail
+                ensureDaemonFn
+                waitReadyFn
+                forceRestartDaemon
+                ipc
+                pipeName
+                filter
 
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
             queryPluginIn CheckVerdict.InnerLoop mode filter
@@ -971,6 +1158,12 @@ let executeCommand
                     // not the nohup wrapper that launched us.
                     File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
 
+                    // Record THIS binary's identity (AUTOMATION-147) BEFORE the
+                    // IPC pipe starts listening, so a CLI that observes a live
+                    // pipe always finds the record. Any daemon that never wrote
+                    // one reads as `NotRecorded` — and is restarted.
+                    DaemonIdentity.recordCurrent repoRoot
+
                     let daemon = createDaemon repoRoot
                     registerPlugins daemon repoRoot config
                     let cts = new CancellationTokenSource()
@@ -999,7 +1192,9 @@ let executeCommand
 
                     0
         | Stop ->
-            withIpc (fun () ->
+            // No corrupted-pipe self-heal here: restarting a daemon in order
+            // to stop it would defeat the command.
+            withIpcNoHeal (fun () ->
                 // Multiple daemons may be listening on the same pipe (historically the
                 // start command spawned duplicates); iterate Shutdown until the pipe
                 // has been quiet for two consecutive probes so we don't leave orphans
@@ -1037,12 +1232,26 @@ let executeCommand
 
                 0)
         | Scan ->
+            // A scan runs REAL WORK on the daemon — never on a stale-binary
+            // one (its results would come from the old code). Same decision as
+            // ensureDaemon, which also announces why it restarts (AUTOMATION-147).
+            if ipc.IsRunning pipeName then
+                match DaemonIdentity.verdictFor repoRoot with
+                | DaemonIdentity.IdentityVerdict.Stale _ -> ensureDaemonFn () |> ignore
+                | DaemonIdentity.IdentityVerdict.Match -> ()
+
             withIpc (fun () ->
                 let result = ipc.Scan pipeName |> Async.RunSynchronously
                 UI.success $"Scan: %s{result}"
                 0)
         | Status pluginName ->
-
+            // Say it in words (AUTOMATION-147): a status computed by a daemon
+            // built from different code than this CLI is never presented
+            // silently as current.
+            if ipc.IsRunning pipeName then
+                match DaemonIdentity.verdictFor repoRoot with
+                | DaemonIdentity.IdentityVerdict.Stale reason -> eprintfn "%s" (staleIdentityStatusWarning reason)
+                | DaemonIdentity.IdentityVerdict.Match -> ()
 
             withIpc (fun () ->
                 let filter = pluginName |> Option.defaultValue ""

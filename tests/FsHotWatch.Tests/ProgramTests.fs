@@ -36,6 +36,9 @@ let private fakeIpc () : IpcOps =
       LaunchDaemon = fun _ _ _ -> () }
 
 // --- computeConfigHashWith tests ---
+// The hash covers `.fshw.json` content ONLY. Binary staleness moved to the
+// DaemonIdentity handshake (AUTOMATION-147) — the old exe-mtime input tracked
+// the WRONG file for dotnet-hosted invocations (the muxer, not the fshw dll).
 
 [<Fact(Timeout = 15000)>]
 let ``computeConfigHashWith returns 16-char hex string`` () =
@@ -43,7 +46,7 @@ let ``computeConfigHashWith returns 16-char hex string`` () =
         { defaultFileOps with
             FileExists = fun _ -> false }
 
-    let result = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
+    let result = computeConfigHashWith fileOps "/tmp/repo"
     test <@ result.Length = 16 @>
     test <@ result |> Seq.forall (fun c -> Char.IsAsciiHexDigitLower c || Char.IsDigit c) @>
 
@@ -53,8 +56,8 @@ let ``computeConfigHashWith is deterministic`` () =
         { defaultFileOps with
             FileExists = fun _ -> false }
 
-    let h1 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
-    let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
+    let h1 = computeConfigHashWith fileOps "/tmp/repo"
+    let h2 = computeConfigHashWith fileOps "/tmp/repo"
     test <@ h1 = h2 @>
 
 [<Fact(Timeout = 15000)>]
@@ -64,46 +67,20 @@ let ``computeConfigHashWith changes when config content changes`` () =
     let fileOps =
         { defaultFileOps with
             FileExists = fun path -> path.EndsWith(".fshw.json")
-            ReadAllText = fun _ -> configContent
-            GetLastWriteTimeUtc = fun _ -> DateTime(2026, 1, 1) }
+            ReadAllText = fun _ -> configContent }
 
-    let h1 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
+    let h1 = computeConfigHashWith fileOps "/tmp/repo"
     configContent <- "v2"
-    let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
+    let h2 = computeConfigHashWith fileOps "/tmp/repo"
     test <@ h1 <> h2 @>
 
 [<Fact(Timeout = 15000)>]
-let ``computeConfigHashWith changes when exe mod time changes`` () =
-    let mutable modTime = DateTime(2026, 1, 1)
-
-    let fileOps =
-        { defaultFileOps with
-            FileExists = fun _ -> true
-            ReadAllText = fun _ -> "config"
-            GetLastWriteTimeUtc = fun _ -> modTime }
-
-    let h1 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
-    modTime <- DateTime(2026, 1, 2)
-    let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
-    test <@ h1 <> h2 @>
-
-[<Fact(Timeout = 15000)>]
-let ``computeConfigHashWith with no files uses empty strings`` () =
+let ``computeConfigHashWith with no config file uses empty content`` () =
     let fileOps =
         { defaultFileOps with
             FileExists = fun _ -> false }
 
-    let result = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
-    test <@ result.Length = 16 @>
-
-[<Fact(Timeout = 15000)>]
-let ``computeConfigHashWith with config but no exe`` () =
-    let fileOps =
-        { defaultFileOps with
-            FileExists = fun path -> path.EndsWith(".fshw.json")
-            ReadAllText = fun _ -> """{"build": {}}""" }
-
-    let result = computeConfigHashWith fileOps "/tmp/repo" "/nonexistent/exe"
+    let result = computeConfigHashWith fileOps "/tmp/repo"
     test <@ result.Length = 16 @>
 
 // --- killStaleDaemonWith tests ---
@@ -239,18 +216,22 @@ let ``startFreshDaemonWith passes extra args to LaunchDaemon`` () =
 
     test <@ receivedArgs = "--verbose " @>
 
-// --- Restart flow tests (via decideDaemonAction) ---
+// --- Restart flow tests (via decideRunningDaemonAction) ---
 
 [<Fact(Timeout = 15000)>]
 let ``restart flow is triggered when stored config hash differs`` () =
-    let action = decideDaemonAction true "old-hash" "new-hash"
-    test <@ action = Restart @>
+    let action =
+        decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "old-hash" "new-hash"
+
+    test <@ action = RestartConfigChanged @>
 
 [<Fact(Timeout = 15000)>]
 let ``restart flow handles shutdown failure gracefully`` () =
-    // decideDaemonAction returns Restart, shutdown exception is caught by ensureDaemon
-    let action = decideDaemonAction true "old-hash" "new-hash"
-    test <@ action = Restart @>
+    // decideRunningDaemonAction returns a restart; the shutdown exception is caught by ensureDaemon
+    let action =
+        decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "old-hash" "new-hash"
+
+    test <@ action = RestartConfigChanged @>
     // startFreshDaemonWith still works after a failed shutdown
     withTempDir "prog-restart-fail" (fun tmpDir ->
         let mutable launchCalled = false
@@ -558,12 +539,14 @@ let ``applyGlobalFlags preserves order of multiple flags`` () =
     test <@ opts.NoWarnFail @>
     test <@ opts.DaemonExtraArgs = "--verbose --log-level debug --no-cache " @>
 
-// --- decideDaemonAction additional edge cases ---
+// --- decideRunningDaemonAction additional edge cases ---
 
 [<Fact(Timeout = 15000)>]
-let ``decideDaemonAction restarts when stored hash is empty but running`` () =
-    let action = decideDaemonAction true "" "new-hash"
-    test <@ action = Restart @>
+let ``decideRunningDaemonAction restarts when stored hash is empty but running`` () =
+    let action =
+        decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "" "new-hash"
+
+    test <@ action = RestartConfigChanged @>
 
 // --- config hash determinism ---
 
@@ -574,18 +557,18 @@ let ``config hash is deterministic across multiple calls`` () =
             { defaultFileOps with
                 FileExists = fun _ -> false }
 
-        let hash1 = computeConfigHashWith fileOps tmpDir "/tmp/exe"
-        let hash2 = computeConfigHashWith fileOps tmpDir "/tmp/exe"
+        let hash1 = computeConfigHashWith fileOps tmpDir
+        let hash2 = computeConfigHashWith fileOps tmpDir
         test <@ hash1 = hash2 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``config hash changes when config file is added`` () =
     withTempDir "prog-hash-change" (fun tmpDir ->
-        let hash1 = computeConfigHashWith defaultFileOps tmpDir "/tmp/exe"
+        let hash1 = computeConfigHashWith defaultFileOps tmpDir
 
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"build": {}}""")
 
-        let hash2 = computeConfigHashWith defaultFileOps tmpDir "/tmp/exe"
+        let hash2 = computeConfigHashWith defaultFileOps tmpDir
         test <@ hash1 <> hash2 @>)
 
 // --- Reuse path ---
@@ -593,6 +576,10 @@ let ``config hash changes when config file is added`` () =
 [<Fact(Timeout = 15000)>]
 let ``reuse path does not launch daemon when hash matches`` () =
     withTempDir "prog-reuse" (fun tmpDir ->
+        // Reuse also requires the identity handshake to match (AUTOMATION-147):
+        // record THIS process's identity as the running daemon's.
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> true
