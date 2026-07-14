@@ -593,9 +593,16 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
 // mirroring the existing `MacFsEvents` DisableParallelization collection.
 // ----------------------------------------------------------------------------
 
-/// Name of the serialized collection that groups every test class touching the
-/// logging globals or `Console.Error`. A literal so it can be used in the
+/// Name of the serialized collection that groups every test class touching
+/// PROCESS-GLOBAL state: the logging globals, `Console.Error`, and the process
+/// ENVIRONMENT (`withEnv`). A literal so it can be used in the
 /// `[<Collection(...)>]` / `[<CollectionDefinition(...)>]` attributes.
+///
+/// The environment is the third global and the last to be noticed: a class that
+/// mutates it and then spawns a child which snapshots it is racing every other
+/// class doing the same, and the symptom is a child that simply does not see the
+/// variable that was just set — no exception, no timeout, just an empty string
+/// where a value was expected.
 [<Literal>]
 let LogGlobalCollectionName = "LogGlobal"
 
