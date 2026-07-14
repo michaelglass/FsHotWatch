@@ -28,7 +28,7 @@ FsHotWatch runs one compiler in the background and shares it with all your tools
 1. **You save a file** — FsHotWatch notices.
 2. **It re-checks just that file** using the already-warm compiler — ideally milliseconds rather than minutes.
 3. **Plugins get the results instantly** — your linter, analyzer, and test runner see the new check results without re-parsing.
-4. **You query the results** — `fshw check` runs everything and reports what each tool found.
+4. **You query the results** — `fshw check` runs every plugin and reports what each one found.
 
 Saves are debounced: if 10 files change at once (a formatter sweeping the repo,
 say), FsHotWatch waits for things to settle and processes them in one batch.
@@ -39,22 +39,68 @@ say), FsHotWatch waits for things to settle and processes them in one batch.
 # Install the CLI
 dotnet tool install -g FsHotWatch.Cli
 
-# Run all checks. This auto-starts the daemon the first time —
+# The inner loop. Auto-starts the daemon the first time —
 # no separate "start" step needed. Verbose by default.
 fshw check
 
 # Prefer one line per plugin?
 fshw check --compact   # or -q
+
+# Before you merge: run the full suite and confirm `check` told the truth.
+fshw confirm
 ```
 
 `fshw init` writes a starter `.fshw.json`; see [Configuration](#configuration).
+
+## `check`, `confirm`, `verdict`
+
+Three verbs, and the difference between them is the difference between a fast
+answer and a trustworthy one.
+
+**`fshw check` is the inner loop, and it is *not* a merge decision.** It runs
+every plugin (build, lint, analyze, test, format-check), but the *tests* are
+**impact-filtered** — it runs the tests a heuristic selector *thinks* your change
+can affect. That is a latency optimization, and it is the right trade for the
+loop you run on every save.
+
+**`fshw confirm` is the merge verb.** It runs the same checks with the tests
+**unfiltered**, and it *refuses to go green* unless they actually ran that way —
+"nothing failed" is not a verdict if the run never produced the evidence
+(exit `3`). Running it beside `check` is a **comparison**, and every disagreement
+is a bug in one of them:
+
+| What you see | What it means |
+|---|---|
+| Failed under `confirm`, never selected by `check` | **The selector MISSED a test.** An impact-analysis bug, not a test bug. |
+| Passed under `confirm`, but `check` says red | **A stale ledger, a flake, or a test-isolation defect** — a test that only passes *with company*. Here `check` is the honest one. |
+
+**`fshw verdict` reads the answer back**, from a file, without contacting the
+daemon — see [Machine-readable state](#machine-readable-state-for-agents-and-ci).
+
+### What these verbs do *not* claim
+
+This matters more than the feature list, so it is stated up front:
+
+- **"The full suite" means every test project your `.fshw.json` knows about** — not
+  every test project in your solution. A project that is in the solution but absent
+  from `.fshw.json` is not run by `confirm`, and `confirm` does not claim otherwise.
+- **Impact *selection* is still known-unsound.** `confirm` makes the merge verdict
+  **unforgeable** — a green must be backed by an unfiltered run. It does **not** make
+  the selector sound: `check` can still miss tests it should have picked. Those are
+  two different claims and only the first one is fixed.
+- **A warm cache makes `confirm` exit 3, not 0.** Re-run it on an *unchanged* tree and
+  the test plugin replays its cached result rather than running; a replay is not
+  evidence, so `confirm` refuses (exit 3) instead of greening. Clear the cache
+  (`rm -rf .fshw/cache`) or change a file. It fails safe, but it is a rough edge.
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
-| `fshw check` | Run all configured checks and report findings. Auto-starts the daemon. `--run-once` runs without a daemon; `-q`/`--compact` for one line per plugin. |
-| `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). |
+| `fshw check` | **The inner loop.** Run every plugin and report findings; tests are impact-filtered. Auto-starts the daemon. Exits 0 (clean), 1 (failures), 2 (completeness unconfirmed). `--run-once` runs without a daemon; `-q`/`--compact` for one line per plugin. |
+| `fshw confirm` | **The merge verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. |
+| `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
+| `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |
 | `fshw stop` | Stop the running daemon. |
 | `fshw format` | Format the code (Fantomas). |
@@ -64,7 +110,30 @@ fshw check --compact   # or -q
 | `fshw config check` | Validate `.fshw.json` without starting the daemon. |
 
 Add `-v` for debug logging or `-a` for agent-friendly, parseable output. Run
-`fshw --help` for the full list.
+`fshw --help` for the full list, and see the
+[CLI README](src/FsHotWatch.Cli/) for every verb and flag.
+
+## Machine-readable state (for agents and CI)
+
+**Don't parse the CLI's output.** It is a progress display written for a human and
+it will change. Every `check` and `confirm` publishes its result as a file:
+
+```bash
+fshw verdict          # stdout: a JSON envelope; exit code: the answer
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+```
+
+`.fshw/verdict.json` is written atomically at the end of every run — **including**
+the ones that fail, time out, or lose the daemon mid-run, which are exactly the
+moments the human output is least sufficient. It is content-addressed to **the tree
+it verified** *and* **the binary that verified it**, so a green from a different tree
+(or from an older, buggier `fshw`) can never be mistaken for a current one. Reading
+it opens no socket and starts nothing, so *asking cannot perturb the answer*.
+
+This — not the progress display — is the surface agents and CI should read. Full
+schema, exit codes, and the tree-hash recipe: [CLI
+README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci) and
+[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md).
 
 ## Packages
 

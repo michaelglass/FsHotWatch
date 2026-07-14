@@ -1,19 +1,16 @@
-# Full Pipeline Example
+module FullPipelineExample
 
-Demonstrates wiring every FsHotWatch plugin into one daemon in a consumer
-application.
+// The region below is the single source of truth for the pipeline example shown
+// in examples/FullPipelineExample/README.md. SyncDocs copies everything between
+// the markers into the README's fenced code block, and CI compiles this file —
+// so the snippet can never silently drift from the live FsHotWatch API.
+//
+// It had drifted, which is why this project exists: the README taught
+// `Daemon.create repoRoot` (it takes a `DaemonOptions` too), and a
+// `LintPlugin.create` / `AnalyzersPlugin.create` without the leading `repoRoot`
+// argument they now take. Nothing compiled it, so nothing noticed.
 
-<!-- This block is sourced from a real, compiled example — see
-     examples/FullPipelineExample/FullPipelineExample.fs. Do not edit it here;
-     edit the source file and run `mise run sync-docs`. The example is a member
-     of FsHotWatch.slnx, so the solution build (CI included) compiles it with
-     TreatWarningsAsErrors; `mise run ci` additionally runs `sync-docs-check`,
-     which fails if this block drifts from the source.
-     It used to be hand-written, and it HAD rotted: it taught a `Daemon.create`
-     and a `LintPlugin.create`/`AnalyzersPlugin.create` whose signatures no
-     longer existed. Nothing compiled it, so nothing noticed. -->
-<!-- sync:full-pipeline:start src=examples/FullPipelineExample/FullPipelineExample.fs -->
-```fsharp
+// sync:full-pipeline:start
 open FsHotWatch.Daemon
 open FsHotWatch.ErrorLedger
 open FsHotWatch.PluginFramework
@@ -127,15 +124,4 @@ let runFullPipeline (repoRoot: string) =
     let cts = new System.Threading.CancellationTokenSource()
     let pipeName = $"fshw-{System.IO.Path.GetFileName repoRoot}"
     daemon.RunWithIpc(pipeName, cts) |> Async.RunSynchronously
-```
-<!-- sync:full-pipeline:end -->
-
-See each package's README for per-plugin details:
-
-- [FsHotWatch.Build](../../src/FsHotWatch.Build/)
-- [FsHotWatch.TestPrune](../../src/FsHotWatch.TestPrune/)
-- [FsHotWatch.Analyzers](../../src/FsHotWatch.Analyzers/)
-- [FsHotWatch.Lint](../../src/FsHotWatch.Lint/)
-- [FsHotWatch.Fantomas](../../src/FsHotWatch.Fantomas/)
-- [FsHotWatch.Coverage](../../src/FsHotWatch.Coverage/)
-- [FsHotWatch.FileCommand](../../src/FsHotWatch.FileCommand/)
+// sync:full-pipeline:end

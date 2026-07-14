@@ -12,6 +12,7 @@
   <Project Path="tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj" />
   <Folder Name="/examples/">
     <Project Path="examples/PluginExample/PluginExample.fsproj" />
+    <Project Path="examples/FullPipelineExample/FullPipelineExample.fsproj" />
   </Folder>
   <Folder Name="/src/" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
