@@ -118,7 +118,14 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
     with ex ->
         Logging.warn "cli-confirm" $"could not settle after the forced full-suite run: %s{ex.Message}"
 
-/// The plugins' failing-diagnostic count — the `hasFailures` half of the verdict.
+/// The plugins' failing-diagnostic count — HALF of "did this run find real problems".
+///
+/// The other half is `CheckVerdict.CheckInputs.anyPluginFailed`, and this path used to
+/// fold in ONLY this one: `hasFailures = failingDiagnostics`, where the daemon path
+/// computed `anyPluginFailed || failingDiagnostics`. A plugin can reach `Failed` without
+/// writing a single `ErrorEntry` — the framework's crash-nets force exactly that — so a
+/// CRASHED plugin exited 1 under `fshw check` and 0 under `fshw confirm --run-once`,
+/// which is what CI runs. Never used alone now; see `checkInputs` below.
 let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
     let allErrors =
         match pluginName with
@@ -184,10 +191,20 @@ let runOnceAndVerdict
 
         /// Read the current state of the host. NO scan — the caller decides when work
         /// happens, so a read can never be mistaken for one.
-        let reread () : bool * Coverage * TestScope =
+        ///
+        /// The in-process HALF of the "one verdict, two transports" contract (the daemon's
+        /// half is `IpcOutput.checkInputs`). It OBSERVES; it decides nothing. Every term
+        /// `CheckVerdict.verdict` needs is a field of the record it hands over, so a
+        /// transport that forgets one — as this one forgot `PluginStatuses`, and greened
+        /// CI on a crashed plugin for it — no longer compiles.
+        let reread () : CheckVerdict.CheckInputs =
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             finalRun.Value <- readTestRun daemon.Host
-            (failingCount daemon noWarnFail pluginName > 0, liveCoverage daemon, finalRun.Value.Scope)
+
+            { PluginStatuses = finalStatuses.Value
+              FailingDiagnostics = failingCount daemon noWarnFail pluginName
+              Coverage = liveCoverage daemon
+              Scope = finalRun.Value.Scope }
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.

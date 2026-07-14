@@ -65,14 +65,30 @@ let private writeReport (root: string) (runId: Guid) (project: string) (tests: i
 let private emptyRun (root: string) (runId: Guid) =
     Directory.CreateDirectory(Ctrf.runDir root runId) |> ignore
 
-let private greenVerdict (treeHash: string) (fileCount: int) : Verdict.Verdict =
-    { ProducedAt = DateTime.UtcNow
-      Command = Verdict.Confirm
-      Producer = Verdict.Producer.current ()
+/// What a test wants to SAY about a verdict.
+///
+/// The verdict itself is no longer hand-assemblable: `Verdict.create` is the only door,
+/// it stamps `producedAt` and the producer from the running process, and it REFUSES a
+/// green carrying a failing plugin. So a test declares its claim as a spec and lets the
+/// constructor enforce the invariant — which is the point. A test that could still
+/// hand-build `{outcome: green, plugins: [fail]}` would be testing a type that has been
+/// deliberately abolished.
+type private Spec =
+    { Command: Verdict.Command
+      RunId: Guid option
+      Scope: TestScope
+      Outcome: Verdict.Outcome
+      ExitCode: int
+      Plugins: Verdict.PluginVerdict list
+      Suites: Verdict.SuiteVerdict list
+      Tree: TreeHash.Tree }
+
+let private build (s: Spec) : Verdict.Verdict =
+    Verdict.create s.Command { Scope = s.Scope; RunId = s.RunId } s.Tree s.Outcome s.ExitCode s.Plugins s.Suites
+
+let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
+    { Command = Verdict.Confirm
       RunId = None
-      TreeHash = treeHash
-      TreeHashAlgorithm = TreeHash.Algorithm
-      TreeFileCount = fileCount
       Scope = FullSuite 2
       Outcome = Verdict.Green
       ExitCode = 0
@@ -81,7 +97,31 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Verdict.Verdict =
             Outcome = Verdict.PluginOutcome.Ok
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
-      Suites = [] }
+      Suites = []
+      Tree =
+        { Hash = treeHash
+          FileCount = fileCount } }
+
+let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
+let private serializeSpec (s: Spec) : string = Verdict.serialize (build s)
+
+let private hintsFor (s: Spec) : string list =
+    ProgressRenderer.AgentHints.forVerdict (build s)
+
+/// A verdict FILE that claims a DIFFERENT fshw produced it.
+///
+/// fshw cannot build one — `Verdict.create` stamps the running binary's identity, and a
+/// caller that could supply it is a caller that could lie about it. So this forges the
+/// artifact on disk, which is the only way one can honestly exist: another build wrote
+/// it. Patching the serialized JSON keeps the test on the real wire format rather than
+/// inventing a second one.
+let private writeVerdictClaimingAnotherBinary (root: string) (s: Spec) : unit =
+    let node = System.Text.Json.Nodes.JsonNode.Parse(serializeSpec s)
+    let producer = node.["producer"]
+    producer.["version"] <- System.Text.Json.Nodes.JsonValue.Create "9.9.9-from-another-build"
+    producer.["contentHash"] <- System.Text.Json.Nodes.JsonValue.Create "deadbeef00000000"
+    Directory.CreateDirectory(Path.GetDirectoryName(Verdict.path root)) |> ignore
+    File.WriteAllText(Verdict.path root, node.ToJsonString() + "\n")
 
 // ---------------------------------------------------------------------------
 // THE staleness guard. Everything else in this file is scaffolding for it.
@@ -94,7 +134,7 @@ let ``a green verdict goes STALE the moment a source file is edited — it is ne
 
         // A green, earned over THIS tree.
         let before = TreeHash.compute root []
-        Verdict.write root (greenVerdict before.Hash before.FileCount)
+        writeSpec root (greenVerdict before.Hash before.FileCount)
 
         // CONTROL: it applies RIGHT NOW. Without this, a test that only proved
         // "stale after an edit" would also pass if the verdict never applied at all.
@@ -133,7 +173,7 @@ let ``a changed CONTENT fixture makes the verdict stale — the dsa-scope-4 fals
         makeRepo root
 
         let before = TreeHash.compute root []
-        Verdict.write root (greenVerdict before.Hash before.FileCount)
+        writeSpec root (greenVerdict before.Hash before.FileCount)
 
         let fixture =
             Path.Combine(root, "tests", "Lib.Tests", "fixtures", "dsa-scope-4.json")
@@ -151,7 +191,7 @@ let ``a changed .fshw.json makes the verdict stale — the config is an input to
         File.WriteAllText(FsHwPaths.configFile root, """{"format": true}""")
 
         let before = TreeHash.compute root []
-        Verdict.write root (greenVerdict before.Hash before.FileCount)
+        writeSpec root (greenVerdict before.Hash before.FileCount)
 
         File.WriteAllText(FsHwPaths.configFile root, """{"format": false}""")
 
@@ -167,7 +207,7 @@ let ``a NEW source file makes the verdict stale — the hash covers the file SET
         makeRepo root
 
         let before = TreeHash.compute root []
-        Verdict.write root (greenVerdict before.Hash before.FileCount)
+        writeSpec root (greenVerdict before.Hash before.FileCount)
 
         File.WriteAllText(Path.Combine(root, "src", "Lib", "New.fs"), "module New\n")
 
@@ -231,23 +271,23 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
         makeRepo root
         let tree = TreeHash.compute root []
 
+        // `producedAt` is stamped by `create` (it is a fact about the producing process,
+        // not something a caller supplies) and round-trips through ISO-8601 "O" at full
+        // tick precision — so equality below tests the CONTRACT, not the clock.
         let written =
-            { greenVerdict tree.Hash tree.FileCount with
-                // `ProducedAt` is serialized as ISO-8601 with sub-tick precision lost;
-                // round it to what the format can actually carry so equality tests the
-                // CONTRACT, not the clock.
-                ProducedAt = DateTime.Parse(DateTime.UtcNow.ToString("O")).ToUniversalTime()
-                Command = Verdict.Check
-                Scope = ImpactFiltered(2, 6)
-                Outcome = Verdict.Red
-                ExitCode = 1
-                Suites =
-                    [ { Project = "Lib.Tests"
-                        Ctrf = ".fshw/test-runs/Lib.Tests-0123456789abcdef0123456789abcdef.ctrf.json"
-                        Total = 63
-                        Passed = 60
-                        Failed = 3
-                        Skipped = 0 } ] }
+            build
+                { greenVerdict tree.Hash tree.FileCount with
+                    Command = Verdict.Check
+                    Scope = ImpactFiltered(2, 6)
+                    Outcome = Verdict.Red
+                    ExitCode = 1
+                    Suites =
+                        [ { Project = "Lib.Tests"
+                            Ctrf = ".fshw/test-runs/Lib.Tests-0123456789abcdef0123456789abcdef.ctrf.json"
+                            Total = 63
+                            Passed = 60
+                            Failed = 3
+                            Skipped = 0 } ] }
 
         Verdict.write root written
 
@@ -278,7 +318,7 @@ let ``a confirm verdict round-trips as a CONFIRM — the writer and the reader a
         makeRepo root
         let tree = TreeHash.compute root []
 
-        Verdict.write
+        writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
                 Command = Verdict.Confirm }
@@ -292,7 +332,7 @@ let ``the verdict is written atomically — no .tmp is left behind`` () =
     withTempDir "verdict-atomic" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
-        Verdict.write root (greenVerdict tree.Hash tree.FileCount)
+        writeSpec root (greenVerdict tree.Hash tree.FileCount)
 
         test <@ File.Exists(Verdict.path root) @>
         test <@ not (File.Exists(Verdict.path root + ".tmp")) @>)
@@ -302,7 +342,7 @@ let ``the serialized outcome is UNIFORMLY tagged — a consumer never type-switc
     // The shape a reader can act on without first discriminating a JSON string
     // from a JSON object. A shape you have to sniff is a shape that invites a regex.
     let json =
-        Verdict.serialize
+        serializeSpec
             { greenVerdict "sha256:abc" 3 with
                 Outcome = Verdict.Incomplete "tests did not run" }
 
@@ -354,7 +394,7 @@ let ``the report envelope always says whether the verdict applies`` () =
     withTempDir "verdict-envelope" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
-        Verdict.write root (greenVerdict tree.Hash tree.FileCount)
+        writeSpec root (greenVerdict tree.Hash tree.FileCount)
 
         let applies (envelope: string) =
             use doc = JsonDocument.Parse(envelope)
@@ -489,11 +529,10 @@ let ``failing counts survive into the suites — the verdict answers "how many f
         // Delete the report; the counts already copied into the verdict stand.
         File.Delete path
 
-        let v =
+        writeSpec
+            root
             { greenVerdict "sha256:abc" 1 with
                 Suites = suites }
-
-        Verdict.write root v
 
         match Verdict.read root with
         | Verdict.Reading.Found back -> test <@ back.Suites.Head.Failed = 3 @>
@@ -535,6 +574,42 @@ let ``tidyRunsDir rotates old RUNS and purges the pre-AUTOMATION-129 flat layout
         test <@ survivors.Length = Ctrf.RetainedRuns @>
         // History is EVIDENCE: the newest runs survive, and nothing is wiped on start.
         test <@ survivors = List.skip (runs.Length - Ctrf.RetainedRuns) runs @>)
+
+[<Fact(Timeout = 60000)>]
+let ``tidyRunsDir cannot FAULT the run it is cleaning up after, however the directory moves`` () =
+    // Housekeeping "must never fail the run that produced the evidence" — its own words.
+    // But it enumerated the run directory TWICE and applied the second enumeration's
+    // COUNT to the first enumeration's LIST:
+    //
+    //     runDirs repoRoot |> List.skip (min keepRuns (List.length (runDirs repoRoot)))
+    //
+    // A run directory appearing between the two (a second fshw process, a concurrent
+    // workspace, a parallel test project finishing its own run) makes the skip count
+    // exceed the list — `List.skip` raises `ArgumentException`, which the enclosing
+    // `IOException | UnauthorizedAccessException` handler does not catch. The tidy then
+    // faults the very run it was tidying up after.
+    //
+    // So: hammer it. A creator racing the tidy, and the tidy must survive every one.
+    withTempDir "ctrf-tidy-race" (fun root ->
+        makeRepo root
+        Directory.CreateDirectory(Ctrf.reportsDir root) |> ignore
+
+        use stop = new System.Threading.CancellationTokenSource()
+
+        let creator =
+            System.Threading.Tasks.Task.Run(fun () ->
+                while not stop.IsCancellationRequested do
+                    Directory.CreateDirectory(Ctrf.runDir root (Guid.NewGuid())) |> ignore
+                    System.Threading.Thread.Sleep 1)
+
+        try
+            // A retention bound well above the directory count, so the skip count is the
+            // LIVE count: any dir that appears mid-call pushes it past the list's length.
+            for _ in 1..200 do
+                Ctrf.tidyRunsDir root 100_000
+        finally
+            stop.Cancel()
+            creator.Wait(5_000) |> ignore)
 
 [<Fact>]
 let ``a report that is not JSON, or has no summary, yields no counts`` () =
@@ -610,7 +685,7 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
                     Failed = 0
                     Skipped = 0 } ] }
 
-    let lines = ProgressRenderer.AgentHints.forVerdict v
+    let lines = hintsFor v
     let text = String.concat "\n" lines
 
     test <@ text.Contains "AGENTS: don't parse this output" @>
@@ -629,7 +704,7 @@ let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm
             Command = Verdict.Check
             Scope = ImpactFiltered(2, 6) }
 
-    let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
+    let text = hintsFor v |> String.concat "\n"
 
     test <@ text.Contains "impact-scoped (2/6 test projects)" @>
     test <@ text.Contains "fshw confirm" @>
@@ -641,7 +716,7 @@ let ``a check that ran no tests is pointed at confirm too — the emptiest evide
             Command = Verdict.Check
             Scope = NoTestsRun }
 
-    let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
+    let text = hintsFor v |> String.concat "\n"
     test <@ text.Contains "fshw confirm" @>
 
 [<Fact>]
@@ -656,14 +731,12 @@ let ``a full-suite check is not nagged, and a confirm never is`` () =
             Command = Verdict.Confirm
             Scope = ImpactFiltered(2, 6) }
 
-    test <@ not ((ProgressRenderer.AgentHints.forVerdict full |> String.concat "\n").Contains "fshw confirm") @>
-    test <@ not ((ProgressRenderer.AgentHints.forVerdict confirmed |> String.concat "\n").Contains "fshw confirm") @>
+    test <@ not ((hintsFor full |> String.concat "\n").Contains "fshw confirm") @>
+    test <@ not ((hintsFor confirmed |> String.concat "\n").Contains "fshw confirm") @>
 
 [<Fact>]
 let ``a run with no suites SAYS so rather than pointing at nothing`` () =
-    let text =
-        ProgressRenderer.AgentHints.forVerdict (greenVerdict "sha256:abc" 12)
-        |> String.concat "\n"
+    let text = hintsFor (greenVerdict "sha256:abc" 12) |> String.concat "\n"
 
     test <@ text.Contains "NO TEST RUN" @>
 
@@ -764,7 +837,7 @@ let ``the verdict file and the agent status line resolve a plugin identically`` 
 let ``every scope round-trips through the file`` () =
     withTempDir "verdict-scopes" (fun root ->
         let roundTrip (scope: TestScope) =
-            Verdict.write
+            writeSpec
                 root
                 { greenVerdict "sha256:abc" 1 with
                     Scope = scope }
@@ -804,9 +877,20 @@ let ``a scope this build cannot read is ScopeUnknown, never full-suite`` () =
 let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not ok`` () =
     withTempDir "verdict-plugins" (fun root ->
         let roundTrip (outcome: Verdict.PluginOutcome) =
-            Verdict.write
+            // The verdict's OWN outcome must agree with the plugin's — `Verdict.create`
+            // refuses a green carrying a failing plugin, which is the whole point of it.
+            // So a failing plugin here rides a red verdict, exactly as it would in life.
+            let verdictOutcome =
+                if Verdict.PluginOutcome.isFailing outcome then
+                    Verdict.Red
+                else
+                    Verdict.Green
+
+            writeSpec
                 root
                 { greenVerdict "sha256:abc" 1 with
+                    Outcome = verdictOutcome
+                    ExitCode = (if verdictOutcome = Verdict.Red then 1 else 0)
                     Plugins =
                         [ { Name = "p"
                             Outcome = outcome
@@ -824,12 +908,14 @@ let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not 
         test <@ roundTrip Verdict.PluginOutcome.Running = Verdict.PluginOutcome.Running @>
 
         // An outcome token this build has never heard of. It is NOT dropped and NOT
-        // rounded to `ok`: an unknown state is not a passing state.
+        // rounded to `ok`: an unknown state is not a passing state. The verdict carrying
+        // it is `red`, so the file is internally consistent and READABLE — the point
+        // here is the TOKEN, and a green would confound it with the invariant below.
         Directory.CreateDirectory(FsHwPaths.root root) |> ignore
 
         File.WriteAllText(
             Verdict.path root,
-            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green"},
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"red"},
                 "plugins":[{"name":"p","outcome":"transcendent"},{"name":"q"}]}"""
         )
 
@@ -843,6 +929,44 @@ let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not 
                     |> List.forall (fun p -> Option.isNone p.ElapsedMs && Option.isNone p.Summary)
                 @>
         | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``a verdict file that says GREEN while a plugin says FAIL is not a verdict — it is UNREADABLE`` () =
+    // THE contradiction, on disk. `{"outcome":"green", "plugins":[{"outcome":"fail"}]}`
+    // is what the `--run-once` path used to WRITE when a plugin crashed, and any reader
+    // lifting the `green` out of it would be reading a check that never ran.
+    //
+    // `Verdict.create` makes it unbuildable; `Verdict.read` makes it unliftable. Both
+    // doors, because a file can also arrive from a hand edit, a future schema, or a
+    // build whose two surfaces have drifted apart again.
+    withTempDir "verdict-contradiction" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        let contradictory (pluginOutcome: string) =
+            File.WriteAllText(
+                Verdict.path root,
+                $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green"},
+                    "plugins":[{"name":"p","outcome":"{{pluginOutcome}}"}]}"""
+            )
+
+            Verdict.read root
+
+        for failing in [ "fail"; "timed-out"; "wedged"; "a-token-from-the-future" ] do
+            match contradictory failing with
+            | Verdict.Reading.Unreadable reason ->
+                test <@ reason.Contains "GREEN verdict cannot contain failing plugins" @>
+            | other -> failwithf "a green carrying a %s plugin must be UNREADABLE, got %A" failing other
+
+        // The control: a green carrying only healthy plugins is a perfectly good verdict.
+        // Without this, a `read` that refused everything would pass the loop above.
+        match contradictory "ok" with
+        | Verdict.Reading.Found v -> test <@ v.Outcome = Verdict.Green @>
+        | other -> failwithf "a green carrying an ok plugin must READ, got %A" other
+
+        // ...and `running` is not failing: a plugin still going is not a plugin that failed.
+        match contradictory "running" with
+        | Verdict.Reading.Found _ -> ()
+        | other -> failwithf "a green carrying a running plugin must READ, got %A" other)
 
 [<Fact>]
 let ``an outcome this build cannot read is Unreadable, never a green`` () =
@@ -1094,7 +1218,7 @@ let ``a confirm that ran the full suite is told nothing extra — the hint is a 
                     Failed = 0
                     Skipped = 0 } ] }
 
-    let lines = ProgressRenderer.AgentHints.forVerdict v
+    let lines = hintsFor v
     let text = String.concat "\n" lines
 
     test <@ text.Contains ".fshw/verdict.json" @>
@@ -1108,7 +1232,7 @@ let ``an UNKNOWN scope on a check is nudged toward confirm too — an unknown sc
             Command = Verdict.Check
             Scope = ScopeUnknown }
 
-    let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
+    let text = hintsFor v |> String.concat "\n"
     test <@ text.Contains "did not establish a full-suite scope" @>
     test <@ text.Contains "fshw confirm" @>
 
@@ -1216,13 +1340,12 @@ let ``a verdict produced by a DIFFERENT binary does not apply — even with a ma
         let tree = TreeHash.compute root []
 
         // Same tree. Different fshw.
-        let fromAnotherBuild =
-            { greenVerdict tree.Hash tree.FileCount with
-                Producer =
-                    { DaemonIdentity.Version = "9.9.9-from-another-build"
-                      DaemonIdentity.ContentHash = "deadbeef00000000" } }
-
-        Verdict.write root fromAnotherBuild
+        //
+        // `Verdict.create` STAMPS the producer from the running process, so this verdict
+        // cannot be built here — and that is correct: it is a foreign artifact, and the
+        // only way to have one is for a foreign binary to have written it. So the test
+        // writes the FILE, exactly as that other build would have.
+        writeVerdictClaimingAnotherBinary root (greenVerdict tree.Hash tree.FileCount)
 
         match Verdict.report root [] with
         | Verdict.Report.Stale(v, reason) ->
@@ -1237,7 +1360,7 @@ let ``a verdict from THIS binary over THIS tree applies — the control`` () =
     withTempDir "verdict-producer-ok" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
-        Verdict.write root (greenVerdict tree.Hash tree.FileCount)
+        writeSpec root (greenVerdict tree.Hash tree.FileCount)
 
         match Verdict.report root [] with
         | Verdict.Report.Applies _ -> ()
@@ -1372,7 +1495,7 @@ let ``the envelope carries the verdict when it applies, and the reason when it d
         // Stale: the verdict IS carried (you may want to see what it said) but the
         // envelope states plainly that it does not apply.
         let tree = TreeHash.compute root []
-        Verdict.write root (greenVerdict tree.Hash tree.FileCount)
+        writeSpec root (greenVerdict tree.Hash tree.FileCount)
         File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet x = 1\n")
 
         let stale = Verdict.serializeReport (Verdict.report root [])
@@ -1381,7 +1504,8 @@ let ``the envelope carries the verdict when it applies, and the reason when it d
 
 [<Fact>]
 let ``every Report case has its own exit code, and none of them is a silent 0`` () =
-    let v = greenVerdict "sha256:x" 1
+    let spec = greenVerdict "sha256:x" 1
+    let v = build spec
     test <@ Verdict.reportExitCode (Verdict.Report.Applies v) = 0 @>
     test <@ Verdict.reportExitCode (Verdict.Report.Stale(v, "because")) = 4 @>
     test <@ Verdict.reportExitCode (Verdict.Report.NoVerdict "because") = 5 @>
@@ -1389,9 +1513,10 @@ let ``every Report case has its own exit code, and none of them is a silent 0`` 
     // A red verdict that APPLIES still reports red — applicability is orthogonal to
     // the answer.
     let red =
-        { v with
-            Outcome = Verdict.Red
-            ExitCode = 1 }
+        build
+            { spec with
+                Outcome = Verdict.Red
+                ExitCode = 1 }
 
     test <@ Verdict.reportExitCode (Verdict.Report.Applies red) = 1 @>
 
@@ -1539,7 +1664,7 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
     // "a missing number is not zero" is this file's own rule. `kind: "none"` carries the
     // load-bearing fact; the counts are simply absent.
     let json =
-        Verdict.serialize
+        serializeSpec
             { greenVerdict "sha256:abc" 1 with
                 Scope = NoTestsRun }
 

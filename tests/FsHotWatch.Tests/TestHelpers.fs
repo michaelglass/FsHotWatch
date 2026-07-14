@@ -646,3 +646,12 @@ let completedAt (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
 /// Failed status at `at`, carrying the canonical test verdict.
 let failedAt (error: string) (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
     FsHotWatch.Events.Failed(error, at, testVerdict)
+
+/// `IpcParsing.parsePluginStatuses`, for tests that are asserting on the CONTENTS of a
+/// payload they already know parses. It FAILS the test on an unreadable payload rather
+/// than degrading to an empty map — which is the same rule the production callers now
+/// follow, and the reason a test can't quietly start asserting over nothing.
+let parseStatuses (json: string) : Map<string, FsHotWatch.Cli.RunOnceOutput.ParsedPluginStatus> =
+    match FsHotWatch.Cli.IpcParsing.parsePluginStatuses json with
+    | Ok statuses -> statuses
+    | Error reason -> failwithf "the plugin-status payload could not be read: %s\n%s" reason json

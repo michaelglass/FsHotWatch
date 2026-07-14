@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: **`Ctrf.tidyRunsDir` can no longer FAULT the run it is cleaning up after.** It
+  enumerated the run directory TWICE and applied the SECOND enumeration's count to the
+  FIRST enumeration's list (`runDirs |> List.skip (min keepRuns (List.length (runDirs
+  …)))`). A run directory appearing between them — a second fshw process, a concurrent
+  workspace, a parallel suite finishing its own run — pushed the skip count past the
+  list's length, and `List.skip` raised `ArgumentException`, which the enclosing
+  `IOException | UnauthorizedAccessException` handler did not catch. It escaped
+  best-effort housekeeping that is explicitly documented as *"must never fail the run
+  that produced the evidence"*. It now enumerates ONCE, and the catch is widened —
+  "must never fail the run" is a promise about all exceptions or it is not a promise.
+
 - fix: **the terminal-status ownership guard is now ATOMIC against a run-slot claim**
   (AUTOMATION-118). A design review alleged the shipped AUTOMATION-95/99 guard was
   "a narrowing, not a cure", and it was right about the mechanism: `liveRunOwnsStatus`

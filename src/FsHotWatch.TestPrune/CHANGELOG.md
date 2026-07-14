@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: **`DependencyFanout` no longer silently DROPS a dependency it cannot resolve.**
+  The fingerprint was built with `List.choose graph.GetCanonicalDllPath`, so a
+  referenced project whose DLL path would not resolve was dropped. A dropped project
+  contributes nothing to the fingerprint, so the fingerprint never moves when that
+  project changes — so a dependency bump inside it **never fans out and its tests are
+  never selected**. That is under-selection: the exact failure `DependencyFanout` exists
+  to prevent, reborn inside it. `ContentHash` names it as unsafe answer #1: *"SKIP the
+  file — the hash matches, and the claim silently covers a file nobody looked at."*
+  An unresolvable DLL now hashes to `ContentHash.UnhashableContent`, which can never
+  collide with a real digest.
+- fix: `DependencyFanout` now hashes through the shared `ContentHash` hasher. It had its
+  own two sentinels (`"missing"`, `"unreadable"`), which made `DaemonIdentity`'s
+  *"one value for I-could-not-read-it, repo-wide"* claim false as written. It also
+  base64-encoded each referenced DLL and hashed the resulting TEXT (~3.7× the DLL size
+  held transiently, per referenced DLL, on every `BuildCompleted`); `ContentHash.ofFile`
+  streams. Note the fingerprint VALUES change, so the first build after upgrading sees
+  every test project's fingerprint move and fans out once — over-selection, which is the
+  safe direction, and it settles on the next build.
+
 - feat!: **`fshw gate` is now `fshw confirm`.** (AUTOMATION-160) **Migration: `fshw gate`
   → `fshw confirm`.** The old verb is removed, not aliased. `gate` named what the verb
   *blocks*, so it got built as a bouncer; its real job is to run the FULL suite and

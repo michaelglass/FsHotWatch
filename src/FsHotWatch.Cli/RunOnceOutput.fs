@@ -19,9 +19,27 @@ type StatusView =
     | Running of since: DateTime
     | Completed of at: DateTime
     | Failed of error: string * at: DateTime
+    /// The daemon SENT a status and this build could not read it — an unrecognized
+    /// tag, a `since` that will not parse, a status that is not even an object.
+    ///
+    /// Its own case, because the alternatives all fail OPEN. Rounding it to `Idle`
+    /// (what the parser used to do, in four places) makes the plugin quiescent, clean
+    /// and INVISIBLE — `Verdict.pluginVerdicts` omits an idle plugin with no run
+    /// record, so it vanishes from `plugins[]` altogether, and a verdict over a clean
+    /// ledger goes green. Dropping the plugin from the map is worse still.
+    ///
+    /// This is a LIVE cross-version hazard, not a hypothetical: `PluginOutcome` gained
+    /// `Wedged` in this very batch, so "old CLI, new daemon" is a shape that exists.
+    /// `Verdict.read` already states the policy for exactly this — "an unknown state is
+    /// not a passing state" — and the wire parser now obeys the same one.
+    | Unreadable of reason: string
 
 module StatusView =
     /// Project the daemon's in-process status (run-once path) to the CLI view.
+    ///
+    /// Total, and note there is no `Unreadable` here: in-process we hold the daemon's
+    /// own `PluginStatus` value, not a wire encoding of it. Absence of an answer is not
+    /// a possible state, so it is not a representable one.
     let ofPluginStatus (status: PluginStatus) : StatusView =
         match status with
         | Idle -> StatusView.Idle
@@ -31,12 +49,18 @@ module StatusView =
 
     // Idle counts as quiescent for status-aggregation callers that query after
     // WaitForScan: Idle there means "not triggered by this scan", not "pending".
+    //
+    // `Unreadable` is quiescent too — and that is not a concession. There is nothing
+    // to WAIT for: a status we cannot read will not become readable by polling it
+    // again, and blocking on one would hang the check instead of failing it. It is
+    // terminal AND failing (see `Verdict.pluginOutcomeOf`), which is the honest pair.
     let isQuiescent (status: StatusView) =
         match status with
         | StatusView.Running _ -> false
         | StatusView.Idle
         | StatusView.Completed _
-        | StatusView.Failed _ -> true
+        | StatusView.Failed _
+        | StatusView.Unreadable _ -> true
 
 type ParsedPluginStatus =
     { Status: StatusView

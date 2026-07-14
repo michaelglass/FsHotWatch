@@ -7638,9 +7638,10 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
         let outcome =
             FsHotWatch.Cli.CheckVerdict.verdict
                 FsHotWatch.Cli.CheckVerdict.Confirmation
-                false
-                FsHotWatch.Cli.IpcParsing.Complete
-                (FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total))
+                { PluginStatuses = Map.empty
+                  FailingDiagnostics = 0
+                  Coverage = FsHotWatch.Cli.IpcParsing.Complete
+                  Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
         test <@ FsHotWatch.Cli.CheckVerdict.exitCode outcome = 3 @>
     | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
@@ -7665,19 +7666,17 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
     test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeNone 2 @>
 
     // NoTestsRun → UnearnedScope → exit 3, in the inner loop as well as `confirm`.
+    let noTestsRan: FsHotWatch.Cli.CheckVerdict.CheckInputs =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          Coverage = FsHotWatch.Cli.IpcParsing.Complete
+          Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
+
     let confirmed =
-        FsHotWatch.Cli.CheckVerdict.verdict
-            FsHotWatch.Cli.CheckVerdict.Confirmation
-            false
-            FsHotWatch.Cli.IpcParsing.Complete
-            FsHotWatch.Cli.IpcParsing.NoTestsRun
+        FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation noTestsRan
 
     let inner =
-        FsHotWatch.Cli.CheckVerdict.verdict
-            FsHotWatch.Cli.CheckVerdict.InnerLoop
-            false
-            FsHotWatch.Cli.IpcParsing.Complete
-            FsHotWatch.Cli.IpcParsing.NoTestsRun
+        FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.InnerLoop noTestsRan
 
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode confirmed = 3 @>
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode inner = 3 @>
