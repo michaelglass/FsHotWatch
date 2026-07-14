@@ -135,42 +135,45 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
     | _ -> None
 
 /// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into
-/// the CLI-side `StatusView`. Returns None if the element isn't a
-/// recognizable tagged status. Total over recognized tags — a missing verdict
-/// can never drop a plugin from the map (which would make `isAllTerminal`
-/// read true for a plugin it can no longer see); the verdict simply isn't
-/// carried here at all (it travels in `lastRun`, the one channel).
-let parseTaggedStatus (el: JsonElement) : StatusView option =
+/// the CLI-side `StatusView`. TOTAL — every way of not understanding the element is a
+/// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from
+/// the map (which would make `isAllTerminal` read true for a plugin it can no longer
+/// see). The verdict isn't carried here at all; it travels in `lastRun`, the one channel.
+///
+/// The `running`/`since` arm is the one that bites hardest. `since` is the ONLY input to
+/// AUTOMATION-147's wedge classifier — `pluginOutcomeOf` fires it on `StatusView.Running
+/// since` and nowhere else — so a `since` that would not parse used to turn a WEDGED
+/// plugin into an idle one, and 147's entire detection was defeated silently, from a
+/// timestamp. An unparseable `since` is now unreadable, not idle.
+let parseTaggedStatus (el: JsonElement) : StatusView =
+    let unreadable (why: string) =
+        StatusView.Unreadable $"unreadable plugin status: %s{why}"
+
     if el.ValueKind <> JsonValueKind.Object then
-        None
+        unreadable $"expected a tagged object, got %A{el.ValueKind}"
     else
         match tryGetStringProp el "tag" with
-        | Some "idle" -> Some StatusView.Idle
+        | Some "idle" -> StatusView.Idle
         | Some "running" ->
-            tryGetStringProp el "since"
-            |> Option.bind tryParseUtcOpt
-            |> Option.map StatusView.Running
+            match tryGetStringProp el "since" |> Option.bind tryParseUtcOpt with
+            | Some since -> StatusView.Running since
+            | None -> unreadable "a `running` status with no readable `since` — the wedge bound cannot be applied to it"
         | Some "completed" ->
-            tryGetStringProp el "at"
-            |> Option.bind tryParseUtcOpt
-            |> Option.map StatusView.Completed
+            match tryGetStringProp el "at" |> Option.bind tryParseUtcOpt with
+            | Some at -> StatusView.Completed at
+            | None -> unreadable "a `completed` status with no readable `at`"
         | Some "failed" ->
             let err = tryGetStringProp el "error" |> Option.defaultValue ""
             let at = tryGetStringProp el "at" |> Option.bind tryParseUtcOpt
 
             match at with
-            | Some dt -> Some(StatusView.Failed(err, dt))
-            | None -> Some(StatusView.Failed(err, DateTime.UtcNow))
-        | _ -> None
+            | Some dt -> StatusView.Failed(err, dt)
+            | None -> StatusView.Failed(err, DateTime.UtcNow)
+        | Some tag -> unreadable $"a status tag this build does not recognize: '%s{tag}'"
+        | None -> unreadable "a status object with no `tag`"
 
-/// Parse the status field of a plugin-status payload.
-let parseStatusField (el: JsonElement) : StatusView =
-    match el.ValueKind with
-    | JsonValueKind.Object ->
-        match parseTaggedStatus el with
-        | Some s -> s
-        | None -> StatusView.Idle
-    | _ -> StatusView.Idle
+/// Parse the status field of a plugin-status payload. Fail closed: see `parseTaggedStatus`.
+let parseStatusField (el: JsonElement) : StatusView = parseTaggedStatus el
 
 /// Parse a tagged RunOutcome object, e.g. {"tag":"failed","error":"..."}.
 let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
@@ -188,15 +191,23 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
         | _ -> None
 
 /// Parse a lastRun.outcome field (tagged-object shape).
+///
+/// An outcome tag this build does not recognize becomes `FailedRun`, NOT `CompletedRun`.
+/// It defaulted to `CompletedRun` — a PASS — which is the same fail-open `Verdict.read`
+/// forbids one file away, in words: "an unknown state is not a passing state". A daemon
+/// reporting a run outcome we have no name for has not told us the run succeeded.
 let parseOutcomeField (outcomeEl: JsonElement) : RunOutcome =
-    parseTaggedOutcome outcomeEl |> Option.defaultValue CompletedRun
+    match parseTaggedOutcome outcomeEl with
+    | Some outcome -> outcome
+    | None -> FailedRun "unrecognized outcome tag — this build cannot read the run's result"
 
 /// Parse a single structured plugin-status JSON element.
 let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
     let status =
         match el.TryGetProperty("status") with
         | true, s -> parseStatusField s
-        | false, _ -> StatusView.Idle
+        // No `status` at all. Not idle — we were told nothing.
+        | false, _ -> StatusView.Unreadable "unreadable plugin status: the payload carries no `status` field"
 
     let subtasks =
         match el.TryGetProperty("subtasks") with
@@ -256,12 +267,19 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
       LastRun = lastRun
       Diagnostics = diagnostics }
 
-/// Parse the top-level JSON object returned by GetStatus into structured per-plugin status.
-let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
-    // F8 (audit 2026-05-02): JSON-shape drift from the daemon must be visible —
-    // the previous bare `with _` silently rendered an empty UI. Narrow to
-    // :? JsonException so a real bug (null, ArgumentException) propagates,
-    // and warn-log so producer/consumer schema drift surfaces in CLI logs.
+/// Parse the top-level JSON object returned by GetStatus into structured per-plugin
+/// status — or say, in a NAMED case, that it could not be read.
+///
+/// AN UNREADABLE MAP IS NOT AN EMPTY ONE. This used to swallow a `JsonException` and
+/// return `Map.empty`, at which point every plugin vanished: nothing Failed, nothing
+/// Running, nothing to report — and any verdict computed over a clean ledger stayed
+/// green. `Map.empty` is a CLAIM ("no plugin has anything to say"); a parse failure is
+/// the absence of one, and the two must not be spelled the same way. Same shape as
+/// `Verdict.read`, which already refuses to round an unreadable file to a verdict.
+///
+/// Only `JsonException` is caught. A real programming bug (null, ArgumentException)
+/// still propagates — a fail-closed reader is not a bug-swallowing one.
+let parsePluginStatuses (json: string) : Result<Map<string, ParsedPluginStatus>, string> =
     try
         use doc = JsonDocument.Parse(json)
 
@@ -269,9 +287,10 @@ let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
               if prop.Value.ValueKind = JsonValueKind.Object then
                   prop.Name, parsePluginStatusElement prop.Value ]
         |> Map.ofList
+        |> Result.Ok
     with :? JsonException as ex ->
         FsHotWatch.Logging.warn "ipc-parsing" $"Failed to parse plugin-status JSON (schema drift?): %s{ex.Message}"
-        Map.empty
+        Result.Error $"the daemon's plugin-status payload could not be parsed (schema drift?): %s{ex.Message}"
 
 /// Project a ParsedPluginStatus map to plain StatusView values.
 let statusOnly (parsed: Map<string, ParsedPluginStatus>) : Map<string, StatusView> =

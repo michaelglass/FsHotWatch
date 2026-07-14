@@ -134,7 +134,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
         let result =
             IpcClient.getPluginStatus pipeName "status-plugin" |> Async.RunSynchronously
 
-        let parsed = IpcParsing.parsePluginStatuses result
+        let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses result
         test <@ parsed.ContainsKey("status-plugin") @>
         test <@ parsed.["status-plugin"].Status = StatusView.Idle @>
     finally
@@ -160,7 +160,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
         let result =
             IpcClient.getPluginStatus pipeName "nonexistent" |> Async.RunSynchronously
 
-        let parsed = IpcParsing.parsePluginStatuses result
+        let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses result
         test <@ Map.isEmpty parsed @>
     finally
         cts.Cancel()
@@ -307,7 +307,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         test <@ result.Contains("something broke") @>
 
         // Round-trip: consumer parser should recover the original DU values.
-        let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses result
+        let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses result
 
         match parsed.["idle-p"].Status with
         | StatusView.Idle -> ()
@@ -571,7 +571,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
     let getParsed name =
-        IpcParsing.parsePluginStatuses (target.GetPluginStatus(name))
+        FsHotWatch.Tests.TestHelpers.parseStatuses (target.GetPluginStatus(name))
 
     test <@ (getParsed "idle-test").["idle-test"].Status = StatusView.Idle @>
 

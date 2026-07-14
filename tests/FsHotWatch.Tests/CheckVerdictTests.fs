@@ -1,7 +1,10 @@
 module FsHotWatch.Tests.CheckVerdictTests
 
+open System
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.CheckVerdict
 
@@ -10,6 +13,75 @@ open FsHotWatch.Cli.CheckVerdict
 /// covered — so these cases pin the InnerLoop mode, which ignores the scope
 /// entirely. The scope's own behaviour is pinned by the Confirmation tests below.
 let private anyScope = FullSuite 1
+
+/// A plugin whose status is `status` and which has NOTHING else to say — no run
+/// record, no diagnostics. The shape of a plugin the framework's crash-net forced to
+/// `Failed`: it threw before it could report anything.
+let private statusOf (status: StatusView) : Map<string, ParsedPluginStatus> =
+    Map.ofList
+        [ "boom",
+          { Status = status
+            Subtasks = []
+            ActivityTail = []
+            LastRun = None
+            Diagnostics = DiagnosticCounts.empty } ]
+
+/// The verdict's inputs, as these tests want to talk about them: `hasFailures` here
+/// means a failing DIAGNOSTIC (the term the run-once path already had, and the only
+/// one it had). The OTHER term — a plugin that failed without writing a diagnostic —
+/// has its own tests below, because it is the one that greened CI.
+let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) : CheckInputs =
+    { PluginStatuses = Map.empty
+      FailingDiagnostics = (if hasFailures then 1 else 0)
+      Coverage = coverage
+      Scope = scope }
+
+// ----------------------------------------------------------------------------
+// THE MISSING TERM. `hasFailures` was computed by each transport, and the run-once
+// transport computed only half of it.
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in BOTH modes`` () =
+    // A plugin reaches `Failed` without writing an `ErrorEntry` every time it throws —
+    // PluginFramework's crash-nets force exactly that, and cannot invent a file and
+    // line for someone else's stack trace. Complete coverage, full suite, empty ledger,
+    // and the check DID NOT RUN. There is only one honest answer.
+    let crashed =
+        { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
+          FailingDiagnostics = 0
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop crashed = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation crashed = CheckOutcome.FailuresFound @>
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: a plugin in a status this build cannot READ is FailuresFound, never Clean`` () =
+    // The cross-version case, now that `PluginOutcome` has gained `Wedged`: a newer
+    // daemon reporting a state we have no name for. An unknown state is not a passing
+    // state — `Verdict.read` has said so all along; the wire parser now agrees.
+    let unreadable =
+        { PluginStatuses = statusOf (StatusView.Unreadable "a status tag this build does not recognize")
+          FailingDiagnostics = 0
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop unreadable = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation unreadable = CheckOutcome.FailuresFound @>
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: a healthy plugin map does not manufacture a failure`` () =
+    // The control. Without it, a `hasFailures` that simply returned `true` would pass
+    // both tests above and prove nothing.
+    let healthy =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 0
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop healthy = CheckOutcome.Clean @>
+    test <@ verdict Confirmation healthy = CheckOutcome.Clean @>
 
 // ----------------------------------------------------------------------------
 // Pure verdict mapping. The exit code is a TOTAL function over an explicit
@@ -21,31 +93,31 @@ let private anyScope = FullSuite 1
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Complete -> FailuresFound`` () =
-    test <@ verdict InnerLoop true Complete anyScope = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop (inputs true Complete anyScope) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Incomplete -> FailuresFound (failures short-circuit)`` () =
-    test <@ verdict InnerLoop true (Incomplete 5) anyScope = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop (inputs true (Incomplete 5) anyScope) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Unknown -> FailuresFound`` () =
-    test <@ verdict InnerLoop true Unknown anyScope = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop (inputs true Unknown anyScope) = CheckOutcome.FailuresFound @>
 
 // no failures: coverage decides.
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Complete -> Clean`` () =
-    test <@ verdict InnerLoop false Complete anyScope = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Incomplete -> Incomplete`` () =
-    test <@ verdict InnerLoop false (Incomplete 3) anyScope = CheckOutcome.Incomplete 3 @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 3) anyScope) = CheckOutcome.Incomplete 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Unknown -> Incomplete (Unknown never reads as Clean)`` () =
     // Unknown must enter convergence, never map to Clean. We model that by
     // mapping it to an Incomplete outcome (unchecked count unknown -> -1).
-    match verdict InnerLoop false Unknown anyScope with
+    match verdict InnerLoop (inputs false Unknown anyScope) with
     | CheckOutcome.Incomplete _ -> ()
     | other -> failwithf "expected Incomplete, got %A" other
 
@@ -67,7 +139,7 @@ let ``exitCode: Incomplete -> 2`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Unknown coverage with no failures never yields exit 0`` () =
-    let code = exitCode (verdict InnerLoop false Unknown anyScope)
+    let code = exitCode (verdict InnerLoop (inputs false Unknown anyScope))
     test <@ code <> 0 @>
 
 // ----------------------------------------------------------------------------
@@ -91,7 +163,7 @@ let private scripted (responses: (bool * Coverage) list) =
             last <- queue.Dequeue()
 
         let (failures, coverage) = last
-        (failures, coverage, anyScope)
+        inputs failures coverage anyScope
 
     (triggerScan, reread, scans)
 
@@ -100,7 +172,7 @@ let ``converge: already complete after first re-read -> Clean`` () =
     let (triggerScan, reread, scans) = scripted [ (false, Complete) ]
 
     let outcome =
-        converge InnerLoop 3 triggerScan reread (false, Incomplete 2, anyScope)
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 2) anyScope)
 
     test <@ outcome = CheckOutcome.Clean @>
     test <@ scans.Value >= 1 @>
@@ -112,7 +184,7 @@ let ``converge: failures appear mid-convergence -> FailuresFound`` () =
         scripted [ (false, Incomplete 3); (true, Incomplete 1) ]
 
     let outcome =
-        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
 
     test <@ outcome = CheckOutcome.FailuresFound @>
 
@@ -122,7 +194,7 @@ let ``converge: no progress (5,5,5) -> Incomplete`` () =
         scripted [ (false, Incomplete 5); (false, Incomplete 5); (false, Incomplete 5) ]
 
     let outcome =
-        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -134,7 +206,7 @@ let ``converge: progress then complete (5 -> 2 -> 0) -> Clean`` () =
         scripted [ (false, Incomplete 2); (false, Complete) ]
 
     let outcome =
-        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
 
     test <@ outcome = CheckOutcome.Clean @>
     test <@ scans.Value = 2 @>
@@ -151,7 +223,7 @@ let ``converge: bounded to 3 attempts when shrinking but never complete`` () =
               (false, Incomplete 1) ]
 
     let outcome =
-        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+        converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -164,7 +236,8 @@ let ``converge: Unknown that stays Unknown -> Incomplete (never Clean)`` () =
     let (triggerScan, reread, _) =
         scripted [ (false, Unknown); (false, Unknown); (false, Unknown) ]
 
-    let outcome = converge InnerLoop 3 triggerScan reread (false, Unknown, anyScope)
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (inputs false Unknown anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -173,7 +246,10 @@ let ``converge: Unknown that stays Unknown -> Incomplete (never Clean)`` () =
 [<Fact(Timeout = 15000)>]
 let ``converge: Unknown then complete -> Clean`` () =
     let (triggerScan, reread, _) = scripted [ (false, Complete) ]
-    let outcome = converge InnerLoop 3 triggerScan reread (false, Unknown, anyScope)
+
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (inputs false Unknown anyScope)
+
     test <@ outcome = CheckOutcome.Clean @>
 
 // ----------------------------------------------------------------------------
@@ -188,13 +264,13 @@ let ``converge: Unknown then complete -> Clean`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: a full-suite run with no failures is the ONLY route to Clean`` () =
-    test <@ verdict Confirmation false Complete (FullSuite 4) = CheckOutcome.Clean @>
+    test <@ verdict Confirmation (inputs false Complete (FullSuite 4)) = CheckOutcome.Clean @>
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: an impact-filtered run cannot yield Clean`` () =
     // The exact shape of the bug: nothing failed, coverage complete — and the run
     // looked at a selected subset. That is not a merge verdict.
-    let outcome = verdict Confirmation false Complete (ImpactFiltered(1, 4))
+    let outcome = verdict Confirmation (inputs false Complete (ImpactFiltered(1, 4)))
 
     test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
     test <@ exitCode outcome <> 0 @>
@@ -204,7 +280,7 @@ let ``Confirmation: a run that executed no tests at all cannot yield Clean`` () 
     // AUTOMATION-108's shape: the daemon skipped the run (cached/baseline-equivalent)
     // and nothing ran. 35 tests were red on `main` throughout. "No tests ran" is not
     // evidence of a green suite.
-    let outcome = verdict Confirmation false Complete NoTestsRun
+    let outcome = verdict Confirmation (inputs false Complete NoTestsRun)
 
     test <@ outcome = CheckOutcome.UnearnedScope NoTestsRun @>
     test <@ exitCode outcome <> 0 @>
@@ -214,7 +290,7 @@ let ``Confirmation: an unknown scope cannot yield Clean`` () =
     // The cross-version backstop. An old daemon, an absent test-prune plugin, a
     // transport fault — every one of them lands here, and none of them is a
     // full-suite run. `confirm` goes green only on a scope it POSITIVELY established.
-    let outcome = verdict Confirmation false Complete ScopeUnknown
+    let outcome = verdict Confirmation (inputs false Complete ScopeUnknown)
 
     test <@ outcome = CheckOutcome.UnearnedScope ScopeUnknown @>
     test <@ exitCode outcome <> 0 @>
@@ -222,21 +298,21 @@ let ``Confirmation: an unknown scope cannot yield Clean`` () =
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: real failures still short-circuit ahead of scope`` () =
     // A failing test is a failing test; don't bury it behind a scope complaint.
-    test <@ verdict Confirmation true Complete (ImpactFiltered(1, 4)) = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation (inputs true Complete (ImpactFiltered(1, 4))) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: incomplete coverage still outranks scope`` () =
     // Files that were never checked are a completeness problem, reported as such.
-    test <@ verdict Confirmation false (Incomplete 7) (FullSuite 4) = CheckOutcome.Incomplete 7 @>
+    test <@ verdict Confirmation (inputs false (Incomplete 7) (FullSuite 4)) = CheckOutcome.Incomplete 7 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
     // The fast loop keeps its optimization. Making it demand the whole suite would
     // defeat the point of having one; `confirm` is where the claim gets made.
-    test <@ verdict InnerLoop false Complete (ImpactFiltered(1, 4)) = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete (ImpactFiltered(1, 4))) = CheckOutcome.Clean @>
     // A repo with no test-prune plugin has no tests to run, and punishing it would be
     // nonsense. `ScopeUnknown` is "we cannot say", not "we ran nothing".
-    test <@ verdict InnerLoop false Complete ScopeUnknown = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = CheckOutcome.Clean @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, not NOTHING`` () =
@@ -253,12 +329,12 @@ let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, n
     // tested; this is a question of WHETHER WE TESTED AT ALL, and the two are not the
     // same axis. The inner loop is allowed to test less. It is not allowed to test
     // nothing and call it green.
-    test <@ verdict InnerLoop false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
-    test <@ verdict Confirmation false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
+    test <@ verdict InnerLoop (inputs false Complete NoTestsRun) = CheckOutcome.UnearnedScope NoTestsRun @>
+    test <@ verdict Confirmation (inputs false Complete NoTestsRun) = CheckOutcome.UnearnedScope NoTestsRun @>
 
     // ...but a REAL failure still outranks it: a red is a red, and reporting "no
     // verdict" would bury it.
-    test <@ verdict InnerLoop true Complete NoTestsRun = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop (inputs true Complete NoTestsRun) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: UnearnedScope is its own code, distinct from failure and incompleteness`` () =
@@ -275,20 +351,12 @@ let ``exitCode: UnearnedScope is its own code, distinct from failure and incompl
 let ``converge: a Confirmation never scans its way out of an unearned scope`` () =
     // Re-scanning cannot widen the scope of a run that already happened. `confirm`'s
     // job is to report that it has no verdict — not to keep scanning for a better one.
-    let queue =
-        System.Collections.Generic.Queue<bool * Coverage * TestScope>([ (false, Complete, ImpactFiltered(1, 4)) ])
-
+    let filtered = inputs false Complete (ImpactFiltered(1, 4))
     let scans = ref 0
     let triggerScan () = incr scans
+    let reread () = filtered
 
-    let reread () =
-        if queue.Count > 0 then
-            queue.Dequeue()
-        else
-            (false, Complete, ImpactFiltered(1, 4))
-
-    let outcome =
-        converge Confirmation 3 triggerScan reread (false, Complete, ImpactFiltered(1, 4))
+    let outcome = converge Confirmation 3 triggerScan reread filtered
 
     test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
     test <@ scans.Value = 0 @>

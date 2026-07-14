@@ -1,5 +1,6 @@
 module FsHotWatch.Cli.CheckVerdict
 
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 
 // ----------------------------------------------------------------------------
@@ -75,10 +76,68 @@ let exitCode (outcome: CheckOutcome) : int =
     | CheckOutcome.Incomplete _ -> 2
     | CheckOutcome.UnearnedScope _ -> 3
 
-/// Pure verdict from (mode, hasFailures, coverage, testScope). Every input is
-/// REQUIRED — a verdict cannot be computed without knowing what the tests covered,
-/// which is what makes "a merge verdict produced from a filtered run" unrepresentable
-/// rather than merely discouraged.
+/// EVERYTHING a verdict is computed from. ONE record, both transports.
+///
+/// WHY A RECORD AND NOT A `bool`. `verdict` used to take `hasFailures: bool`, computed
+/// by the caller. The daemon path computed `anyPluginFailed || failingDiagnostics`; the
+/// `--run-once` path — which is what CI runs — computed ONLY the second term. So a
+/// plugin that CRASHED (PluginFramework's crash-nets force `Failed` with no
+/// `ErrorEntry`: the framework cannot invent a file and line for someone else's stack
+/// trace) exited 1 under `fshw check` and 0 under `fshw confirm --run-once`, with
+/// `outcome: green` and `plugins: [{"outcome":"fail"}]` in the same verdict file.
+///
+/// The two transports differ ONLY in how they observe the daemon — a socket or an
+/// in-process host. They may not differ in what they DECIDE. So the observations are
+/// what they hand over, the disjunction is computed once, here, and a transport that
+/// forgets a term no longer produces a green: it fails to compile.
+type CheckInputs =
+    {
+        /// Per-plugin status, as the transport observed it. A plugin in here can be
+        /// failing WITHOUT having written a single diagnostic — which is precisely
+        /// why this is a field and not something the caller was trusted to fold in.
+        PluginStatuses: Map<string, ParsedPluginStatus>
+        /// Failing entries in the diagnostic ledger. Whether warnings count is
+        /// resolved by the transport (`--no-warn-fail`), because only it knows.
+        FailingDiagnostics: int
+        /// Did the run actually check every file it is responsible for? `Unknown` is
+        /// never `Complete`.
+        Coverage: Coverage
+        /// What the tests that ran actually COVERED. `ScopeUnknown` is never full-suite.
+        Scope: TestScope
+    }
+
+module CheckInputs =
+    /// Did any plugin reach a FAILING status?
+    ///
+    /// THE definition, and both transports ask it rather than each deciding for
+    /// themselves. `StatusView.Unreadable` counts: a status this build cannot read is
+    /// not a passing status (see `IpcParsing.parseTaggedStatus`), and rounding it down
+    /// to idle is how a plugin disappears from the verdict entirely.
+    let anyPluginFailed (statuses: Map<string, ParsedPluginStatus>) : bool =
+        statuses
+        |> Map.exists (fun _ parsed ->
+            match parsed.Status with
+            | StatusView.Failed _
+            | StatusView.Unreadable _ -> true
+            | StatusView.Idle
+            | StatusView.Running _
+            | StatusView.Completed _ -> false)
+
+    /// THE definition of "this run found real problems" — BOTH terms, in ONE place.
+    /// A crashed plugin is a failure even with a spotless ledger; a failing ledger is a
+    /// failure even with every plugin green.
+    let foundProblems (statuses: Map<string, ParsedPluginStatus>) (failingDiagnostics: int) : bool =
+        anyPluginFailed statuses || failingDiagnostics > 0
+
+    /// Does this check have failures? The `hasFailures` half of the verdict.
+    let hasFailures (inputs: CheckInputs) : bool =
+        foundProblems inputs.PluginStatuses inputs.FailingDiagnostics
+
+/// Pure verdict from (mode, inputs). Every input is REQUIRED — a verdict cannot be
+/// computed without knowing what the plugins did, what the ledger says, what was
+/// checked, and what the tests covered. That is what makes "a merge verdict produced
+/// from a filtered run" (or from a crashed plugin) unrepresentable rather than merely
+/// discouraged.
 ///
 /// Failures short-circuit (a real problem is reported immediately, whatever the
 /// scope). Then completeness. Then — in `Confirmation` only — scope: `FullSuite` is the
@@ -89,8 +148,11 @@ let exitCode (outcome: CheckOutcome) : int =
 /// `InnerLoop` ignores the scope entirely — an impact-filtered green is exactly the
 /// answer it wants, and making the fast loop demand the whole suite would defeat the
 /// point of having one.
-let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScope: TestScope) : CheckOutcome =
-    if hasFailures then
+let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
+    let coverage = inputs.Coverage
+    let testScope = inputs.Scope
+
+    if CheckInputs.hasFailures inputs then
         CheckOutcome.FailuresFound
     else
         match coverage with
@@ -186,11 +248,10 @@ let converge
     (mode: CheckMode)
     (maxAttempts: int)
     (triggerScan: unit -> unit)
-    (reread: unit -> bool * Coverage * TestScope)
-    (initial: bool * Coverage * TestScope)
+    (reread: unit -> CheckInputs)
+    (initial: CheckInputs)
     : CheckOutcome =
-    let (initFailures, initCoverage, initScope) = initial
-    let initOutcome = verdict mode initFailures initCoverage initScope
+    let initOutcome = verdict mode initial
 
     match initOutcome with
     | CheckOutcome.FailuresFound
@@ -205,21 +266,20 @@ let converge
                 CheckOutcome.Incomplete prevMagnitude
             else
                 triggerScan ()
-                let (failures, coverage, scope) = reread ()
+                let inputs = reread ()
 
-                if failures then
-                    CheckOutcome.FailuresFound
-                else
-                    match coverage with
-                    | Complete -> verdict mode false coverage scope
-                    | _ ->
-                        let magnitude = uncheckedMagnitude coverage
+                // Every re-read goes through the SAME `verdict` as the first one — the
+                // convergence loop holds no second opinion about what a read MEANS.
+                match verdict mode inputs with
+                | CheckOutcome.Incomplete _ as incomplete ->
+                    let magnitude = uncheckedMagnitude inputs.Coverage
 
-                        if magnitude >= prevMagnitude then
-                            // No progress: the re-scan did not reduce the
-                            // unchecked count. Stop — genuinely un-completable.
-                            verdict mode false coverage scope
-                        else
-                            loop (attempt + 1) magnitude
+                    if magnitude >= prevMagnitude then
+                        // No progress: the re-scan did not reduce the unchecked
+                        // count. Stop — genuinely un-completable.
+                        incomplete
+                    else
+                        loop (attempt + 1) magnitude
+                | terminal -> terminal
 
-        loop 1 (uncheckedMagnitude initCoverage)
+        loop 1 (uncheckedMagnitude initial.Coverage)

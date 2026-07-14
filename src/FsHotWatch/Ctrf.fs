@@ -220,7 +220,14 @@ let latestRunReports (repoRoot: string) : Report list =
 ///     since.) A stale artifact that looks authoritative is worse than none.
 ///
 /// Best-effort throughout — tidying is housekeeping and must never fail the run that
-/// produced the evidence.
+/// produced the evidence. Which it once could, from its own retention arithmetic: it
+/// enumerated the run directory TWICE and applied the SECOND enumeration's count to the
+/// FIRST enumeration's list. A run-dir appearing between them (a second fshw process, a
+/// concurrent workspace, a parallel suite finishing) pushed the skip count past the
+/// list's length, `List.skip` raised `ArgumentException`, and the tidy faulted the very
+/// run it was tidying up after. ONE enumeration; and the catch is widened to whatever
+/// else housekeeping might one day throw, because "must never fail the run" is a
+/// promise about ALL exceptions or it is not a promise.
 let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
     let root = reportsDir repoRoot
 
@@ -231,18 +238,19 @@ let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
             for stale in Directory.GetFiles(root) do
                 try
                     File.Delete(stale)
-                with
-                | :? IOException
-                | :? UnauthorizedAccessException -> ()
+                with _ ->
+                    ()
 
-            runDirs repoRoot
-            |> List.skip (min keepRuns (List.length (runDirs repoRoot)))
+            // ONE listing. The count and the list are the same observation of the same
+            // directory at the same moment, so they cannot disagree about its size.
+            let dirs = runDirs repoRoot
+
+            dirs
+            |> List.skip (min keepRuns (List.length dirs))
             |> List.iter (fun d ->
                 try
                     d.Delete(true)
-                with
-                | :? IOException
-                | :? UnauthorizedAccessException -> ())
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException -> ()
+                with _ ->
+                    ())
+        with _ ->
+            ()

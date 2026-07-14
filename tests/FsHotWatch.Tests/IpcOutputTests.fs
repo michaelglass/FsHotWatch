@@ -41,6 +41,63 @@ let ``parseDiagnosticsResponse extracts statuses`` () =
     | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
+// ---------------------------------------------------------------------------
+// AN UNREADABLE PLUGIN STATUS IS NOT A PASSING ONE.
+//
+// `Verdict.read` already states the policy one file away: "a plugin outcome token
+// this build does not recognize is NOT dropped and NOT rounded to `Ok` — it becomes
+// `Fail`. An unknown state is not a passing state." The IPC parser did the opposite:
+// four separate places rounded an unparseable status DOWN to `Idle` — quiescent, no
+// failure, omitted from the verdict entirely.
+//
+// This is a LIVE cross-version hazard, not a hypothetical: `PluginOutcome` gained
+// `Wedged` in this batch, so "old CLI, new daemon" is a shape that exists.
+//
+// Asserted through `hasFailures` — the one predicate both `check` and `confirm`
+// decide on — so the tests pin the CONSEQUENCE, not the representation.
+// ---------------------------------------------------------------------------
+
+let private responseWithStatus (statusJson: string) =
+    parseDiagnosticsResponse (
+        """{"count":0,"files":{},"unchecked":0,"statuses":{"mystery":{"status":"""
+        + statusJson
+        + ""","subtasks":[],"activityTail":[],"lastRun":null}}}"""
+    )
+
+[<Fact(Timeout = 15000)>]
+let ``a status tag this build does not recognize is a FAILURE, not idle`` () =
+    // A newer daemon reporting a state we have no name for. Rounding it to `Idle`
+    // makes the plugin quiescent, clean, and INVISIBLE in the verdict's `plugins[]`.
+    let resp = responseWithStatus """{"tag":"quantum-superposition"}"""
+    test <@ hasFailures false resp @>
+    test <@ exitCodeFromResponse false resp = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a running status whose since cannot be parsed is a FAILURE, not idle`` () =
+    // This one silently defeated ALL of AUTOMATION-147's wedge detection: the wedge
+    // classifier only ever fires on `StatusView.Running since`, so a `since` we could
+    // not parse turned a WEDGED plugin into an idle one — the 8h36m silence, restored.
+    let resp = responseWithStatus """{"tag":"running","since":"not-a-timestamp"}"""
+    test <@ hasFailures false resp @>
+
+[<Fact(Timeout = 15000)>]
+let ``a status that is not even an object is a FAILURE, not idle`` () =
+    let resp = responseWithStatus "\"running\""
+    test <@ hasFailures false resp @>
+
+[<Fact(Timeout = 15000)>]
+let ``a plugin element with NO status field is a FAILURE, not idle`` () =
+    let resp =
+        parseDiagnosticsResponse
+            """{"count":0,"files":{},"unchecked":0,"statuses":{"mystery":{"subtasks":[],"activityTail":[],"lastRun":null}}}"""
+
+    test <@ hasFailures false resp @>
+
+[<Fact(Timeout = 15000)>]
+let ``a recognized idle status is still idle — the fail-closed rule does not swallow the healthy case`` () =
+    let resp = responseWithStatus """{"tag":"idle"}"""
+    test <@ not (hasFailures false resp) @>
+
 [<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let json =
@@ -281,8 +338,7 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
     let json = """{"plugin": "Completed at 2026-01-01T00:00:00Z"}"""
-    let parsed = parsePluginStatuses json
-    test <@ Map.isEmpty parsed @>
+    test <@ parsePluginStatuses json = Ok Map.empty @>
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses accepts object-valued entries with status field`` () =
@@ -290,7 +346,7 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
     let json =
         """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
-    let parsed = parsePluginStatuses json
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses json
     test <@ Map.containsKey "plugin" parsed @>
 
 // --- Regression: check soundness (false green before the test-prune verdict) ---

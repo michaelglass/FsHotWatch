@@ -70,6 +70,21 @@ module PluginOutcome =
         | PluginOutcome.Running -> "running"
         | PluginOutcome.Wedged -> "wedged"
 
+    /// Is this plugin's own outcome incompatible with a GREEN verdict? Total, so a new
+    /// outcome must be classified here by an explicit edit — it cannot default to
+    /// "compatible with green".
+    ///
+    /// `Running` is not listed, deliberately: a plugin still running has not failed. It
+    /// is `Wedged` — running PAST the bound, which is failure by definition — that is.
+    let isFailing (o: PluginOutcome) : bool =
+        match o with
+        | PluginOutcome.Fail
+        | PluginOutcome.TimedOut
+        | PluginOutcome.Wedged -> true
+        | PluginOutcome.Ok
+        | PluginOutcome.Warn
+        | PluginOutcome.Running -> false
+
 /// Resolve a plugin's outcome from its parsed status. `None` means "nothing to
 /// report" — idle, never run — and such a plugin is omitted rather than being
 /// invented as a pass.
@@ -106,6 +121,11 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         match PluginWedge.classifyRunning (PluginWedge.ambientBound ()) now since with
         | PluginWedge.RunningHealth.Wedged _ -> Some PluginOutcome.Wedged
         | PluginWedge.RunningHealth.StillRunning _ -> Some PluginOutcome.Running
+    // A status this build could not read is `Fail`, and — crucially — it is `Some`: the
+    // plugin STAYS IN the verdict. Omitting it (which is what rounding down to `Idle`
+    // achieved) is how a plugin nobody could read vanishes from `plugins[]` and the
+    // verdict goes green over a check that never reported.
+    | StatusView.Unreadable _ -> Some PluginOutcome.Fail
     | StatusView.Failed _ when timedOutLastRun () -> Some PluginOutcome.TimedOut
     | StatusView.Failed _ -> Some PluginOutcome.Fail
     // Fail closed: Completed with no run record can never be `ok`. A clean ledger
@@ -242,29 +262,119 @@ module Command =
         | CheckVerdict.Confirmation -> Confirm
 
 /// The on-disk verdict.
+///
+/// THE REPRESENTATION IS PRIVATE, and the only door in is `Verdict.create`. `outcome`
+/// and `plugins` used to be assembled side by side from independent sources, and
+/// nothing forbade the one state this file must never be able to express:
+///
+///     {"outcome": "green", "plugins": [{"outcome": "fail"}]}
+///
+/// That is not a hypothetical shape — it is exactly what the `--run-once` path wrote
+/// when a plugin crashed, because its `hasFailures` was missing the `anyPluginFailed`
+/// term. Two surfaces, assembled independently, disagreeing about the same run.
+///
+/// So `outcome` is no longer merely CORRELATED with `plugins`; it is CHECKED against
+/// them, once, at the only place a `Verdict` can come into existence. Same move
+/// AUTOMATION-99 made for `RunVerdict` (private record, `create` rejects an empty
+/// summary): if a state is a lie, do not document that it must not be constructed —
+/// make it unconstructible.
+[<NoComparison>]
 type Verdict =
-    {
-        ProducedAt: DateTime
-        Command: Command
-        /// The fshw binary that produced this verdict. A verdict from a different
-        /// binary does not apply, however well its `treeHash` matches.
-        Producer: Producer
-        /// The test run this verdict's suites came from — i.e. the directory they
-        /// live in (`.fshw/test-runs/<runId>/`). `None` when NO test run happened,
-        /// which is a fact the verdict states rather than a silence for the reader
-        /// to decode.
-        RunId: Guid option
-        TreeHash: string
-        TreeHashAlgorithm: string
-        TreeFileCount: int
-        Scope: TestScope
-        Outcome: Outcome
-        /// The exit code the producing command returned. Carried so the file and
-        /// the process agree in the record, not just by convention.
-        ExitCode: int
-        Plugins: PluginVerdict list
-        Suites: SuiteVerdict list
-    }
+    private
+        { producedAt: DateTime
+          command: Command
+          producer: Producer
+          runId: Guid option
+          treeHash: string
+          treeHashAlgorithm: string
+          treeFileCount: int
+          scope: TestScope
+          outcome: Outcome
+          exitCode: int
+          plugins: PluginVerdict list
+          suites: SuiteVerdict list }
+
+    member this.ProducedAt = this.producedAt
+    member this.Command = this.command
+
+    /// The fshw binary that produced this verdict. A verdict from a different
+    /// binary does not apply, however well its `treeHash` matches.
+    member this.Producer = this.producer
+
+    /// The test run this verdict's suites came from — i.e. the directory they
+    /// live in (`.fshw/test-runs/<runId>/`). `None` when NO test run happened,
+    /// which is a fact the verdict states rather than a silence for the reader
+    /// to decode.
+    member this.RunId = this.runId
+    member this.TreeHash = this.treeHash
+    member this.TreeHashAlgorithm = this.treeHashAlgorithm
+    member this.TreeFileCount = this.treeFileCount
+    member this.Scope = this.scope
+
+    /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
+    member this.Outcome = this.outcome
+
+    /// The exit code the producing command returned. Carried so the file and
+    /// the process agree in the record, not just by convention.
+    member this.ExitCode = this.exitCode
+    member this.Plugins = this.plugins
+    member this.Suites = this.suites
+
+/// The one invariant: a GREEN verdict may not contain a failing plugin.
+///
+/// Both construction sites — `create` (producing) and `read` (rehydrating from disk) —
+/// go through this, so a hand-edited or hostile verdict file is refused on the way IN
+/// as well as being impossible on the way out.
+let private validate (v: Verdict) : Result<Verdict, string> =
+    match v.Outcome with
+    | Red
+    | Incomplete _ -> Ok v
+    | Green ->
+        match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
+        | [] -> Ok v
+        | failing ->
+            let named =
+                failing
+                |> List.map (fun p -> $"%s{p.Name} (%s{PluginOutcome.token p.Outcome})")
+                |> String.concat ", "
+
+            Error
+                $"a GREEN verdict cannot contain failing plugins — %s{named}. A check that says green on one \
+                   surface and fail on another has not checked anything; it has produced two answers."
+
+/// The ONLY constructor. Throws on the contradiction `validate` names: a verdict that
+/// says green while one of its own plugins says fail is not a verdict, it is a bug
+/// wearing one. It cannot be written to disk, because it cannot be built.
+///
+/// `producedAt` and `producer` are stamped HERE, not passed: they are facts about the
+/// process doing the constructing, and a caller that could supply them is a caller that
+/// could lie about them.
+let create
+    (command: Command)
+    (runReport: TestRunReport)
+    (tree: TreeHash.Tree)
+    (outcome: Outcome)
+    (exitCode: int)
+    (plugins: PluginVerdict list)
+    (suites: SuiteVerdict list)
+    : Verdict =
+    let candidate =
+        { producedAt = DateTime.UtcNow
+          command = command
+          producer = Producer.current ()
+          runId = runReport.RunId
+          treeHash = tree.Hash
+          treeHashAlgorithm = TreeHash.Algorithm
+          treeFileCount = tree.FileCount
+          scope = runReport.Scope
+          outcome = outcome
+          exitCode = exitCode
+          plugins = plugins
+          suites = suites }
+
+    match validate candidate with
+    | Ok v -> v
+    | Error reason -> invalidArg (nameof outcome) reason
 
 /// Absolute path to the verdict file.
 let path (repoRoot: string) : string =
@@ -542,8 +652,12 @@ let read (repoRoot: string) : Reading =
                 | _, _, Error e, _ -> Reading.Unreadable e
                 | _, _, _, Error e -> Reading.Unreadable e
                 | Some treeHash, Some outcome, Ok plugins, Ok suites ->
-                    Reading.Found
-                        { ProducedAt =
+                    // Rehydrated through the SAME invariant `create` enforces. A verdict
+                    // file that says green while one of its plugins says fail is not a
+                    // green we happen to distrust — it is not a verdict at all, and a
+                    // reader must not be able to lift the green out of it.
+                    let rehydrated =
+                        { producedAt =
                             tryString root "producedAt"
                             |> Option.bind (fun s ->
                                 match
@@ -556,12 +670,12 @@ let read (repoRoot: string) : Reading =
                                 | true, dt -> Some dt
                                 | _ -> None)
                             |> Option.defaultValue DateTime.MinValue
-                          Command =
+                          command =
                             (if tryString root "command" = Some "confirm" then
                                  Confirm
                              else
                                  Check)
-                          Producer =
+                          producer =
                             (match tryProp root "producer" with
                              | Some el ->
                                  { DaemonIdentity.Version =
@@ -574,20 +688,24 @@ let read (repoRoot: string) : Reading =
                              | None ->
                                  { DaemonIdentity.Version = "unknown-version"
                                    DaemonIdentity.ContentHash = ContentHash.UnhashableContent })
-                          RunId =
+                          runId =
                             tryString root "runId"
                             |> Option.bind (fun s ->
                                 match Guid.TryParse s with
                                 | true, g -> Some g
                                 | _ -> None)
-                          TreeHash = treeHash
-                          TreeHashAlgorithm = tryString root "treeHashAlgorithm" |> Option.defaultValue "(none)"
-                          TreeFileCount = tryInt root "treeFileCount" |> Option.defaultValue 0
-                          Scope = scope
-                          Outcome = outcome
-                          ExitCode = tryInt root "exitCode" |> Option.defaultValue 2
-                          Plugins = plugins
-                          Suites = suites }
+                          treeHash = treeHash
+                          treeHashAlgorithm = tryString root "treeHashAlgorithm" |> Option.defaultValue "(none)"
+                          treeFileCount = tryInt root "treeFileCount" |> Option.defaultValue 0
+                          scope = scope
+                          outcome = outcome
+                          exitCode = tryInt root "exitCode" |> Option.defaultValue 2
+                          plugins = plugins
+                          suites = suites }
+
+                    match validate rehydrated with
+                    | Ok v -> Reading.Found v
+                    | Error reason -> Reading.Unreadable reason
                 | None, _, _, _ -> Reading.Unreadable "no treeHash — the verdict does not say which tree it verified"
                 | _, None, _, _ -> Reading.Unreadable "no recognizable outcome"
         with

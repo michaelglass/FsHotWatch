@@ -612,7 +612,6 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
     // also refuses the write that precedes it. So drive the prune directly.
     if not (OperatingSystem.IsWindows()) then
         withTempDir "ftc-prune-fail" (fun tmpDir ->
-            let key = ck "lint" "/src/A.fs"
             let sibling = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@deadbeefcafe.json")
             System.IO.File.WriteAllText(sibling, "{}")
 
@@ -624,7 +623,7 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
 
             try
                 // Must not throw.
-                pruneSupersededSiblings tmpDir key "/some/other/keep.json"
+                pruneSupersededSiblings [ sibling ] "/some/other/keep.json"
             finally
                 System.IO.File.SetUnixFileMode(
                     tmpDir,
@@ -637,6 +636,143 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
             // swallow, not merely that nothing was there to delete. The next write
             // to this key collects it.
             test <@ System.IO.File.Exists sibling @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache prune keeps collecting after one delete fails`` () =
+    // Each delete is independently guarded, so one undeletable sibling cannot shield
+    // the rest. (The old shape wrapped the whole loop in a single `try`: the first
+    // throw abandoned every sibling after it.) The undeletable one is a DIRECTORY at
+    // an entry's path — `File.Delete` refuses it — which needs no permission games.
+    withTempDir "ftc-prune-partial" (fun tmpDir ->
+        let blocker = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@aaaaaaaaaaaa.json")
+
+        let collectable =
+            System.IO.Path.Combine(tmpDir, "lint---src-A.fs@bbbbbbbbbbbb.json")
+
+        System.IO.Directory.CreateDirectory(blocker) |> ignore
+        System.IO.File.WriteAllText(collectable, "{}")
+
+        pruneSupersededSiblings [ blocker; collectable ] "/some/other/keep.json"
+
+        test <@ System.IO.Directory.Exists blocker @>
+        test <@ not (System.IO.File.Exists collectable) @>)
+
+// ---------------------------------------------------------------------------
+// The prune must not SCAN. Its cost cannot be a function of the cache's size.
+// ---------------------------------------------------------------------------
+//
+// `Directory.EnumerateFiles(dir, pattern)` is not a prefix-optimised syscall: it
+// readdirs the WHOLE directory and pattern-matches in managed code. A cold scan
+// writes ~3 entries per source file (Lint, Analyzers, FormatCheck each carry a
+// per-`FileChecked` cache key) into a directory that grows to ~3 entries per file —
+// so a prune that scans makes the cold scan QUADRATIC. Measured at ~2.2 ms per scan
+// against a 4,500-entry directory: ~10 seconds of pure directory scanning added to a
+// cold scan of a 1500-file repo, on exactly the paths (cold scan, `--run-once`, the
+// merge gate) that were already timing out.
+//
+// RED-BEFORE-GREEN: restore the `EnumerateFiles(cacheDir, prefix + "*.json")` prune
+// and this reads 200, not 0.
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache write path never scans the directory (prune cost is independent of cache size)`` () =
+    withTempDir "ftc-prune-cost" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        // The constructor's one-time sweeps are the only scans this cache is allowed.
+        let afterConstruction = cache.DirectoryScanCount
+        let itc = cache :> ITaskCache
+
+        let resultFor (h: string) =
+            { CacheKey = hash h
+              Errors = []
+              Status = completedAt fixedTime
+              EmittedEvents = [] }
+
+        // 50 files × 4 successive edits — a cold scan in miniature.
+        for i in 1..50 do
+            for h in [ "v1"; "v2"; "v3"; "v4" ] do
+                itc.Set (ck "lint" $"/src/F%d{i}.fs") (hash h) (resultFor h)
+
+        // NOT ONE directory scan across 200 writes.
+        test <@ cache.DirectoryScanCount = afterConstruction @>
+
+        // …and the prune still did its job: one surviving entry per key, the newest.
+        test <@ System.IO.Directory.GetFiles(tmpDir, "*.json").Length = 50 @>
+        test <@ (itc.TryGet (ck "lint" "/src/F7.fs") (hash "v4")).IsSome @>
+        test <@ (itc.TryGet (ck "lint" "/src/F7.fs") (hash "v1")).IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
+    // The write path knows only the paths IT wrote, so the guarantee ("only the newest
+    // hash per key survives") would end at the process boundary — a cache directory
+    // carried over from an earlier daemon would keep its dead siblings forever. The
+    // constructor's one-time sweep is what closes that: it seeds the memo from disk, so
+    // the first write to a key still collects what someone else left under it.
+    withTempDir "ftc-prune-prior-process" (fun tmpDir ->
+        // Entries a previous process left behind, for two different keys.
+        let priorA1 = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@aaaaaaaaaaaa.json")
+        let priorA2 = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@bbbbbbbbbbbb.json")
+        let priorB = System.IO.Path.Combine(tmpDir, "lint---src-B.fs@cccccccccccc.json")
+
+        for f in [ priorA1; priorA2; priorB ] do
+            System.IO.File.WriteAllText(f, "{}")
+
+        // A FRESH cache over that directory — a new process, as after a daemon restart.
+        let cache = FileTaskCache(tmpDir) :> ITaskCache
+
+        cache.Set
+            (ck "lint" "/src/A.fs")
+            (hash "v-new")
+            { CacheKey = hash "v-new"
+              Errors = []
+              Status = completedAt fixedTime
+              EmittedEvents = [] }
+
+        // Both of A's inherited siblings are collected by A's first write…
+        test <@ not (System.IO.File.Exists priorA1) @>
+        test <@ not (System.IO.File.Exists priorA2) @>
+        // …and B's, belonging to a key nobody wrote, is untouched: it is still the
+        // newest entry for ITS key, and is still reachable.
+        test <@ System.IO.File.Exists priorB @>
+        test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "v-new")).IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache ignores a stray .json that is not one of its entries`` () =
+    // The construction sweep reads every `*.json` in the cache dir and works out which
+    // key each one belongs to — from the `@{hash}` suffix in its name. A file WITHOUT
+    // that suffix belongs to no key: it is unreachable through `TryGet`, so it is not
+    // ours to remember — and, just as importantly, not ours to DELETE. Nothing in the
+    // cache dir may be collected except as the superseded sibling of a key we wrote.
+    withTempDir "ftc-stray" (fun tmpDir ->
+        let stray = System.IO.Path.Combine(tmpDir, "notes.json")
+        let leadingAt = System.IO.Path.Combine(tmpDir, "@nokey.json")
+        System.IO.File.WriteAllText(stray, "{}")
+        System.IO.File.WriteAllText(leadingAt, "{}")
+
+        // Construction must survive them…
+        let cache = FileTaskCache(tmpDir) :> ITaskCache
+
+        // …and a write that prunes its own siblings must leave them alone.
+        cache.Set
+            (ck "lint" "/src/A.fs")
+            (hash "v1")
+            { CacheKey = hash "v1"
+              Errors = []
+              Status = completedAt fixedTime
+              EmittedEvents = [] }
+
+        cache.Set
+            (ck "lint" "/src/A.fs")
+            (hash "v2")
+            { CacheKey = hash "v2"
+              Errors = []
+              Status = completedAt fixedTime
+              EmittedEvents = [] }
+
+        test <@ System.IO.File.Exists stray @>
+        test <@ System.IO.File.Exists leadingAt @>
+        test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "v2")).IsSome @>
+        // The key's own predecessor WAS collected: 2 strays + 1 live entry.
+        test <@ System.IO.Directory.GetFiles(tmpDir, "*.json").Length = 3 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache persists and retrieves across instances`` () =

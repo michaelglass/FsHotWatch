@@ -464,6 +464,87 @@ let ``run-once publishes a verdict file that agrees with its exit code`` () =
         | other -> failwithf "expected a published verdict, got %A" other)
 
 // ---------------------------------------------------------------------------
+// A CRASHED PLUGIN MUST NOT GREEN CI.
+//
+// `PluginStatus.Failed` is reachable WITHOUT a single `ErrorEntry` being written:
+// PluginFramework's two crash-nets (a faulted exclusive run; a throwing event
+// handler) force `Failed` and report NO diagnostics — deliberately, because the
+// framework cannot invent a file/line for someone else's stack trace.
+//
+// The daemon path has always counted that: `IpcOutput.hasFailures` is
+// `anyPluginFailed || failingDiagnostics`. The `--run-once` path — which is what CI
+// runs — counted ONLY the diagnostics, so a plugin that CRASHED exited 0, `outcome:
+// green`, with `plugins: [{"outcome":"fail"}]` sitting in the same verdict file.
+//
+// This drives the REAL run-once driver against a plugin that throws in its handler.
+// ---------------------------------------------------------------------------
+
+/// A plugin whose event handler THROWS. Not a contrived shape: this is what EVERY
+/// unhandled plugin exception looks like from the framework's side. It writes no
+/// `ErrorEntry` — it never gets the chance to.
+let private crashingHandler () : FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+    { Name = FsHotWatch.PluginFramework.PluginName.create "crash-plugin"
+      Init = ()
+      Update = fun _ctx _state _event -> async { return failwith "plugin exploded mid-handler" }
+      Commands = []
+      Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
+      CacheKey = None
+      Teardown = None }
+
+/// A run-once driver whose daemon carries a plugin that has been handed an event it
+/// will crash on. The event is emitted BEFORE `RunOnce`, so the crash happens inside
+/// the settle the driver itself waits out — exactly as a real plugin fault would.
+let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRoot: string) : int =
+    let createDaemon (root: string) =
+        let daemon =
+            Daemon.createWith
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+
+        daemon.Host.RegisterHandler(crashingHandler ())
+        daemon.Host.EmitBuildCompleted(BuildSucceeded)
+        daemon
+
+    FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+        (fun _ -> "")
+        checkMode
+        false
+        createDaemon
+        repoRoot
+        (noTestProjectsConfig ())
+        None
+
+[<Fact(Timeout = 60000)>]
+let ``check --run-once goes RED on a plugin that FAILED without writing a diagnostic`` () =
+    // THE hole. The ledger is spotless — the plugin never reached `ReportErrors`,
+    // it threw. Exit 0 here is a green stamped over a check that did not run.
+    withProjectOnlyRepo "runonce-crashed-plugin" (fun repoRoot ->
+        let exitCode =
+            runOnceWithCrashedPlugin FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
+
+        test <@ exitCode = 1 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``the verdict file can NEVER say green while a plugin says fail`` () =
+    // The contradiction bug #1 produces, asserted on the artifact itself:
+    // `{"outcome":"green", "plugins":[{"outcome":"fail"}]}`. Whatever the exit code,
+    // the FILE must not be able to state both.
+    withProjectOnlyRepo "runonce-crashed-verdict-file" (fun repoRoot ->
+        runOnceWithCrashedPlugin FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
+        |> ignore
+
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found v ->
+            let crashed =
+                v.Plugins |> List.tryFind (fun p -> p.Name = "crash-plugin") |> Option.get
+
+            test <@ crashed.Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Fail @>
+            test <@ FsHotWatch.Cli.Verdict.Outcome.tag v.Outcome <> "green" @>
+            test <@ v.ExitCode = 1 @>
+        | other -> failwithf "expected a published verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
 // RunOnceCheck — `confirm`'s scope commands over the IN-PROCESS transport.
 //
 // The daemon path reaches `test-scope`/`set-scope` over a socket; run-once reaches

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- fix!: **a CRASHED PLUGIN NO LONGER GREENS CI.** `--run-once` — which is what CI runs —
+  computed its `hasFailures` as the failing-diagnostic count and nothing else, while the
+  daemon path computed `anyPluginFailed || failingDiagnostics`. A plugin can reach
+  `Failed` **without writing a single diagnostic**: PluginFramework's two crash-nets force
+  exactly that when a work async or an event handler throws (they cannot invent a file and
+  line for someone else's stack trace). So `fshw check` exited 1 on a crashed plugin and
+  `fshw confirm --run-once` exited **0, `outcome: green`**, with `plugins:
+  [{"outcome":"fail"}]` sitting in the same verdict file.
+  - Fixed **structurally**, not by copying the missing term across. `CheckVerdict.verdict`
+    now consumes a `CheckInputs` record — plugin statuses, failing-diagnostic count,
+    coverage, scope — and computes the disjunction ONCE. Both transports hand over the
+    same record; neither decides anything. A transport that forgets a term no longer
+    produces a green, it fails to compile.
+  - **Breaking (API):** `CheckVerdict.verdict` and `CheckVerdict.converge` take
+    `CheckInputs` instead of positional `hasFailures`/`coverage`/`testScope`.
+
+- fix!: **`Verdict` is now a private record with a smart constructor,
+  `Verdict.create`, that REJECTS a `Green` carrying a failing plugin.** `outcome` and
+  `plugins` were assembled side by side from independent sources, so nothing forbade
+  `{"outcome":"green","plugins":[{"outcome":"fail"}]}` — and the bug above is exactly how
+  you produced one. The same move AUTOMATION-99 made for `RunVerdict`: if a state is a
+  lie, do not document that it must not be constructed — make it unconstructible.
+  `Verdict.read` enforces the same invariant on the way IN, so a hand-edited or
+  future-schema file cannot have a green lifted out of it either (it reads `Unreadable`).
+  - **Breaking (API):** the `Verdict` record can no longer be built or copy-updated by
+    hand; use `Verdict.create`. Fields are exposed as members and read exactly as before.
+
+- fix!: **the IPC status parser fails CLOSED.** It rounded unknowns DOWN to "fine" in four
+  places, while `Verdict.read` one file away stated the opposite policy and enforced it:
+  *"an unknown state is not a passing state"*. This is a live cross-version hazard —
+  `PluginOutcome` gained `Wedged` in this same batch, so "old CLI, new daemon" is a shape
+  that exists.
+  - an unparseable `status` object → `StatusView.Idle` → quiescent → the plugin was
+    **omitted from the verdict entirely**. Now `StatusView.Unreadable`, which is a
+    `PluginOutcome.Fail`, and the plugin stays in `plugins[]`.
+  - a `"running"` status whose `since` would not parse → `Idle`. This **silently defeated
+    all of AUTOMATION-147's wedge detection**, which fires only on `StatusView.Running
+    since`. Now `Unreadable`.
+  - an unrecognized `lastRun.outcome` tag → `CompletedRun`, i.e. **an unknown run outcome
+    defaulted to a PASS**. Now `FailedRun`.
+  - `parsePluginStatuses` returned `Map.empty` on a `JsonException` → every plugin
+    vanished and a clean ledger still went green. It now returns
+    `Result<_, string>`; an unreadable map is not an empty one.
+  - **Breaking (API):** `StatusView` has a new `Unreadable of reason` case;
+    `parseTaggedStatus` returns `StatusView` (not `StatusView option`);
+    `parsePluginStatuses` returns `Result<Map<_,_>, string>`.
+
 - feat!: **`fshw gate` is now `fshw confirm`.** (AUTOMATION-160)
 
   **Migration: `fshw gate` → `fshw confirm`.** The old verb is **removed**, not aliased.
