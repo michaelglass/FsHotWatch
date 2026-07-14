@@ -685,7 +685,9 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
 
     let cacheKeyFn = handler.CacheKey.Value
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
-    let buildDoneEvt = Custom(BuildDone(BuildPassed "x", []))
+
+    let buildDoneEvt =
+        Custom(BuildDone(BuildPassed "x", [], System.TimeSpan.Zero, "built"))
 
     let fileKey = cacheKeyFn fileEvt
     let doneKey = cacheKeyFn buildDoneEvt

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- fix!: **`Completed` carries its verdict — a guard that cannot say what it measured
+  has not measured anything.** (AUTOMATION-99) `PluginStatus.Completed` is now
+  `Completed of at * verdict: RunVerdict` where `RunVerdict = { Summary; Elapsed }`,
+  so a plugin physically cannot report "done" without stating what it did and how
+  long it took. This kills the manufactured "✓ with `started:` but no `elapsed:`"
+  terminal — the signature of a status stamped over a live run — at the type level,
+  and collapses the summary side-channel: the host routes `verdict.Summary` into the
+  run record, so the status and the history can never disagree.
+  - **BREAKING:** every `ReportStatus(Completed …)` site must supply a `RunVerdict`;
+    `PluginCtxHelpers.completeWith` now takes the elapsed duration.
+  - The run record's elapsed is the verdict's sworn duration (startedAt derived as
+    `at - Elapsed`); the old fallback that recorded a ZERO elapsed for a Completed
+    with no preceding Running is gone.
+  - Cache replay keeps the ORIGINAL verdict and marks it `(cached)`; pre-verdict
+    on-disk cache entries are rejected as misses (no evidence to replay).
+  - Preprocessor completions now carry a verdict (files checked / rewritten + duration).
+- fix!: **a plugin with work in flight is BUSY, full stop — one counter, no hand-off
+  gap.** (AUTOMATION-99) An exclusive `RunExclusive` run now holds a token in the
+  SAME `inflightCount` that counts mailbox events, from claim until AFTER its
+  completion message is posted. The previous `inflight > 0 || anyRunSlotBusy()`
+  composite read two atomics at different instants, and the slot-release →
+  completion-post hand-off had a window in which a verdict-waiting `check` could
+  observe "at rest" while the run's verdict was still in flight.
+- fix: a handler that throws while an exclusive run is in flight no longer stomps a
+  forced `Failed` over the live run's `Running` (the run's completion path is
+  guaranteed to deliver the earned terminal status); the crash is still logged.
+  With no run in flight the forced `Failed` stands, as before. (AUTOMATION-99)
+
 - feat: `ErrorLedger.ErrorEntry.warningWithDetail` — a Warning-severity entry with a
   detail body, the sibling `errorWithDetail` never had. For conditions that deny a
   clean verdict under the default warn-fail policy without themselves being a failed

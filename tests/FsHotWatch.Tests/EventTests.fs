@@ -4,6 +4,7 @@ open System
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 15000)>]
 let ``FileChangeKind constructors work`` () =
@@ -73,7 +74,7 @@ let ``ContentHash round-trips`` () =
 [<Fact(Timeout = 15000)>]
 let ``isTerminal is true for Completed and Failed, false for Idle and Running`` () =
     let now = System.DateTime.UtcNow
-    test <@ PluginStatus.isTerminal (Completed now) @>
+    test <@ PluginStatus.isTerminal (completedAt now) @>
     test <@ PluginStatus.isTerminal (Failed("err", now)) @>
     test <@ not (PluginStatus.isTerminal Idle) @>
     test <@ not (PluginStatus.isTerminal (Running(since = now))) @>
@@ -82,7 +83,7 @@ let ``isTerminal is true for Completed and Failed, false for Idle and Running`` 
 let ``isQuiescent is true for Idle, Completed and Failed, false for Running`` () =
     let now = System.DateTime.UtcNow
     test <@ PluginStatus.isQuiescent Idle @>
-    test <@ PluginStatus.isQuiescent (Completed now) @>
+    test <@ PluginStatus.isQuiescent (completedAt now) @>
     test <@ PluginStatus.isQuiescent (Failed("err", now)) @>
     test <@ not (PluginStatus.isQuiescent (Running(since = now))) @>
 

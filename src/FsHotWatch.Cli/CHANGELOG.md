@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: parse the `RunVerdict` (summary + elapsed) the daemon now sends on
+  `completed` statuses (AUTOMATION-99); payloads from older daemons parse to an
+  empty verdict rather than failing the status read.
+
 - feat!: **new `fshw gate` verb — the merge gate, which runs the FULL test suite and
   refuses a green verdict from anything less.** `fshw check` remains the inner dev
   loop and keeps impact filtering, which is what filtering is genuinely good for.

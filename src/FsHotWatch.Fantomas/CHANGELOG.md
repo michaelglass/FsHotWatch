@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix!: adapt to core `RunVerdict` (AUTOMATION-99): format-check completions carry
+  the format summary plus the measured check duration.
+
 - fix!: **`FormatPreprocessor` ran Fantomas with NO timeout** while its twin
   `createFormatCheck` wrapped the IDENTICAL call in `runWithCancellableTimeout` —
   one bounded, one not, and the unbounded one on the worse path. A preprocessor

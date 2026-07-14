@@ -85,6 +85,27 @@ type ProjectCheckResult =
         FileResults: Map<string, FileCheckResult>
     }
 
+/// The evidence a `Completed` status carries: WHAT the run did and how long it
+/// took. A guard that cannot say what it measured has not measured anything —
+/// so "done, with nothing to report" is unrepresentable by construction
+/// (AUTOMATION-99): every completion site must state its verdict, and a
+/// content-free `✓` (the observed "started: with no elapsed:" manufactured
+/// terminal) cannot be built. `Failed` needs no counterpart — its `error` IS
+/// its evidence.
+[<NoComparison>]
+type RunVerdict =
+    {
+        /// Human-readable statement of what the run did — e.g.
+        /// "6 passed, 0 failed in 6 projects". Rendered by `fshw status`/`check`
+        /// and recorded as the run's history summary.
+        Summary: string
+        /// The plugin's own measurement of the completed work's duration.
+        /// Drives the run record's elapsed (the host derives startedAt from
+        /// `at - Elapsed`), so a completion that never went through `Running`
+        /// still renders honest timing.
+        Elapsed: System.TimeSpan
+    }
+
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
 type PluginStatus =
@@ -92,8 +113,8 @@ type PluginStatus =
     | Idle
     /// Plugin is currently processing.
     | Running of since: System.DateTime
-    /// Plugin finished processing successfully.
-    | Completed of at: System.DateTime
+    /// Plugin finished processing successfully, carrying the verdict it earned.
+    | Completed of at: System.DateTime * verdict: RunVerdict
     /// Plugin encountered an error.
     | Failed of error: string * at: System.DateTime
 

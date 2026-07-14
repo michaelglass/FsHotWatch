@@ -92,9 +92,11 @@ let private statusPayload (status: PluginStatus) : obj =
         {| tag = "running"
            since = since.ToString("O") |}
         :> obj
-    | Completed at ->
+    | Completed(at, verdict) ->
         {| tag = "completed"
-           at = at.ToString("O") |}
+           at = at.ToString("O")
+           summary = verdict.Summary
+           elapsedMs = verdict.Elapsed.TotalMilliseconds |}
         :> obj
     | Failed(error, at) ->
         {| tag = "failed"

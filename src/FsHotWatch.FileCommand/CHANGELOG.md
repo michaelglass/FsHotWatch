@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix!: adapt to core `RunVerdict` (AUTOMATION-99): the `Completed` status carries
+  "<name>: succeeded" plus the measured command duration (previously a separate
+  summary side-channel).
+
 - fix: fileCommand spawns go through the single, always-bounded
   `ProcessHelper.runProcess` (`ProcessBounds.silent cmdTimeout`), so a command
   whose grandchild holds the inherited stdout pipe after it exits no longer

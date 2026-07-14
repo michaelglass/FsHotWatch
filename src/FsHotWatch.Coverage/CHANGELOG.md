@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix!: adapt to core `RunVerdict` (AUTOMATION-99): `Completed` statuses carry a
+  verdict ("coverage floors passed" / the not-gated notice) plus the measured
+  check duration, threaded through `CheckDone`. Timestamps now use UTC.
+
 ## 0.7.0-alpha.14 - 2026-06-17
 
 - docs: correct the README "how it works" (the plugin finds/parses/gates; TestPrune performs the coverage merge) and add an early-alpha status note.

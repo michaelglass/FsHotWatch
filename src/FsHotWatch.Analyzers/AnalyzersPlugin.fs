@@ -351,7 +351,8 @@ let internal createWithSlowHook
                         return state
                     else
 
-                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        let runStarted = DateTime.UtcNow
+                        ctx.ReportStatus(Running(since = runStarted))
                         ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
 
                         // Bug C: pick up a changed analyzer assembly set (e.g. a
@@ -500,7 +501,10 @@ let internal createWithSlowHook
 
                             ctx.EndSubtask PrimarySubtaskKey
 
-                            PluginCtxHelpers.completeWith ctx (summarize analyzed updated)
+                            PluginCtxHelpers.completeWith
+                                ctx
+                                (summarize analyzed updated)
+                                (DateTime.UtcNow - runStarted)
 
                             return
                                 { state with
@@ -510,7 +514,12 @@ let internal createWithSlowHook
                             // Crash — same logic as old Custom AnalysisFailed handler.
                             ctx.ReportErrors fileStr [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
                             ctx.EndSubtask PrimarySubtaskKey
-                            PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName fileStr}"
+
+                            PluginCtxHelpers.completeWith
+                                ctx
+                                $"analyzer crashed on {Path.GetFileName fileStr}"
+                                (DateTime.UtcNow - runStarted)
+
                             return state
                 | Custom(AnalysisComplete(file, entries)) ->
                     // Report/clear so the gated ledger set and the summary agree, and
@@ -523,7 +532,10 @@ let internal createWithSlowHook
 
                     ctx.EndSubtask PrimarySubtaskKey
 
-                    PluginCtxHelpers.completeWith ctx (summarize analyzed updated)
+                    // Legacy test-driving arm: the analysis ran outside this
+                    // handler, so there is no duration to swear to — Zero renders
+                    // as "no timing shown", never a fabricated measurement.
+                    PluginCtxHelpers.completeWith ctx (summarize analyzed updated) TimeSpan.Zero
 
                     return
                         { state with
@@ -533,7 +545,7 @@ let internal createWithSlowHook
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
                     ctx.EndSubtask PrimarySubtaskKey
-                    PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName file}"
+                    PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName file}" TimeSpan.Zero
                     return state
                 | _ -> return state
             }

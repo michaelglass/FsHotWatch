@@ -23,7 +23,17 @@ let myPlugin: PluginHandler<MyState, unit> =
                     // result.ParseResults and result.CheckResults come from the
                     // warm FSharpChecker — no re-parsing needed.
                     printfn "Checked: %s" (AbsFilePath.value result.File)
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                    // A Completed status carries its verdict: what was done, and
+                    // how long it took. "Done with nothing to report" does not
+                    // typecheck — by design.
+                    ctx.ReportStatus(
+                        Completed(
+                            DateTime.UtcNow,
+                            { Summary = $"checked %d{state.FilesChecked + 1} files"
+                              Elapsed = TimeSpan.Zero }
+                        )
+                    )
 
                     return
                         { state with

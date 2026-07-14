@@ -71,11 +71,13 @@ let ``withSubtask calls EndSubtask even when work throws`` () =
     test <@ calls |> Seq.toList = [ "Start k:l"; "End k" ] @>
 
 [<Fact(Timeout = 15000)>]
-let ``completeWith emits Summary then Completed status`` () =
+let ``completeWith reports a Completed status carrying the verdict`` () =
     let ctx, calls = makeRecordingCtx ()
 
-    PluginCtxHelpers.completeWith ctx "done"
+    PluginCtxHelpers.completeWith ctx "done" (TimeSpan.FromSeconds 1.5)
 
-    test <@ calls.Count = 2 @>
-    test <@ calls.[0] = "Summary done" @>
-    test <@ (calls.[1]: string).StartsWith("ReportStatus Completed ") @>
+    // ONE call: the Completed status carries the summary (RunVerdict) — there
+    // is no separate summary channel for the two to disagree through.
+    test <@ calls.Count = 1 @>
+    test <@ (calls.[0]: string).StartsWith("ReportStatus Completed ") @>
+    test <@ (calls.[0]: string).Contains("done") @>

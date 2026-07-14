@@ -95,7 +95,21 @@ let parseTaggedStatus (el: JsonElement) : PluginStatus option =
         match tryGetStringProp el "tag" with
         | Some "idle" -> Some Idle
         | Some "running" -> tryGetStringProp el "since" |> Option.bind tryParseUtcOpt |> Option.map Running
-        | Some "completed" -> tryGetStringProp el "at" |> Option.bind tryParseUtcOpt |> Option.map Completed
+        | Some "completed" ->
+            // Deserialization edge: the daemon sends the verdict alongside the
+            // timestamp. A payload from an OLDER daemon (no verdict fields)
+            // parses to an empty verdict rather than failing the whole status
+            // read — the CLI renders from the run record either way.
+            let verdict: RunVerdict =
+                { Summary = tryGetStringProp el "summary" |> Option.defaultValue ""
+                  Elapsed =
+                    match el.TryGetProperty("elapsedMs") with
+                    | true, v when v.ValueKind = JsonValueKind.Number -> TimeSpan.FromMilliseconds(v.GetDouble())
+                    | _ -> TimeSpan.Zero }
+
+            tryGetStringProp el "at"
+            |> Option.bind tryParseUtcOpt
+            |> Option.map (fun at -> Completed(at, verdict))
         | Some "failed" ->
             let err = tryGetStringProp el "error" |> Option.defaultValue ""
             let at = tryGetStringProp el "at" |> Option.bind tryParseUtcOpt

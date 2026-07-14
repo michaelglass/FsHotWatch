@@ -30,7 +30,7 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host
 
-let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
+let private completedHandlerWith (name: string) (summary: string) (action: PluginCtx<unit> -> Async<unit>) =
     { Name = PluginName.create name
       Init = ()
       Update =
@@ -40,7 +40,14 @@ let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<un
                 | FileChanged _ ->
                     ctx.ReportStatus(Running DateTime.UtcNow)
                     do! action ctx
-                    ctx.ReportStatus(Completed DateTime.UtcNow)
+
+                    ctx.ReportStatus(
+                        Completed(
+                            DateTime.UtcNow,
+                            { Summary = summary
+                              Elapsed = TimeSpan.Zero }
+                        )
+                    )
                 | _ -> ()
 
                 return state
@@ -75,14 +82,13 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        completedHandler "worker" (fun ctx ->
+        completedHandlerWith "worker" "did 3 things" (fun ctx ->
             async {
                 ctx.StartSubtask "p1" "project A"
                 ctx.Log "line one"
                 ctx.Log "line two"
                 ctx.Log "line three"
                 ctx.EndSubtask "p1"
-                ctx.CompleteWithSummary "did 3 things"
             })
 
     host.RegisterHandler(handler)
@@ -137,11 +143,7 @@ let ``GetDiagnostics payload exposes structured per-plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        completedHandler "diag" (fun ctx ->
-            async {
-                ctx.Log "hello"
-                ctx.CompleteWithSummary "ok"
-            })
+        completedHandlerWith "diag" "ok" (fun ctx -> async { ctx.Log "hello" })
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])

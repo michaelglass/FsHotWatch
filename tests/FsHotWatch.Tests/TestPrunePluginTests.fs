@@ -6402,3 +6402,22 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
 
         cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
         test <@ cmdTask.IsCompleted @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a green run's Completed status carries its verdict`` () =
+    // AUTOMATION-99, the type-level guarantee end-to-end: the status a real
+    // green run reports CARRIES what it did (summary) — a ✓ with nothing to
+    // say is unrepresentable — and the run-history record holds the SAME
+    // summary (one channel, host-routed).
+    withTempDir "tp-verdict" (fun tmpDir ->
+        let host, _sentinel = withSingleProjectHarness tmpDir "VerdictProject"
+        emitBuildAndWaitTerminal host
+
+        match host.GetStatus("test-prune") with
+        | Some(PluginStatus.Completed(_, v)) ->
+            test <@ v.Summary.Contains "1 passed" @>
+            test <@ v.Summary.Contains "0 failed" @>
+
+            let record = List.head (host.GetHistory("test-prune"))
+            test <@ record.Summary = Some v.Summary @>
+        | other -> Assert.Fail($"expected Completed carrying a verdict, got: %A{other}"))

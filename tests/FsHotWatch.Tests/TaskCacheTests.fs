@@ -25,7 +25,7 @@ let private hash (s: string) = ContentHash.create s
 let private makeResult (cacheKey: string) =
     { CacheKey = hash cacheKey
       Errors = []
-      Status = Completed(at = fixedTime)
+      Status = completedAt fixedTime
       EmittedEvents = [] }
 
 [<Fact(Timeout = 15000)>]
@@ -420,7 +420,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     let cachedResult: TaskCacheResult =
         { CacheKey = hash "commit-abc"
           Errors = cachedErrors
-          Status = Completed(at = fixedTime)
+          Status = completedAt fixedTime
           EmittedEvents = [] }
 
     cache.Set(ck "test-plugin" "/src/A.fs", hash "commit-abc", cachedResult)
@@ -436,7 +436,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
             fun ctx state _event ->
                 async {
                     updateCallCount <- updateCallCount + 1
-                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    ctx.ReportStatus(completedAt DateTime.UtcNow)
                     return state
                 }
           Commands = []
@@ -477,7 +477,7 @@ let ``plugin stores result on cache miss then hits on second event`` () =
             fun ctx state _event ->
                 async {
                     updateCallCount <- updateCallCount + 1
-                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    ctx.ReportStatus(completedAt DateTime.UtcNow)
                     return state
                 }
           Commands = []
@@ -513,7 +513,7 @@ let ``plugin runs Update when cache key changes`` () =
             fun ctx state _event ->
                 async {
                     updateCallCount <- updateCallCount + 1
-                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    ctx.ReportStatus(completedAt DateTime.UtcNow)
                     return state
                 }
           Commands = []
@@ -559,7 +559,7 @@ let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
         let resultFor (h: string) =
             { CacheKey = hash h
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents = [] }
 
         // Three successive edits to the same file — three content hashes.
@@ -585,7 +585,7 @@ let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents = [] }
 
         // Same file, different plugin; same plugin, different file; and a
@@ -646,7 +646,7 @@ let ``FileTaskCache persists and retrieves across instances`` () =
         let result =
             { CacheKey = hash "abc"
               Errors = [ "/src/A.fs", [ errorEntry "warn" DiagnosticSeverity.Warning ] ]
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents = [] }
 
         (cache1 :> ITaskCache).Set (ck "lint" "/src/A.fs") (hash "abc") result
@@ -665,7 +665,7 @@ let ``FileTaskCache clear removes all files`` () =
         let result =
             { CacheKey = hash "abc"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents = [] }
 
         (cache :> ITaskCache).Set (ckPlugin "build") (hash "abc") result
@@ -681,7 +681,7 @@ let ``FileTaskCache roundtrips all PluginStatus variants`` () =
         let statuses =
             [ Idle
               Running(since = fixedTime)
-              Completed(at = fixedTime)
+              completedAt fixedTime
               Failed("boom", at = fixedTime) ]
 
         for i, status in statuses |> List.indexed do
@@ -700,7 +700,7 @@ let ``FileTaskCache roundtrips all PluginStatus variants`` () =
         let c2 = cache2 :> ITaskCache
         test <@ (c2.TryGet (ck "plugin" "0") (hash "k")).Value.Status = Idle @>
         test <@ (c2.TryGet (ck "plugin" "1") (hash "k")).Value.Status = Running(since = fixedTime) @>
-        test <@ (c2.TryGet (ck "plugin" "2") (hash "k")).Value.Status = Completed(at = fixedTime) @>
+        test <@ (c2.TryGet (ck "plugin" "2") (hash "k")).Value.Status = completedAt fixedTime @>
         test <@ (c2.TryGet (ck "plugin" "3") (hash "k")).Value.Status = Failed("boom", at = fixedTime) @>)
 
 [<Fact(Timeout = 15000)>]
@@ -712,7 +712,7 @@ let ``FileTaskCache roundtrips cached events`` () =
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedBuildCompleted BuildSucceeded
                   CachedBuildCompleted(BuildFailed [ "err1"; "err2" ])
@@ -744,7 +744,7 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunCompleted
                       { RunId = runId
@@ -786,7 +786,7 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunCompleted
                       { RunId = System.Guid.NewGuid()
@@ -826,7 +826,7 @@ let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunCompleted
                       { RunId = System.Guid.NewGuid()
@@ -870,7 +870,7 @@ let ``FileTaskCache roundtrips error entries with detail`` () =
         let result =
             { CacheKey = hash "k"
               Errors = [ "/src/X.fs", [ entry ] ]
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents = [] }
 
         c.Set (ck "lint" "/src/X.fs") (hash "k") result
@@ -998,7 +998,7 @@ let ``FileTaskCache tolerates explicit null wasFiltered/elapsedSeconds (old cach
         let result =
             { CacheKey = cacheKey
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunCompleted
                       { RunId = System.Guid.NewGuid()
@@ -1050,7 +1050,7 @@ let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunCompleted
                       { RunId = runId
@@ -1115,7 +1115,7 @@ let ``FileTaskCache roundtrips CachedTestProgress and CachedCommandCompleted`` (
         let result =
             { CacheKey = hash "k"
               Errors = []
-              Status = Completed(at = fixedTime)
+              Status = completedAt fixedTime
               EmittedEvents =
                 [ CachedTestRunStarted started
                   CachedTestProgress progress
@@ -1220,7 +1220,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
                   Line = 1
                   Column = 0
                   Detail = None } ] ]
-          Status = Completed(at = fixedTime)
+          Status = completedAt fixedTime
           EmittedEvents = [] }
     )
 
@@ -1249,7 +1249,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
                             })
                     | Custom() ->
                         // The run finished and reported its own real verdict.
-                        ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1296,7 +1296,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
     waitForTerminalStatus host "test-plugin" 12000
 
     // NOT the cached `fixedTime` — the verdict came from the run, not the replay.
-    test <@ host.GetStatus("test-plugin") <> Some(Completed(at = fixedTime)) @>
+    test <@ host.GetStatus("test-plugin") <> Some(completedAt fixedTime) @>
 
     test
         <@
@@ -1304,3 +1304,82 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
             | Some(Completed _) -> true
             | _ -> false
         @>
+
+// --- RunVerdict on the wire (AUTOMATION-99) --------------------------------
+// A Completed status now CARRIES its verdict. Two consequences pinned here:
+// an on-disk entry from before the verdict existed has no evidence to replay,
+// so it must be a cache MISS; and a replayed verdict must identify itself as
+// served from cache rather than passing as a fresh run.
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache rejects a pre-verdict completed entry as a cache miss`` () =
+    withTempDir "ftc-preverdict" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "X.fs"
+        let cacheKey = hash "k"
+        c.Set key cacheKey (makeResult "k")
+
+        // Rewrite the entry into the OLD shape: completed status with no
+        // summary / elapsedMs fields.
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+
+        let root =
+            System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path)).AsObject()
+
+        let status = root.["status"].AsObject()
+        status.Remove("summary") |> ignore
+        status.Remove("elapsedMs") |> ignore
+        System.IO.File.WriteAllText(path, root.ToJsonString())
+
+        let before = cache.ParseFailureCount
+        let result = c.TryGet key cacheKey
+        test <@ result = None @>
+        test <@ cache.ParseFailureCount = before + 1 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``cache replay reports the original verdict marked as cached`` () =
+    let cache = InMemoryTaskCache()
+
+    cache.Set(
+        ck "verdict-plugin" "/src/V.fs",
+        hash "k-V",
+        { CacheKey = hash "k-V"
+          Errors = []
+          Status =
+            Completed(
+                fixedTime,
+                { Summary = "6 passed, 0 failed in 6 projects"
+                  Elapsed = TimeSpan.FromSeconds 12.5 }
+            )
+          EmittedEvents = [] }
+    )
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "verdict-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          CacheKey = Some(fun _ -> Some(hash "k-V"))
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(dummyFileCheckResult "/src/V.fs")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("verdict-plugin") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        12000
+
+    match host.GetStatus("verdict-plugin") with
+    | Some(Completed(_, v)) ->
+        // The evidence is the ORIGINAL run's (summary + true duration), and the
+        // rendering can never pass the replay off as a fresh run.
+        test <@ v.Summary = "6 passed, 0 failed in 6 projects (cached)" @>
+        test <@ v.Elapsed = TimeSpan.FromSeconds 12.5 @>
+    | other -> failwith $"expected Completed with verdict, got %A{other}"

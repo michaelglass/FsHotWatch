@@ -125,7 +125,8 @@ let create
                     else
 
                         Logging.debug "lint" $"FileChecked received: %s{fileStr}"
-                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        let runStarted = DateTime.UtcNow
+                        ctx.ReportStatus(Running(since = runStarted))
 
                         return!
                             PluginCtxHelpers.withSubtask
@@ -177,6 +178,7 @@ let create
                                             PluginCtxHelpers.completeWith
                                                 ctx
                                                 $"linted {newWarnings.Count} files, {totalIssues} issues"
+                                                (DateTime.UtcNow - runStarted)
 
                                             return newState
                                         | WorkCompleted(Lint.LintResult.Failure failure) ->

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- fix!: **a force-run the daemon cannot see is a gate that cannot gate.**
+  (AUTOMATION-99) The `run-tests` IPC command executed the suite directly on the
+  IPC thread — outside the `RunExclusive "tests"` slot, with no `Running` status
+  and no busy accounting. For the whole run the daemon's model read "at rest":
+  a concurrent `FileChecked` stamped a terminal status over the live run (the
+  observed `✓ test-prune  started: … (no elapsed:)`), and a concurrent
+  `fshw check` resolved its verdict wait and exited 0 while the test process was
+  literally alive. The command now posts `RunTestsRequested` to the plugin
+  mailbox; the handler claims the slot and reports `Running` like every other
+  launch site, and the reply carries the results JSON back to the command.
+- fix: `FileChecked` idle checks moved to the point of use — the `isIdle`
+  snapshot taken at handler entry could go stale across the analysis await while
+  a run claimed the slot, stamping `Completed`/`Failed` over the live run.
+- fix: any fault inside the `FileChecked` handler (not just an `analyzeSource`
+  error) now routes through the unanalysable-file machinery: ledger diagnostic +
+  forced full-suite runs until the file analyses cleanly — F10's "never silent"
+  guarantee in durable form, without manufacturing a terminal status mid-run.
+- fix!: the green verdict is carried BY the `Completed` status (summary +
+  measured run duration) per the core `RunVerdict` change; per-file analysis
+  stamps state what they analysed.
+
 - fix!: **a file whose symbol analysis failed was silently dropped from the impact
   graph — so a change to it selected NO tests and the gate went green having run
   nothing relevant.** The `FileChecked` error branch logged and `return state`d: the

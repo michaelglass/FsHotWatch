@@ -473,9 +473,23 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // "completed" instantly via cache replay.
                                 let nowAt = System.DateTime.UtcNow
 
+                                // The replayed verdict is the ORIGINAL run's evidence —
+                                // keep it (summary + true duration) and mark it as
+                                // served from cache so the rendering never passes a
+                                // replay off as a fresh run. Idempotent: a re-cached
+                                // replay doesn't stack suffixes.
+                                let cachedSuffix = " (cached)"
+
+                                let markCached (v: RunVerdict) =
+                                    if v.Summary.EndsWith(cachedSuffix, System.StringComparison.Ordinal) then
+                                        v
+                                    else
+                                        { v with
+                                            Summary = v.Summary + cachedSuffix }
+
                                 let replayStatus =
                                     match result.Status with
-                                    | Completed _ -> Completed nowAt
+                                    | Completed(_, v) -> Completed(nowAt, markCached v)
                                     | Failed(err, _) -> Failed(err, nowAt)
                                     | s -> s
 
@@ -755,10 +769,12 @@ module PluginCtxHelpers =
                 ctx.EndSubtask key
         }
 
-    /// Set the run summary and transition status to Completed at the current UTC time.
-    let completeWith (ctx: PluginCtx<'Msg>) (summary: string) : unit =
-        ctx.CompleteWithSummary summary
-        ctx.ReportStatus(Completed System.DateTime.UtcNow)
+    /// Transition status to Completed at the current UTC time, carrying the
+    /// verdict (summary + the plugin's own duration measurement). The host
+    /// routes the verdict's summary into the run record — there is no separate
+    /// summary channel to forget or contradict.
+    let completeWith (ctx: PluginCtx<'Msg>) (summary: string) (elapsed: System.TimeSpan) : unit =
+        ctx.ReportStatus(Completed(System.DateTime.UtcNow, { Summary = summary; Elapsed = elapsed }))
 
     /// Report or clear the per-file error scope based on whether any entries exist.
     /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file

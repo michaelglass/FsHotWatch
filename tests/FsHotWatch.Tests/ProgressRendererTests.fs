@@ -8,6 +8,7 @@ open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.ProgressRenderer
+open FsHotWatch.Tests.TestHelpers
 
 /// Fixed "now" so elapsed calculations are deterministic across runs.
 let private now = DateTime(2026, 4, 17, 14, 3, 20, DateTimeKind.Utc)
@@ -49,7 +50,7 @@ let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : R
 [<Fact(Timeout = 15000)>]
 let ``compact Completed shows check glyph elapsed and summary`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(3.2))
+        { Status = completedAt (now - TimeSpan.FromSeconds(3.2))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) (Some "built 4 projects"))
@@ -71,7 +72,7 @@ let ``compact Completed with no LastRun does not display 0ms timing`` () =
     // must not display a misleading "(0ms)" timing — it should omit the
     // timing portion instead.
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = None
@@ -91,7 +92,7 @@ let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` 
     // milliseconds, not zero). Treat zero as "elapsed unknown" so the UI
     // doesn't claim a 30-second build took 0ms.
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero (Some "built 19 projects"))
@@ -107,7 +108,7 @@ let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` 
 [<Fact(Timeout = 15000)>]
 let ``verbose Completed with zero-elapsed LastRun does not display 0ms timing`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero None)
@@ -122,7 +123,7 @@ let ``verbose Completed with zero-elapsed LastRun does not display 0ms timing`` 
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with ledger errors shows warn glyph and count`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(3.2))
+        { Status = completedAt (now - TimeSpan.FromSeconds(3.2))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) None)
@@ -138,7 +139,7 @@ let ``compact Completed with ledger errors shows warn glyph and count`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with only warnings respects warningsAreFailures flag`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(1.0))
+        { Status = completedAt (now - TimeSpan.FromSeconds(1.0))
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
@@ -351,7 +352,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
     let startedAt = now - TimeSpan.FromSeconds 3.2
 
     let parsed: ParsedPluginStatus =
-        { Status = Completed now
+        { Status = completedAt now
           Subtasks = []
           ActivityTail = [ "dotnet build sln" ]
           LastRun =
@@ -375,7 +376,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
     let startedAt = now - TimeSpan.FromSeconds 1.0
 
     let parsed: ParsedPluginStatus =
-        { Status = Completed now
+        { Status = completedAt now
           Subtasks = []
           ActivityTail = []
           LastRun =
@@ -398,7 +399,7 @@ let ``renderAll concatenates per-plugin blocks`` () =
     let statuses =
         Map.ofList
             [ "Build",
-              { Status = Completed now
+              { Status = completedAt now
                 Subtasks = []
                 ActivityTail = []
                 LastRun = Some(completedRun (TimeSpan.FromSeconds 3.0) (TimeSpan.FromSeconds 3.0) (Some "ok"))
@@ -421,7 +422,7 @@ let ``renderAll concatenates per-plugin blocks`` () =
 
 module private AgentFixtures =
     let okStatus (summary: string option) : ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds 1.0)
+        { Status = completedAt (now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) summary)
@@ -442,7 +443,7 @@ module private AgentFixtures =
           Diagnostics = DiagnosticCounts.empty }
 
     let warnStatus () : ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds 1.0)
+        { Status = completedAt (now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
@@ -698,7 +699,7 @@ let ``compact Running prefers primary subtask label over activity tail`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Idle shows explicit summary not last log line`` () =
     let parsed: ParsedPluginStatus =
-        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+        { Status = completedAt (now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
           ActivityTail = [ "processing foo.fs"; "processing bar.fs" ]
           LastRun = Some(completedRun (TimeSpan.FromSeconds 2.0) (TimeSpan.FromSeconds 2.0) (Some "5 passed, 0 failed"))

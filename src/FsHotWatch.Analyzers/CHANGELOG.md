@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix!: adapt to core `RunVerdict` (AUTOMATION-99): completions carry the analyzer
+  summary plus the measured per-file analysis duration.
+
 ## 0.7.0-alpha.21 - 2026-07-02
 
 - fix: skip compile items that resolve outside the repo root (NuGet-injected `_content`, e.g. xunit.v3's `DefaultRunnerReporters.fs`). Running F# analyzers (FSharpLint via the shim) over such third-party sources crashed the analyzer host. `create` / `createWithSlowHook` now take a leading `repoRoot: string option` (AUTOMATION-49).

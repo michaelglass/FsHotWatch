@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix!: adapt to core `RunVerdict` (AUTOMATION-99): the build's `Completed` status
+  carries its verdict — "built N projects" + the measured build duration — via an
+  extended `BuildDone` message; build crashes carry an explicit crash summary.
+
 - fix: build spawns go through the single, always-bounded
   `ProcessHelper.runProcess` (`ProcessBounds.silent buildTimeout`). A build is a
   SILENT child — `dotnet build -v q` prints nothing until it finishes, and a

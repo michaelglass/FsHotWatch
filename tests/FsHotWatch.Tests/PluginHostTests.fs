@@ -667,7 +667,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                     match event with
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -857,7 +857,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         Thread.Sleep(50)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -978,7 +978,7 @@ let ``a throwing OnStatusChanged subscriber is logged and does not kill status n
                         match event with
                         | FileChanged _ ->
                             ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                            ctx.ReportStatus(Completed(DateTime.UtcNow))
+                            ctx.ReportStatus(completedAt DateTime.UtcNow)
                         | _ -> ()
 
                         return state
@@ -1019,7 +1019,7 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
             fun ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | FileChanged _ -> ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1064,7 +1064,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1089,7 +1089,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         bReachedRunning <- true
                         do! Async.Sleep(50)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                         bReachedCompleted <- true
                     | _ -> ()
 
@@ -1170,7 +1170,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                         // settle into Completed before BuildCompleted is emitted.
                         do! Async.Sleep(300)
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1190,7 +1190,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         do! Async.Sleep(50)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | BuildCompleted _ ->
                         // Sleep before transitioning to Running. This widens the
                         // race window: B is in Completed (from the prior
@@ -1202,7 +1202,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                         Interlocked.Increment(&bRunningCount.contents) |> ignore
 
                         do! Async.Sleep(20)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1257,7 +1257,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         do! Async.Sleep(20)
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1286,7 +1286,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                               Results = Map.empty
                               RanFullSuite = true }
 
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state
@@ -1309,7 +1309,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                         do! Async.Sleep(300)
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         do! Async.Sleep(20)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                         cCompleted <- true
                     | _ -> ()
 

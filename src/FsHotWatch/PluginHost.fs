@@ -136,13 +136,17 @@ type PluginHost
                         let runStartedAt' =
                             match prev, status with
                             | _, Running since -> Map.add name since state.RunStartedAt
-                            | _, Completed at ->
-                                let startedAt =
-                                    match Map.tryFind name state.RunStartedAt with
-                                    | Some s -> s
-                                    | None -> at
-
-                                activity.RecordTerminal(name, CompletedRun, startedAt, at)
+                            | _, Completed(at, verdict) ->
+                                // The verdict is the run's own sworn statement of its
+                                // duration — record THAT, deriving startedAt from it.
+                                // The old shape fell back to `startedAt = at` when no
+                                // Running preceded the Completed, which recorded an
+                                // elapsed of ZERO and rendered as the manufactured
+                                // "started: with no elapsed:" signature
+                                // (AUTOMATION-99). With the verdict carrying Elapsed,
+                                // a completion that never went through Running still
+                                // records honest timing.
+                                activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
                                 Map.remove name state.RunStartedAt
                             | _, Failed(err, at) ->
                                 let startedAt =
@@ -175,6 +179,16 @@ type PluginHost
                   RunStartedAt = Map.empty })
 
     let setStatus (name: string) status =
+        // A Completed status CARRIES its summary (RunVerdict) — route it into
+        // the activity log here, at the one choke point every status flows
+        // through, so the run record's summary and the reported verdict can
+        // never disagree. Set BEFORE the status post: RecordTerminal (fired by
+        // the status agent when it applies the mutation) consumes the pending
+        // summary.
+        match status with
+        | Completed(_, verdict) -> activity.SetSummary(name, verdict.Summary)
+        | _ -> ()
+
         // Non-blocking by design: setStatus is called from plugin
         // MailboxProcessor agent threads (via ReportStatus inside handler
         // Update bodies). The previous implementation posted a
@@ -284,12 +298,26 @@ type PluginHost
         let mutable modifiedFiles = []
 
         for preprocessor in preprocessors do
-            setStatus preprocessor.Name (Running(since = System.DateTime.UtcNow))
+            let startedAt = System.DateTime.UtcNow
+            setStatus preprocessor.Name (Running(since = startedAt))
 
             try
                 let modified = preprocessor.Process files repoRoot
                 modifiedFiles <- modified @ modifiedFiles
-                setStatus preprocessor.Name (Completed(System.DateTime.UtcNow))
+                let finishedAt = System.DateTime.UtcNow
+
+                let summary =
+                    match modified.Length with
+                    | 0 -> $"%d{files.Length} file(s) checked, none rewritten"
+                    | n -> $"%d{n} of %d{files.Length} file(s) rewritten"
+
+                setStatus
+                    preprocessor.Name
+                    (Completed(
+                        finishedAt,
+                        { Summary = summary
+                          Elapsed = finishedAt - startedAt }
+                    ))
             with ex ->
                 setStatus preprocessor.Name (Failed(ex.ToString(), System.DateTime.UtcNow))
 
