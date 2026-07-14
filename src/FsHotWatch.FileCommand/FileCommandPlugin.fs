@@ -219,7 +219,9 @@ let create
 
                             let cmdResult =
                                 match processResult with
-                                | ProcessOutcome.Succeeded out -> Succeeded out
+                                // `output` (rendered) rather than the raw capture: an
+                                // incomplete drain is named in the text a human reads.
+                                | ProcessOutcome.Succeeded _ -> Succeeded output
                                 | _ -> CommandFailed output
 
                             let finishedAt = DateTime.UtcNow
@@ -262,7 +264,7 @@ let create
                                 { Name = nameStr
                                   Outcome =
                                     match processResult with
-                                    | ProcessOutcome.Succeeded out -> FsHotWatch.Events.CommandSucceeded out
+                                    | ProcessOutcome.Succeeded _ -> FsHotWatch.Events.CommandSucceeded output
                                     | _ -> FsHotWatch.Events.CommandFailed output }
                             )
 

@@ -338,13 +338,16 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 
     match outcome with
     | Failed(code, out) ->
-        let tail = StringHelpers.truncateOutput 10 out
+        // `renderOutput`, not the raw capture: this tail is shown to a human who is
+        // about to debug a failed restore, so a drain that could not finish must say
+        // so rather than let them read a short tail as the whole story.
+        let tail = StringHelpers.truncateOutput 10 (renderOutput out)
 
         $"deps: project.assets.json stale for %s{projName} and 'dotnet restore' failed (exit %d{code}). Fix deps manually, then re-run.",
         tail
     | TimedOut(after, tail) ->
         $"deps: project.assets.json stale for %s{projName} and 'dotnet restore' timed out after %d{int after.TotalSeconds}s. Fix deps manually, then re-run.",
-        tail
+        renderOutput tail
     | Succeeded _ ->
         // Restore reported success but assets are still absent — a different
         // failure mode (e.g. restore didn't regenerate assets for this project).
@@ -532,7 +535,9 @@ let internal restoreSteps (repoRoot: string) (fsprojPath: string) : RestoreStep 
 let private runRestoreSteps (steps: RestoreStep list) : ProcessOutcome =
     let rec run remaining =
         match remaining with
-        | [] -> Succeeded ""
+        // No steps left to run: a synthesised success with an output we genuinely
+        // did observe to be empty (no process ran at all), not one we failed to read.
+        | [] -> Succeeded(ProcessOutput.Drained "")
         | step :: rest ->
             // `dotnet restore --verbosity quiet` prints nothing on success, so a
             // launch deadline could not tell a healthy slow restore from a wedged
