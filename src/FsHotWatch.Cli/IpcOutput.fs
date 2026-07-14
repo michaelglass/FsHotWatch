@@ -233,7 +233,7 @@ let MaxConvergeAttempts = 3
 /// daemon's `WaitForComplete` RPC (`waitForVerdict` → `requireVerdict=true`,
 /// which gates on `AnyPluginBusy` + generation advancement + quiescence), so
 /// `isSettled` is wired to that RPC's completion. The status reads here are for
-/// RENDERING ONLY and never decide the gate.
+/// RENDERING ONLY and never decide the verdict.
 let private pollUntilSettled
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (getStatus: unit -> string)
@@ -383,7 +383,7 @@ let internal publishVerdict
 
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
-/// 2 = completeness unachievable, 3 = merge gate with an unearned scope).
+/// 2 = completeness unachievable, 3 = `confirm` with an unearned scope).
 /// `renderStatuses` is injected so callers choose the progress renderer
 /// (compact/verbose). `triggerScan` forces a fresh scan and is invoked only on
 /// the convergence path (incomplete coverage, no failures).
@@ -405,10 +405,10 @@ let pollAndRender
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
     // Run EVERY configured test project, now, and don't come back until it is done
-    // (`run-tests` with no filter). This is the gate's teeth: `set-scope full` only
+    // (`run-tests` with no filter). This is `confirm`'s teeth: `set-scope full` only
     // makes the next run unfiltered, and on a warm daemon whose impact DB says nothing
-    // changed there IS no next run — so the gate would refuse for want of evidence it
-    // was never willing to go and get. Invoked ONLY in `MergeGate`, and only when the
+    // changed there IS no next run — so `confirm` would refuse for want of evidence it
+    // was never willing to go and get. Invoked ONLY in `Confirmation`, and only when the
     // settled scope is not already full-suite, so the common case (a cold daemon whose
     // scan already provoked the unfiltered run) pays for exactly one suite.
     (forceFullRun: unit -> unit)
@@ -488,25 +488,25 @@ let pollAndRender
         let firstRun = getTestRun ()
         finalRun.Value <- firstRun
 
-        // THE GATE EARNS ITS EVIDENCE (AUTOMATION-117).
+        // CONFIRM EARNS ITS EVIDENCE (AUTOMATION-117).
         //
         // `set-scope full` was already sent (before the scan), so any run the scan
         // provoked is unfiltered — and on a cold daemon that is the whole story: the
         // scope reads `FullSuite` here and nothing more is run. But a WARM daemon whose
         // impact DB says nothing changed provokes NO run at all, and the scope we just
         // read is the last (filtered) run's. Refusing there is correct — there is no
-        // whole-suite evidence — but refusing and STOPPING makes the gate unsatisfiable,
-        // and an unsatisfiable gate is one people route around with a shell script.
+        // whole-suite evidence — but refusing and STOPPING makes `confirm` unsatisfiable,
+        // and an unsatisfiable check is one people route around with a shell script.
         //
         // So: no full-suite evidence ⇒ go and produce some. Then re-settle and re-read,
         // because a forced run can fail, and its failures are the answer.
         let initialRead =
-            if CheckVerdict.gateNeedsFullRun checkMode firstRun.Scope then
+            if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope then
                 eprintfn
-                    "  Merge gate: the tests that ran were %s — running the FULL suite to earn a verdict..."
+                    "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
                     (TestScope.describe firstRun.Scope)
 
-                withProgress "Running the full suite (merge gate)" "Running the full suite (merge gate)..." (fun () ->
+                withProgress "Running the full suite (confirm)" "Running the full suite (confirm)..." (fun () ->
                     forceFullRun ())
 
                 settle ()
@@ -531,11 +531,11 @@ let pollAndRender
 
             UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
-            // Nothing failed — and that is precisely the point. The gate was asked for
+            // Nothing failed — and that is precisely the point. `confirm` was asked for
             // a claim about the whole suite and the tests that ran do not support one,
             // so it has no verdict to give. Say so; never launder it into a green.
             UI.fail
-                $"Merge gate: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
+                $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
                    not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
                    look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
                    reported sound either."

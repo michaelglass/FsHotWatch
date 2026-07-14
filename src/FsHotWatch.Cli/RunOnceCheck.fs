@@ -1,8 +1,8 @@
-/// `check` and `gate` WITHOUT a daemon — the `--run-once` path (AUTOMATION-117).
+/// `check` and `confirm` WITHOUT a daemon — the `--run-once` path (AUTOMATION-117).
 ///
-/// WHY THIS FILE EXISTS. `gate` was reachable only over the daemon's IPC socket, and
+/// WHY THIS FILE EXISTS. `confirm` was reachable only over the daemon's IPC socket, and
 /// `--run-once` bypasses the daemon entirely — which is precisely how CI runs fshw. So
-/// our own CI could not invoke the gate it is supposed to be gated by. It happened to
+/// our own CI could not invoke the very check it is supposed to be judged by. It happened to
 /// run the full suite anyway, because a CI checkout starts with a COLD impact DB and a
 /// cold DB selects everything; that is an accident of the environment, not a property
 /// of the tool. Warm the cache, restore the DB, or optimise CI at all, and the same
@@ -43,23 +43,23 @@ let private runHostCommand (host: PluginHost.PluginHost) (name: string) (args: s
 /// Ask the host what the last completed run ACTUALLY covered.
 ///
 /// Every way of not getting a straight answer — no test-prune plugin, an unparseable
-/// reply, a throw — becomes `ScopeUnknown`, which the merge gate refuses. The failure
-/// direction is safe BY CONSTRUCTION: a gate can only go green on a scope it positively
-/// established. But it is never SILENT about it — safe-and-mute is how `fshw gate`
+/// reply, a throw — becomes `ScopeUnknown`, which `confirm` refuses. The failure
+/// direction is safe BY CONSTRUCTION: `confirm` can only go green on a scope it positively
+/// established. But it is never SILENT about it — safe-and-mute is how `fshw confirm`
 /// stayed broken on every repo for its whole life (AUTOMATION-129).
 let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
     try
         match runHostCommand host TestScopeCommand [||] with
         | None ->
             Logging.warn
-                "cli-gate"
+                "cli-confirm"
                 $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a merge \
-                   verdict cannot be earned here. `fshw gate --run-once` will report NO VERDICT."
+                   verdict cannot be earned here. `fshw confirm --run-once` will report NO VERDICT."
 
             { Scope = ScopeUnknown; RunId = None }
         | Some reply -> parseTestRunReport reply
     with ex ->
-        Logging.warn "cli-gate" $"could not read the test scope: %s{ex.Message}"
+        Logging.warn "cli-confirm" $"could not read the test scope: %s{ex.Message}"
         { Scope = ScopeUnknown; RunId = None }
 
 /// Turn impact filtering OFF for this process, BEFORE anything runs.
@@ -68,7 +68,7 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
 /// below provokes the test run, and that run must ALREADY be unfiltered. Asking
 /// afterwards would only learn that it wasn't.
 ///
-/// A failure here is not fatal on its own — the gate does not trust this call's return
+/// A failure here is not fatal on its own — `confirm` does not trust this call's return
 /// value. It trusts `readTestRun`, which reports what actually ran. The request is not
 /// the evidence.
 let internal requestFullSuiteScope (host: PluginHost.PluginHost) : unit =
@@ -76,16 +76,16 @@ let internal requestFullSuiteScope (host: PluginHost.PluginHost) : unit =
         match runHostCommand host SetScopeCommand [| FullSuiteScopeArgs |] with
         | None ->
             eprintfn
-                $"fshw gate: the plugin host has no `%s{SetScopeCommand}` command (no test projects configured). \
-                   The gate will refuse the verdict."
-        | Some reply -> Logging.debug "cli-gate" $"set-scope reply: %s{reply}"
+                $"fshw confirm: the plugin host has no `%s{SetScopeCommand}` command (no test projects configured). \
+                   The verdict will be refused."
+        | Some reply -> Logging.debug "cli-confirm" $"set-scope reply: %s{reply}"
     with ex ->
         eprintfn
-            $"fshw gate: could not disable impact filtering (%s{ex.Message}). \
-               The tests will run impact-filtered, and the gate will refuse the verdict."
+            $"fshw confirm: could not disable impact filtering (%s{ex.Message}). \
+               The tests will run impact-filtered, and the verdict will be refused."
 
 /// Ask the host to run EVERY configured test project, now — `run-tests` with no filter
-/// and no project selection. The gate's teeth: see `CheckVerdict.gateNeedsFullRun`.
+/// and no project selection. `confirm`'s teeth: see `CheckVerdict.confirmNeedsFullRun`.
 ///
 /// Sends no `waitSec`, so the plugin's own default budget applies (ONE default, not a
 /// second one here). If that budget expires the run is NOT cancelled — it was already
@@ -96,18 +96,18 @@ let internal requestFullRun (host: PluginHost.PluginHost) : unit =
         match runHostCommand host RunTestsCommand [| "{}" |] with
         | None ->
             // No test-prune plugin: there is nothing to force, and `readTestRun` will
-            // report `ScopeUnknown` — which the gate refuses. Nothing to do but say so.
-            Logging.warn "cli-gate" $"the plugin host has no `%s{RunTestsCommand}` command — no tests can be forced"
-        | Some reply -> Logging.debug "cli-gate" $"run-tests reply: %s{reply}"
+            // report `ScopeUnknown` — which `confirm` refuses. Nothing to do but say so.
+            Logging.warn "cli-confirm" $"the plugin host has no `%s{RunTestsCommand}` command — no tests can be forced"
+        | Some reply -> Logging.debug "cli-confirm" $"run-tests reply: %s{reply}"
     with ex ->
-        Logging.warn "cli-gate" $"the forced full-suite run failed: %s{ex.Message}"
+        Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
 
 /// Request the full run AND wait for it.
 ///
 /// The wait is the authoritative bound, not the command's own budget: a `run-tests` whose
 /// `waitSec` expires leaves the run going, and reading the scope at that moment would
-/// report a run still in flight (`ScopeUnknown`) — a gate that refuses because it did not
-/// wait long enough for the answer it asked for. Settling (never re-scanning: a second
+/// report a run still in flight (`ScopeUnknown`) — a refusal caused not by the evidence but by not
+/// having waited long enough for the answer it asked for. Settling (never re-scanning: a second
 /// scan would rebuild the world just to wait for a run already in progress) means the
 /// scope is read from what the run actually DID.
 let internal forceFullRun (daemon: Daemon.Daemon) : unit =
@@ -116,7 +116,7 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
     try
         daemon.Settle() |> Async.RunSynchronously
     with ex ->
-        Logging.warn "cli-gate" $"could not settle after the forced full-suite run: %s{ex.Message}"
+        Logging.warn "cli-confirm" $"could not settle after the forced full-suite run: %s{ex.Message}"
 
 /// The plugins' failing-diagnostic count — the `hasFailures` half of the verdict.
 let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
@@ -147,10 +147,10 @@ let private liveCoverage (daemon: Daemon.Daemon) : Coverage =
 
 /// Run every check once, in-process, and produce the verdict.
 ///
-/// `checkMode` is the ONLY difference between `check --run-once` and `gate --run-once`:
+/// `checkMode` is the ONLY difference between `check --run-once` and `confirm --run-once`:
 ///   * `InnerLoop` — impact filtering stays on; the scope is read, reported, and (per
 ///     `CheckVerdict.verdict`) ignored. An impact-filtered green is the answer it wants.
-///   * `MergeGate` — impact filtering is turned OFF before the scan; the full suite is
+///   * `Confirmation` — impact filtering is turned OFF before the scan; the full suite is
 ///     FORCED if the scan did not already produce it; and only a `FullSuite` scope can
 ///     reach a green. Anything less is exit 3, `UnearnedScope` — no verdict, never a
 ///     laundered pass.
@@ -171,7 +171,7 @@ let runOnceAndVerdict
         registerPlugins daemon repoRoot config
 
         // BEFORE the scan — the run it provokes must already be unfiltered.
-        if checkMode = CheckVerdict.MergeGate then
+        if checkMode = CheckVerdict.Confirmation then
             requestFullSuiteScope daemon.Host
 
         let statuses = runOnceWithProgress daemon
@@ -193,18 +193,18 @@ let runOnceAndVerdict
         /// IS the re-scan.
         let rescan () : unit = runOnceWithProgress daemon |> ignore
 
-        // THE GATE EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune
+        // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune
         // launch chokepoint (build → BuildCompleted), where full-suite scope has already
         // forced every project in full — so in the common case the scope is ALREADY
         // `FullSuite` here and nothing more runs. This is the backstop for every case
-        // where it is not (a replayed cache entry, a skipped launch): the gate goes and
+        // where it is not (a replayed cache entry, a skipped launch): `confirm` goes and
         // produces the evidence rather than refusing for want of evidence it declined to
         // get. It is a backstop, not the mechanism — hence it costs nothing when the
         // mechanism worked.
         let initialRead =
-            if CheckVerdict.gateNeedsFullRun checkMode finalRun.Value.Scope then
+            if CheckVerdict.confirmNeedsFullRun checkMode finalRun.Value.Scope then
                 eprintfn
-                    "  Merge gate: the tests that ran were %s — running the FULL suite to earn a verdict..."
+                    "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
                     (TestScope.describe finalRun.Value.Scope)
 
                 forceFullRun daemon
@@ -273,11 +273,11 @@ let runOnceAndVerdict
 
             UI.fail $"Check incomplete: %s{detail}"
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
-            // Nothing failed — and that is the point. The gate was asked for a claim
+            // Nothing failed — and that is the point. `confirm` was asked for a claim
             // about the whole suite; the tests that ran do not support one; so it has no
             // verdict to give. Say so. Never launder it into a green.
             UI.fail
-                $"Merge gate: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
+                $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
                    not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
                    look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
                    reported sound either."

@@ -67,7 +67,7 @@ let private emptyRun (root: string) (runId: Guid) =
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Verdict.Verdict =
     { ProducedAt = DateTime.UtcNow
-      Command = Verdict.Gate
+      Command = Verdict.Confirm
       Producer = Verdict.Producer.current ()
       RunId = None
       TreeHash = treeHash
@@ -262,6 +262,32 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
         | other -> failwith $"expected a readable verdict, got %A{other}")
 
 [<Fact>]
+let ``a confirm verdict round-trips as a CONFIRM — the writer and the reader agree on the token`` () =
+    // AUTOMATION-160. The `command` field is a WIRE token: `Verdict.write` emits
+    // `Command.token`, and `Verdict.read` matches a string literal back. Nothing makes
+    // the two sides agree except this test.
+    //
+    // The failure mode is silent and it under-claims in a way no other test would
+    // catch: the reader's `else` branch is `Check`, so a writer emitting "confirm"
+    // against a reader still looking for "gate" parses a full-suite merge verdict back
+    // as an impact-scoped inner-loop one — a DOWNGRADE, with no parse error, no
+    // exception, and a green exit code. That is precisely the class of quiet
+    // disagreement this verb exists to catch, so it may not live in the verb's own
+    // serializer.
+    withTempDir "verdict-confirm-roundtrip" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        Verdict.write
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Command = Verdict.Confirm }
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v -> test <@ v.Command = Verdict.Confirm @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
 let ``the verdict is written atomically — no .tmp is left behind`` () =
     withTempDir "verdict-atomic" (fun root ->
         makeRepo root
@@ -296,8 +322,8 @@ let ``the serialized outcome is UNIFORMLY tagged — a consumer never type-switc
     test <@ read [ "treeHashAlgorithm" ] = TreeHash.Algorithm @>
 
 [<Fact>]
-let ``an UnearnedScope gate is INCOMPLETE in the file, never green`` () =
-    // The merge gate's whole reason for existing: an impact-filtered run is not
+let ``an UnearnedScope confirm is INCOMPLETE in the file, never green`` () =
+    // `confirm`'s whole reason for existing: an impact-filtered run is not
     // the claim a merge needs. Nothing is reported broken — and nothing is
     // reported sound either. That must survive the trip to disk.
     let outcome =
@@ -597,7 +623,7 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
     test <@ text.Contains ".fshw/test-runs/Intelligence.Tests.Integration-7134d9cfbee943df9cdf24d622dc31ca.ctrf.json" @>
 
 [<Fact>]
-let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at gate`` () =
+let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -606,32 +632,32 @@ let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at gate`` 
     let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
 
     test <@ text.Contains "impact-scoped (2/6 test projects)" @>
-    test <@ text.Contains "fshw gate" @>
+    test <@ text.Contains "fshw confirm" @>
 
 [<Fact>]
-let ``a check that ran no tests is pointed at gate too — the emptiest evidence needs the loudest hint`` () =
+let ``a check that ran no tests is pointed at confirm too — the emptiest evidence needs the loudest hint`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
             Scope = NoTestsRun }
 
     let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
-    test <@ text.Contains "fshw gate" @>
+    test <@ text.Contains "fshw confirm" @>
 
 [<Fact>]
-let ``a full-suite check is not nagged, and a gate never is`` () =
+let ``a full-suite check is not nagged, and a confirm never is`` () =
     let full =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
             Scope = FullSuite 6 }
 
-    let gate =
+    let confirmed =
         { greenVerdict "sha256:abc" 12 with
-            Command = Verdict.Gate
+            Command = Verdict.Confirm
             Scope = ImpactFiltered(2, 6) }
 
-    test <@ not ((ProgressRenderer.AgentHints.forVerdict full |> String.concat "\n").Contains "fshw gate") @>
-    test <@ not ((ProgressRenderer.AgentHints.forVerdict gate |> String.concat "\n").Contains "fshw gate") @>
+    test <@ not ((ProgressRenderer.AgentHints.forVerdict full |> String.concat "\n").Contains "fshw confirm") @>
+    test <@ not ((ProgressRenderer.AgentHints.forVerdict confirmed |> String.concat "\n").Contains "fshw confirm") @>
 
 [<Fact>]
 let ``a run with no suites SAYS so rather than pointing at nothing`` () =
@@ -899,9 +925,9 @@ let ``the wire tokens are stable — consumers key off them`` () =
     test <@ Verdict.Outcome.tag Verdict.Red = "red" @>
     test <@ Verdict.Outcome.tag (Verdict.Incomplete "x") = "incomplete" @>
     test <@ Verdict.Command.token Verdict.Check = "check" @>
-    test <@ Verdict.Command.token Verdict.Gate = "gate" @>
+    test <@ Verdict.Command.token Verdict.Confirm = "confirm" @>
     test <@ Verdict.Command.ofCheckMode CheckVerdict.InnerLoop = Verdict.Check @>
-    test <@ Verdict.Command.ofCheckMode CheckVerdict.MergeGate = Verdict.Gate @>
+    test <@ Verdict.Command.ofCheckMode CheckVerdict.Confirmation = Verdict.Confirm @>
 
     let tokens =
         [ Verdict.PluginOutcome.Ok
@@ -1055,10 +1081,10 @@ let ``the status hint lists the LATEST RUN's reports — not a pile spanning man
         test <@ (lines |> List.filter (fun l -> l.Contains "suites")).Length = 1 @>)
 
 [<Fact>]
-let ``a gate that ran the full suite is told nothing extra — the hint is a nudge, not noise`` () =
+let ``a confirm that ran the full suite is told nothing extra — the hint is a nudge, not noise`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
-            Command = Verdict.Gate
+            Command = Verdict.Confirm
             Scope = FullSuite 6
             Suites =
                 [ { Project = "A.Tests"
@@ -1076,7 +1102,7 @@ let ``a gate that ran the full suite is told nothing extra — the hint is a nud
     test <@ not (text.Contains "did not establish") @>
 
 [<Fact>]
-let ``an UNKNOWN scope on a check is nudged toward gate too — an unknown scope is not a full one`` () =
+let ``an UNKNOWN scope on a check is nudged toward confirm too — an unknown scope is not a full one`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -1084,7 +1110,7 @@ let ``an UNKNOWN scope on a check is nudged toward gate too — an unknown scope
 
     let text = ProgressRenderer.AgentHints.forVerdict v |> String.concat "\n"
     test <@ text.Contains "did not establish a full-suite scope" @>
-    test <@ text.Contains "fshw gate" @>
+    test <@ text.Contains "fshw confirm" @>
 
 // ---------------------------------------------------------------------------
 // A MISSING NUMBER IS NOT ZERO.

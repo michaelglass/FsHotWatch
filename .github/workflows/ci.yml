@@ -22,11 +22,12 @@ jobs:
       # sibling TestPrune.Core sources leak into the cobertura XML at 0%.
       # Relative path — the workflow's `dotnet test` runs from the repo root.
       test-extra-args: '--coverage-settings coverage.settings'
-      # `gate --run-once` is the MERGE GATE, and CI runs the gate — not `check`.
+      # `confirm --run-once` runs the FULL suite and confirms `check` told the truth,
+      # and that is what CI runs — not `check` itself.
       #
       # The difference is the whole point. `check` keeps impact filtering: it answers
       # "did my change break anything it plausibly touches?", which is a latency
-      # optimization for the inner dev loop. `gate` answers "is the suite green?",
+      # optimization for the inner dev loop. `confirm` answers "is the suite green?",
       # which is a correctness claim, and it will not make that claim from a filtered
       # run: it disables impact filtering, RUNS the full suite (forcing it if the scan
       # did not already provoke one), and refuses a green verdict — exit 3,
@@ -37,14 +38,14 @@ jobs:
       # COLD impact DB and a cold DB selects everything. That is an accident of the
       # environment, not a property of the tool: cache the `.fshw` state between runs,
       # restore the DB, or optimise CI at all, and the same green would silently start
-      # coming from a SUBSET, with nothing in the output to say so. `gate` makes the
+      # coming from a SUBSET, with nothing in the output to say so. `confirm` makes the
       # full-suite scope a checked precondition of the exit code instead of a lucky
       # side effect — and `--run-once` is what makes it reachable here at all, since it
       # is the only path that needs no daemon.
       #
       # NOTE ON "FULL SUITE": it means every test project `.fshw.json` knows about,
       # which today is FsHotWatch.Tests alone. FsHotWatch.IntegrationTests is in the
-      # solution but not in `.fshw.json`, so the gate does not run it (AUTOMATION-158).
+      # solution but not in `.fshw.json`, so `confirm` does not run it (AUTOMATION-158).
       #
       # This is ALSO how the repo's own convention rules run in CI
       # (analyzers/FsHotWatch.Rules → FSHW-CLAIM-001, FSHW-CLOCK-001): the
@@ -53,4 +54,4 @@ jobs:
       # is missing, the daemon does NOT silently skip them — `analyzerPathFailures`
       # raises `config error: Analyzer path(s) loaded 0 analyzers` and this step
       # exits 2. An unloaded analyzer and a clean one must never look alike.
-      lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- gate --run-once'
+      lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'

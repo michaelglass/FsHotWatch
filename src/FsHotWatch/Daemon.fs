@@ -1372,7 +1372,7 @@ type Daemon
     /// Block until every plugin reaches a terminal state — the settle half of
     /// `RunOnce`, WITHOUT the scan.
     ///
-    /// Exposed for the run-once merge gate (AUTOMATION-117), which forces a full test
+    /// Exposed for run-once `confirm` (AUTOMATION-117), which forces a full test
     /// run through the plugin host after the scan has already settled and must then
     /// wait out THAT run — a second `RunOnce` would re-scan and rebuild the world just
     /// to wait for a run that is already in flight.

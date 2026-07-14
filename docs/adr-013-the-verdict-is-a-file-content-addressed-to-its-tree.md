@@ -22,7 +22,7 @@ Three separate defects fed each other:
    to look is not enforcement — it is hope.*
 
 2. **Measuring perturbed the thing measured.** The `fshw test-rerun` calls the
-   orchestrator made *because the gate looked untrustworthy* were themselves what
+   orchestrator made *because the verdict looked untrustworthy* were themselves what
    corrupted the daemon's busy accounting, which is what made the next `check`
    stamp a content-free green (AUTOMATION-99). The act of measuring created the
    defect being measured.
@@ -36,7 +36,7 @@ Three separate defects fed each other:
 
 **The daemon's verdict is a FILE, and its identity is derived from content.**
 
-`.fshw/verdict.json` is written atomically at the end of every `check` and `gate`
+`.fshw/verdict.json` is written atomically at the end of every `check` and `confirm`
 — including the ones that fail, time out, or lose the daemon mid-run. It carries
 the outcome, the scope, per-plugin results, pointers to this run's CTRF reports,
 and a `treeHash`.
@@ -58,13 +58,13 @@ APPLIC-24 fixture is now inside the thing the verdict is addressed by: change it
 and the previous green stops applying. Nothing to remember; no MSBuild involved.
 
 **The pointer is in the output you are already reading.** In non-TTY output, every
-check and gate prints the actual paths for *this* run:
+check and confirm prints the actual paths for *this* run:
 
 ```
   AGENTS: don't parse this output. Machine-readable results:
     verdict  .fshw/verdict.json   (treeHash-keyed — `dotnet fshw verdict` re-checks it…)
     suites   .fshw/test-runs/Intelligence.Tests.Unit-8134092f….ctrf.json
-  this check was impact-scoped (2/6 test projects) — for a MERGE verdict use `fshw gate`
+  this check was impact-scoped (2/6 test projects) — for a MERGE verdict use `fshw confirm`
 ```
 
 Real paths, not a generic pointer: *a hint that makes you go and find the file is
@@ -111,7 +111,7 @@ and agents call constantly), and still a *request* — it can perturb. The daemo
 long-lived and reactive; "what is true right now" is a **state** question, and
 request/response is the wrong shape for it.
 
-**An "agent mode" that tightens the gate.** See above: two greens that mean
+**An "agent mode" that tightens the check.** See above: two greens that mean
 different things is the disease, not the cure.
 
 **mtime, or "the newest file in the directory".** Both are what already lied. The
@@ -121,6 +121,6 @@ verdict is addressed by content or it is not addressed at all.
 
 - ADR-008 — mtime is never a content oracle (this is the same rule, applied to the
   verdict rather than to a cache key).
-- AUTOMATION-112 — `check` vs `gate`: the verb names its guarantee.
+- AUTOMATION-112 — `check` vs `confirm` (named `gate` until AUTOMATION-160): the verb names its guarantee.
 - AUTOMATION-123 — identity derived from content, never asserted by a label. The
   same principle, in a different subsystem, discovered independently.

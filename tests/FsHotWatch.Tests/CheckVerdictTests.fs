@@ -8,7 +8,7 @@ open FsHotWatch.Cli.CheckVerdict
 /// The scope these coverage-convergence tests are indifferent to. Convergence is
 /// about COMPLETENESS (did every file get checked), not about what the tests
 /// covered — so these cases pin the InnerLoop mode, which ignores the scope
-/// entirely. The scope's own behaviour is pinned by the MergeGate tests below.
+/// entirely. The scope's own behaviour is pinned by the Confirmation tests below.
 let private anyScope = FullSuite 1
 
 // ----------------------------------------------------------------------------
@@ -179,7 +179,7 @@ let ``converge: Unknown then complete -> Clean`` () =
 // ----------------------------------------------------------------------------
 // AUTOMATION-112 — a merge verdict cannot be produced from an impact-filtered run.
 //
-// Impact filtering is a latency optimization for the inner loop. A merge gate is a
+// Impact filtering is a latency optimization for the inner loop. A merge decision is a
 // correctness claim. An impact-filtered green means "your change didn't break
 // anything I chose to look at" — not "the suite is green". These tests pin the
 // difference in the TYPE, because "remember to also run an unfiltered test-rerun
@@ -187,52 +187,52 @@ let ``converge: Unknown then complete -> Clean`` () =
 // ----------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: a full-suite run with no failures is the ONLY route to Clean`` () =
-    test <@ verdict MergeGate false Complete (FullSuite 4) = CheckOutcome.Clean @>
+let ``Confirmation: a full-suite run with no failures is the ONLY route to Clean`` () =
+    test <@ verdict Confirmation false Complete (FullSuite 4) = CheckOutcome.Clean @>
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: an impact-filtered run cannot yield Clean`` () =
+let ``Confirmation: an impact-filtered run cannot yield Clean`` () =
     // The exact shape of the bug: nothing failed, coverage complete — and the run
     // looked at a selected subset. That is not a merge verdict.
-    let outcome = verdict MergeGate false Complete (ImpactFiltered(1, 4))
+    let outcome = verdict Confirmation false Complete (ImpactFiltered(1, 4))
 
     test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
     test <@ exitCode outcome <> 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: a run that executed no tests at all cannot yield Clean`` () =
+let ``Confirmation: a run that executed no tests at all cannot yield Clean`` () =
     // AUTOMATION-108's shape: the daemon skipped the run (cached/baseline-equivalent)
     // and nothing ran. 35 tests were red on `main` throughout. "No tests ran" is not
     // evidence of a green suite.
-    let outcome = verdict MergeGate false Complete NoTestsRun
+    let outcome = verdict Confirmation false Complete NoTestsRun
 
     test <@ outcome = CheckOutcome.UnearnedScope NoTestsRun @>
     test <@ exitCode outcome <> 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: an unknown scope cannot yield Clean`` () =
+let ``Confirmation: an unknown scope cannot yield Clean`` () =
     // The cross-version backstop. An old daemon, an absent test-prune plugin, a
     // transport fault — every one of them lands here, and none of them is a
-    // full-suite run. A gate goes green only on a scope it POSITIVELY established.
-    let outcome = verdict MergeGate false Complete ScopeUnknown
+    // full-suite run. `confirm` goes green only on a scope it POSITIVELY established.
+    let outcome = verdict Confirmation false Complete ScopeUnknown
 
     test <@ outcome = CheckOutcome.UnearnedScope ScopeUnknown @>
     test <@ exitCode outcome <> 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: real failures still short-circuit ahead of scope`` () =
+let ``Confirmation: real failures still short-circuit ahead of scope`` () =
     // A failing test is a failing test; don't bury it behind a scope complaint.
-    test <@ verdict MergeGate true Complete (ImpactFiltered(1, 4)) = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation true Complete (ImpactFiltered(1, 4)) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
-let ``MergeGate: incomplete coverage still outranks scope`` () =
+let ``Confirmation: incomplete coverage still outranks scope`` () =
     // Files that were never checked are a completeness problem, reported as such.
-    test <@ verdict MergeGate false (Incomplete 7) (FullSuite 4) = CheckOutcome.Incomplete 7 @>
+    test <@ verdict Confirmation false (Incomplete 7) (FullSuite 4) = CheckOutcome.Incomplete 7 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
     // The fast loop keeps its optimization. Making it demand the whole suite would
-    // defeat the point of having one; the gate is where the claim gets made.
+    // defeat the point of having one; `confirm` is where the claim gets made.
     test <@ verdict InnerLoop false Complete (ImpactFiltered(1, 4)) = CheckOutcome.Clean @>
     // A repo with no test-prune plugin has no tests to run, and punishing it would be
     // nonsense. `ScopeUnknown` is "we cannot say", not "we ran nothing".
@@ -254,7 +254,7 @@ let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, n
     // same axis. The inner loop is allowed to test less. It is not allowed to test
     // nothing and call it green.
     test <@ verdict InnerLoop false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
-    test <@ verdict MergeGate false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
+    test <@ verdict Confirmation false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
 
     // ...but a REAL failure still outranks it: a red is a red, and reporting "no
     // verdict" would bury it.
@@ -272,8 +272,8 @@ let ``exitCode: UnearnedScope is its own code, distinct from failure and incompl
     test <@ unearned <> exitCode (CheckOutcome.Incomplete 1) @>
 
 [<Fact(Timeout = 15000)>]
-let ``converge: a MergeGate never scans its way out of an unearned scope`` () =
-    // Re-scanning cannot widen the scope of a run that already happened. The gate's
+let ``converge: a Confirmation never scans its way out of an unearned scope`` () =
+    // Re-scanning cannot widen the scope of a run that already happened. `confirm`'s
     // job is to report that it has no verdict — not to keep scanning for a better one.
     let queue =
         System.Collections.Generic.Queue<bool * Coverage * TestScope>([ (false, Complete, ImpactFiltered(1, 4)) ])
@@ -288,7 +288,7 @@ let ``converge: a MergeGate never scans its way out of an unearned scope`` () =
             (false, Complete, ImpactFiltered(1, 4))
 
     let outcome =
-        converge MergeGate 3 triggerScan reread (false, Complete, ImpactFiltered(1, 4))
+        converge Confirmation 3 triggerScan reread (false, Complete, ImpactFiltered(1, 4))
 
     test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
     test <@ scans.Value = 0 @>

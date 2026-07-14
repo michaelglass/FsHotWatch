@@ -293,7 +293,7 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
     let parsed = parsePluginStatuses json
     test <@ Map.containsKey "plugin" parsed @>
 
-// --- Regression: check-gate soundness (false green before the test-prune verdict) ---
+// --- Regression: check soundness (false green before the test-prune verdict) ---
 //
 // THE BUG (observed on alpha.30 against a large consumer repo): `fshw check`
 // returned exit 0 "No errors" having computed N affected tests, but BEFORE the
@@ -301,14 +301,14 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 // AFTER `check` had already exited green, so real test failures sat behind a
 // green exit.
 //
-// ROOT CAUSE: the CLI `check` gate (`pollAndRender`) settled on the
+// ROOT CAUSE: the CLI `check` (`pollAndRender`) settled on the
 // Idle-tolerant `isAllTerminal` status predicate instead of the daemon's
 // authoritative `WaitForComplete` verdict. The scan signals its generation as
 // soon as FCS check + BatchChecked finish; at that instant test-prune can still
 // be Idle (the build's `BuildCompleted` event is queued in its mailbox but its
 // handler hasn't run, so it hasn't transitioned Idle->Running yet). `isAllTerminal`
 // treats Idle as quiescent and never consults the host's inflight/busy state, so
-// the gate concluded "settled" and read diagnostics during that Idle window —
+// the check concluded "settled" and read diagnostics during that Idle window —
 // missing the test-prune failure that surfaces only once the run completes.
 //
 // THE FIX: `pollAndRender` now blocks on `WaitForComplete` (the daemon's
@@ -324,10 +324,10 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 //     test-prune run finished (as `waitForVerdict` would, by blocking until the
 //     inflight BuildCompleted -> run reaches terminal).
 //   - `getErrors` reports the test failure ONLY after the run finished — i.e. a
-//     gate that reads diagnostics during the Idle window sees a (false) clean.
+//     check that reads diagnostics during the Idle window sees a (false) clean.
 //
-// With the fix the gate waits for `waitForComplete`, so the failure is surfaced
-// (exit 1). Without it the gate stops at `isAllTerminal` while test-prune is Idle
+// With the fix the check waits for `waitForComplete`, so the failure is surfaced
+// (exit 1). Without it the check stops at `isAllTerminal` while test-prune is Idle
 // and reads the clean diagnostics (exit 0) — the false green. The assertion
 // `exit = 1` is therefore red-before / green-after.
 
@@ -428,8 +428,8 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
     // ...and the test-prune failure surfaced. Exit 1 (failure) only happens if
-    // the gate waited for the verdict before reading diagnostics. With the bug
-    // (settle on `isAllTerminal` while test-prune is Idle) the gate reads the
+    // the check waited for the verdict before reading diagnostics. With the bug
+    // (settle on `isAllTerminal` while test-prune is Idle) the check reads the
     // clean ledger during the Idle window and returns exit 0 — the false green.
     test <@ exitCode = 1 @>
 
@@ -603,24 +603,24 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
     test <@ exitCode = 2 @>
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-117 — the gate EARNS its evidence.
+// AUTOMATION-117 — `confirm` EARNS its evidence.
 //
 // `set-scope full` makes the next test run unfiltered. It does not make a run
 // HAPPEN. On a warm daemon whose impact DB says nothing changed, the scan provokes
-// no run at all, so `gate` read the LAST (filtered) run's coverage and refused —
+// no run at all, so `confirm` read the LAST (filtered) run's coverage and refused —
 // correctly (it had no whole-suite evidence) but uselessly: there was no way to
-// produce any. A gate that can only be satisfied by luck is a gate people route
+// produce any. A check that can only be satisfied by luck is a check people route
 // around with a shell script, which is exactly how a 40-line unverified bash
 // harness ended up making merge decisions on this repo.
 //
-// So the gate now RUNS the suite it demands, and only then judges it.
+// So `confirm` now RUNS the suite it demands, and only then judges it.
 // ---------------------------------------------------------------------------
 
 /// A `pollAndRender` drive whose test scope starts out impact-filtered and only
 /// becomes full-suite once `forceFullRun` has actually been invoked — i.e. the
 /// daemon behaves exactly as a warm daemon with nothing to do: it reports the last
 /// filtered run until something forces a new one.
-let private driveGate (checkMode: CheckVerdict.CheckMode) : int * int =
+let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
     let mutable forceCalls = 0
 
     let getTestRun () : TestRunReport =
@@ -631,7 +631,7 @@ let private driveGate (checkMode: CheckVerdict.CheckMode) : int * int =
               RunId = None }
 
     let exitCode =
-        TestHelpers.withTempDir "ipcoutput-gate-force" (fun repoRoot ->
+        TestHelpers.withTempDir "ipcoutput-confirm-force" (fun repoRoot ->
             pollAndRender
                 ProgressRenderer.Agent
                 checkMode
@@ -650,29 +650,29 @@ let private driveGate (checkMode: CheckVerdict.CheckMode) : int * int =
     exitCode, forceCalls
 
 [<Fact(Timeout = 15000)>]
-let ``a merge gate with no full-suite evidence FORCES the run and then goes green`` () =
-    // RED BEFORE THE FIX: the gate never called `forceFullRun`, read the stale
+let ``a confirm with no full-suite evidence FORCES the run and then goes green`` () =
+    // RED BEFORE THE FIX: `confirm` never called `forceFullRun`, read the stale
     // ImpactFiltered scope, and returned exit 3 (UnearnedScope) — with no way for the
     // caller to ever get a different answer. GREEN AFTER: it runs the suite, re-reads
     // what that run actually covered, and earns the verdict.
-    let exitCode, forceCalls = driveGate CheckVerdict.MergeGate
+    let exitCode, forceCalls = driveConfirm CheckVerdict.Confirmation
 
     test <@ forceCalls = 1 @>
     test <@ exitCode = 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``a merge gate that already has full-suite evidence does NOT run the suite twice`` () =
+let ``a confirm that already has full-suite evidence does NOT run the suite twice`` () =
     // The force is a BACKSTOP, not the mechanism. On a cold daemon the scan already
     // provoked the unfiltered run (`set-scope full` was sent first), so the scope reads
-    // full-suite here and the gate must pay for exactly ONE suite. A gate that re-ran
-    // the world every time would be a gate people turn off.
+    // full-suite here and `confirm` must pay for exactly ONE suite. A check that re-ran
+    // the world every time would be a check people turn off.
     let mutable forceCalls = 0
 
     let exitCode =
-        TestHelpers.withTempDir "ipcoutput-gate-noforce" (fun repoRoot ->
+        TestHelpers.withTempDir "ipcoutput-confirm-noforce" (fun repoRoot ->
             pollAndRender
                 ProgressRenderer.Agent
-                CheckVerdict.MergeGate
+                CheckVerdict.Confirmation
                 repoRoot
                 []
                 (fun _ -> [])
@@ -692,7 +692,7 @@ let ``a merge gate that already has full-suite evidence does NOT run the suite t
 let ``the inner loop NEVER forces a full suite`` () =
     // `check` is the fast loop. An impact-filtered green is precisely the answer it
     // wants, and a fast loop that secretly runs the whole suite is not a fast loop.
-    let exitCode, forceCalls = driveGate CheckVerdict.InnerLoop
+    let exitCode, forceCalls = driveConfirm CheckVerdict.InnerLoop
 
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>

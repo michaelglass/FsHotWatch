@@ -16,11 +16,31 @@ wait ~500ms before querying.
 
 Placement-independent (`fshw -a check` ≡ `fshw check -a`).
 
-There are two verbs that matter: **`check`** is the gate (it triggers a full
-run and blocks until done; exit 0 = green), and **`status`** is the observer
-(it reports current state without triggering anything). The old per-plugin
-verbs (`build`, `test`, `lint`, `analyze`, `format-check`, `errors`) were
-folded into these two.
+The verbs that matter:
+
+- **`check`** — the fast inner loop. Triggers a full run and blocks until done;
+  exit 0 = green. The tests are **impact-filtered**: a latency optimization, not a
+  merge decision.
+- **`confirm`** — run the FULL suite and confirm `check` told the truth. Same
+  checks, but the tests run unfiltered, and a green is refused (exit 3) unless they
+  actually did. This is what CI runs.
+- **`status`** — the observer. Reports current state without triggering anything.
+- **`verdict`** — read the last verdict from `.fshw/verdict.json`. No socket, no
+  run: reading cannot perturb.
+
+The old per-plugin verbs (`build`, `test`, `lint`, `analyze`, `format-check`,
+`errors`) were folded into `check`.
+
+**When `check` and `confirm` disagree, that is a BUG — never noise:**
+
+- *failed under `confirm`, never selected by `check`* → the selector **MISSED** a
+  test. An impact-analysis bug, not a test bug.
+- *passed under `confirm`, but `check` says red* → a stale red, a flake, or a
+  **test-isolation defect** (a test that only passes with company, because another
+  test sets up state it depends on). There, `check` is the honest one.
+
+"Full suite" means every test project `.fshw.json` knows about — not necessarily
+every test project in the solution.
 
 ## Workflows
 

@@ -30,20 +30,22 @@ open FsHotWatch.Cli.IpcParsing
 ///   impact-filtered run answers this well, and that is what impact filtering is
 ///   genuinely FOR: it is a LATENCY OPTIMIZATION.
 ///
-///   `MergeGate` — "is the suite green?" That is a CORRECTNESS CLAIM, and a heuristic
+///   `Confirmation` — "is the suite green?" That is a CORRECTNESS CLAIM, and a heuristic
 ///   selector may not be its sole basis unless the selector is PROVEN sound. Ours
 ///   demonstrably isn't: 35 tests sat red on `main` for an unknown period, never
-///   selected, gate green throughout.
+///   selected, every run green throughout.
 ///
 /// Enforced in the TYPE, not by convention. "Remember to also run an unfiltered
 /// test-rerun before merging" is precisely the discipline that has already failed —
-/// a gate that depends on someone remembering is not a gate. So `MergeGate` demands a
-/// `FullSuite` scope as EVIDENCE and has no branch that can reach `Clean` without one.
+/// a check that depends on someone remembering confirms nothing. So `Confirmation`
+/// demands a `FullSuite` scope as EVIDENCE and has no branch that can reach `Clean`
+/// without one.
 type CheckMode =
     /// The inner dev loop. Keeps impact filtering, which is what it is good at.
     | InnerLoop
-    /// The merge gate. Only a full-suite run can produce a clean verdict.
-    | MergeGate
+    /// Confirming that the inner loop told the truth. Only a full-suite run can
+    /// produce a clean verdict.
+    | Confirmation
 
 /// The decided outcome of a `check`, in one-to-one correspondence with an exit
 /// code. `Incomplete` carries the residual unchecked count for reporting
@@ -56,10 +58,10 @@ type CheckOutcome =
     | FailuresFound
     /// No failures, but completeness could not be achieved.
     | Incomplete of unchecked: int
-    /// A MERGE-GATE run whose tests did not cover the whole suite. Nothing failed —
+    /// A CONFIRMATION run whose tests did not cover the whole suite. Nothing failed —
     /// but the run did not produce the evidence a merge verdict is made of, so there
     /// is no verdict to give. Distinct from `FailuresFound` (nothing is known to be
-    /// broken) and from `Clean` (nothing is known to be sound, either): the gate is
+    /// broken) and from `Clean` (nothing is known to be sound, either): the run is
     /// owed work it did not discharge. Unreachable in `InnerLoop`, by construction.
     | UnearnedScope of TestScope
 
@@ -79,7 +81,7 @@ let exitCode (outcome: CheckOutcome) : int =
 /// rather than merely discouraged.
 ///
 /// Failures short-circuit (a real problem is reported immediately, whatever the
-/// scope). Then completeness. Then — in `MergeGate` only — scope: `FullSuite` is the
+/// scope). Then completeness. Then — in `Confirmation` only — scope: `FullSuite` is the
 /// ONLY scope that can reach `Clean`. `ImpactFiltered`, `NoTestsRun` and `ScopeUnknown`
 /// all land on `UnearnedScope`, including the cross-version case where the daemon
 /// simply didn't answer: an unknown scope is not a full-suite scope.
@@ -117,7 +119,7 @@ let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScop
                 // `ScopeUnknown` is tolerated here — a repo with no test-prune plugin
                 // configured has no tests to run, and punishing it would be nonsense.
                 | InnerLoop -> CheckOutcome.Clean
-                | MergeGate ->
+                | Confirmation ->
                     match testScope with
                     | FullSuite _ -> CheckOutcome.Clean
                     | ImpactFiltered _
@@ -126,29 +128,28 @@ let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScop
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
 
-/// Must the gate go and PRODUCE the evidence it is about to demand?
+/// Must `confirm` go and PRODUCE the evidence it is about to demand?
 ///
-/// A GATE THAT ONLY DEMANDS IS A GATE NOBODY CAN SATISFY (AUTOMATION-117). Setting
-/// full-suite scope makes the next run unfiltered; it does not make a run HAPPEN. So a
-/// gate asked "may I merge this?" on a tree whose suite has not run — a fresh CI
-/// checkout, or a warm daemon whose impact DB says nothing changed — would refuse for
-/// want of evidence while offering no way to produce any. That is not a strict gate,
-/// it is a broken one, and the documented workaround for a broken gate is the 40-line
-/// bash harness this whole release exists to delete. So the gate RUNS the suite it
-/// demands, and only then judges it.
+/// A DEMAND NOBODY CAN SATISFY IS NOT A CHECK, IT IS AN OBSTACLE (AUTOMATION-117).
+/// Setting full-suite scope makes the next run unfiltered; it does not make a run
+/// HAPPEN. So a `confirm` asked "may I merge this?" on a tree whose suite has not run —
+/// a fresh CI checkout, or a warm daemon whose impact DB says nothing changed — would
+/// refuse for want of evidence while offering no way to produce any. The documented
+/// workaround for that is the 40-line bash harness this whole release exists to delete.
+/// So `confirm` RUNS the suite it demands, and only then judges it.
 ///
 /// Deliberately expressed as the exact negation of what `verdict` will accept: this
 /// says "go and earn a `FullSuite`", `verdict` says "only a `FullSuite` may pass". Two
-/// readings of ONE rule (`TestScope.isFullSuite`). If they could drift, the gate could
-/// force a run it then refused — an infinite-work gate — or, far worse, skip the run
-/// and accept what it never asked for.
+/// readings of ONE rule (`TestScope.isFullSuite`). If they could drift, `confirm` could
+/// force a run it then refused — endless work — or, far worse, skip the run and accept
+/// what it never asked for.
 ///
 /// `InnerLoop` never forces: an impact-filtered green IS the answer it wants, and a
 /// fast loop that secretly runs the whole suite is not a fast loop.
-let gateNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
+let confirmNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
     match mode with
     | InnerLoop -> false
-    | MergeGate -> not (TestScope.isFullSuite scope)
+    | Confirmation -> not (TestScope.isFullSuite scope)
 
 /// Comparable "unchecked" magnitude used for progress tracking across
 /// convergence attempts. Complete is 0; Incomplete carries its count; Unknown
@@ -173,13 +174,13 @@ let internal uncheckedMagnitude (coverage: Coverage) : int =
 /// `maxAttempts` times: trigger a re-scan, re-read, and:
 ///   - failures      -> FailuresFound (exit 1)
 ///   - Complete      -> Clean         (exit 0), or UnearnedScope (exit 3) under
-///                      MergeGate if the run was not full-suite
+///                      Confirmation if the run was not full-suite
 ///   - else, if the unchecked magnitude did not shrink vs the previous attempt,
 ///     break (no progress) and report Incomplete (exit 2).
 /// After the budget is exhausted, report Incomplete (exit 2).
 ///
 /// `UnearnedScope` deliberately does NOT drive convergence: re-scanning cannot widen
-/// the scope of a run that already happened. The gate's job there is to report that it
+/// the scope of a run that already happened. `confirm`'s job there is to report that it
 /// has no verdict, loudly — not to keep scanning in the hope of a different answer.
 let converge
     (mode: CheckMode)

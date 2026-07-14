@@ -17,7 +17,7 @@ dotnet tool install -g FsHotWatch.Cli
 ## Quick start
 
 ```bash
-# The one gate: run every check (build + lint + analyze + test + format-check)
+# The inner loop: run every check (build + lint + analyze + test + format-check)
 # and report every error. Triggers a full run and blocks until it's done.
 fshw check
 
@@ -28,7 +28,7 @@ fshw start
 fshw status
 ```
 
-`fshw check` is the single gate — it folds the old per-plugin verbs
+`fshw check` is the single entry point — it folds the old per-plugin verbs
 (`build`, `test`, `lint`, `analyze`, `format-check`, `errors`) into one
 command. It runs every plugin, waits for genuine completion, and exits
 non-zero on failures (exit 1) or when completeness cannot be confirmed
@@ -40,7 +40,7 @@ current state without triggering anything.
 | Command | Description |
 |---------|-------------|
 | `check [--run-once]` | **The inner loop.** Run every plugin (build + lint + analyze + test + format-check), wait for genuine completion, and report every error. Tests are impact-filtered — a latency optimization, and the output says so. Exits 0 (clean), 1 (failures), or 2 (completeness unconfirmed). `--run-once` uses an ephemeral daemon (for CI). |
-| `gate` | **The merge gate.** Same checks as `check`, but tests run UNFILTERED and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). |
+| `confirm [--run-once]` | **Run the full suite and confirm `check` told the truth.** Same checks as `check`, but the tests run UNFILTERED — and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). See [Disagreement is a bug](#disagreement-is-a-bug). |
 | `verdict` | **Read the last verdict** from `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run — reading cannot perturb. Exits 0/1/2/3 as the verdict itself, plus **4** (STALE: the verdict describes a different tree) and **5** (no usable verdict). |
 | `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
@@ -56,6 +56,26 @@ current state without triggering anything.
 | `completions` | Install fish shell completions. |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
+### Disagreement is a bug
+
+`check` is the fast inner loop and it is impact-filtered — it runs the tests a
+heuristic selector *thinks* your change can affect. `confirm` runs the full suite.
+Running both is therefore a **comparison**, and when they disagree, one of them is
+wrong:
+
+| What you see | What it means |
+|---|---|
+| Failed under `confirm`, never selected by `check` | **The selector MISSED a test.** A bug in impact analysis, not in the test. (Seen in the wild: a change whose entire content was browser-test edits got a green `check` in 1 ms, having run zero tests.) |
+| Passed under `confirm`, but `check` says red | **A stale red, a flake, or a test-isolation defect** — a test that only passes *with company*, because another test sets up state it depends on. Here `check` is the honest one and the full suite is the liar. |
+
+Neither direction is noise, and neither is "just re-run it". Both are defects worth
+a ticket.
+
+> **What "the full suite" means.** Every test project `.fshw.json` knows about — not
+> necessarily every test project in your solution. A project that is in the solution
+> but absent from `.fshw.json` is not run by `confirm`, and `confirm` does not claim
+> otherwise.
+
 ## Options
 
 | Flag | Description |
@@ -63,14 +83,14 @@ current state without triggering anything.
 | `-v`, `--verbose` | Enable debug-level logging (same as `--log-level=debug`). |
 | `--log-level=<level>` | Set log level: `error`, `warning`, `info`, `debug` (default: `info`). |
 | `--no-cache` | Disable the on-disk task result cache. |
-| `--no-warn-fail` | Treat warnings as non-fatal (errors still fail the gate). |
+| `--no-warn-fail` | Treat warnings as non-fatal (errors still fail the check). |
 | `-q`, `--compact` | One line per plugin instead of per-file detail. |
 | `-a`, `--agent` | Agent-friendly parseable output with a next-step hint. |
 
 ## Examples
 
 ```bash
-# Run the full gate (build + lint + analyze + test + format-check) and report errors
+# Run every check (build + lint + analyze + test + format-check) and report errors
 fshw check
 
 # Rerun a single test class for investigation (xUnit v3 wildcards supported)
@@ -94,12 +114,12 @@ fshw warnings
 ## Machine-readable state (for agents and CI)
 
 **Don't parse the CLI's output.** It is a progress display written for a human and
-it will change. Every check and gate publishes its result as a file instead.
+it will change. Every `check` and `confirm` publishes its result as a file instead.
 
 ### `.fshw/verdict.json` — the verdict
 
 Written atomically (temp + rename, so a partial read is impossible) at the end of
-every `check` and `gate`, including the ones that fail, time out, or lose the
+every `check` and `confirm`, including the ones that fail, time out, or lose the
 daemon mid-run — those are exactly the moments the human output is least
 sufficient.
 
@@ -107,7 +127,7 @@ sufficient.
 {
   "schema": "fshw-verdict-v1",
   "producedAt": "2026-07-14T10:52:03.4471180Z",
-  "command": "gate",
+  "command": "confirm",
   "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
   "runId": "24bf66063d004decb0447e3cc3ece719",
   "treeHash": "sha256:24bf6606…",
@@ -143,10 +163,10 @@ field.
 | `outcome.kind` | `green` · `red` · `incomplete` (with `reason`) |
 | `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
-| `command` | `check` (impact-scoped) · `gate` (unfiltered, evidence-required) |
+| `command` | `check` (impact-scoped) · `confirm` (unfiltered, evidence-required) |
 
 `incomplete` is the honest third answer: **nothing is known to be broken, and
-nothing is known to be sound either.** A `gate` whose tests ran impact-filtered
+nothing is known to be sound either.** A `confirm` whose tests ran impact-filtered
 lands here. It is never laundered into a green.
 
 ### The one rule: a verdict applies only to the tree it verified, from the binary that verified it

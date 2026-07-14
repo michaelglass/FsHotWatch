@@ -92,28 +92,67 @@ type DeadCodeFlag =
         CmdArg("pattern")>] Entry of string
     | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
 
+/// The column CommandTree indents a command's description to in the `fshw --help`
+/// listing (two spaces, then the name padded to 17). A description is emitted VERBATIM
+/// on both surfaces, so a multi-line one must carry its own continuation indent — an
+/// un-indented second line starts at column 0 in the listing and reads as if it were
+/// another COMMAND, which is worse than no formatting at all (measured, not assumed).
+///
+/// The cost is that `fshw confirm --help`, which prints the description as a left-aligned
+/// block, shows those continuation lines indented. Readable, but ragged. The real fix is
+/// for CommandTree to re-indent a description per surface rather than making the caller
+/// pick one; until then the LISTING wins, because that is where the verb is discovered.
+[<Literal>]
+let private HelpIndent = "                   "
+
 type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
-    | [<CmdExample("", "--run-once"); Cmd("Run all checks")>] Check of RunFlag list
-    /// The merge gate (AUTOMATION-112). Same checks as `check`, but the tests run
-    /// UNFILTERED — and the verdict is refused unless they actually did. `check` is the
-    /// inner loop and keeps impact filtering, which is a latency optimization; a merge
-    /// is a correctness claim and cannot be built on a heuristic selection.
+    | [<CmdExample("", "--run-once");
+        Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, which is a latency optimization and not the basis for a merge decision (use `confirm` for that)")>] Check of
+        RunFlag list
+    /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH (AUTOMATION-112,
+    /// AUTOMATION-160). Same checks as `check`, but the tests run UNFILTERED — and the
+    /// verdict is refused unless they actually did. `check` is the inner loop and keeps
+    /// impact filtering, which is a latency optimization; a merge is a correctness claim
+    /// and cannot be built on a heuristic selection.
+    ///
+    /// It was called `gate` until AUTOMATION-160, and the name did real damage: `gate`
+    /// says what the verb BLOCKS, so it got built as a bouncer — pass/fail — and the most
+    /// valuable thing it produces was thrown away as a side-effect. Running the whole
+    /// suite next to an impact-filtered `check` is a COMPARISON, and every disagreement
+    /// between the two is a BUG in one of them:
+    ///
+    ///   * failed here, never selected by `check` → the SELECTOR missed a test. A
+    ///     TestPrune bug, not a test bug.
+    ///   * passed here, but `check` says failed → a stale ledger entry, a flake, or a
+    ///     test-isolation defect — one that only passes because another test set up the
+    ///     state it depends on. There, `check` is the honest one and the full suite lies.
+    ///
+    /// Reporting that comparison is AUTOMATION-160 part 2; naming it correctly is what
+    /// makes it obvious there is one to make.
     ///
     /// `--run-once` runs it WITHOUT a daemon (AUTOMATION-117) — which is how CI must
     /// invoke it, because `--run-once` is what CI uses. A merge verdict that is only
-    /// reachable over a socket is a merge verdict CI cannot ask for, and a gate CI
-    /// cannot ask for is a gate CI does not have.
+    /// reachable over a socket is a merge verdict CI cannot ask for.
     | [<CmdExample("", "--run-once");
-        Cmd("Merge gate: run all checks with the FULL test suite (no impact filtering) and refuse a green verdict from anything less")>] Gate of
-        RunFlag list
+        Cmd("Run the FULL suite and confirm `check` told the truth.\n"
+            + HelpIndent
+            + "Any disagreement is a BUG:\n"
+            + HelpIndent
+            + "  failed here, not selected by check  → the selector MISSED a test\n"
+            + HelpIndent
+            + "  passed here, but check says failed  → a stale red, a flake, or a\n"
+            + HelpIndent
+            + "                                        test that only passes with company\n"
+            + HelpIndent
+            + "Refuses a green verdict from anything less than the full suite (exit 3).")>] Confirm of RunFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
     /// disk (AUTOMATION-129).
     ///
     /// Touches NO socket, starts no daemon, triggers no run: reading cannot perturb.
     /// That is the whole point — the `test-rerun` calls an orchestrator made *because
-    /// the gate looked untrustworthy* were themselves what corrupted the daemon's
+    /// the verdict looked untrustworthy* were themselves what corrupted the daemon's
     /// accounting and produced the next content-free green (AUTOMATION-99). The act of
     /// measuring created the defect being measured.
     ///
@@ -453,12 +492,12 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
 ///
 /// Any failure to get a straight answer — no test-prune plugin, an old daemon that
 /// doesn't know the command, a transport fault, an unparseable reply — becomes
-/// `ScopeUnknown`, which a merge gate treats as "not full-suite" and therefore refuses
-/// to go green on. The failure direction is the safe one BY CONSTRUCTION: a gate can
+/// `ScopeUnknown`, which `confirm` treats as "not full-suite" and therefore refuses
+/// to go green on. The failure direction is the safe one BY CONSTRUCTION: `confirm` can
 /// only ever go green on a scope it positively established.
 ///
 /// An UNKNOWN-COMMAND reply is now WARNED about rather than folded silently into
-/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a gate stays
+/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a broken check stays
 /// broken for its whole life.
 let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     try
@@ -466,22 +505,22 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
 
         if FsHotWatch.Ipc.isUnknownCommandReply reply then
             FsHotWatch.Logging.warn
-                "cli-gate"
+                "cli-confirm"
                 $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a merge \
-                   verdict cannot be earned from it. `fshw gate` will report NO VERDICT."
+                   verdict cannot be earned from it. `fshw confirm` will report NO VERDICT."
 
             { Scope = ScopeUnknown; RunId = None }
         else
             IpcParsing.parseTestRunReport reply
     with ex ->
-        FsHotWatch.Logging.warn "cli-gate" $"could not read the test scope: %s{ex.Message}"
+        FsHotWatch.Logging.warn "cli-confirm" $"could not read the test scope: %s{ex.Message}"
         { Scope = ScopeUnknown; RunId = None }
 
 /// Put the daemon's test-prune plugin into full-suite scope for the rest of this
-/// session. Called BEFORE the gate triggers its scan, so the test run the scan provokes
-/// is already unfiltered and the gate never pays for two runs.
+/// session. Called BEFORE `confirm` triggers its scan, so the test run the scan provokes
+/// is already unfiltered and `confirm` never pays for two runs.
 ///
-/// A failure here is NOT fatal on its own — the gate does not trust this call's return
+/// A failure here is NOT fatal on its own — `confirm` does not trust this call's return
 /// value anyway. It trusts `readTestScope`, which reports what actually ran. If the
 /// scope could not be set, the run will come back impact-filtered and the verdict will
 /// be `UnearnedScope`. The request is not the evidence.
@@ -493,23 +532,24 @@ let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
 
         if FsHotWatch.Ipc.isUnknownCommandReply reply then
             eprintfn
-                $"fshw gate: the daemon has no `%s{SetScopeCommand}` command (no test projects configured). \
-                   The gate will refuse the verdict."
+                $"fshw confirm: the daemon has no `%s{SetScopeCommand}` command (no test projects configured). \
+                   The verdict will be refused."
         else
-            FsHotWatch.Logging.debug "cli-gate" $"set-scope reply: %s{reply}"
+            FsHotWatch.Logging.debug "cli-confirm" $"set-scope reply: %s{reply}"
     with ex ->
         eprintfn
-            $"fshw gate: could not put the daemon in full-suite scope (%s{ex.Message}). \
-               The tests will run impact-filtered, and the gate will refuse the verdict."
+            $"fshw confirm: could not put the daemon in full-suite scope (%s{ex.Message}). \
+               The tests will run impact-filtered, and the verdict will be refused."
 
 /// Run EVERY configured test project on the daemon, now, and wait for it — `run-tests`
 /// with no filter and no project selection.
 ///
-/// This is how `fshw gate` FORCES the run it demands (AUTOMATION-117). `set-scope full`
-/// only makes the NEXT run unfiltered; on a warm daemon whose impact DB says nothing
-/// changed there is no next run, and the gate would refuse for want of evidence it was
-/// never willing to go and get. `CheckVerdict.gateNeedsFullRun` decides when this fires
-/// — never in the inner loop, and never when the scan already produced a full suite.
+/// This is how `fshw confirm` FORCES the run it demands (AUTOMATION-117). `set-scope
+/// full` only makes the NEXT run unfiltered; on a warm daemon whose impact DB says
+/// nothing changed there is no next run, and `confirm` would refuse for want of evidence
+/// it was never willing to go and get. `CheckVerdict.confirmNeedsFullRun` decides when
+/// this fires — never in the inner loop, and never when the scan already produced a full
+/// suite.
 ///
 /// Sends no `waitSec`, so the plugin's own default budget applies. An expired budget
 /// does NOT cancel the run (it was already launched; only the wait gave up), and the
@@ -520,12 +560,12 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
 
         if FsHotWatch.Ipc.isUnknownCommandReply reply then
             FsHotWatch.Logging.warn
-                "cli-gate"
+                "cli-confirm"
                 $"the daemon has no `%s{RunTestsCommand}` command — no tests can be forced"
         else
-            FsHotWatch.Logging.debug "cli-gate" $"run-tests reply: %s{reply}"
+            FsHotWatch.Logging.debug "cli-confirm" $"run-tests reply: %s{reply}"
     with ex ->
-        FsHotWatch.Logging.warn "cli-gate" $"the forced full-suite run failed: %s{ex.Message}"
+        FsHotWatch.Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
 
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
@@ -565,10 +605,10 @@ let private ensureAndQueryErrors
 
             2
         | DaemonReadiness.Ready ->
-            // The merge gate declares its scope BEFORE anything runs. Ordering is
+            // `confirm` declares its scope BEFORE anything runs. Ordering is
             // load-bearing: the scan below provokes the test run, and that run must
             // already be unfiltered — asking afterwards would only learn that it wasn't.
-            if checkMode = CheckVerdict.MergeGate then
+            if checkMode = CheckVerdict.Confirmation then
                 requestFullSuiteScope ipc pipeName
 
             withCheckIpc forceRestart (fun () ->
@@ -599,9 +639,9 @@ let private ensureAndQueryErrors
                     // for. The inner loop reads it too — and ignores it — so there is one
                     // verdict path, not two that can drift.
                     (fun () -> readTestRun ipc pipeName)
-                    // The gate's teeth: run the whole suite when the scan did not.
-                    // Invoked only in MergeGate, only when the scope is not already
-                    // full — see `CheckVerdict.gateNeedsFullRun`.
+                    // `confirm`'s teeth: run the whole suite when the scan did not.
+                    // Invoked only in Confirmation, only when the scope is not already
+                    // full — see `CheckVerdict.confirmNeedsFullRun`.
                     (fun () -> forceFullSuiteRun ipc pipeName)
                     // Convergence re-scan: start a scan and block until it (and the
                     // plugins it triggers) settle, so the next GetDiagnostics read
@@ -918,7 +958,7 @@ let staleIdentityStatusWarning (reason: DaemonIdentity.StaleReason) : string =
             $"was started from a different fshw binary (%s{recorded.Version})"
 
     $"⚠ the running daemon %s{what} — this status reflects THAT build; \
-      the next check/gate/format/scan command restarts it automatically"
+      the next check/confirm/format/scan command restarts it automatically"
 
 /// Effectful readiness gate. Probes the daemon with a lightweight RPC until it
 /// answers (`Ready`), the daemon process is proven gone (`Crashed`), or the
@@ -1081,7 +1121,7 @@ let executeCommand
         match command with
         | Start
         | Check _
-        | Gate _
+        | Confirm _
         | TestRerun _
         | Format _
         | Rerun _ -> true
@@ -1175,7 +1215,7 @@ let executeCommand
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
             queryPluginIn CheckVerdict.InnerLoop mode filter
 
-        /// `check`/`gate` with NO daemon (`--run-once`). Same verdict, same verdict
+        /// `check`/`confirm` with NO daemon (`--run-once`). Same verdict, same verdict
         /// file, same exit codes — only the transport differs (`PluginHost.RunCommand`
         /// in-process instead of a socket).
         ///
@@ -1374,7 +1414,7 @@ let executeCommand
 
                     eprintfn "%s" output
 
-                    // Same nudge as `check`/`gate`: when a machine is reading, name the
+                    // Same nudge as `check`/`confirm`: when a machine is reading, name the
                     // files rather than leaving it to scrape a display built for a human.
                     if not UI.isInteractive then
                         eprintfn ""
@@ -1463,13 +1503,13 @@ let executeCommand
         // Same pipeline as `check` — build, format, lint, analyzers, coverage — but
         // full-suite scope is set FIRST, so the test run the scan provokes is unfiltered;
         // the suite is FORCED if the scan did not produce one; and the verdict is computed
-        // in `MergeGate` mode, which has no path to a green that does not go through a
+        // in `Confirmation` mode, which has no path to a green that does not go through a
         // full-suite run.
         //
         // Both transports, one verdict. `--run-once` needs no daemon — which is the only
-        // reason CI can invoke the gate at all (AUTOMATION-117).
-        | Gate flags when isRunOnce flags -> runOnceIn CheckVerdict.MergeGate
-        | Gate _ -> queryPluginIn CheckVerdict.MergeGate mode ""
+        // reason CI can invoke `confirm` at all (AUTOMATION-117).
+        | Confirm flags when isRunOnce flags -> runOnceIn CheckVerdict.Confirmation
+        | Confirm _ -> queryPluginIn CheckVerdict.Confirmation mode ""
         | Verdict ->
             // Pure read. No daemon, no IPC, no run — so it cannot perturb the thing it
             // is measuring, and it costs nothing to call in a loop.
@@ -1509,7 +1549,7 @@ let executeCommand
                 // reason supports, and nothing it doesn't.
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
-                say "  Re-run `fshw check` (or `fshw gate` for a merge). Never reuse it."
+                say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."
             | Verdict.Report.NoVerdict reason -> say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
 
             Verdict.reportExitCode report

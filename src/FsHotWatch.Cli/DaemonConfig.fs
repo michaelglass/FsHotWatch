@@ -69,7 +69,7 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
     resolved
 
 /// Fail-loud guard: analyzers are treated like test failures — EVERY configured
-/// `analyzers.paths` entry must contribute ≥1 analyzer, else the gate goes RED.
+/// `analyzers.paths` entry must contribute ≥1 analyzer, else the check goes RED.
 ///
 /// This closes a "silent green" class — PER PATH, not just in aggregate: a
 /// `.fshw.json` with several analyzer paths where ONE points at a bin dir that
@@ -1066,7 +1066,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             absolutePaths
             |> List.map (fun p -> p, (Map.tryFind p countByResolvedPath |> Option.defaultValue 0))
 
-        // Fail-loud: any configured path that loads nothing must turn the gate
+        // Fail-loud: any configured path that loads nothing must turn the check
         // RED (treated like a test failure), never silently pass — even when other
         // configured paths loaded fine.
         match analyzerPathFailures loadedByOriginalPath with

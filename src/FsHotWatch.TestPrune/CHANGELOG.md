@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat!: **`fshw gate` is now `fshw confirm`.** (AUTOMATION-160) **Migration: `fshw gate`
+  → `fshw confirm`.** The old verb is removed, not aliased. `gate` named what the verb
+  *blocks*, so it got built as a bouncer; its real job is to run the FULL suite and
+  confirm that `check` told the truth — and any disagreement between the two is a bug in
+  one of them (a test `confirm` fails but `check` never selected means the **selector**
+  missed it; a test `confirm` passes but `check` calls red means a stale red, a flake, or
+  a test that only passes with company).
+
+  Inside this plugin the scope concept is now named for **what it is** rather than for the
+  verb that requests it — TestPrune has no business knowing which CLI verb asked:
+  `gateScopeHash` → `fullSuiteScopeHash`, and the §2a cache-key entry `gate-scope` →
+  `full-suite-scope`.
+  - **Cache note:** the renamed key entry changes the §2a cache key for full-suite runs, so
+    the first `confirm` after upgrading re-runs instead of replaying a cached entry. A
+    one-time miss; impact-filtered (`check`) keys are unchanged.
+
 - fix!: **an unreadable needs-testing ledger is not an empty one.** (AUTOMATION-150)
   `PendingVerification.load` answered every failure with `with _ -> empty`, so a corrupt,
   truncated or unreadable sidecar silently absorbed the ENTIRE outstanding test debt: the
@@ -33,7 +49,7 @@
   project X; a queued impact-filtered re-run then executed a *narrower* selection,
   passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never
   re-ran and never passed, yet `check` went green. Same disease as AUTOMATION-95/99/112:
-  "no failures reported by THIS run" read as "no failures". The merge gate was protected
+  "no failures reported by THIS run" read as "no failures". `confirm` was protected
   (a filtered green is `UnearnedScope`); the inner loop was not, so a developer or agent
   saw red → made an unrelated edit → saw green and concluded they had fixed it.
 
@@ -169,9 +185,9 @@
   TestPrune.Core 6.0.1 root fix, which stops files being refused for a merely
   *informational* parse diagnostic in the first place. (AUTOMATION-113)
 
-- feat!: **the merge gate runs the full suite, and a merge verdict can no longer be
+- feat!: **`fshw confirm` runs the full suite, and a merge verdict can no longer be
   produced from an impact-filtered run.** Impact filtering is a latency optimization
-  for the inner dev loop; a merge gate is a correctness claim, and we had been using
+  for the inner dev loop; a merge decision is a correctness claim, and we had been using
   the first as the second. An impact-filtered green means "your change didn't break
   anything I chose to look at" — not "the suite is green". Two new plugin commands
   make the distinction real rather than remembered: `set-scope` puts the daemon in
