@@ -65,8 +65,10 @@ module FsHotWatch.TestPrune.ArtifactFreshness
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
+open System.Threading
 open System.Xml.Linq
 open FsHotWatch
 
@@ -156,14 +158,46 @@ let tfmOutputDirs (binDir: string) : string[] =
 let private binDirOf (projectDir: string) =
     Path.Combine(projectDir, "bin", "Debug")
 
+/// A memo whose value factory runs AT MOST ONCE per key, however many threads ask
+/// for that key at once.
+///
+/// `ConcurrentDictionary.GetOrAdd(key, valueFactory)` does NOT give that, and the
+/// difference is the whole point of a memo. It is free to invoke the factory
+/// CONCURRENTLY on several threads for the same key and publish only one result;
+/// the losing threads still did the work, and it is thrown away. For a memo whose
+/// entire job is to eliminate duplicated directory walks and `XDocument.Load`
+/// parses, that eliminates nothing — and the duplicate is the NORMAL case here,
+/// not a rare race: test groups genuinely run in parallel and their
+/// `ProjectReference` closures overlap heavily, so they collide on the same cold
+/// key by construction.
+///
+/// A `Lazy` under `ExecutionAndPublication` IS the guarantee: exactly one
+/// execution, and every other caller blocks on it and takes its result. (The
+/// dictionary may still construct several `Lazy` objects for one key — but a
+/// `Lazy` is a cheap wrapper, and only the published one is ever forced.)
+type internal OnceMemo<'K, 'V when 'K: equality>() =
+    let entries = ConcurrentDictionary<'K, Lazy<'V>>()
+
+    /// The memoised value for `key`, computing it with `factory` if this is the
+    /// first ask. `factory` runs at most once per key, ever.
+    member _.GetOrAdd(key: 'K, factory: 'K -> 'V) : 'V =
+        entries
+            .GetOrAdd(key, (fun k -> Lazy<'V>((fun () -> factory k), LazyThreadSafetyMode.ExecutionAndPublication)))
+            .Value
+
 /// Per-run memo. The directory walks and `.fsproj` parses are the expensive part
 /// of the gate, and every test config in a run shares the same closure prefixes —
 /// so each project is walked at most ONCE per run, even when several test projects
 /// depend on it. Thread-safe: test groups run in parallel.
+///
+/// "At most once" is the `OnceMemo` guarantee, and it has to be: a plain
+/// `ConcurrentDictionary.GetOrAdd` would let the parallel test groups each run the
+/// same walk and discard all but one result, which is the cost this type exists to
+/// avoid.
 type Cache() =
-    let closures = ConcurrentDictionary<string, Result<string list, string>>()
-    let files = ConcurrentDictionary<string, (string * DateTime) list>()
-    let assemblies = ConcurrentDictionary<string, (string * DateTime) option>()
+    let closures = OnceMemo<string, Result<string list, string>>()
+    let files = OnceMemo<string, (string * DateTime) list>()
+    let assemblies = OnceMemo<string, (string * DateTime) option>()
 
     /// Direct `ProjectReference` includes of a project file, absolute and
     /// resolved.
@@ -273,6 +307,16 @@ type Cache() =
 let private projectLabel (projectDir: string) =
     Path.GetFileName(projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
 
+/// The mtime of the build's copy at `rel`, or `None` when the build put nothing
+/// there. The whole of the copy check keys on this `None` — a file the build does
+/// not copy has no destination and is never asserted about — so it is worth having
+/// the lookup SAY `None` rather than leaving a bare `TryGetValue` bool at the one
+/// site that reads it.
+let private tryCopyMtime (outputs: IReadOnlyDictionary<string, DateTime>) (rel: string) : DateTime option =
+    match outputs.TryGetValue rel with
+    | true, mtime -> Some mtime
+    | false, _ -> None
+
 /// Is one project's contribution to `tfmDir` stale? `projectDir`/`assemblyName`
 /// name a project in the test project's closure (possibly the test project
 /// itself); `outputs` maps every file the build has placed under `tfmDir` to its
@@ -280,7 +324,7 @@ let private projectLabel (projectDir: string) =
 let private staleContribution
     (cache: Cache)
     (tfmDir: string)
-    (outputs: Map<string, DateTime>)
+    (outputs: IReadOnlyDictionary<string, DateTime>)
     (projectDir: string)
     (assemblyName: string)
     : StaleInput option =
@@ -310,7 +354,7 @@ let private staleContribution
     let staleCopy () =
         sources
         |> List.tryPick (fun (rel, originMtime) ->
-            match outputs.TryFind rel with
+            match tryCopyMtime outputs rel with
             | Some copyMtime when copyMtime < originMtime ->
                 Some(
                     CopyOlderThanOrigin(
@@ -406,10 +450,17 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
             let perTfm =
                 candidateTfmDirs
                 |> Array.map (fun tfmDir ->
+                    // A hash table, not an F# `Map`. This is a lookup table read exactly
+                    // one way — `TryGetValue rel` — and it is built from a full walk of
+                    // the output dir (hundreds of DLLs here, before content and fixtures).
+                    // A `Map` would pay O(n log n) and one heap node per file to build an
+                    // ordering nothing ever asks for. `readOnlyDict` builds in O(n),
+                    // answers the one question asked, and keeps `Map.ofSeq`'s
+                    // last-writer-wins on a repeated relative path.
                     let outputs =
                         SafeWalk.enumerateFiles Set.empty tfmDir
                         |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName), f.LastWriteTimeUtc)
-                        |> Map.ofSeq
+                        |> readOnlyDict
 
                     ordered
                     |> List.tryPick (fun (projectDir, assemblyName) ->
