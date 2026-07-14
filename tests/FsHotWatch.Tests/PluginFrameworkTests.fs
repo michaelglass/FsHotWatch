@@ -1892,3 +1892,90 @@ let ``AUTOMATION-118: a claim from the MAILBOX cannot enter the guard's window a
     // report, so the claim event cannot even be dequeued until the report has landed.
     runA118Rig (fun _ctx reg _work -> reg.Dispatch(DispatchBuildCompleted BuildSucceeded))
     |> assertNoTerminalOnLiveRun
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-161 — a `Custom` message is a cache WRITER, never a cache READER.
+//
+// Every other event the framework dispatches is an OBSERVATION of the world, and its
+// payload is what the cache key is computed from: same key ⇒ same input ⇒ the cached
+// result is the result. A `Custom` message is neither of those things. It is the
+// plugin's OWN post — the DELIVERY of work that has already been done, at real cost —
+// and its payload is NOT in the key: TestPrune's `cacheKeyFor` reads its
+// `TestRunCompleted` only far enough to decide whether the result is CACHEABLE, never
+// far enough to IDENTIFY it. Two different runs, with different run ids and different
+// (all-passing) results, therefore collide on one key.
+//
+// So a "hit" on a Custom message is not a proof of equivalence — it is a collision.
+// And serving it SKIPS THE HANDLER, which is the only thing that folds the finished
+// run into the plugin's state.
+//
+// Observed, live, on an unchanged tree: `fshw confirm` forced the full suite, ran it
+// for 102 seconds, passed 1965 tests and wrote a complete CTRF report to disk — and
+// then the framework replayed a cached terminal over the `TestsFinished` that carried
+// the result. The plugin never learned the run had happened; `test-scope` still
+// answered "no tests ran"; and `confirm` refused to give a verdict on evidence it had
+// just spent 102 seconds producing. A cache that can DESTROY evidence is worse than
+// no cache.
+//
+// The WRITE stays: a Custom window is how the entry the next `BuildCompleted` hits
+// gets minted in the first place.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``a cache hit must NEVER be replayed over a Custom message — its payload is not in the key`` () =
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "custom-never-replayed"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        // A warm entry under EXACTLY the key the Custom message will compute.
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = completedAt System.DateTime.UtcNow
+              EmittedEvents = [] }
+
+        let customHandled = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<unit, string> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        // The command below posts this. It stands for `TestsFinished`:
+                        // the results of a run that HAS ALREADY HAPPENED.
+                        | Custom _ ->
+                            System.Threading.Interlocked.Increment(customHandled) |> ignore
+                            ctx.ReportStatus(completedAt System.DateTime.UtcNow)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands =
+                [ "post-result",
+                  (fun ctx _state _args ->
+                      async {
+                          ctx.Post "run-finished"
+                          return "ok"
+                      }) ]
+              Subscriptions = Set.empty
+              CacheKey = Some(fun _ -> Some cacheKey)
+              Teardown = None }
+
+        let reg =
+            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
+
+        let! _ = registeredCmd.Value [||]
+
+        // The handler MUST run. A cached status is not a substitute for the result of
+        // a run that actually executed.
+        waitUntil (fun () -> !customHandled = 1) 10000
+        test <@ !customHandled = 1 @>
+    }
+    |> Async.RunSynchronously

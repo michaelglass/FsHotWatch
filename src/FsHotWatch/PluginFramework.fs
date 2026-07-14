@@ -876,10 +876,43 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | Some cacheKeyFn -> cacheKeyFn event
                                     | None -> None
 
+                                // A `Custom` message is a cache WRITER, never a cache READER.
+                                //
+                                // Every other event here is an OBSERVATION of the world, and its
+                                // payload is what the key is computed FROM: same key ⇒ same input ⇒
+                                // the cached result IS the result. A `Custom` message is neither.
+                                // It is the plugin's own post — the DELIVERY of work already done,
+                                // at real cost — and its payload is NOT in the key. TestPrune's
+                                // `cacheKeyFor` reads the `TestRunCompleted` it carries only far
+                                // enough to decide whether the result is CACHEABLE (did everything
+                                // pass? did it abort?), never far enough to IDENTIFY it. Two
+                                // different runs — different run ids, different results, both
+                                // green — collide on one key.
+                                //
+                                // So a hit here is not a proof of equivalence; it is a COLLISION.
+                                // And serving it skips the handler, which is the only thing that
+                                // folds the finished run into the plugin's state.
+                                //
+                                // Observed on an unchanged tree: `confirm` forced the full suite,
+                                // ran it for 102 seconds, passed 1965 tests and wrote a complete
+                                // CTRF report — and the framework replayed a cached terminal over
+                                // the `TestsFinished` carrying it. The plugin never learned the run
+                                // had happened, `test-scope` still answered "no tests ran", and
+                                // `confirm` refused to give a verdict on evidence it had just spent
+                                // 102 seconds producing. A cache that can DESTROY evidence is worse
+                                // than no cache.
+                                //
+                                // The WRITE below keeps the real key: a Custom window is how the
+                                // entry the next `BuildCompleted` hits gets minted at all.
+                                let replayKeyOpt =
+                                    match event with
+                                    | Custom _ -> None
+                                    | _ -> cacheKeyOpt
+
                                 let! nextState =
                                     async {
                                         try
-                                            if tryReplayCache event cacheKeyOpt then
+                                            if tryReplayCache event replayKeyOpt then
                                                 return state
                                             else
                                                 return! runAndCache event state cacheKeyOpt

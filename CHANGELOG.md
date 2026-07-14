@@ -4,6 +4,41 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### `confirm` on a warm cache: a refusal despite evidence (AUTOMATION-161)
+
+Run `fshw confirm` twice on a **byte-identical tree** and the second exited **3 — "NO
+TESTS RAN — nothing was verified"**, while the very same run's status line reported *"1
+passed, 0 failed in 1 projects, full suite (cached)"*. Both described the same run. So did
+`fshw check`. **Both headline verbs, on every repeat run.**
+
+This release is about greens nobody earned. This was its **inverse**: not a green without
+evidence, but a **refusal despite evidence** — because the replay dropped the receipt.
+
+And it was worse than a dropped receipt. The second `confirm` **did** force the full suite
+and **did** run it — 102 seconds, 1965 tests passed, a complete CTRF report written to
+disk — and then the task cache **replayed a cached terminal over the `TestsFinished` that
+carried the result**. The one handler that folds a finished run into plugin state was
+skipped, so `LastCoverage` stayed empty, so `test-scope` answered *"no tests ran"*, so the
+verdict refused. **`confirm` refused a verdict on evidence it had just spent 102 seconds
+producing.**
+
+One rule, in three places:
+
+- **core** — a `Custom` message is a cache **writer**, never a cache **reader**. Its payload
+  is not in the key, so a hit is a *collision*, not a proof; and it delivers work already
+  done, so a replay can only *destroy* evidence.
+- **test-prune** — a **process may not assert a test result it has no record of running**.
+  The `BuildCompleted` key does not pin the tree (on a cold scan it is dispatched *before*
+  the FCS pass, so `changed-symbols` is empty whatever the tree holds), so it may not carry
+  a test claim across a process boundary. Fail closed: run.
+- **cli** — `confirm` **honours a verdict it already earned**. `.fshw/verdict.json` is
+  content-addressed to the tree *and* to the producing binary, and it is the **only** thing
+  entitled to carry a green across a process boundary. `1m 45s → 1.4s`.
+
+Deliberately **not** done: making the cached replay mint a CTRF receipt for the new run id.
+That would manufacture merge-grade evidence from a key that cannot see the tree — the
+vacuous green, rebuilt inside the fix for it.
+
 ### `fshw gate` is now `fshw confirm` — run the full suite and confirm `check` told the truth
 
 **Migration: `fshw gate` → `fshw confirm`.** The old verb is **removed**, not aliased —

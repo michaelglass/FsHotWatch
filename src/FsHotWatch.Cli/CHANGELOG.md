@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- feat: **`confirm` HONOURS a verdict it has already earned.** (AUTOMATION-161) `confirm`
+  is the pre-merge verb, so it gets run more than once — and on a tree that has not moved,
+  the honest answer to *"is the suite green?"* was settled the first time. Asking again is
+  not a fresh question; it is the same question about the same bytes. Before starting a
+  daemon, setting a scope or running a test, `confirm` now reads `.fshw/verdict.json` and,
+  if the recorded verdict is a **full-suite green** whose **`treeHash` and `producer` both
+  match**, reports it and exits 0 — naming when it was earned:
+
+  ```
+  ✓ confirm — the verdict from 21:25 still applies
+              (treeHash + producer match; full suite, 1 project, 1975 passed)
+  ```
+
+  Anything else — a moved tree, a *different fshw binary*, an impact-filtered green, a red,
+  an unreadable file, no file — is not an answer, and `confirm` goes and earns one. This is
+  the **only** thing in fshw allowed to carry a green across a process boundary, and the
+  asymmetry is the point: a cached *plugin result* explicitly may not (its key does not pin
+  the tree), so the fast path runs through the artifact **built to be trusted** rather than
+  one that happens to be lying around. It is what content-addressing is *for*. On this repo:
+  **1m 45s → 1.4s.**
+
+- fix!: **`confirm` no longer refuses on evidence it has just produced.** (AUTOMATION-161)
+  On a warm cache, running `confirm` twice on a byte-identical tree exited **3 — "NO TESTS
+  RAN — nothing was verified"** — while the plugin's own status line said *"1 passed, 0
+  failed, full suite (cached)"*. Both described the same run. So did `check`.
+
+  Not a green without evidence, but the inverse: **a refusal despite evidence**. The second
+  `confirm` *did* force the full suite and *did* run it — 102 seconds, 1965 passed, a
+  complete CTRF report written to disk — and then the task cache replayed a cached terminal
+  over the `TestsFinished` carrying the result, so the plugin never learned the run had
+  happened. Fixed in core (a `Custom` message is a cache writer, never a reader) and in
+  TestPrune (a process may not assert a test result it has no record of running).
+
+  This is also what makes the AUTOMATION-117 claim below — *"`confirm` RUNS the suite it
+  demands"* — **true**. It was false on a warm cache: `confirm` ran the suite it demanded,
+  and the cache threw the receipt away.
+
 - fix!: **a CRASHED PLUGIN NO LONGER GREENS CI.** `--run-once` — which is what CI runs —
   computed its `hasFailures` as the failing-diagnostic count and nothing else, while the
   daemon path computed `anyPluginFailed || failingDiagnostics`. A plugin can reach

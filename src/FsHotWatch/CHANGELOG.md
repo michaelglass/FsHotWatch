@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix!: **the task cache can no longer DESTROY the result of a run that actually
+  happened.** (AUTOMATION-161) `PluginFramework` consulted the cache for *every*
+  dispatched event, including a plugin's own `Custom` messages — and a `Custom` message is
+  not an observation of the world, it is the **delivery of work already done**. Its payload
+  is not in the cache key: TestPrune's `cacheKeyFor` reads the `TestRunCompleted` it
+  carries only far enough to decide whether the result is *cacheable*, never far enough to
+  *identify* it. Two different runs — different run ids, different results, both green —
+  therefore collide on one key, and serving the hit **skips the handler**, which is the
+  only thing that folds a finished run into plugin state.
+  - Observed on an unchanged tree: `fshw confirm` forced the full suite, ran it for 102
+    seconds, passed 1965 tests and wrote a complete CTRF report — and the framework
+    replayed a cached terminal over the `TestsFinished` carrying it. The plugin never
+    learned the run had happened, `test-scope` went on answering *"no tests ran"*, and
+    `confirm` refused to give a verdict on evidence it had just spent 102 seconds
+    producing.
+  - A `Custom` message is now a cache **writer**, never a cache **reader**. The write is
+    kept: a Custom window is how the entry the next `BuildCompleted` hits gets minted at
+    all. A cache that can destroy evidence is worse than no cache.
+
 - fix: **`Ctrf.tidyRunsDir` can no longer FAULT the run it is cleaning up after.** It
   enumerated the run directory TWICE and applied the SECOND enumeration's count to the
   FIRST enumeration's list (`runDirs |> List.skip (min keepRuns (List.length (runDirs
