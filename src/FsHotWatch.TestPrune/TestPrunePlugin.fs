@@ -302,6 +302,11 @@ type TestPruneState =
         /// is the source of truth for "currently running", so we no longer
         /// need a phantom-typed Idle/Running phase to wrap this value.
         LastResults: TestResults option
+        /// The id of the run that produced `LastResults` — i.e. the directory its
+        /// CTRF reports live in (`.fshw/test-runs/<runId>/`). Reported to the CLI by
+        /// `test-scope` so the verdict can DECLARE which reports are this run's,
+        /// instead of inferring membership from mtimes. `None` until a run completes.
+        LastRunId: Guid option
         /// True if a BuildCompleted arrived while a test run was in flight.
         /// The synchronous `Custom(TestsFinished)` handler reads this AFTER
         /// the run completes — at which point `state.ChangedSymbols` reflects
@@ -733,46 +738,6 @@ let internal coarseFallbackProjects
     else
         Set.union fanout (fullSuiteProjects configs)
 
-/// What a completed test run actually COVERED — the honest scope of the evidence it
-/// produced (AUTOMATION-112).
-///
-/// An impact-filtered green means "your change didn't break anything I chose to look
-/// at". It does NOT mean "the suite is green". Those are different claims, and a merge
-/// gate may only consume the second. So the scope is reported as a value the verdict
-/// can be a total function OVER, rather than left implicit for a caller to assume.
-///
-/// `RanEverything` requires BOTH that no project was impact-filtered AND that every
-/// configured project actually produced a result: a run that filtered nothing but
-/// skipped half the projects covered no more of the suite than one that filtered.
-/// A run whose Results map is empty (the zero-affected skip's degenerate green)
-/// verified NOTHING and is `RanNothing` — never full-suite, whatever
-/// `TestRunCompleted.RanFullSuite` says about it (that flag is vacuously true for an
-/// empty map, which is exactly the trap a merge gate must not fall into).
-type internal RunScope =
-    /// Every configured test project ran, none of them filtered. The only scope from
-    /// which a merge-gate verdict may be produced.
-    | RanEverything of projects: int
-    /// A subset ran: some project was impact-filtered, or some project did not run.
-    | RanSubset of ranProjects: int * totalProjects: int
-    /// No test run has completed in this session, or the one that did executed no
-    /// tests at all.
-    | RanNothing
-
-/// Classify the last completed run against the configured projects.
-let internal classifyRunScope (configs: TestConfig list) (lastResults: TestResults option) : RunScope =
-    let total = List.length configs
-
-    match lastResults with
-    | None -> RanNothing
-    | Some results when Map.isEmpty results.Results -> RanNothing
-    | Some results ->
-        let ran = Map.count results.Results
-        let noneFiltered = TestResult.ranFullSuite results.Results
-
-        if noneFiltered && ran >= total && total > 0 then
-            RanEverything total
-        else
-            RanSubset(ran, total)
 
 /// The single answer to "what did this run actually cover?" — PUBLIC because it is
 /// load-bearing outside this handler too: a verdict writer must be able to ask it, per
@@ -850,6 +815,35 @@ module RunCoverage =
                 | Some ProjectInFull
                 | None -> None)
         |> Map.ofList
+
+/// The SCOPE a merge gate reads, as a pure PROJECTION of `RunCoverage`.
+///
+/// It is deliberately not an independent derivation. Until AUTOMATION-129 the gate's
+/// scope came from `classifyRunScope` (over `LastResults`) while the ledger decided
+/// what a run could CLEAR from `RunCoverage` — two answers to one question, with
+/// nothing making them agree. A gate could therefore go green on a scope the ledger
+/// would never have granted. There is one source of truth now, and this is a view of
+/// it.
+type internal ScopeReport =
+    /// Every configured project executed, each in FULL. The only scope a whole-suite
+    /// claim can be made from.
+    | ScopeFull of projects: int
+    /// Some project ran, but not the whole suite in full.
+    | ScopeFiltered of ran: int * total: int
+    /// NOTHING executed. Not a scope — an absence of evidence, which the CLI reads as
+    /// `NoTestsRun` and refuses to call green in either mode.
+    | ScopeNone of total: int
+
+let internal scopeOf (projects: string list) (coverage: RunCoverage) : ScopeReport =
+    let covered = RunCoverage.coveredProjects coverage
+    let total = List.length projects
+
+    if RunCoverage.coversWholeSuite projects coverage then
+        ScopeFull total
+    elif Set.isEmpty covered then
+        ScopeNone total
+    else
+        ScopeFiltered(Set.count covered, total)
 
 module internal OutstandingFailure =
 
@@ -1435,9 +1429,6 @@ let private reportOutstanding
 let private flakinessHistoryPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
 
-let private testRunsDir (repoRoot: string) =
-    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
-
 let private executeTests
     (db: Database)
     (ctx: PluginCtx<'msg> option)
@@ -1453,6 +1444,18 @@ let private executeTests
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
         let sw = Stopwatch.StartNew()
         let runId = Guid.NewGuid()
+
+        // The run's own directory. Created NOW — before anything runs — so that a run
+        // which executes but reports nothing is distinguishable from a run that never
+        // happened: the first leaves an empty directory, the second leaves none.
+        let runDir = Ctrf.runDir repoRoot runId
+
+        try
+            Directory.CreateDirectory(runDir) |> ignore
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
 
         // Launch-liveness deadline (AUTOMATION-65 QA finding). Between a test
         // config's spawn and its first sign of life, `ProcessBounds.streaming`
@@ -1648,17 +1651,30 @@ let private executeTests
                                     | Some capable -> capable
                                     | None -> isDotnetCommand config.Command
 
+                            // ONE DIRECTORY PER RUN (AUTOMATION-129). The reports of a run
+                            // live in `.fshw/test-runs/<runId>/`, and NOTHING ELSE does — so
+                            // membership is a fact about where a file IS, not an inference
+                            // from when it was written. A shared pile with no manifest is
+                            // unreadable in BOTH directions: you cannot tell which files are
+                            // yours (presence), and an empty listing could mean "nothing ran"
+                            // or "cleaned up" or "wrong glob" (absence). Two capable readers
+                            // misread this directory within an hour of each other.
+                            //
+                            // The run-dir is created whether or not any project reports, so an
+                            // executed run that produced nothing leaves an EMPTY DIRECTORY —
+                            // a stated fact — rather than a silence to be decoded.
                             let ctrfPath =
                                 if shouldRequestCtrf then
-                                    let ctrfDir = testRunsDir repoRoot
-                                    Directory.CreateDirectory(ctrfDir) |> ignore
-                                    let ctrfName = $"{config.Project}-{Guid.NewGuid():N}.ctrf.json"
+                                    Directory.CreateDirectory(runDir) |> ignore
+                                    // The dir already names the run, so the file need only name
+                                    // the project. No guid to guess at, nothing to parse.
+                                    let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
 
                                     extraArgs.Add(
-                                        $"--report-ctrf --report-ctrf-filename {ctrfName} --results-directory \"{ctrfDir}\""
+                                        $"--report-ctrf --report-ctrf-filename {ctrfName} --results-directory \"{runDir}\""
                                     )
 
-                                    Some(Path.Combine(ctrfDir, ctrfName))
+                                    Some(Path.Combine(runDir, ctrfName))
                                 else
                                     None
 
@@ -1863,25 +1879,21 @@ let private executeTests
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            // Persist the raw output for any non-clean run (Failed,
-                            // TimedOut, Errored) so the CI console has the diagnostic
-                            // even when `.fshw/test-runs` isn't uploaded as an artifact.
+                            // Report the failure in full. The raw runner output used to
+                            // ALSO be dumped to `.fshw/test-runs/<Project>-<ts>.log` —
+                            // that format is GONE (AUTOMATION-129). It was written only
+                            // when something broke, so the newest one dated from the last
+                            // red run, and anyone listing the directory read that date as
+                            // "when tests last ran". (It said 2026-06-30, and produced the
+                            // confident, false conclusion that no test had run in weeks.)
+                            // A stale artifact that looks authoritative is worse than
+                            // none. Nothing is lost: the failing tests, with messages and
+                            // traces, are in the RETAINED CTRF report the verdict points
+                            // at, and the failure report is logged here in full.
                             match result with
                             | TestsFailed _
                             | TestsTimedOut _
                             | TestsErrored _ ->
-                                try
-                                    let logDir = testRunsDir repoRoot
-                                    Directory.CreateDirectory(logDir) |> ignore
-                                    let timestamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ")
-                                    let logPath = Path.Combine(logDir, $"%s{config.Project}-%s{timestamp}.log")
-                                    File.WriteAllText(logPath, output)
-                                    Logging.info "test-prune" $"%s{config.Project}: full output saved to %s{logPath}"
-                                with
-                                | :? IOException
-                                | :? UnauthorizedAccessException as ex ->
-                                    Logging.error "test-prune" $"Failed to persist test output: %s{ex.Message}"
-
                                 for line in formatFailureReport config.Project output do
                                     Logging.error "test-prune" line
                             | _ -> ()
@@ -1908,15 +1920,23 @@ let private executeTests
                             // per-test records for the single post-parallel write (see
                             // `flakinessRecords`). Best-effort — exceptions never fail
                             // the run.
+                            //
+                            // The report is RETAINED (AUTOMATION-129). It used to be
+                            // `File.Delete`d the instant its records had been folded into
+                            // the flakiness history — so the reports an operator found in
+                            // `.fshw/test-runs/` were the ones whose deletion had FAILED:
+                            // orphans, months old, indistinguishable from a current run's
+                            // evidence. The verdict file now POINTS at these reports, and
+                            // a pointer into a directory of accidental survivors is worse
+                            // than no pointer at all. `Ctrf.tidyRunsDir` (post-run) keeps
+                            // the newest few per project, so retention stays bounded.
                             match ctrfPath, reportJson with
-                            | Some p, Some json ->
+                            | Some _, Some json ->
                                 try
                                     let records = Flakiness.parseCtrfTests json
 
                                     if not records.IsEmpty then
                                         lock flakinessLock (fun () -> flakinessRecords <- flakinessRecords @ records)
-
-                                    File.Delete p
                                 with
                                 | :? IOException
                                 | :? UnauthorizedAccessException
@@ -1924,12 +1944,13 @@ let private executeTests
                                     Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
                             | Some p, None ->
                                 // Report requested but unreadable (missing — the host
-                                // aborted before flushing — or locked). Best-effort
-                                // cleanup; absence already drove the Errored verdict.
+                                // aborted before flushing — or locked). Nothing to retain;
+                                // its ABSENCE already drove the Errored verdict.
                                 try
                                     File.Delete p
-                                with _ ->
-                                    ()
+                                with
+                                | :? IOException
+                                | :? UnauthorizedAccessException -> ()
                             | None, _ -> ()
 
                             results <- (config.Project, result) :: results
@@ -1970,6 +1991,11 @@ let private executeTests
             | :? IOException
             | :? UnauthorizedAccessException
             | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+
+        // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format
+        // (AUTOMATION-129). Runs AFTER this run's reports were written, so the
+        // evidence the verdict is about to point at is always among the survivors.
+        Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns
 
         sw.Stop()
 
@@ -2381,7 +2407,7 @@ let create
     ///
     /// Note this only makes the run unfiltered. It does NOT let the CLI *claim* a
     /// full-suite verdict: the gate reads back what the run actually covered
-    /// (`test-scope` → `classifyRunScope`) and refuses to go green on anything less.
+    /// (`test-scope` → a projection of `RunCoverage`) and refuses anything less.
     /// The flag is a request; the scope report is the evidence.
     let mutable fullSuiteScopeRef = false
 
@@ -2614,6 +2640,7 @@ let create
           ChangedSymbols = pendingQueueRef |> Set.toList
           ChangedFiles = []
           LastResults = None
+          LastRunId = None
           PendingRerun = false
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
@@ -3083,30 +3110,48 @@ let create
                         // requested: `set-scope full` is a request, this is the receipt.
                         // A run still in flight reports `running`, which the gate treats
                         // as "no verdict yet" rather than as a scope.
+                        // The reply carries the RUN ID as well as the scope, so the CLI
+                        // can DECLARE which CTRF reports belong to this run
+                        // (`.fshw/test-runs/<runId>/`) rather than inferring membership
+                        // from mtimes. A pile you have to date-sort is a pile you have to
+                        // do forensics on.
+                        let runId =
+                            match state.LastRunId with
+                            | Some id -> box (id.ToString("N"))
+                            | None -> null
+
+                        // The scope is a PROJECTION of `LastCoverage` — the very value the
+                        // ledger uses to decide what a run is entitled to CLEAR
+                        // (AUTOMATION-125). See `scopeOf`.
+                        let projects = allConfigs |> List.map (fun c -> c.Project)
+
                         if ctx.IsRunning "tests" then
-                            return JsonSerializer.Serialize({| scope = "running" |})
+                            return JsonSerializer.Serialize({| scope = "running"; runId = runId |})
                         else
-                            match classifyRunScope allConfigs state.LastResults with
-                            | RanEverything projects ->
+                            match scopeOf projects state.LastCoverage with
+                            | ScopeFull n ->
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "full"
-                                           ranProjects = projects
-                                           totalProjects = projects |}
+                                           ranProjects = n
+                                           totalProjects = n
+                                           runId = runId |}
                                     )
-                            | RanSubset(ran, total) ->
+                            | ScopeFiltered(ran, total) ->
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "filtered"
                                            ranProjects = ran
-                                           totalProjects = total |}
+                                           totalProjects = total
+                                           runId = runId |}
                                     )
-                            | RanNothing ->
+                            | ScopeNone total ->
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
                                            ranProjects = 0
-                                           totalProjects = List.length allConfigs |}
+                                           totalProjects = total
+                                           runId = runId |}
                                     )
                     }
 
@@ -4118,6 +4163,7 @@ let create
                         let dequeuedState =
                             { state with
                                 LastResults = Some testResults
+                                LastRunId = Some completed.RunId
                                 ChangedFiles = []
                                 ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed []
@@ -4170,6 +4216,7 @@ let create
                             return
                                 { state with
                                     LastResults = Some testResults
+                                    LastRunId = Some completed.RunId
                                     PendingRerun = false
                                     ChangedFiles = []
                                     ChangedSymbols = remainingChangedSymbols
@@ -4188,6 +4235,7 @@ let create
                             let rerunState =
                                 { rerunState with
                                     LastResults = Some testResults
+                                    LastRunId = Some completed.RunId
                                     PendingRerun = false
                                     PendingForceRunProjects = Set.empty }
 
@@ -4223,6 +4271,7 @@ let create
                         return
                             { state with
                                 LastResults = Some testResults
+                                LastRunId = Some completed.RunId
                                 ChangedFiles = []
                                 ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed [] }

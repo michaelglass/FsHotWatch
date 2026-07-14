@@ -287,11 +287,26 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
       Statuses = statuses
       Coverage = coverage }
 
+/// What the last completed test run covered, AND WHICH RUN IT WAS.
+///
+/// The run id is what lets the verdict DECLARE which CTRF reports are this run's
+/// (they are the files in `.fshw/test-runs/<runId>/`) instead of inferring
+/// membership from mtimes. Membership by inference is how a directory listing
+/// becomes a forensics exercise — and how two readers, an hour apart, each
+/// mistook another run's artifacts (or an absence) for an answer.
+type TestRunReport =
+    {
+        Scope: TestScope
+        /// `None` when no run has completed in this daemon session — in which case
+        /// there is no run directory, and that ABSENCE is itself the fact.
+        RunId: Guid option
+    }
+
 /// Parse the JSON reply from the test-prune `test-scope` command. Anything the
 /// contract does not explicitly recognize collapses to `ScopeUnknown` — including an
 /// `{"error": ...}` reply from a daemon with no test-prune plugin, and a `running`
 /// reply from a run still in flight (no scope has been earned yet).
-let parseTestScope (json: string) : TestScope =
+let parseTestRunReport (json: string) : TestRunReport =
     try
         use doc = JsonDocument.Parse(json)
         let root = doc.RootElement
@@ -304,13 +319,23 @@ let parseTestScope (json: string) : TestScope =
                 | _ -> None
             | _ -> None
 
-        match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
-        | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
-        | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
-        | Some "none", _, _ -> NoTestsRun
-        | _ -> ScopeUnknown
+        let scope =
+            match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
+            | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
+            | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
+            | Some "none", _, _ -> NoTestsRun
+            | _ -> ScopeUnknown
+
+        let runId =
+            tryGetStringProp root "runId"
+            |> Option.bind (fun s ->
+                match Guid.TryParse s with
+                | true, g -> Some g
+                | _ -> None)
+
+        { Scope = scope; RunId = runId }
     with _ ->
-        ScopeUnknown
+        { Scope = ScopeUnknown; RunId = None }
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

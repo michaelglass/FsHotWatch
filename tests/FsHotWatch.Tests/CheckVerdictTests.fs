@@ -234,8 +234,31 @@ let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is f
     // The fast loop keeps its optimization. Making it demand the whole suite would
     // defeat the point of having one; the gate is where the claim gets made.
     test <@ verdict InnerLoop false Complete (ImpactFiltered(1, 4)) = CheckOutcome.Clean @>
-    test <@ verdict InnerLoop false Complete NoTestsRun = CheckOutcome.Clean @>
+    // A repo with no test-prune plugin has no tests to run, and punishing it would be
+    // nonsense. `ScopeUnknown` is "we cannot say", not "we ran nothing".
     test <@ verdict InnerLoop false Complete ScopeUnknown = CheckOutcome.Clean @>
+
+[<Fact(Timeout = 15000)>]
+let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, not NOTHING`` () =
+    // AUTOMATION-129. This assertion used to read `= CheckOutcome.Clean`, and that was
+    // the vacuous green in its purest form.
+    //
+    // `NoTestsRun` does NOT mean "impact analysis selected nothing this time". It means
+    // the daemon holds NO TEST EVIDENCE AT ALL — no run has completed in this session,
+    // or the one that did executed zero tests ("0 passed, 0 failed in 0 projects").
+    // A `check` that exits 0 on that has verified nothing and said everything was fine.
+    // It was observed in the wild twice on the day this was written.
+    //
+    // So it is refused in BOTH modes. Impact filtering is a question of HOW MUCH we
+    // tested; this is a question of WHETHER WE TESTED AT ALL, and the two are not the
+    // same axis. The inner loop is allowed to test less. It is not allowed to test
+    // nothing and call it green.
+    test <@ verdict InnerLoop false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
+    test <@ verdict MergeGate false Complete NoTestsRun = CheckOutcome.UnearnedScope NoTestsRun @>
+
+    // ...but a REAL failure still outranks it: a red is a red, and reporting "no
+    // verdict" would bury it.
+    test <@ verdict InnerLoop true Complete NoTestsRun = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: UnearnedScope is its own code, distinct from failure and incompleteness`` () =
@@ -273,37 +296,37 @@ let ``converge: a MergeGate never scans its way out of an unearned scope`` () =
 // --- TestScope parsing: the daemon's answer, and every way it can fail to give one ---
 
 [<Fact(Timeout = 15000)>]
-let ``parseTestScope: a full-suite reply parses as FullSuite`` () =
+let ``parseTestRunReport: a full-suite reply parses as FullSuite`` () =
     let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
-    test <@ parseTestScope json = FullSuite 3 @>
+    test <@ (parseTestRunReport json).Scope = FullSuite 3 @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseTestScope: a filtered reply parses as ImpactFiltered`` () =
+let ``parseTestRunReport: a filtered reply parses as ImpactFiltered`` () =
     let json = """{"scope":"filtered","ranProjects":1,"totalProjects":3}"""
-    test <@ parseTestScope json = ImpactFiltered(1, 3) @>
+    test <@ (parseTestRunReport json).Scope = ImpactFiltered(1, 3) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseTestScope: a none reply parses as NoTestsRun`` () =
+let ``parseTestRunReport: a none reply parses as NoTestsRun`` () =
     let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
-    test <@ parseTestScope json = NoTestsRun @>
+    test <@ (parseTestRunReport json).Scope = NoTestsRun @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseTestScope: every unusable reply collapses to ScopeUnknown, never FullSuite`` () =
+let ``parseTestRunReport: every unusable reply collapses to ScopeUnknown, never FullSuite`` () =
     // The safe direction, by construction: an error reply (no test-prune plugin), a
     // still-running run, an old daemon that echoes nothing useful, and outright
     // garbage all fail CLOSED.
-    test <@ parseTestScope """{"error":"unknown command 'test-scope'"}""" = ScopeUnknown @>
-    test <@ parseTestScope """{"scope":"running"}""" = ScopeUnknown @>
-    test <@ parseTestScope """{"scope":"full"}""" = ScopeUnknown @>
-    test <@ parseTestScope "not json at all" = ScopeUnknown @>
-    test <@ parseTestScope "" = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"error":"unknown command 'test-scope'"}""").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"scope":"running"}""").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"scope":"full"}""").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport "not json at all").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport "").Scope = ScopeUnknown @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseTestScope: a full reply that did not actually cover every project is not FullSuite`` () =
+let ``parseTestRunReport: a full reply that did not actually cover every project is not FullSuite`` () =
     // A daemon claiming "full" while reporting 2 of 4 projects is not trusted: the
     // counts are the evidence, the label is not.
-    test <@ parseTestScope """{"scope":"full","ranProjects":2,"totalProjects":4}""" = ScopeUnknown @>
-    test <@ parseTestScope """{"scope":"full","ranProjects":0,"totalProjects":0}""" = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"scope":"full","ranProjects":2,"totalProjects":4}""").Scope = ScopeUnknown @>
+    test <@ (parseTestRunReport """{"scope":"full","ranProjects":0,"totalProjects":0}""").Scope = ScopeUnknown @>
 
 // --- uncheckedMagnitude: defensive totality, pinned directly ---------------
 // `converge` structurally never routes `Complete` into the magnitude

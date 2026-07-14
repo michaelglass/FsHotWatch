@@ -69,6 +69,26 @@
 
   `newestSourceMtime`/`apphostStale` are replaced by the `ArtifactFreshness` module.
 
+- feat!: **CTRF reports are RETAINED, and the dead `.log` format is deleted.** (AUTOMATION-129)
+  Every report used to be `File.Delete`d the instant its per-test records had been folded
+  into the flakiness history — so the reports an operator found in `.fshw/test-runs/` were
+  the ones whose deletion had FAILED: orphans, months old, indistinguishable from a
+  current run's evidence. `.fshw/verdict.json` now POINTS at these reports, and a pointer
+  into a directory of accidental survivors is worse than no pointer at all. The newest 5
+  per project are kept (`Ctrf.tidyRunsDir`, swept after each run).
+  - The `.fshw/test-runs/<Project>-<ts>.log` raw-output dump is GONE. It was written only
+    when something broke, so the newest one dated from the last red run — and anyone
+    listing the directory read that date as "when tests last ran". It said 2026-06-30, and
+    produced the confident, false conclusion that no test had run in weeks. A stale
+    artifact that looks authoritative is worse than none. Nothing is lost: the failing
+    tests, with messages and traces, are in the retained CTRF report, and the failure
+    report is still logged in full.
+
+- refactor!: `Flakiness.TestReport` is now an abbreviation of `FsHotWatch.Ctrf.Summary`,
+  and `tryParseReport` delegates to `Ctrf.trySummary`. One CTRF summary reader for the
+  whole solution — the pass/fail verdict, the flakiness history and the verdict file's
+  `suites` cannot disagree about what a report says.
+
 - fix!: **a force-run refused the slot is QUEUED, never declined.** (AUTOMATION-99)
   Routing `run-tests` through the mailbox left one hole: if a run was already in flight
   the handler replied `busy` and ran nothing — and the CLI mapped that to exit 0. A

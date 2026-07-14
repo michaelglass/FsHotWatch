@@ -101,6 +101,19 @@ type Command =
     /// inner loop and keeps impact filtering, which is a latency optimization; a merge
     /// is a correctness claim and cannot be built on a heuristic selection.
     | [<Cmd("Merge gate: run all checks with the FULL test suite (no impact filtering) and refuse a green verdict from anything less")>] Gate
+    /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
+    /// disk (AUTOMATION-129).
+    ///
+    /// Touches NO socket, starts no daemon, triggers no run: reading cannot perturb.
+    /// That is the whole point — the `test-rerun` calls an orchestrator made *because
+    /// the gate looked untrustworthy* were themselves what corrupted the daemon's
+    /// accounting and produced the next content-free green (AUTOMATION-99). The act of
+    /// measuring created the defect being measured.
+    ///
+    /// This verb is a CONVENIENCE over the file, not a second source of truth: it
+    /// prints the same verdict the check wrote, plus the one judgement a consumer must
+    /// not get wrong — does this verdict describe the tree I have?
+    | [<Cmd("Report the last check's verdict and whether it still applies to the current tree (reads .fshw/verdict.json; never contacts the daemon)")>] Verdict
     | [<CmdExample("--filter-class *CryptoTests*", "--filter-trait Category=Browser");
         Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
         RerunFlag list
@@ -429,7 +442,28 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
             2)
         action
 
-/// Ensure daemon, poll for progress, render colored output.
+/// The daemon commands the gate speaks. `RunCommand` dispatches on the COMMAND
+/// name — a plugin's own name is not a command and resolves to nothing.
+///
+/// Both of these used to be called as `RunCommand "test-prune" "test-scope"`, i.e.
+/// with the PLUGIN name in the command slot and the command name stuffed into the
+/// args. The host looked up a command called `test-prune`, found none, and
+/// returned the unknown-command sentinel — which `parseTestScope` correctly
+/// (and silently) read as `ScopeUnknown`. So `fshw gate` could never establish a
+/// full-suite scope, never read one back, and had NO PATH TO A GREEN: it exited 3
+/// ("unearned scope") on every repo, forever, including one whose entire suite had
+/// just run unfiltered.
+///
+/// It failed in the SAFE direction, which is why nothing caught it — a gate that
+/// always refuses is a gate that is never wrong. It is also a gate nobody can use,
+/// and the workaround for an unusable gate is the bash harness this ticket exists
+/// to delete. Named here so the two callers cannot spell them differently again.
+[<Literal>]
+let private TestScopeCommand = "test-scope"
+
+[<Literal>]
+let private SetScopeCommand = "set-scope"
+
 /// Ask the test-prune plugin what the last completed run actually covered.
 ///
 /// Any failure to get a straight answer — no test-prune plugin, an old daemon that
@@ -437,14 +471,26 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
 /// `ScopeUnknown`, which a merge gate treats as "not full-suite" and therefore refuses
 /// to go green on. The failure direction is the safe one BY CONSTRUCTION: a gate can
 /// only ever go green on a scope it positively established.
-let private readTestScope (ipc: IpcOps) (pipeName: string) : TestScope =
+///
+/// An UNKNOWN-COMMAND reply is now WARNED about rather than folded silently into
+/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a gate stays
+/// broken for its whole life.
+let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     try
-        ipc.RunCommand pipeName "test-prune" "test-scope"
-        |> Async.RunSynchronously
-        |> IpcParsing.parseTestScope
+        let reply = ipc.RunCommand pipeName TestScopeCommand "" |> Async.RunSynchronously
+
+        if FsHotWatch.Ipc.isUnknownCommandReply reply then
+            FsHotWatch.Logging.warn
+                "cli-gate"
+                $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a merge \
+                   verdict cannot be earned from it. `fshw gate` will report NO VERDICT."
+
+            { Scope = ScopeUnknown; RunId = None }
+        else
+            IpcParsing.parseTestRunReport reply
     with ex ->
-        FsHotWatch.Logging.debug "cli-gate" $"could not read the test scope: %s{ex.Message}"
-        ScopeUnknown
+        FsHotWatch.Logging.warn "cli-gate" $"could not read the test scope: %s{ex.Message}"
+        { Scope = ScopeUnknown; RunId = None }
 
 /// Put the daemon's test-prune plugin into full-suite scope for the rest of this
 /// session. Called BEFORE the gate triggers its scan, so the test run the scan provokes
@@ -454,13 +500,18 @@ let private readTestScope (ipc: IpcOps) (pipeName: string) : TestScope =
 /// value anyway. It trusts `readTestScope`, which reports what actually ran. If the
 /// scope could not be set, the run will come back impact-filtered and the verdict will
 /// be `UnearnedScope`. The request is not the evidence.
-let private requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
+let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
     try
         let reply =
-            ipc.RunCommand pipeName "test-prune" "set-scope {\"scope\":\"full\"}"
+            ipc.RunCommand pipeName SetScopeCommand """{"scope":"full"}"""
             |> Async.RunSynchronously
 
-        FsHotWatch.Logging.debug "cli-gate" $"set-scope reply: %s{reply}"
+        if FsHotWatch.Ipc.isUnknownCommandReply reply then
+            eprintfn
+                $"fshw gate: the daemon has no `%s{SetScopeCommand}` command (no test projects configured). \
+                   The gate will refuse the verdict."
+        else
+            FsHotWatch.Logging.debug "cli-gate" $"set-scope reply: %s{reply}"
     with ex ->
         eprintfn
             $"fshw gate: could not put the daemon in full-suite scope (%s{ex.Message}). \
@@ -469,6 +520,8 @@ let private requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
+    (repoRoot: string)
+    (excludePatterns: string list)
     (noWarnFail: bool)
     (ensureDaemon: unit -> bool)
     (waitReady: unit -> DaemonReadiness)
@@ -512,6 +565,8 @@ let private ensureAndQueryErrors
                 IpcOutput.pollAndRender
                     mode
                     checkMode
+                    repoRoot
+                    excludePatterns
                     (renderLines mode (not noWarnFail))
                     noWarnFail
                     (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
@@ -533,7 +588,7 @@ let private ensureAndQueryErrors
                     // verdict point, from the daemon, never inferred from what we asked
                     // for. The inner loop reads it too — and ignores it — so there is one
                     // verdict path, not two that can drift.
-                    (fun () -> readTestScope ipc pipeName)
+                    (fun () -> readTestRun ipc pipeName)
                     // Convergence re-scan: start a scan and block until it (and the
                     // plugins it triggers) settle, so the next GetDiagnostics read
                     // reflects the fresh scan. `Scan` returns "scan started:<gen>";
@@ -1016,6 +1071,10 @@ let executeCommand
         | TestRerun _
         | Format _
         | Rerun _ -> true
+        // `verdict` is a pure read of `.fshw/verdict.json`. It starts nothing and
+        // asks the daemon nothing, so a workspace with zero projects is not an
+        // error for it — it simply has no verdict yet (exit 5).
+        | Verdict
         | Stop
         | Scan
         | Status _
@@ -1089,6 +1148,8 @@ let executeCommand
             ensureAndQueryErrors
                 mode
                 checkMode
+                repoRoot
+                config.Exclude
                 noWarnFail
                 ensureDaemonFn
                 waitReadyFn
@@ -1276,6 +1337,15 @@ let executeCommand
                         IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) scoped
 
                     eprintfn "%s" output
+
+                    // Same nudge as `check`/`gate`: when a machine is reading, name the
+                    // files rather than leaving it to scrape a display built for a human.
+                    if not UI.isInteractive then
+                        eprintfn ""
+
+                        for line in ProgressRenderer.AgentHints.forStatus repoRoot do
+                            eprintfn "%s" line
+
                     IpcOutput.exitCodeFromResponse noWarnFail scoped)
         | TestRerun flags ->
             // Filter knobs live here, not on `fshw test`, so the
@@ -1376,6 +1446,42 @@ let executeCommand
             // provokes is unfiltered, and the verdict is computed in `MergeGate` mode,
             // which has no path to a green that does not go through a full-suite run.
             queryPluginIn CheckVerdict.MergeGate mode ""
+        | Verdict ->
+            // Pure read. No daemon, no IPC, no run — so it cannot perturb the thing it
+            // is measuring, and it costs nothing to call in a loop.
+            let report = Verdict.report repoRoot config.Exclude
+
+            // STDOUT IS THE MACHINE SURFACE, and nothing else may touch it: an agent
+            // piping this must get an envelope that parses, every time. (`UI.success`
+            // prints to stdout — using it here would have wedged a trailing prose line,
+            // ANSI and all, into the JSON. Exactly the class of thing that makes an
+            // agent give up and go back to grepping.) Every human line below goes to
+            // stderr, where the rest of the CLI's prose already lives.
+            printfn "%s" (Verdict.serializeReport report)
+
+            let say (line: string) = eprintfn "%s" line
+
+            match report with
+            | Verdict.Report.Applies v ->
+                let verb = Verdict.Command.token v.Command
+
+                match v.Outcome with
+                | Verdict.Green ->
+                    say $"%s{Color.green}✓%s{Color.reset} %s{verb}: green — for THIS tree (%s{v.TreeHash})"
+                | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
+                | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
+            | Verdict.Report.Stale(v, currentTree) ->
+                // A green from a different tree is still a green — which is exactly why
+                // it may never be REPORTED as one. It is not an answer.
+                say
+                    $"%s{Color.red}✗%s{Color.reset} STALE — the verdict describes a DIFFERENT tree, so it does not apply."
+
+                say $"    verdict tree  %s{v.TreeHash}"
+                say $"    current tree  %s{currentTree}"
+                say "  Re-run `fshw check` (or `fshw gate` for a merge). Never reuse it."
+            | Verdict.Report.NoVerdict reason -> say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
+
+            Verdict.reportExitCode report
         | Config ConfigCommand.Check ->
             // Config has already been parsed by main; reaching here means it's valid.
             printfn "config: OK (%d plugins configured)" (countPlugins config)

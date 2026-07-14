@@ -47,6 +47,7 @@
         <Compile Include="RunOnceOutput.fs" />
         <Compile Include="IpcParsing.fs" />
         <Compile Include="CheckVerdict.fs" />
+        <Compile Include="Verdict.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="IpcOutput.fs" />
         <Compile Include="DeadCode.fs" />

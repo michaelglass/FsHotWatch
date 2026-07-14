@@ -72,6 +72,12 @@ type IdentityVerdict =
 /// Pure comparison. `None` (no recorded identity) is `Stale NotRecorded` —
 /// never a match: the whole point is that an old daemon which never wrote an
 /// identity is detected by the NEW CLI alone.
+/// NOTE on the unhashable case: two binaries that both hash to `UnhashableContent`
+/// compare EQUAL here, and therefore MATCH. That is deliberate and it is the opposite
+/// of what the verdict file does with the same sentinel — see `UnhashableContent`. The
+/// question here is "restart the daemon?", and answering "yes, because I cannot tell"
+/// restarts it on every single command, thrashing the FCS cache forever. Fail-open is
+/// the correct answer to THIS question, and it is stated rather than emergent.
 let compareIdentity (recorded: BinaryIdentity option) (current: BinaryIdentity) : IdentityVerdict =
     match recorded with
     | None -> IdentityVerdict.Stale StaleReason.NotRecorded
@@ -82,12 +88,21 @@ let compareIdentity (recorded: BinaryIdentity option) (current: BinaryIdentity) 
 let identityFilePath (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "daemon.identity")
 
-/// Sentinel hash used when the binary's bytes cannot be read/hashed. It is a
-/// DETERMINISTIC value (not a random one) so a daemon and CLI running the same
-/// unhashable binary still agree — a random sentinel would restart the daemon
-/// on every command, thrashing the warm FCS cache forever.
+/// Sentinel hash used when the binary's bytes cannot be read/hashed.
+///
+/// THE hasher and THE sentinel now live in `FsHotWatch.ContentHash` — one hash of a
+/// file, one value for "I could not read it", repo-wide (AUTOMATION-129/155). Two
+/// hashers with two sentinel policies is precisely the class of bug this release
+/// exists to cure; it would be an odd thing to ship two of.
+///
+/// The VALUE is shared. The CONCLUSION is not, and deliberately so: this module asks
+/// *"should I restart the daemon?"*, so two unhashable binaries MATCH (see
+/// `compareIdentity`) — a refusal here would restart the daemon on every command and
+/// thrash the warm FCS cache forever. The verdict file asks *"does this claim apply?"*
+/// and refuses an unhashable producer outright. Different questions, different
+/// answers, one hash.
 [<Literal>]
-let UnhashableContent = "unhashable"
+let UnhashableContent = ContentHash.UnhashableContent
 
 /// Resolve which on-disk file *is* "this binary" for identity purposes:
 /// the entry assembly's dll when it resolves to a real file (local `dotnet
@@ -103,16 +118,16 @@ let internal identitySourceFile (processPath: string) (entryAssemblyLocation: st
         else
             None
 
-/// SHA256 of the file's bytes, shortened to 16 hex chars. `None` on any read
-/// failure (logged at debug; the caller substitutes the deterministic
-/// `UnhashableContent` sentinel).
+/// SHA256 of the file's bytes (via the ONE hasher), shortened to 16 hex chars for the
+/// one-line disk format. `None` when the file could not be read — the caller
+/// substitutes the deterministic `UnhashableContent` sentinel.
 let internal hashFile (path: string) : string option =
-    try
-        use fs = File.OpenRead(path)
-        let hash = SHA256.HashData(fs)
-        Some(Convert.ToHexStringLower(hash).Substring(0, 16))
-    with ex ->
-        debug "identity" $"could not hash %s{path}: %s{ex.GetType().Name}: %s{ex.Message}"
+    let hash = ContentHash.ofFile path
+
+    if ContentHash.isReadable hash then
+        Some(hash.Substring(0, 16))
+    else
+        debug "identity" $"could not hash %s{path}"
         None
 
 /// Pure assembly-independent core of `currentIdentity`, split out so the

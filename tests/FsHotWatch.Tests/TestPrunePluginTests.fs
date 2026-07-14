@@ -6610,72 +6610,54 @@ let ``cacheKeyFor: two merge-gate runs over the same tree DO share a key`` () =
 
     test <@ gateKey () = gateKey () @>
 
-// --- AUTOMATION-112: what a completed run actually covered ---
+// --- AUTOMATION-129: the gate's scope is a PROJECTION of RunCoverage ---
+//
+// These replace the `classifyRunScope` suite (AUTOMATION-112). That function derived
+// the gate's scope INDEPENDENTLY, from `LastResults`, while the ledger decided what a
+// run may CLEAR from `RunCoverage` (AUTOMATION-125) — two answers to one question,
+// with nothing making them agree, so a gate could go green on a scope the ledger would
+// never have granted. `scopeOf` is a VIEW of the ledger's own value; they cannot
+// disagree by construction. Every behaviour the old suite pinned is pinned here.
 
 [<Fact(Timeout = 10000)>]
-let ``classifyRunScope: every project ran, none filtered -> RanEverything`` () =
-    let results: TestResults =
-        { Results =
-            Map.ofList
-                [ "Alpha.Tests", TestsPassed("ok", false, TimeSpan.Zero)
-                  "Beta.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
-          Elapsed = TimeSpan.Zero }
+let ``scopeOf: every project executed in FULL is the only whole-suite scope`` () =
+    let projects = [ "Alpha.Tests"; "Beta.Tests" ]
 
-    let scope =
-        classifyRunScope [ testConfigNamed "Alpha.Tests"; testConfigNamed "Beta.Tests" ] (Some results)
+    let everything =
+        Map.ofList [ "Alpha.Tests", CoveredWholeProject; "Beta.Tests", CoveredWholeProject ]
 
-    test <@ scope = RanEverything 2 @>
+    test <@ scopeOf projects everything = ScopeFull 2 @>
 
 [<Fact(Timeout = 10000)>]
-let ``classifyRunScope: a filtered project -> RanSubset`` () =
-    // `wasFiltered = true` on any project means a selection was applied. Whatever else
-    // is true, this run did not look at the whole suite.
-    let results: TestResults =
-        { Results =
-            Map.ofList
-                [ "Alpha.Tests", TestsPassed("ok", true, TimeSpan.Zero)
-                  "Beta.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
-          Elapsed = TimeSpan.Zero }
+let ``scopeOf: a class-filtered project makes the run a SUBSET, never full-suite`` () =
+    let projects = [ "Alpha.Tests"; "Beta.Tests" ]
 
-    let scope =
-        classifyRunScope [ testConfigNamed "Alpha.Tests"; testConfigNamed "Beta.Tests" ] (Some results)
+    let oneFiltered =
+        Map.ofList
+            [ "Alpha.Tests", CoveredClasses(Set.ofList [ "SomeTests" ])
+              "Beta.Tests", CoveredWholeProject ]
 
-    test <@ scope = RanSubset(2, 2) @>
+    test <@ scopeOf projects oneFiltered = ScopeFiltered(2, 2) @>
 
 [<Fact(Timeout = 10000)>]
-let ``classifyRunScope: an unfiltered run that skipped a project -> RanSubset`` () =
-    // Filtering nothing is not the same as covering everything. A run that simply
-    // didn't execute half the suite covered no more of it than a filtered one did.
-    let results: TestResults =
-        { Results = Map.ofList [ "Alpha.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
-          Elapsed = TimeSpan.Zero }
-
-    let scope =
-        classifyRunScope
-            [ testConfigNamed "Alpha.Tests"
-              testConfigNamed "Beta.Tests"
-              testConfigNamed "Gamma.Tests" ]
-            (Some results)
-
-    test <@ scope = RanSubset(1, 3) @>
+let ``scopeOf: an unfiltered run that SKIPPED a project is a subset`` () =
+    let projects = [ "Alpha.Tests"; "Beta.Tests" ]
+    let oneMissing = Map.ofList [ "Alpha.Tests", CoveredWholeProject ]
+    test <@ scopeOf projects oneMissing = ScopeFiltered(1, 2) @>
 
 [<Fact(Timeout = 10000)>]
-let ``classifyRunScope: the zero-affected skip's empty green is RanNothing, NOT full-suite`` () =
-    // The trap. `TestRunCompleted.RanFullSuite` is vacuously TRUE for an empty Results
-    // map (nothing was filtered because nothing ran), and the degenerate
-    // zero-affected skip produces exactly that. A merge gate reading that flag would
-    // see "full suite: true" for a run in which no test executed — AUTOMATION-108's
-    // shape precisely. `classifyRunScope` refuses to launder it.
-    let skipped: TestResults =
-        { Results = Map.empty
-          Elapsed = TimeSpan.Zero }
-
-    test <@ TestResult.ranFullSuite skipped.Results @>
-    test <@ classifyRunScope [ testConfigNamed "Alpha.Tests" ] (Some skipped) = RanNothing @>
+let ``scopeOf: the zero-affected skip's empty green is NO SCOPE, not a full suite`` () =
+    // The trap, carried over verbatim from the suite this replaces: a run whose
+    // coverage is EMPTY verified nothing. `RanFullSuite` is vacuously true for an empty
+    // map, which is exactly what a merge gate must not swallow. It is `ScopeNone` — and
+    // the CLI refuses to call that green in EITHER mode (AUTOMATION-129).
+    test <@ scopeOf [ "Alpha.Tests" ] RunCoverage.none = ScopeNone 1 @>
 
 [<Fact(Timeout = 10000)>]
-let ``classifyRunScope: no run at all is RanNothing`` () =
-    test <@ classifyRunScope [ testConfigNamed "Alpha.Tests" ] None = RanNothing @>
+let ``scopeOf: a repo with no test projects is not a covered suite`` () =
+    // There is no evidence in a run of nothing.
+    test <@ scopeOf [] RunCoverage.none = ScopeNone 0 @>
+
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-99 — a test run the daemon cannot SEE is a gate that cannot
@@ -7420,19 +7402,63 @@ let ``AUTOMATION-125: the merge gate still rejects a filtered green as UnearnedS
         { Results = Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ]
           Elapsed = TimeSpan.FromSeconds 1.0 }
 
-    match classifyRunScope configs (Some filteredResults) with
-    | RanSubset(ran, total) ->
-        test <@ ran = 2 && total = 2 @>
+    // ProjA was impact-skipped (it never ran). ProjB was launched under a CLASS FILTER
+    // and passed — so the run's honest reach is "some of ProjB", and nothing else.
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectClasses(Set.ofList [ "SomeTests" ]) ])
+            filteredResults.Results
+
+    match scopeOf (configs |> List.map (fun c -> c.Project)) coverage with
+    | ScopeFiltered(ran, total) ->
+        test <@ ran = 1 && total = 2 @>
 
         let outcome =
             FsHotWatch.Cli.CheckVerdict.verdict
                 FsHotWatch.Cli.CheckVerdict.MergeGate
                 false
                 FsHotWatch.Cli.IpcParsing.Complete
-                (FsHotWatch.Cli.IpcParsing.ImpactFiltered(2, 2))
+                (FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total))
 
         test <@ FsHotWatch.Cli.CheckVerdict.exitCode outcome = 3 @>
     | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate sees no scope at all`` () =
+    // Sharper than the case above, and worth pinning: `run-tests --filter <raw>` is an
+    // arbitrary filter string whose reach `RunCoverage.ofRun` cannot compute, so it
+    // credits the run with NOTHING. Projecting that gives `ScopeNone` — not
+    // `ScopeFiltered` — and the CLI refuses to call it green in EITHER mode. Strictly
+    // safer than the `classifyRunScope` it replaces, which would have called this a
+    // SUBSET (still exit 3, but for the weaker reason).
+    let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
+
+    let rawFiltered: TestResults =
+        { Results = Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ]
+          Elapsed = TimeSpan.FromSeconds 1.0 }
+
+    let coverage =
+        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ]) rawFiltered.Results
+
+    test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeNone 2 @>
+
+    // NoTestsRun → UnearnedScope → exit 3, in the inner loop as well as the gate.
+    let gate =
+        FsHotWatch.Cli.CheckVerdict.verdict
+            FsHotWatch.Cli.CheckVerdict.MergeGate
+            false
+            FsHotWatch.Cli.IpcParsing.Complete
+            FsHotWatch.Cli.IpcParsing.NoTestsRun
+
+    let inner =
+        FsHotWatch.Cli.CheckVerdict.verdict
+            FsHotWatch.Cli.CheckVerdict.InnerLoop
+            false
+            FsHotWatch.Cli.IpcParsing.Complete
+            FsHotWatch.Cli.IpcParsing.NoTestsRun
+
+    test <@ FsHotWatch.Cli.CheckVerdict.exitCode gate = 3 @>
+    test <@ FsHotWatch.Cli.CheckVerdict.exitCode inner = 3 @>
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (AUTOMATION-113)`` () =

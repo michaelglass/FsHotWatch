@@ -2,6 +2,7 @@ module FsHotWatch.Cli.ProgressRenderer
 
 open System
 open CommandTree
+open FsHotWatch
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginActivity
@@ -370,26 +371,14 @@ module private Agent =
 
     /// Terminal state for a plugin as seen by an agent consumer. `None` from
     /// `stateToken` means "omit this plugin from output" (idle with no history).
-    [<RequireQualifiedAccess>]
-    type State =
-        | Ok
-        | Fail
-        | TimedOut
-        | Warn
-        | Running
-        /// Running past the wedge bound with no completion posted — by
-        /// definition wedged (AUTOMATION-147). Its own token so an agent
-        /// consumer can never read a wedge as mere "running".
-        | Wedged
+    ///
+    /// This IS `Verdict.PluginOutcome` — not a parallel copy of it. The status line an
+    /// agent reads and the `plugins[]` array in `.fshw/verdict.json` are two renderings
+    /// of ONE value, so they cannot drift into disagreeing about whether a plugin
+    /// passed — or, since AUTOMATION-147, about whether it is WEDGED.
+    type State = Verdict.PluginOutcome
 
-    let private tokenOf =
-        function
-        | State.Ok -> "ok"
-        | State.Fail -> "fail"
-        | State.TimedOut -> "timed-out"
-        | State.Warn -> "warn"
-        | State.Running -> "running"
-        | State.Wedged -> "wedged"
+    let private tokenOf = Verdict.PluginOutcome.token
 
     /// Escape a summary for `summary="..."`: collapse newlines to spaces,
     /// escape embedded double quotes, truncate to 80 chars.
@@ -401,47 +390,12 @@ module private Agent =
             |> truncateTo80
 
     /// Determine the state for a plugin. Returns None when the plugin
-    /// should be omitted (Idle with no lastRun).
+    /// should be omitted (Idle with no lastRun). ONE implementation, shared with the
+    /// verdict file — see `State`. It carries AUTOMATION-147's wedge detection and its
+    /// fail-closed "Completed with no run record is never ok" rule, so `.fshw/verdict.json`
+    /// inherits both: a wedge can never be laundered into "running" on either surface.
     let stateToken (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : State option =
-        let okOrDiag () =
-            if DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
-                if parsed.Diagnostics.Errors > 0 then
-                    State.Fail
-                else
-                    State.Warn
-            else
-                State.Ok
-
-        let timedOutLastRun () =
-            match parsed.LastRun with
-            | Some r ->
-                match r.Outcome with
-                | TimedOut _ -> true
-                | _ -> false
-            | None -> false
-
-        match parsed.Status with
-        | StatusView.Running since ->
-            match runningWedge now since with
-            | FsHotWatch.PluginWedge.RunningHealth.Wedged _ -> Some State.Wedged
-            | FsHotWatch.PluginWedge.RunningHealth.StillRunning _ -> Some State.Running
-        | StatusView.Failed _ when timedOutLastRun () -> Some State.TimedOut
-        | StatusView.Failed _ -> Some State.Fail
-        // Fail closed: Completed with no run record can never token as "ok"
-        // (the agent-mode ✓) — see CompletedNoRecordText. Failing diagnostics
-        // still take precedence (fail/warn); a clean ledger downgrades to warn.
-        | StatusView.Completed _ when parsed.LastRun.IsNone ->
-            match okOrDiag () with
-            | State.Ok -> Some State.Warn
-            | other -> Some other
-        | StatusView.Completed _ -> Some(okOrDiag ())
-        | StatusView.Idle ->
-            parsed.LastRun
-            |> Option.map (fun r ->
-                match r.Outcome with
-                | FailedRun _ -> State.Fail
-                | TimedOut _ -> State.TimedOut
-                | CompletedRun -> okOrDiag ())
+        Verdict.pluginOutcomeOf warningsAreFailures now parsed
 
     /// Extract a summary string for non-ok states. None when there's nothing to show.
     let private summaryFor (parsed: ParsedPluginStatus) : string option =
@@ -576,6 +530,83 @@ let renderPlugin
         match Agent.formatLine warningsAreFailures now name parsed with
         | Some line -> [ line ]
         | None -> []
+
+// ----- Steering hints (AUTOMATION-129) -----
+
+/// Point the reader at the MACHINE-READABLE results, in the output they are
+/// already reading.
+///
+/// The CTRF reports existed. The house rule ("if you need a primitive fshw
+/// doesn't have, add it upstream — don't route around it with bash") existed. The
+/// orchestrator's own memory said so. It still spent a night grepping `total:`
+/// and `elapsed:` out of a progress display built for a human, and then wrote a
+/// 40-line bash harness that made merge decisions. A convention that lives
+/// somewhere you must already know to look is not enforcement — it is hope. So
+/// the pointer goes HERE, at the point of use, with the ACTUAL paths for THIS
+/// run: a hint that makes you go and find the file is a hint you will ignore.
+///
+/// Printed when stdout is NOT a terminal — that is when a machine is reading.
+/// This is PRESENTATION adapting to the caller, which is allowed; the verdict is
+/// byte-for-byte identical either way. What must never adapt is the SEMANTICS,
+/// and none do: no check is stricter for an agent than for a human.
+module AgentHints =
+
+    /// The steering block for a completed check/gate, naming this run's files.
+    let forVerdict (v: Verdict.Verdict) : string list =
+        // NEVER print a path for a file that was not written. A hint that sends you to
+        // an empty directory teaches distrust — and distrust of the tool is what drove
+        // the bash harness in the first place.
+        let suiteLines =
+            match v.Suites, v.RunId with
+            | [], None ->
+                [ "    suites   NO TEST RUN — nothing was verified by tests in this check (there is no run directory)" ]
+            | [], Some id ->
+                let dir = id.ToString("N")
+                [ $"    suites   NONE — the run executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)" ]
+            | suites, _ ->
+                suites
+                |> List.mapi (fun i s ->
+                    let label = if i = 0 then "suites  " else "        "
+                    $"    %s{label} %s{s.Ctrf}")
+
+        let scopeAdvice =
+            match v.Command, v.Scope with
+            | Verdict.Check, ImpactFiltered(ran, total) ->
+                [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — for a MERGE verdict use \
+                     `fshw gate` (unfiltered; exit 3 if the scope was not earned)" ]
+            | Verdict.Check, (NoTestsRun | ScopeUnknown) ->
+                [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — for a MERGE \
+                     verdict use `fshw gate` (unfiltered; exit 3 if the scope was not earned)" ]
+            | Verdict.Check, FullSuite _
+            | Verdict.Gate, _ -> []
+
+        [ "  AGENTS: don't parse this output. Machine-readable results:"
+          $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against the \
+             tree on disk; exit 4 = stale, do not reuse)" ]
+        @ suiteLines
+        @ scopeAdvice
+
+    /// The steering block for `fshw status`, which triggers no run and therefore
+    /// has no verdict of its own — it points at whatever the last one left behind.
+    let forStatus (repoRoot: string) : string list =
+        let suites =
+            Ctrf.latestRunReports repoRoot
+            |> List.map (fun r -> System.IO.Path.GetRelativePath(repoRoot, r.Path).Replace('\\', '/'))
+
+        let suiteLines =
+            match suites with
+            | [] -> [ "    suites   (none — no test run has produced a report yet)" ]
+            | paths ->
+                paths
+                |> List.mapi (fun i p ->
+                    let label = if i = 0 then "suites  " else "        "
+                    $"    %s{label} %s{p}")
+
+        [ "  AGENTS: don't parse this output. Machine-readable state:"
+          $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` says whether it still \
+             applies; exit 4 = stale)" ]
+        @ suiteLines
+        @ [ "    NOTE: `status` triggers no run — the verdict above is from whichever check last ran." ]
 
 /// Render all plugin statuses in the given mode. Callers join with newlines
 /// and use the line count for cursor-up erase.

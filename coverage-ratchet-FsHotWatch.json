@@ -110,6 +110,20 @@
         "platform": "linux"
       }
     ],
+    "ContentHash.fs": [
+      {
+        "line": 100,
+        "branch": 66,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 58,
+        "reason": "provisional Linux floor (AUTOMATION-129, 2026-07-14): not measured locally; set below the macOS actual by the margin this repo already sees on pure-logic files (cf. CheckVerdict.fs), to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "CoverageMerge.fs": [
       {
         "line": 97,
@@ -133,6 +147,20 @@
       {
         "line": 83,
         "branch": 50,
+        "platform": "linux"
+      }
+    ],
+    "Ctrf.fs": [
+      {
+        "line": 88,
+        "branch": 59,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "platform": "macos"
+      },
+      {
+        "line": 85,
+        "branch": 51,
+        "reason": "provisional Linux floor (AUTOMATION-129, 2026-07-14): not measured locally; set below the macOS actual by the margin this repo already sees on pure-logic files (cf. CheckVerdict.fs), to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
         "platform": "linux"
       }
     ],
@@ -161,6 +189,20 @@
         "line": 76,
         "branch": 78,
         "reason": "lower coverage on Linux CI; race-fix retry path",
+        "platform": "linux"
+      }
+    ],
+    "DaemonIdentity.fs": [
+      {
+        "line": 100,
+        "branch": 71,
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 71,
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
@@ -513,6 +555,20 @@
         "platform": "linux"
       }
     ],
+    "PluginWedge.fs": [
+      {
+        "line": 92,
+        "branch": 87,
+        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
+        "platform": "macos"
+      },
+      {
+        "line": 92,
+        "branch": 87,
+        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "platform": "linux"
+      }
+    ],
     "ProcessHelper.fs": [
       {
         "line": 95,
@@ -647,6 +703,34 @@
       "branch": 30,
       "reason": "loosened automatically"
     },
+    "TreeHash.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "AUTOMATION-129: TIGHTENED from 100/75. The unreachable IO exception filters moved into ContentHash (one hasher, one fail-closed policy), leaving TreeHash pure and fully covered.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "pure logic, platform-independent; the same unit tests cover it on Linux.",
+        "platform": "linux"
+      }
+    ],
+    "Verdict.fs": [
+      {
+        "line": 94,
+        "branch": 85,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 77,
+        "reason": "provisional Linux floor (AUTOMATION-129, 2026-07-14): not measured locally; set below the macOS actual by the margin this repo already sees on pure-logic files (cf. CheckVerdict.fs), to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "Watcher.fs": [
       {
         "line": 90,
@@ -658,34 +742,6 @@
         "line": 83,
         "branch": 60,
         "reason": "higher line coverage on Linux CI (no FSEvents)",
-        "platform": "linux"
-      }
-    ],
-    "PluginWedge.fs": [
-      {
-        "line": 92,
-        "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
-        "platform": "macos"
-      },
-      {
-        "line": 92,
-        "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
-        "platform": "linux"
-      }
-    ],
-    "DaemonIdentity.fs": [
-      {
-        "line": 100,
-        "branch": 71,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure.",
-        "platform": "macos"
-      },
-      {
-        "line": 100,
-        "branch": 71,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ]
