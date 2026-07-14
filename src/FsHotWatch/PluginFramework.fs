@@ -248,12 +248,23 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     let mutable agentRef: MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>> option =
         None
 
-    // Per-plugin inflight counter: incremented every time a Choice1Of2 event
-    // is posted to the agent's mailbox, decremented after the agent has
-    // finished handling that event. `WaitForComplete` consults this via
-    // `RegisteredPlugin.IsBusy` to avoid declaring quiescence while events are
-    // still queued or being processed but the plugin's status is observably
-    // Idle (e.g. handler hasn't yet called ReportStatus(Running)).
+    // Per-plugin inflight counter — the SINGLE source of "this plugin has work
+    // in flight". Incremented (a) every time a Choice1Of2 event is posted to
+    // the agent's mailbox, decremented after the agent has finished handling
+    // that event; and (b) for the whole lifetime of an exclusive run: from the
+    // moment `runExclusive` claims the slot until AFTER the run's completion
+    // message has been posted back (see `runOne`'s finally). `WaitForComplete`
+    // consults this via `RegisteredPlugin.IsBusy`.
+    //
+    // ONE counter on purpose (AUTOMATION-99). The previous shape —
+    // `inflightCount > 0 || anyRunSlotBusy()` — was a composite of two
+    // atomics read at different instants, and the hand-off between them had a
+    // gap: `runOne` released the slot BEFORE posting the completion message,
+    // so a reader could observe "slot free" AND "mailbox empty" while the
+    // run's verdict was still in flight between the two. Because the work
+    // token is not released until after the completion post, the counter
+    // never dips to zero anywhere between "run claimed" and "completion
+    // handled".
     let inflightCount = ref 0
 
     let post (msg: 'Msg) =
@@ -300,11 +311,27 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         handler.Name
                         (PluginStatus.Failed($"RunExclusive '%s{key}' work failed: %s{ex.Message}", DateTime.UtcNow))
             finally
+                // Release order matters (AUTOMATION-99):
+                //   1. free the slot — the completion handler may itself launch
+                //      the next run (`PendingRerun`), so the slot must be free
+                //      by the time the completion message is PROCESSED;
+                //   2. post the completion message — increments the mailbox leg
+                //      of `inflightCount`;
+                //   3. only then drop the work token taken by `runExclusive`.
+                // The counter stays positive across the whole hand-off, so no
+                // observer can catch the plugin "at rest" between the run
+                // finishing and its verdict being handled. On the faulted path
+                // (no completion) the forced `Failed` above was reported while
+                // the token was still held — the status is terminal before the
+                // plugin ever reads as not-busy.
                 lock runSlotsLock (fun () -> runSlots.[key] <- false)
 
-                match completion with
-                | ValueSome m -> post m
-                | ValueNone -> ()
+                try
+                    match completion with
+                    | ValueSome m -> post m
+                    | ValueNone -> ()
+                finally
+                    System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
         }
 
     let runExclusive (key: string) (work: Async<'Msg>) =
@@ -317,6 +344,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     true)
 
         if shouldStart then
+            // Work token: counts this exclusive run in `inflightCount` from
+            // claim until after its completion message is posted (released in
+            // `runOne`'s finally). See the counter's doc comment.
+            System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
             Async.Start(runOne key work)
         else
             // AUTOMATION-15 (item 5): exclusion-slot contention. A new run was
@@ -503,13 +534,31 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     /// terminal status, UI shows "running" forever). We surface the exception
                     /// as PluginStatus.Failed *after* catching so the observable status always
                     /// reaches a terminal state, regardless of what the handler did beforehand.
+                    ///
+                    /// EXCEPT while an exclusive run is in flight (AUTOMATION-99): the same
+                    /// ownership rule as the cache-replay suppression applies — the live run
+                    /// owns this plugin's status. It reported Running at launch and its
+                    /// completion path is GUARANTEED to deliver a terminal status (the
+                    /// completion handler on success, `runOne`'s forced Failed on a faulted
+                    /// work async), so the stuck-forever hazard this net exists for cannot
+                    /// occur. Stomping Failed over the live Running is precisely how a
+                    /// crashing per-file handler manufactured a terminal status mid-test-run
+                    /// (the observed "terminal with started: but no elapsed:" signature).
+                    /// The crash is still logged loudly either way.
                     let safeUpdate pluginCtx state event =
                         async {
                             try
                                 return! handler.Update pluginCtx state event
                             with ex ->
                                 error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
-                                services.ReportStatus handler.Name (Failed(ex.ToString(), DateTime.UtcNow))
+
+                                if anyRunSlotBusy () then
+                                    FsHotWatch.Logging.debug
+                                        (PluginName.value handler.Name)
+                                        "handler fault: suppressing forced Failed status — an exclusive run is in flight and owns the status"
+                                else
+                                    services.ReportStatus handler.Name (Failed(ex.ToString(), DateTime.UtcNow))
+
                                 return state
                         }
 
@@ -679,15 +728,17 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     { Name = handler.Name
       Dispatch = dispatch
       Teardown = handler.Teardown
-      // "Busy" must mean "this plugin has work in flight", full stop. It used to
-      // mean only "has events queued in its mailbox" — which is blind to the
-      // background work a handler launches via `RunExclusive` (a test run) and then
-      // returns from. So the host could conclude a plugin was at rest while its test
-      // run was still executing, and `WaitForComplete` would hand `check` a verdict
-      // the run had not yet produced (AUTOMATION-95/99). An exclusive run slot is
-      // released in a `finally`, so this stays bounded — and the verdict deadline
+      // "Busy" must mean "this plugin has work in flight", full stop: events
+      // queued or being handled, AND any exclusive run from its claim until its
+      // completion message has been handled — all counted in the ONE
+      // `inflightCount` (see its doc comment for why a single counter, not a
+      // composite of counter-plus-slots, is load-bearing). Without the run leg
+      // the host could conclude a plugin was at rest while its test run was
+      // still executing, and `WaitForComplete` would hand `check` a verdict the
+      // run had not yet produced (AUTOMATION-95/99). Run tokens are released in
+      // a `finally`, so this stays bounded — and the verdict deadline
       // (Ipc.resolveVerdictDeadline) still bounds a genuinely wedged run.
-      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 || anyRunSlotBusy () }
+      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 }
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
 module PluginCtxHelpers =

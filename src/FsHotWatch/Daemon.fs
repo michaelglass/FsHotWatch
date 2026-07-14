@@ -1428,11 +1428,12 @@ type Daemon
                 // check clients blocked on the daemon's authoritative settle).
                 // Feeds the idle-exit `Busy` predicate below so the daemon is
                 // NEVER treated as idle while a client is actively waiting for a
-                // verdict — even when every plugin's mailbox is quiet and a
-                // background `RunExclusive` run is holding a Running status that
-                // `AnyPluginBusy` (mailbox-inflight only) does not observe. Without
-                // this, a long/stuck settle let idle-exit fire mid-wait and drop
-                // the client with a connection error instead of a verdict.
+                // verdict. (`AnyPluginBusy` now observes exclusive runs too, but
+                // a client can be blocked on a verdict even while every plugin
+                // is momentarily quiet — e.g. between convergence attempts.)
+                // Without this, a long/stuck settle let idle-exit fire mid-wait
+                // and drop the client with a connection error instead of a
+                // verdict.
                 let activeVerdictWaits = ref 0
 
                 let rpcConfig: DaemonRpcConfig =
@@ -1511,13 +1512,15 @@ type Daemon
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readGcPressure
                               Now = fun () -> System.DateTime.UtcNow
-                              // Busy when any plugin mailbox is in flight OR a
-                              // client is actively blocked on a verdict wait. The
-                              // wait leg is the fix for the fresh-workspace wedge:
-                              // it keeps idle-exit from firing out from under a
-                              // connected `fshw check` even while all mailboxes are
-                              // quiet (a background test run holds a Running status
-                              // that `AnyPluginBusy` alone cannot see).
+                              // Busy when any plugin has work in flight (mailbox
+                              // events or an exclusive background run — both
+                              // observed by `AnyPluginBusy`) OR a client is
+                              // actively blocked on a verdict wait. The wait leg
+                              // is the fix for the fresh-workspace wedge: it keeps
+                              // idle-exit from firing out from under a connected
+                              // `fshw check` even in the instants where no plugin
+                              // work is in flight (e.g. between convergence
+                              // attempts).
                               Busy =
                                 fun () ->
                                     IdleExit.busyForIdleExit

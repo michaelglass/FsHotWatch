@@ -303,7 +303,22 @@ type TestRunLaunch =
     { Symbols: Set<string>
       CoveringProjectsBySymbol: Map<string, Set<string>> }
 
-type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
+[<NoComparison; NoEquality>]
+type TestPruneMsg =
+    | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
+    /// A `run-tests` IPC command asking the MAILBOX to launch its force-run
+    /// under the `RunExclusive "tests"` slot (AUTOMATION-99). The command must
+    /// never execute tests on the IPC thread itself: a run outside the slot is
+    /// invisible to the daemon's whole runtime model — `IsRunning "tests"`
+    /// reads false (so a concurrent FileChecked stamps a terminal status over
+    /// it), the plugin never reports Running, and `AnyPluginBusy()` reads
+    /// false, letting a concurrent `fshw check` resolve its verdict wait and
+    /// exit 0 while the test process is literally alive. Routing the launch
+    /// through the mailbox serialises it with every other launch site and
+    /// makes the run held-and-visible for its whole duration. `reply` carries
+    /// the results JSON back to the awaiting IPC command; every completion
+    /// path must resolve it.
+    | RunTestsRequested of configs: TestConfig list * filter: string option * reply: Tasks.TaskCompletionSource<string>
 
 /// Build the degenerate Started→Aborted lifecycle a faulted run posts back so
 /// the synchronous `TestsFinished` handler drives the plugin to a NON-green
@@ -2835,60 +2850,36 @@ let create
                                     | Ok configs when configs.IsEmpty ->
                                         return JsonSerializer.Serialize({| error = "no matching test projects" |})
                                     | Ok configs ->
-                                        let! results, started, completed =
-                                            executeTests
-                                                db
-                                                None
-                                                repoRoot
-                                                beforeRun
-                                                coveragePaths
-                                                afterRun
-                                                configs
-                                                Map.empty
-                                                filter
+                                        // AUTOMATION-99: the run is NOT executed here.
+                                        // Executing on the IPC thread bypassed the
+                                        // `RunExclusive "tests"` slot entirely, so for the
+                                        // whole duration of a force-run the daemon model
+                                        // read "at rest": `IsRunning "tests"` false (a
+                                        // concurrent FileChecked stamped a terminal status
+                                        // over the live run — the observed "✓ with
+                                        // started: but no elapsed:" signature), no Running
+                                        // status, `AnyPluginBusy()` false — and a
+                                        // concurrent `fshw check` exited 0 while the test
+                                        // process was alive. Post the launch request to
+                                        // the mailbox instead: the handler claims the slot
+                                        // and reports Running like every other launch
+                                        // site, and the reply carries the results JSON
+                                        // back here.
+                                        let reply =
+                                            Tasks.TaskCompletionSource<string>(
+                                                Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                            )
 
-                                        // Post rather than EmitTestRunCompleted directly — the
-                                        // Custom(TestsFinished) handler also does error reporting and
-                                        // status updates that a bare emit call would skip.
-                                        //
-                                        // Empty launch set: `run-tests` is a manual FORCE run
-                                        // (optionally filtered to a subset / only-failed). It is NOT
-                                        // the impact-analysis queue-draining path, and a filtered
-                                        // force-run may not cover every queued symbol — so it commits
-                                        // NOTHING from the pending-verification queue (over-testing is
-                                        // the safe direction). The queue drains through the normal
-                                        // BuildCompleted impact flow.
-                                        let emptyLaunch =
-                                            { Symbols = Set.empty
-                                              CoveringProjectsBySymbol = Map.empty }
-
-                                        ctx.Post(TestsFinished(started, completed, emptyLaunch))
-
-                                        return formatTestResultsJson results
+                                        ctx.Post(RunTestsRequested(configs, filter, reply))
+                                        let! json = Async.AwaitTask reply.Task
+                                        return json
                             with ex ->
+                                // Command-local faults only (the run itself executes in
+                                // the mailbox-launched work, which owns run faults per
+                                // AUTOMATION-68 and always resolves the reply + posts
+                                // the Aborted lifecycle). Nothing to post here: no run
+                                // was launched.
                                 Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-
-                                // AUTOMATION-68: a `beforeRun` throw / `executeTests`
-                                // fault means the suite NEVER RAN. Pre-fix this only
-                                // returned a command-level JSON error and posted
-                                // NOTHING, so the plugin status stayed at its prior
-                                // (possibly green) value and a concurrent `fshw check`
-                                // read the daemon aggregate as clean (exit 0) even
-                                // though the preflight-guarded suite was skipped. Post
-                                // the SAME Aborted lifecycle the impact path
-                                // (`runTestsWithImpact`) builds so the synchronous
-                                // TestsFinished handler drives the plugin to
-                                // PluginStatus.Failed (`anyPluginFailed` ⇒ non-zero
-                                // verdict) with the hook's output surfaced. Empty
-                                // launch: a manual force-run commits nothing from the
-                                // pending-verification queue (over-testing is safe).
-                                let started, completed = abortedRunLifecycle ex.Message
-
-                                let abortedLaunch: TestRunLaunch =
-                                    { Symbols = Set.empty
-                                      CoveringProjectsBySymbol = Map.empty }
-
-                                ctx.Post(TestsFinished(started, completed, abortedLaunch))
                                 return JsonSerializer.Serialize({| error = ex.Message |})
                     } ]
         | _ -> commands
@@ -2900,255 +2891,299 @@ let create
             async {
                 match event with
                 | PluginEvent.FileChecked result ->
-                    let isIdle = not (ctx.IsRunning "tests")
-
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
-                    // Canonical project identity. For real .fsproj files, FCS
-                    // gives "MyProject.fsproj" → "MyProject". For .fsx scripts
-                    // FCS synthesizes "Lib.fsx.fsproj" → "Lib.fsx" after one
-                    // strip; drop the trailing ".fsx" so config that specifies
-                    // `"Lib"` matches both cases.
-                    let projectName =
-                        let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+                    try
+                        // Canonical project identity. For real .fsproj files, FCS
+                        // gives "MyProject.fsproj" → "MyProject". For .fsx scripts
+                        // FCS synthesizes "Lib.fsx.fsproj" → "Lib.fsx" after one
+                        // strip; drop the trailing ".fsx" so config that specifies
+                        // `"Lib"` matches both cases.
+                        let projectName =
+                            let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
 
-                        if raw.EndsWith(".fsx") then
-                            raw.Substring(0, raw.Length - 4)
-                        else
-                            raw
-
-                    // Path D — fshw-owned per-file freshness sidecar gates the
-                    // detectChanges call site. The F38 "withhold the symbol-DB
-                    // write entirely" branch is gone: dirty FCS results no
-                    // longer block persistence (cold-scan rows still go in).
-                    // Instead the sidecar records `fcsClean = false` for the
-                    // file so cross-restart Phase B replay treats those rows
-                    // as untrusted-for-diff. The next clean recheck will both
-                    // overwrite the rows with good extractions and flip the
-                    // sidecar back to clean.
-                    let currentClean =
-                        not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
-
-                    let storedFreshness =
-                        let store = Volatile.Read(&freshnessRef)
-                        FileFreshness.classify relPath store
-
-                    if not currentClean then
-                        let errCount =
-                            fcsErrorCount ctx.FcsSuppressedCodes result.Source result.CheckResults
-
-                        Logging.warn
-                            "test-prune"
-                            $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
-
-                    let! analysisResult =
-                        analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
-
-                    match analysisResult with
-                    | Ok analysisResult ->
-                        let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
-
-                        let fileAnalysis =
-                            { Symbols = normalizedSymbols
-                              Dependencies = analysisResult.Dependencies
-                              TestMethods =
-                                analysisResult.TestMethods
-                                |> List.map (fun t -> { t with TestProject = projectName })
-                              Attributes = analysisResult.Attributes
-                              ParentLinks = analysisResult.ParentLinks
-                              Diagnostics = analysisResult.Diagnostics }
-
-                        // Read stored symbols from the in-memory snapshot (populated after
-                        // each flush). Falls back to DB for warm starts where the snapshot
-                        // hasn't been populated yet.
-                        let storedSymbols =
-                            match Map.tryFind relPath state.SymbolSnapshot with
-                            | Some symbols -> symbols
-                            | None -> db.GetSymbolsInFile(relPath)
-
-                        // Accumulate per-project; flush on BuildCompleted.
-                        // Replace any prior analysis for this file to avoid double-counting
-                        // when a file is checked more than once before the flush (e.g. initial
-                        // scan followed by a file-change recheck).
-                        let existingForProject =
-                            state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
-
-                        let filteredExisting =
-                            existingForProject
-                            |> List.filter (fun a -> not (a.Symbols |> List.exists (fun s -> s.SourceFile = relPath)))
-
-                        let newPending =
-                            state.PendingAnalysis
-                            |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
-
-                        // Path D gate: decide whether the stored rows can be
-                        // diffed against. Requires the CURRENT extraction to be
-                        // FCS-clean (a dirty current result means the
-                        // just-extracted symbols are themselves suspect). Given
-                        // that, the STORED side is trusted per FileFreshness.classify:
-                        //
-                        //   Clean   — explicit clean stamp → diff.
-                        //   Unknown — NO sidecar record. Over a NON-EMPTY stored
-                        //             row set this is a seeded test-impact.db
-                        //             (ADR-010) whose freshness sidecar didn't
-                        //             travel into this fresh workspace. ADR-010
-                        //             guarantees a seeded DB over-indexes but
-                        //             never serves a stale verdict, so DIFF the
-                        //             seeded rows: unchanged files find no
-                        //             changes, edited files find the real delta
-                        //             and select their covering tests. Bypassing
-                        //             here (the pre-AUTOMATION-67 behaviour)
-                        //             silently UNDER-selected — a real edit in a
-                        //             seeded workspace ran zero tests → vacuous
-                        //             green. Gated on stored rows existing: an
-                        //             EMPTY stored set is a genuine cold scan
-                        //             (empty DB) with no baseline to diff, which
-                        //             stays no-diff so it doesn't select the
-                        //             whole suite.
-                        //   Dirty   — explicit `fcsClean = false` stamp: the
-                        //             stored rows were written during an FCS-error
-                        //             extraction and may be PARTIAL. Diffing
-                        //             against them yields a phantom "all symbols
-                        //             changed" delta (the 4921-affected-tests
-                        //             Phase B regression). Bypass.
-                        let storedTrustedForDiff =
-                            match storedFreshness with
-                            | FileFreshness.Clean -> true
-                            | FileFreshness.Unknown -> not storedSymbols.IsEmpty
-                            | FileFreshness.Dirty -> false
-
-                        let (changedNames, suppressedDiff) =
-                            if currentClean && storedTrustedForDiff then
-                                // detectChanges filters externs internally; no pre-filter needed here.
-                                let (changes, _events) = detectChanges normalizedSymbols storedSymbols
-
-                                Logging.info
-                                    "test-prune"
-                                    $"detectChanges for %s{relPath} (stored=%A{storedFreshness}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
-
-                                changedSymbolNames changes, false
+                            if raw.EndsWith(".fsx") then
+                                raw.Substring(0, raw.Length - 4)
                             else
-                                Logging.info
-                                    "test-prune"
-                                    $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
+                                raw
 
-                                [], true
+                        // Path D — fshw-owned per-file freshness sidecar gates the
+                        // detectChanges call site. The F38 "withhold the symbol-DB
+                        // write entirely" branch is gone: dirty FCS results no
+                        // longer block persistence (cold-scan rows still go in).
+                        // Instead the sidecar records `fcsClean = false` for the
+                        // file so cross-restart Phase B replay treats those rows
+                        // as untrusted-for-diff. The next clean recheck will both
+                        // overwrite the rows with good extractions and flip the
+                        // sidecar back to clean.
+                        let currentClean =
+                            not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
 
-                        ignore suppressedDiff
+                        let storedFreshness =
+                            let store = Volatile.Read(&freshnessRef)
+                            FileFreshness.classify relPath store
 
-                        let newChangedSymbols =
-                            if not changedNames.IsEmpty then
-                                Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+                        if not currentClean then
+                            let errCount =
+                                fcsErrorCount ctx.FcsSuppressedCodes result.Source result.CheckResults
 
-                                // Write-through to the durable needs-testing queue at the
-                                // SAME point the in-memory hot view accumulates. Persisted
-                                // here (before the BatchChecked analysis flush) so a crash
-                                // between this and the DB rebuild leaves the symbols QUEUED
-                                // — over-testing is the safe direction. They leave the queue
-                                // only when a covering test run passes (TestsFinished) or
-                                // they prove to have no covering test (flushAndQueryAffected).
-                                enqueuePending changedNames
+                            Logging.warn
+                                "test-prune"
+                                $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
 
-                                (state.ChangedSymbols @ changedNames) |> List.distinct
-                            else
-                                state.ChangedSymbols
+                        let! analysisResult =
+                            analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
 
-                        // Only track file as changed if its AST actually changed.
-                        // Comment-only changes produce the same symbol hashes, so they
-                        // should not trigger extension-based tests (e.g. Falco routes).
-                        let newChangedFiles =
-                            if not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath) then
-                                relPath :: state.ChangedFiles
-                            else
-                                state.ChangedFiles
+                        match analysisResult with
+                        | Ok analysisResult ->
+                            let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
 
-                        // Update class→file mapping for test methods found in this file
-                        let newClassFiles =
-                            fileAnalysis.TestMethods
-                            |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
+                            let fileAnalysis =
+                                { Symbols = normalizedSymbols
+                                  Dependencies = analysisResult.Dependencies
+                                  TestMethods =
+                                    analysisResult.TestMethods
+                                    |> List.map (fun t -> { t with TestProject = projectName })
+                                  Attributes = analysisResult.Attributes
+                                  ParentLinks = analysisResult.ParentLinks
+                                  Diagnostics = analysisResult.Diagnostics }
 
-                        // AffectedTests is no longer eagerly populated here. The
-                        // `affected-tests` IPC command computes it on demand from
-                        // state.ChangedSymbols against the current DB. AffectedTests
-                        // is set exclusively by flushAndQueryAffected on BuildCompleted
-                        // and consumed by runTestsWithImpact.
-                        let newState =
-                            { state with
-                                ChangedFiles = newChangedFiles
-                                PendingAnalysis = newPending
-                                ChangedSymbols = newChangedSymbols
-                                TestClassFiles = newClassFiles
-                                // The file analysed cleanly, so it is back in the impact
-                                // graph and no longer owes the coarse fallback. The
-                                // framework already cleared this plugin's ledger entries
-                                // for the file when the FileChecked arrived, so the
-                                // warning disappears with it.
-                                UnanalyzableFiles = Set.remove relPath state.UnanalyzableFiles }
+                            // Read stored symbols from the in-memory snapshot (populated after
+                            // each flush). Falls back to DB for warm starts where the snapshot
+                            // hasn't been populated yet.
+                            let storedSymbols =
+                                match Map.tryFind relPath state.SymbolSnapshot with
+                                | Some symbols -> symbols
+                                | None -> db.GetSymbolsInFile(relPath)
 
-                        // Keep the mutable snapshot in sync for the cache key function
-                        Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
+                            // Accumulate per-project; flush on BuildCompleted.
+                            // Replace any prior analysis for this file to avoid double-counting
+                            // when a file is checked more than once before the flush (e.g. initial
+                            // scan followed by a file-change recheck).
+                            let existingForProject =
+                                state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
 
-                        // Stamp the freshness sidecar with the result of THIS check.
-                        // Done after analysis (rather than at the very top) so a
-                        // failed `analyzeSource` doesn't lock in a clean stamp for
-                        // a file we have no symbols for.
-                        //
-                        // Item 3 gate: only `markClean` if we've observed a
-                        // BuildCompleted in this session AND the current FCS
-                        // result is clean. fshw's pipeline guarantees
-                        // BuildCompleted reaches the mailbox before any
-                        // FileChecked on a cold scan, so post-build clean
-                        // stamps fire on the very first session — no
-                        // two-session warm-up required. Otherwise
-                        // `markUnverified` (won't downgrade a previously-clean
-                        // entry to dirty — see FileFreshness.markUnverified).
-                        let now = DateTime.UtcNow
+                            let filteredExisting =
+                                existingForProject
+                                |> List.filter (fun a ->
+                                    not (a.Symbols |> List.exists (fun s -> s.SourceFile = relPath)))
 
-                        let updatedFreshness =
-                            let prior = Volatile.Read(&freshnessRef)
+                            let newPending =
+                                state.PendingAnalysis
+                                |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
 
-                            if currentClean && state.BuildCompletedInThisSession then
-                                FileFreshness.markClean now relPath prior
-                            else
-                                FileFreshness.markUnverified relPath prior
+                            // Path D gate: decide whether the stored rows can be
+                            // diffed against. Requires the CURRENT extraction to be
+                            // FCS-clean (a dirty current result means the
+                            // just-extracted symbols are themselves suspect). Given
+                            // that, the STORED side is trusted per FileFreshness.classify:
+                            //
+                            //   Clean   — explicit clean stamp → diff.
+                            //   Unknown — NO sidecar record. Over a NON-EMPTY stored
+                            //             row set this is a seeded test-impact.db
+                            //             (ADR-010) whose freshness sidecar didn't
+                            //             travel into this fresh workspace. ADR-010
+                            //             guarantees a seeded DB over-indexes but
+                            //             never serves a stale verdict, so DIFF the
+                            //             seeded rows: unchanged files find no
+                            //             changes, edited files find the real delta
+                            //             and select their covering tests. Bypassing
+                            //             here (the pre-AUTOMATION-67 behaviour)
+                            //             silently UNDER-selected — a real edit in a
+                            //             seeded workspace ran zero tests → vacuous
+                            //             green. Gated on stored rows existing: an
+                            //             EMPTY stored set is a genuine cold scan
+                            //             (empty DB) with no baseline to diff, which
+                            //             stays no-diff so it doesn't select the
+                            //             whole suite.
+                            //   Dirty   — explicit `fcsClean = false` stamp: the
+                            //             stored rows were written during an FCS-error
+                            //             extraction and may be PARTIAL. Diffing
+                            //             against them yields a phantom "all symbols
+                            //             changed" delta (the 4921-affected-tests
+                            //             Phase B regression). Bypass.
+                            let storedTrustedForDiff =
+                                match storedFreshness with
+                                | FileFreshness.Clean -> true
+                                | FileFreshness.Unknown -> not storedSymbols.IsEmpty
+                                | FileFreshness.Dirty -> false
 
-                        updateFreshness updatedFreshness
+                            let (changedNames, suppressedDiff) =
+                                if currentClean && storedTrustedForDiff then
+                                    // detectChanges filters externs internally; no pre-filter needed here.
+                                    let (changes, _events) = detectChanges normalizedSymbols storedSymbols
 
-                        if isIdle then
-                            ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                    Logging.info
+                                        "test-prune"
+                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
 
-                        return newState
-                    | Error msg ->
-                        // AUTOMATION-113. This branch used to `return state` — the file
-                        // was DROPPED. It contributed no symbols, so the impact graph
-                        // never saw it, so a change to it diffed against nothing and
-                        // selected NO tests, and the gate reported green having run
-                        // nothing relevant. The `Failed` status below was the only trace,
-                        // and it is overwritten by the very next file's `Completed`, so
-                        // in practice the failure was invisible. Silent under-selection:
-                        // the one failure mode a test-impact tool must not have.
-                        //
-                        // Now the file is REMEMBERED as unanalysable. Three consequences,
-                        // none of them silent:
-                        //   1. a WARNING lands in the error ledger, keyed to the file, so
-                        //      `fshw check` prints it and (under the default warn-fail
-                        //      policy) refuses a green verdict;
-                        //   2. `runTestsWithImpact` falls back to EVERY test project in
-                        //      full while the set is non-empty — safe over-selection
-                        //      instead of a selection made without the file;
-                        //   3. the non-empty force-run set also disables the
-                        //      zero-affected skip gate, so this can never terminate as
-                        //      "0 affected — green, 0 ran".
-                        // The file leaves the set the moment it analyses cleanly.
+                                    changedSymbolNames changes, false
+                                else
+                                    Logging.info
+                                        "test-prune"
+                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
+
+                                    [], true
+
+                            ignore suppressedDiff
+
+                            let newChangedSymbols =
+                                if not changedNames.IsEmpty then
+                                    Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+
+                                    // Write-through to the durable needs-testing queue at the
+                                    // SAME point the in-memory hot view accumulates. Persisted
+                                    // here (before the BatchChecked analysis flush) so a crash
+                                    // between this and the DB rebuild leaves the symbols QUEUED
+                                    // — over-testing is the safe direction. They leave the queue
+                                    // only when a covering test run passes (TestsFinished) or
+                                    // they prove to have no covering test (flushAndQueryAffected).
+                                    enqueuePending changedNames
+
+                                    (state.ChangedSymbols @ changedNames) |> List.distinct
+                                else
+                                    state.ChangedSymbols
+
+                            // Only track file as changed if its AST actually changed.
+                            // Comment-only changes produce the same symbol hashes, so they
+                            // should not trigger extension-based tests (e.g. Falco routes).
+                            let newChangedFiles =
+                                if not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath) then
+                                    relPath :: state.ChangedFiles
+                                else
+                                    state.ChangedFiles
+
+                            // Update class→file mapping for test methods found in this file
+                            let newClassFiles =
+                                fileAnalysis.TestMethods
+                                |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
+
+                            // AffectedTests is no longer eagerly populated here. The
+                            // `affected-tests` IPC command computes it on demand from
+                            // state.ChangedSymbols against the current DB. AffectedTests
+                            // is set exclusively by flushAndQueryAffected on BuildCompleted
+                            // and consumed by runTestsWithImpact.
+                            let newState =
+                                { state with
+                                    ChangedFiles = newChangedFiles
+                                    PendingAnalysis = newPending
+                                    ChangedSymbols = newChangedSymbols
+                                    TestClassFiles = newClassFiles
+                                    // The file analysed cleanly, so it is back in the impact
+                                    // graph and no longer owes the coarse fallback. The
+                                    // framework already cleared this plugin's ledger entries
+                                    // for the file when the FileChecked arrived, so the
+                                    // warning disappears with it.
+                                    UnanalyzableFiles = Set.remove relPath state.UnanalyzableFiles }
+
+                            // Keep the mutable snapshot in sync for the cache key function
+                            Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
+
+                            // Stamp the freshness sidecar with the result of THIS check.
+                            // Done after analysis (rather than at the very top) so a
+                            // failed `analyzeSource` doesn't lock in a clean stamp for
+                            // a file we have no symbols for.
+                            //
+                            // Item 3 gate: only `markClean` if we've observed a
+                            // BuildCompleted in this session AND the current FCS
+                            // result is clean. fshw's pipeline guarantees
+                            // BuildCompleted reaches the mailbox before any
+                            // FileChecked on a cold scan, so post-build clean
+                            // stamps fire on the very first session — no
+                            // two-session warm-up required. Otherwise
+                            // `markUnverified` (won't downgrade a previously-clean
+                            // entry to dirty — see FileFreshness.markUnverified).
+                            let now = DateTime.UtcNow
+
+                            let updatedFreshness =
+                                let prior = Volatile.Read(&freshnessRef)
+
+                                if currentClean && state.BuildCompletedInThisSession then
+                                    FileFreshness.markClean now relPath prior
+                                else
+                                    FileFreshness.markUnverified relPath prior
+
+                            updateFreshness updatedFreshness
+
+                            // AUTOMATION-99: idleness is read AT THE POINT OF USE, never
+                            // snapshotted at handler entry. This handler awaits
+                            // `analyzeSource` above; a test run launched concurrently (a
+                            // `run-tests` force-run claims the slot from its mailbox
+                            // message) must not be stomped by a stale "idle" decision. A
+                            // run in flight OWNS this plugin's status — it reported
+                            // Running at launch and TestsFinished will deliver the earned
+                            // verdict; per-file analysis has nothing to say about it.
+                            if not (ctx.IsRunning "tests") then
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                            return newState
+                        | Error msg ->
+                            // AUTOMATION-113. This branch used to `return state` — the file
+                            // was DROPPED. It contributed no symbols, so the impact graph
+                            // never saw it, so a change to it diffed against nothing and
+                            // selected NO tests, and the gate reported green having run
+                            // nothing relevant. The `Failed` status below was the only trace,
+                            // and it is overwritten by the very next file's `Completed`, so
+                            // in practice the failure was invisible. Silent under-selection:
+                            // the one failure mode a test-impact tool must not have.
+                            //
+                            // Now the file is REMEMBERED as unanalysable. Three consequences,
+                            // none of them silent:
+                            //   1. a WARNING lands in the error ledger, keyed to the file, so
+                            //      `fshw check` prints it and (under the default warn-fail
+                            //      policy) refuses a green verdict;
+                            //   2. `runTestsWithImpact` falls back to EVERY test project in
+                            //      full while the set is non-empty — safe over-selection
+                            //      instead of a selection made without the file;
+                            //   3. the non-empty force-run set also disables the
+                            //      zero-affected skip gate, so this can never terminate as
+                            //      "0 affected — green, 0 ran".
+                            // The file leaves the set the moment it analyses cleanly.
+                            Logging.error
+                                "test-prune"
+                                $"Analysis failed for %s{relPath}: %s{msg} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+
+                            ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath msg ]
+
+                            // Point-of-use idleness read — same contract as the clean
+                            // branch above. The ledger entry above survives regardless,
+                            // so suppressing the status stamp mid-run loses nothing: the
+                            // run's own terminal report follows, and the verdict
+                            // consults the ledger.
+                            if not (ctx.IsRunning "tests") then
+                                ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+
+                            return
+                                { state with
+                                    UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
+
+                    with ex ->
+                        // F10 ∩ AUTOMATION-99/113: a fault ANYWHERE in this handler
+                        // (not just an `analyzeSource` Error) leaves the file
+                        // unanalysed — invisible to the impact graph, the silent
+                        // under-selection AUTOMATION-113 exists to kill. Route it
+                        // through the SAME machinery as an analysis failure: a
+                        // ledger diagnostic + membership in UnanalyzableFiles (which
+                        // forces full-suite runs until the file analyses cleanly).
+                        // The status stamp is point-of-use idle-guarded like every
+                        // other stamp in this handler: a live test run OWNS the
+                        // status (it reported Running and its completion delivers
+                        // the earned verdict), so a handler crash mid-run must not
+                        // manufacture a terminal status — that stomp was the
+                        // observed "terminal with started: but no elapsed:"
+                        // signature. Nothing is lost: the diagnostic and the
+                        // force-full-suite consequence both persist either way.
                         Logging.error
                             "test-prune"
-                            $"Analysis failed for %s{relPath}: %s{msg} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+                            $"FileChecked handler failed for %s{relPath}: %s{ex.ToString()} — treating the file as unanalysable (every test project runs in full until it analyses cleanly)"
 
-                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath msg ]
+                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath ex.Message ]
 
-                        if isIdle then
-                            ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+                        if not (ctx.IsRunning "tests") then
+                            ctx.ReportStatus(
+                                PluginStatus.Failed($"FileChecked handler failed: %s{ex.Message}", DateTime.UtcNow)
+                            )
 
                         return
                             { state with
@@ -3697,6 +3732,91 @@ let create
                                 ChangedFiles = []
                                 ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed [] }
+
+                | Custom(RunTestsRequested(configs, filter, reply)) ->
+                    // AUTOMATION-99: the `run-tests` force-run, launched from the
+                    // mailbox so it is serialised with every other launch site and
+                    // holds the `RunExclusive "tests"` slot for its whole duration
+                    // — visible to `IsRunning`, to `AnyPluginBusy()`, and (via the
+                    // Running report below) to `fshw status`. The IPC command
+                    // already waited (bounded) for a prior run; this re-check
+                    // closes the remaining race without blocking the mailbox.
+                    if ctx.IsRunning "tests" then
+                        reply.TrySetResult(
+                            JsonSerializer.Serialize(
+                                {| status = "busy"
+                                   message = "a test run is already in progress; retry once it finishes" |}
+                            )
+                        )
+                        |> ignore
+
+                        return state
+                    else
+                        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+
+                        // Empty launch set: `run-tests` is a manual FORCE run
+                        // (optionally filtered to a subset / only-failed). It is NOT
+                        // the impact-analysis queue-draining path, and a filtered
+                        // force-run may not cover every queued symbol — so it commits
+                        // NOTHING from the pending-verification queue (over-testing
+                        // is the safe direction). The queue drains through the normal
+                        // BuildCompleted impact flow.
+                        let commandLaunch: TestRunLaunch =
+                            { Symbols = Set.empty
+                              CoveringProjectsBySymbol = Map.empty }
+
+                        ctx.RunExclusive
+                            "tests"
+                            (async {
+                                try
+                                    try
+                                        let! results, started, completed =
+                                            executeTests
+                                                db
+                                                None
+                                                repoRoot
+                                                beforeRun
+                                                coveragePaths
+                                                afterRun
+                                                configs
+                                                Map.empty
+                                                filter
+
+                                        reply.TrySetResult(formatTestResultsJson results) |> ignore
+
+                                        // Returned (not Posted) so the framework's
+                                        // completion path delivers it: the synchronous
+                                        // TestsFinished handler does the error
+                                        // reporting and status updates a bare emit
+                                        // would skip.
+                                        return TestsFinished(started, completed, commandLaunch)
+                                    with ex ->
+                                        // AUTOMATION-68: a `beforeRun` throw /
+                                        // `executeTests` fault means the suite it
+                                        // guards NEVER RAN — that must surface as a
+                                        // failure, never a stale prior green. The
+                                        // Aborted lifecycle drives the TestsFinished
+                                        // handler to PluginStatus.Failed.
+                                        Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                                        let started, completed = abortedRunLifecycle ex.Message
+
+                                        reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
+
+                                        return TestsFinished(started, completed, commandLaunch)
+                                finally
+                                    // Cancellation (daemon teardown) skips `with` but
+                                    // runs `finally`: never leave the IPC client
+                                    // awaiting a reply that cannot come. No-op when a
+                                    // result was already set.
+                                    reply.TrySetResult(
+                                        JsonSerializer.Serialize(
+                                            {| error = "daemon shut down before the run completed" |}
+                                        )
+                                    )
+                                    |> ignore
+                            })
+
+                        return state
 
                 | _ -> return state
             }

@@ -460,23 +460,30 @@ let ``FileChecked does not set Running status`` () =
         | _ -> ())
 
 [<Fact(Timeout = 30000)>]
-let ``FileChecked exception while tests running surfaces Failed via framework safeUpdate (F10)`` () =
-    // F10 (audit/2026-05-02): the previous FileChecked Update had an inner
-    // try/with that only reported Failed *when isIdle* (no test run in flight)
-    // and silently swallowed otherwise — masking real bugs whenever a check
-    // happened mid-test. Dropping the inner catch lets PluginFramework's
-    // safeUpdate own the boundary; safeUpdate ALWAYS reports Failed.
+let ``FileChecked exception while tests running surfaces in the ledger without stomping the run's status (F10, AUTOMATION-99)``
+    ()
+    =
+    // F10 (audit/2026-05-02) established that a FileChecked throw mid-test-run
+    // must never be SILENT. Its original mechanism — framework safeUpdate
+    // stomping PluginStatus.Failed over the live run — was itself a lie: it
+    // manufactured a terminal status while the run was executing (the
+    // AUTOMATION-99 "terminal with started: but no elapsed:" signature), and
+    // the run's own TestsFinished verdict overwrote the Failed moments later,
+    // so the "visibility" was only ever a blip.
     //
-    // This test pins the not-isIdle path:
+    // The durable form (AUTOMATION-113 machinery): the fault lands in the
+    // ERROR LEDGER as an unanalysable-file diagnostic and the file joins
+    // UnanalyzableFiles (forcing full-suite runs until it analyses cleanly).
+    // The run keeps OWNING the status: it stays Running until TestsFinished
+    // delivers the earned verdict.
+    //
+    // This test pins the not-idle path:
     //   1. Configure a long-sleeping test command and trigger BuildCompleted
-    //      to put RunExclusive "tests" in flight (so ctx.IsRunning "tests" =
-    //      true and isIdle = false).
+    //      to put RunExclusive "tests" in flight.
     //   2. Emit a FileChecked that throws inside the Update body
     //      (ProjectOptions = Unchecked.defaultof<_> → NullReferenceException).
-    //   3. Assert the plugin transitions to Failed.
-    //
-    // Before the fix: Failed never reached (inner catch swallowed because
-    // isIdle was false). After the fix: Failed reached via safeUpdate.
+    //   3. Assert the fault reached the ledger AND the status is still the
+    //      run's Running — no terminal stomp.
     withTempDir "tp-f10-not-idle" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -499,25 +506,18 @@ let ``FileChecked exception while tests running surfaces Failed via framework sa
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // Subscribe to Failed *before* triggering anything — avoids the race
-        // where the transition happens before we start polling.
-        let failedAwaiter =
-            beginAwaitStatus host "test-prune" (function
-                | Failed _ -> true
-                | _ -> false)
-
         // Kick off the long-running test run.
         host.EmitBuildCompleted(BuildSucceeded)
 
         // Wait until the test run is actually in flight (status reaches
-        // Running) so isIdle is guaranteed false when we emit FileChecked.
+        // Running) so a run is guaranteed live when we emit FileChecked.
         let runningWait =
             beginAwaitStatus host "test-prune" (function
                 | Running _ -> true
                 | _ -> false)
 
         if not (runningWait.Wait(TimeSpan.FromSeconds 10.0)) then
-            Assert.Fail("test run never reached Running — cannot exercise not-isIdle path")
+            Assert.Fail("test run never reached Running — cannot exercise the mid-run path")
 
         // Now emit a FileChecked that throws inside the FileChecked branch
         // of Update (ProjectOptions = Unchecked.defaultof<_>).
@@ -533,12 +533,20 @@ let ``FileChecked exception while tests running surfaces Failed via framework sa
         with _ ->
             ()
 
-        // safeUpdate must observe the throw and report Failed even though
-        // the test run is in flight. Before F10 was fixed, the inner catch
-        // would swallow silently and we'd time out here.
-        if not (failedAwaiter.Wait(TimeSpan.FromSeconds 10.0)) then
-            let cur = host.GetStatus("test-prune")
-            Assert.Fail($"expected Failed status from safeUpdate after FileChecked throw; got: %A{cur}"))
+        // The fault must land in the error ledger (never silent — F10)...
+        waitUntil (fun () -> not (host.GetErrorsByPlugin("test-prune").IsEmpty)) 10000
+        test <@ not (host.GetErrorsByPlugin("test-prune").IsEmpty) @>
+
+        // ...WITHOUT stomping a terminal status over the live run
+        // (AUTOMATION-99): the run reported Running and still owns the status.
+        let statusAfterFault = host.GetStatus("test-prune")
+
+        test
+            <@
+                match statusAfterFault with
+                | Some(Running _) -> true
+                | _ -> false
+            @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileChecked sets Failed status on analysis error`` () =
@@ -6267,3 +6275,130 @@ let ``classifyRunScope: the zero-affected skip's empty green is RanNothing, NOT 
 [<Fact(Timeout = 10000)>]
 let ``classifyRunScope: no run at all is RanNothing`` () =
     test <@ classifyRunScope [ testConfigNamed "Alpha.Tests" ] None = RanNothing @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-99 — a test run the daemon cannot SEE is a gate that cannot
+// gate. The `run-tests` IPC command used to call `executeTests` directly on
+// the IPC thread: no `RunExclusive "tests"` slot, no `Running` status, no
+// busy accounting. During such a run the daemon's whole model read "at
+// rest" — `fshw check` could exit 0 while the test process was literally
+// alive, and any concurrent FileChecked stamped a terminal status over it
+// (the observed "✓ test-prune, started: with no elapsed:" signature).
+// ---------------------------------------------------------------------------
+
+/// A single-project config whose command touches `started`, waits until
+/// `release` exists (bounded), then touches `done` — a run whose in-flight
+/// window the test controls deterministically. The script lives in a file
+/// (`sh <script>`) so no argument-quoting rules apply.
+let private gatedRunConfig (tmpDir: string) =
+    let started = Path.Combine(tmpDir, "started")
+    let release = Path.Combine(tmpDir, "release")
+    let doneFile = Path.Combine(tmpDir, "done")
+    let scriptPath = Path.Combine(tmpDir, "gated-run.sh")
+
+    File.WriteAllText(
+        scriptPath,
+        $"touch {started}\n"
+        + $"n=0\n"
+        + $"while [ ! -f {release} ] && [ \"$n\" -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"
+        + $"touch {doneFile}\n"
+    )
+
+    let config =
+        { Project = "GatedProject"
+          Command = "sh"
+          Args = scriptPath
+          Group = "default"
+          Environment = []
+          FilterTemplate = None
+          ClassJoin = " "
+          TimeoutSec = Some 30
+          ReportVerificationFormat = AutoDetect }
+
+    config, started, release, doneFile
+
+[<Fact(Timeout = 30000)>]
+let ``run-tests: an in-flight command-driven run is visible to the daemon model`` () =
+    withTempDir "tp-cmd-visible" (fun tmpDir ->
+        let config, started, release, _doneFile = gatedRunConfig tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+        host.RegisterHandler(handler)
+
+        let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        try
+            waitUntil (fun () -> File.Exists started) 15000
+            test <@ File.Exists started @>
+
+            // The test process is now RUNNING. The daemon model must reflect it:
+            // the plugin holds the exclusive "tests" slot (busy) and reports
+            // Running — otherwise a concurrent `fshw check` sees "at rest" and
+            // exits 0 while tests are still executing.
+            test <@ host.AnyPluginBusy() @>
+
+            let statusDuringRun = host.GetStatus("test-prune")
+
+            test
+                <@
+                    match statusDuringRun with
+                    | Some(Running _) -> true
+                    | _ -> false
+                @>
+        finally
+            File.WriteAllText(release, "")
+
+        cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        test <@ cmdTask.IsCompleted @>
+        // The command still returns the results JSON it always did.
+        test <@ cmdTask.Result.IsSome @>
+        test <@ cmdTask.Result.Value.Contains("projects") @>)
+
+[<Fact(Timeout = 30000)>]
+let ``FileChecked while a test run is in flight must not report a terminal status`` () =
+    withTempDir "tp-midrun-stamp" (fun tmpDir ->
+        let config, started, release, doneFile = gatedRunConfig tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+        host.RegisterHandler(handler)
+
+        let cmdTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        try
+            waitUntil (fun () -> File.Exists started) 15000
+            test <@ File.Exists started @>
+
+            // A FileChecked lands MID-RUN (an editor save during a long suite).
+            // Whatever its analysis outcome, the plugin must NOT go terminal:
+            // the run owns the status until TestsFinished delivers the earned
+            // verdict. (Analysis diagnostics still reach the error ledger —
+            // nothing is lost by staying Running.)
+            let srcFile = Path.Combine(tmpDir, "Lib.fs")
+            File.WriteAllText(srcFile, "module Lib\nlet x = 1\n")
+
+            host.EmitFileChecked(
+                { fakeFileCheckResult srcFile with
+                    Source = "module Lib\nlet x = 1\n" }
+            )
+
+            // Sample the status while the run is provably still in flight
+            // (`done` not yet written). A terminal status here is the lie.
+            let deadline = DateTime.UtcNow.AddSeconds(8.0)
+            let mutable sawTerminalMidRun = false
+
+            while not (File.Exists doneFile) && DateTime.UtcNow < deadline do
+                match host.GetStatus("test-prune") with
+                | Some(PluginStatus.Completed _)
+                | Some(PluginStatus.Failed _) -> sawTerminalMidRun <- true
+                | _ -> ()
+
+                Thread.Sleep(25)
+
+            test <@ not sawTerminalMidRun @>
+        finally
+            File.WriteAllText(release, "")
+
+        cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        test <@ cmdTask.IsCompleted @>)

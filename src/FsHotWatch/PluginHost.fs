@@ -404,10 +404,13 @@ type PluginHost
     member _.WorkCycleGenerations() : Map<string, int64> =
         pluginGenerations |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
-    /// True if any registered plugin still has events queued in its mailbox or
-    /// is actively processing one. The status agent reflects only what handlers
-    /// have explicitly reported; this catches the gap between "event posted to
-    /// mailbox" and "handler called ReportStatus(Running)".
+    /// True if any registered plugin has work in flight: events queued in its
+    /// mailbox, an event being processed, or an exclusive background run
+    /// (`RunExclusive`) anywhere between claim and completion-handled. The
+    /// status agent reflects only what handlers have explicitly reported; this
+    /// catches both the "event posted but handler hasn't reported Running yet"
+    /// gap and the "handler returned but its background run is still
+    /// executing" gap (AUTOMATION-95/99).
     member _.AnyPluginBusy() : bool =
         registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
 
