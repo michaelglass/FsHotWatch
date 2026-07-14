@@ -46,7 +46,7 @@ let private runProcessBounded command args bounds =
 // that named the wrong culprit.
 //
 // That is the same failure as a `top` that cannot sample reporting a healthy box,
-// or a gate that cannot run tests reporting no failures: a measurement that could
+// or a check that cannot run tests reporting no failures: a measurement that could
 // not be taken, reported as a measurement of nothing. The cure is not a longer
 // window — it is that "I never finished draining" and "the child printed nothing"
 // are now DIFFERENT VALUES (`ProcessOutput.DrainTimedOut` vs `Drained ""`), and

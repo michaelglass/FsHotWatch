@@ -75,7 +75,7 @@ In `.fshw.json`:
 ## CLI
 
 ```bash
-# Run the gate — TestPrune runs the affected tests as part of it
+# Run every check — TestPrune runs the affected tests as part of it
 fshw check
 
 # Rerun a specific slice for investigation (bypasses impact analysis)

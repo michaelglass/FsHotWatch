@@ -38,7 +38,7 @@ Set `"lint": false` to disable. The plugin automatically loads
 ## CLI
 
 ```bash
-# Run the full gate (lint is part of it) and show warnings
+# Run every check (lint is part of it) and show warnings
 fshw check
 
 # Inspect just the lint plugin without triggering a run
