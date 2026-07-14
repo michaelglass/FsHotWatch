@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- fix!: **a copy and its origin are compared by CONTENT, so a target-framework mismatch
+  cannot be expressed.** (AUTOMATION-169) The freshness gate's copy check asked
+  `copyMtime < originMtime` — and **resolved the origin to the wrong target framework**.
+  A multi-targeted dependency (`netstandard2.0; net8.0; net9.0; net10.0` — a vendored
+  SqlHydra fork) consumed by a test project on **net10.0**: MSBuild copies the net10.0
+  output, but the gate resolved the origin to whichever per-TFM output was **newest**,
+  which was **net8.0**, built nine minutes later. So it compared a net10.0 copy against a
+  net8.0 origin and condemned a **byte-perfect copy**. The message indicted itself — the
+  origin it printed ended `/net8.0/`, the destination `/net10.0/`. **4 of 6 test projects
+  refused to run**; verdict red.
+  - **No `dotnet build` could answer it.** A correct rebuild re-copies net10.0, so the copy
+    keeps the net10.0 stamp and the gate compares it against net8.0 again. That is the
+    unanswerable accusation AUTOMATION-122 was written to kill, back through a different
+    door: not the wrong project — the wrong **framework**.
+  - Different TFMs of one project **build at different times**, so an mtime comparison
+    *across* TFMs is not a bad heuristic, it is a **category error**. Correcting the
+    resolution would leave the error expressible, so the mtimes are **gone from the copy
+    verdict entirely**: `CopyOlderThanOrigin(origin, copy, originMtime, copyMtime)` is now
+    **`CopyDiffersFromOrigin(origin, copy)`**. A verdict that holds no mtimes cannot compare
+    two of them across a TFM boundary.
+  - The rule is now one rule with two applications: **a copy is current iff its bytes are
+    the bytes of one of the outputs the build could have copied it from** — for a content
+    item, the file at that relative path; for a dependency assembly, any of that project's
+    per-TFM outputs. The question never mentions a target framework, so it cannot get one
+    wrong — and the gate never has to guess which TFM MSBuild picked (a question needing
+    nearest-compatible-framework rules that a graph-free on-disk parse cannot answer).
+  - **Strictly stronger, not weaker.** Content also catches what mtimes never could: a stale
+    copy whose mtime *equals* its origin's — a `jj`/`git` working-copy restamp, a coarse
+    filesystem timestamp, a rebuild inside one timestamp tick. Verified against the real
+    consumer: the APPLIC-24 fake green (a changed fixture the build did not re-copy) is
+    still caught **even with the mtime left untouched**, which the old rule called *fresh*.
+  - Uses core's one hasher, `ContentHash`, and inherits its fail-closed sentinel: a file the
+    gate **cannot read** is `InputsUndeterminable`, never "fresh" — in BOTH directions, an
+    unreadable copy and an unreadable origin. `AssemblyOlderThanSource` (a `.fs` source vs
+    the `.dll` compiled from it) **keeps its mtime** — those two share no bytes, so the clock
+    is the only signal there, and that half of the module was right.
+  - **Shadowing, closed in the same change.** A relative path can be claimed by several
+    projects in one closure (`xunit.runner.json` sits in five of them in that consumer);
+    MSBuild copies them all to one destination and the last writer wins. Comparing the
+    survivor against a single claimant condemns the SHADOWED project for a build doing
+    exactly what it means to do — and under a content rule that misfire would have been
+    **permanent**, where the old mtime rule only tripped when the shadowed file happened to
+    be newer. So a copy is now checked against **every claimant in the closure** and is
+    current if it matches any. Fixing the TFM bug without this would have opened a new door
+    for the same wolf.
+  - This settles the standing disagreement between two sibling modules: `TreeHash` already
+    held that *"the hash is over CONTENT, never mtimes — mtime is precisely what lied in
+    APPLIC-24."* `ArtifactFreshness` now agrees.
+
 - fix!: **a PROCESS may not assert a test result it has no record of running.**
   (AUTOMATION-161) On a warm task cache the first `BuildCompleted` of a new process was a
   cache **hit**, which skips the handler — so no test run happened, no `TestsFinished`
