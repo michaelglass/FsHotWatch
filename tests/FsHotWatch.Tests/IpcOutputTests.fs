@@ -407,17 +407,22 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     let triggerScan () : string = "idle"
 
     let exitCode =
-        pollAndRender
-            ProgressRenderer.Agent
-            CheckVerdict.InnerLoop
-            (fun _ -> [])
-            false
-            waitForScan
-            waitForComplete
-            getStatus
-            getErrors
-            (fun () -> IpcParsing.FullSuite 1)
-            triggerScan
+        TestHelpers.withTempDir "ipcoutput-verdict" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                waitForScan
+                waitForComplete
+                getStatus
+                getErrors
+                (fun () ->
+                    { IpcParsing.Scope = IpcParsing.FullSuite 1
+                      IpcParsing.RunId = None })
+                triggerScan)
 
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
@@ -464,17 +469,22 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
         """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
 
     let exitCode =
-        pollAndRender
-            ProgressRenderer.Agent
-            CheckVerdict.InnerLoop
-            (fun _ -> [])
-            false
-            (fun () -> "idle")
-            waitForComplete
-            getStatus
-            cleanDiagnostics
-            (fun () -> IpcParsing.FullSuite 1)
-            (fun () -> "idle")
+        TestHelpers.withTempDir "ipcoutput-verdict" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                waitForComplete
+                getStatus
+                cleanDiagnostics
+                (fun () ->
+                    { IpcParsing.Scope = IpcParsing.FullSuite 1
+                      IpcParsing.RunId = None })
+                (fun () -> "idle"))
 
     test <@ exitCode = 0 @>
 
@@ -515,17 +525,22 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
         raise (System.IO.IOException("pipe is broken"))
 
     let exitCode =
-        pollAndRender
-            ProgressRenderer.Agent
-            CheckVerdict.InnerLoop
-            (fun _ -> [])
-            false
-            (fun () -> "idle") // waitForScan
-            waitForComplete
-            (fun () -> "{}") // getStatus
-            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
-            (fun () -> IpcParsing.FullSuite 1)
-            (fun () -> "idle") // triggerScan
+        TestHelpers.withTempDir "ipcoutput-verdict" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle") // waitForScan
+                waitForComplete
+                (fun () -> "{}") // getStatus
+                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () ->
+                    { IpcParsing.Scope = IpcParsing.FullSuite 1
+                      IpcParsing.RunId = None })
+                (fun () -> "idle")) // triggerScan
 
     test <@ exitCode = 2 @>
 
@@ -564,16 +579,21 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
         raise (System.TimeoutException("WaitForComplete timed out after 01:00:00 — still running: test-prune (1h 0m)"))
 
     let exitCode =
-        pollAndRender
-            ProgressRenderer.Agent
-            CheckVerdict.InnerLoop
-            (fun _ -> [])
-            false
-            (fun () -> "idle") // waitForScan
-            waitForComplete
-            (fun () -> "{}") // getStatus
-            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
-            (fun () -> IpcParsing.FullSuite 1)
-            (fun () -> "idle") // triggerScan
+        TestHelpers.withTempDir "ipcoutput-verdict" (fun repoRoot ->
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle") // waitForScan
+                waitForComplete
+                (fun () -> "{}") // getStatus
+                (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+                (fun () ->
+                    { IpcParsing.Scope = IpcParsing.FullSuite 1
+                      IpcParsing.RunId = None })
+                (fun () -> "idle")) // triggerScan
 
     test <@ exitCode = 2 @>

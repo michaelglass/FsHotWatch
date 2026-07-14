@@ -93,14 +93,36 @@ let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScop
     else
         match coverage with
         | Complete ->
-            match mode with
-            | InnerLoop -> CheckOutcome.Clean
-            | MergeGate ->
-                match testScope with
-                | FullSuite _ -> CheckOutcome.Clean
-                | ImpactFiltered _
-                | NoTestsRun
-                | ScopeUnknown -> CheckOutcome.UnearnedScope testScope
+            match testScope with
+            // NO TESTS RAN — in EITHER mode (AUTOMATION-129).
+            //
+            // `NoTestsRun` does not mean "impact analysis selected nothing this
+            // time"; it means the daemon holds NO TEST EVIDENCE AT ALL — no run has
+            // completed in this session, or the one that did executed zero tests
+            // ("0 passed, 0 failed in 0 projects"). A `check` that goes green on that
+            // is the vacuous green in its purest form: nothing was verified, and the
+            // exit code said everything was fine.
+            //
+            // Observed in the wild the same day this was written, twice. It is not a
+            // scope question ("did we test enough?") but an evidence question ("did we
+            // test AT ALL?"), so unlike `ImpactFiltered` it is refused in the inner
+            // loop too. The inner loop is allowed to test LESS; it is not allowed to
+            // test NOTHING and call it green.
+            | NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
+            | FullSuite _
+            | ImpactFiltered _
+            | ScopeUnknown ->
+                match mode with
+                // The inner loop keeps impact filtering, which is what it is good at.
+                // `ScopeUnknown` is tolerated here — a repo with no test-prune plugin
+                // configured has no tests to run, and punishing it would be nonsense.
+                | InnerLoop -> CheckOutcome.Clean
+                | MergeGate ->
+                    match testScope with
+                    | FullSuite _ -> CheckOutcome.Clean
+                    | ImpactFiltered _
+                    | NoTestsRun
+                    | ScopeUnknown -> CheckOutcome.UnearnedScope testScope
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
 

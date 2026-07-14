@@ -2,6 +2,92 @@
 
 ## Unreleased
 
+- fix!: **a missing number is not zero.** (AUTOMATION-129) The verdict READER defaulted a
+  missing `elapsedMs` to `0L` and every missing suite count to `0` — which is the
+  AUTOMATION-99 signature (`started:` with no `elapsed:`) rebuilt inside the very file
+  that exists to prevent it, and worse: `total: 0, failed: 0` conjured from a truncated
+  file reads as *"this suite ran cleanly"*. A vacuous green out of thin air.
+  - `PluginVerdict.ElapsedMs` is now `int64 option` — `0` is a MEASUREMENT
+    ("instantaneous"); absence is the absence of one, and the two must be distinguishable.
+    The WRITER had the same bug (no `LastRun` → `0L`); it now writes `null`.
+  - A suite entry whose counts cannot be read makes the whole verdict **`Unreadable`**,
+    exactly as a missing `treeHash` does. Fail closed, or do not bother having a verdict.
+  - These cases cannot arise from our own writer — which is precisely why they needed
+    pinning. They arise from the files a verdict exists to SURVIVE.
+
+- feat!: **the verdict is content-addressed to its PRODUCER as well as its subject.**
+  (AUTOMATION-129) `treeHash` says WHAT the claim is about; `producer` says WHO made it —
+  a SHA-256 of the fshw binary. Without it a stale daemon writes a verdict for an
+  UNCHANGED tree, the `treeHash` matches, and the verdict reads as current: the
+  provenance chain had a hole in the middle. `fshw verdict` now exits 4 (STALE) for a
+  verdict produced by a binary it is not running, however well the tree matches. A
+  verdict that cannot say who made it has not established provenance and does not apply.
+  (The daemon-handshake half of this argument is AUTOMATION-147; both should share one
+  `ContentHash` policy — they now can.)
+
+- fix!: **"no tests ran" can no longer be green — in EITHER mode.** (AUTOMATION-129)
+  `NoTestsRun` does not mean "impact analysis selected nothing this time"; it means the
+  daemon holds NO TEST EVIDENCE AT ALL ("0 passed, 0 failed in 0 projects"). A `check`
+  that went green on that was the vacuous green in its purest form — observed in the wild
+  twice on the day this was written. It is not a scope question ("did we test enough?")
+  but an evidence question ("did we test AT ALL?"), so unlike `ImpactFiltered` it is now
+  refused in the inner loop too. The inner loop may test LESS; it may not test NOTHING
+  and call it green.
+
+- feat!: **the verdict DECLARES which reports are its own.** (AUTOMATION-129) It carries
+  the `runId`, and the suites are the files in that run's directory
+  (`.fshw/test-runs/<runId>/`) — membership stated, never inferred from mtimes. Per-suite
+  `total/passed/failed/skipped` are carried **INLINE**, so a number never depends on a
+  second file still being readable. And the steering hint never prints a path for a file
+  that was not written: when nothing ran it says so, in words.
+
+- feat!: **the verdict is a FILE, content-addressed to the tree it verified.** (AUTOMATION-129,
+  ADR-013) Every `check` and `gate` now publishes `.fshw/verdict.json` — written
+  atomically (temp + rename, so a partial read is impossible), carrying the outcome,
+  the scope, per-plugin results, pointers to THIS run's CTRF reports, and a `treeHash`.
+  Published on every terminal path, including a failing gate, a wedged plugin and a
+  daemon that dies mid-run — those are exactly the moments the human-readable output is
+  least sufficient and the temptation to scrape it is highest.
+  - **The consumer's rule is total:** read the file; if `treeHash` ≠ hash(current tree),
+    **the verdict does not apply.** Never reuse it. A green from a different tree is
+    still a green — so stale is now DETECTABLE, not merely avoidable.
+  - The exit code and the file's `outcome` are two renderings of ONE `CheckOutcome`.
+    One truth, two surfaces — never a human surface and an agent surface that can
+    disagree. There is deliberately **no "agent mode" that changes what a check means**:
+    presentation may adapt to the caller; semantics may not.
+  - **BREAKING:** `IpcOutput.pollAndRender` takes `repoRoot` and the config's exclude
+    patterns (it now publishes the verdict).
+
+- feat: **`fshw verdict`** — read the last verdict and report whether it still applies to
+  the tree on disk. Contacts no daemon, triggers no run: **reading cannot perturb.** (The
+  `test-rerun` calls an orchestrator made *because the gate looked untrustworthy* were
+  themselves what corrupted the daemon's busy accounting — the act of measuring created
+  the defect being measured, AUTOMATION-99.) stdout is a JSON envelope that always states
+  `applies`, so a stale green can never be mistaken for a current one. Exits 0/1/2/3 as
+  the verdict itself, plus **4** (STALE) and **5** (no usable verdict).
+
+- feat: **the output points at the machine-readable results.** (AUTOMATION-129) In non-TTY
+  output — that is when a machine is reading — `check`, `gate` and `status` print the
+  verdict path and the ACTUAL CTRF paths for THIS run, and an impact-scoped `check` says
+  so and names `fshw gate`. Real paths, not a generic pointer: a hint that makes you go
+  and find the file is a hint you will ignore. The CTRF reports already existed; nothing
+  ever told the reader where to look, and an orchestrator spent two days grepping
+  `total:` and `elapsed:` out of a progress display built for a human.
+
+- fix!: **`fshw gate` could never go green.** (AUTOMATION-129) `readTestScope` and
+  `requestFullSuiteScope` called `RunCommand` with the PLUGIN name (`test-prune`) in the
+  command slot and the real command name stuffed into the args. The host looked up a
+  command called `test-prune`, found none, and returned the unknown-command sentinel —
+  which `parseTestScope` correctly, and silently, read as `ScopeUnknown`, which the merge
+  gate correctly, and silently, treats as "not full-suite". So `gate` exited 3 ("unearned
+  scope") on every repo, forever, **including one whose entire suite had just run
+  unfiltered**. (`set-scope`'s payload was not valid JSON either, so even a routed call
+  would have set IMPACT.) It failed in the safe direction, which is why nothing caught
+  it: a gate that always refuses is never wrong — it is merely useless, and the
+  workaround for a useless gate is a bash harness making merge decisions. An
+  unknown-command reply is now WARNED about rather than folded silently into
+  `ScopeUnknown`; safe-and-mute is how a gate stays broken for its whole life.
+
 - fix!: **`test-rerun` can no longer exit 0 without running.** (AUTOMATION-99) A `busy`
   reply — the force-run produced no result within its budget — now exits NON-ZERO. It
   stays distinct from "Tests failed" (nothing is known to be broken), but `test-rerun` is

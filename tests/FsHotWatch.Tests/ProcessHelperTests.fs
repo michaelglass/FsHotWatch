@@ -1,3 +1,12 @@
+// This class mutates the PROCESS ENVIRONMENT (`withEnv`) and then spawns children
+// that snapshot it — two globals, interacting. Run in parallel with the other
+// global-state classes it flaked under saturation: the child of
+// `runProcess inherits the parent process environment` came up with the probe
+// variable EMPTY (observed 2026-07-14 at load ~26, only inside `mise run ci`,
+// which forks compile + lint + tests at once). Serialized with the rest of the
+// process-global-state classes, per the pattern this repo already uses for the
+// logging globals and the live file watchers.
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.ProcessHelperTests
 
 open System

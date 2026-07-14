@@ -1476,3 +1476,78 @@ let ``computeLaunchCommand: dotnet with empty entry-assembly location falls back
     let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" (Some "")
     test <@ exe = "/usr/local/bin/dotnet" @>
     test <@ prefix.Contains("fshw") @>
+
+// ---------------------------------------------------------------------------
+// The merge gate's daemon commands (AUTOMATION-129)
+//
+// `RunCommand` dispatches on the COMMAND name. The gate used to call it with the
+// PLUGIN name — `RunCommand "test-prune" "test-scope"` — so the host looked up a
+// command called `test-prune`, found none, and returned the unknown-command
+// sentinel. `parseTestScope` then correctly, and SILENTLY, read that as
+// `ScopeUnknown`, which the merge gate correctly, and SILENTLY, treats as "not
+// full-suite". Result: `fshw gate` had NO PATH TO A GREEN on any repo, ever — it
+// exited 3 even when the whole suite had just run unfiltered.
+//
+// It failed in the safe direction, which is why nothing caught it. A gate that
+// always refuses is never WRONG; it is merely useless, and the workaround for a
+// useless gate is a hand-rolled bash harness making merge decisions.
+//
+// These tests pin the WIRE NAMES, which is the thing that was broken.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``readTestRun asks the daemon for the command named test-scope`` () =
+    let mutable seen: (string * string) list = []
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ name args ->
+                    async {
+                        seen <- (name, args) :: seen
+                        return """{"scope":"full","ranProjects":6,"totalProjects":6}"""
+                    } }
+
+    let run = readTestRun ipc "pipe"
+
+    // The command name — not the plugin name — travels in the command slot.
+    test <@ seen |> List.map fst = [ "test-scope" ] @>
+    // ...and the daemon's answer is actually READ, rather than collapsing to
+    // ScopeUnknown because the call never reached a handler.
+    test <@ run.Scope = IpcParsing.FullSuite 6 @>
+
+[<Fact(Timeout = 15000)>]
+let ``an unknown-command reply is ScopeUnknown — a gate never goes green on a scope it did not establish`` () =
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
+
+    test <@ (readTestRun ipc "pipe").Scope = IpcParsing.ScopeUnknown @>
+
+[<Fact(Timeout = 15000)>]
+let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} payload`` () =
+    // Doubly broken before: the command name was wrong AND the args were
+    // `set-scope {"scope":"full"}`, which is not JSON — so even if it had been
+    // routed, the handler's `JsonDocument.Parse` would have thrown and defaulted
+    // to IMPACT. The gate would have asked for a full suite and been given a
+    // filtered one.
+    let mutable seen: (string * string) list = []
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ name args ->
+                    async {
+                        seen <- (name, args) :: seen
+                        return """{"scope":"full"}"""
+                    } }
+
+    requestFullSuiteScope ipc "pipe"
+
+    match seen with
+    | [ (name, args) ] ->
+        test <@ name = "set-scope" @>
+
+        use doc = System.Text.Json.JsonDocument.Parse(args)
+        test <@ doc.RootElement.GetProperty("scope").GetString() = "full" @>
+    | other -> failwith $"expected exactly one set-scope call, got %A{other}"

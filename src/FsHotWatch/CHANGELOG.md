@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- feat: **`FsHotWatch.ContentHash` — ONE hasher, ONE fail-closed policy.** (AUTOMATION-129)
+  Three hashers had grown independently, each with its own answer to the only question
+  that matters: *what do you hash when you CANNOT READ the file?* There is one safe
+  answer — a sentinel that will NOT match the hash of the same file readable — and it
+  must be the same everywhere, or a claim can silently cover a file nobody looked at.
+  `TreeHash` and the verdict's producer identity both route through it; the daemon's
+  binary identity (AUTOMATION-147) should adopt it on merge.
+
+- feat!: **`FsHotWatch.Ctrf` — ONE DIRECTORY PER RUN.** (AUTOMATION-129) Reports live in
+  `.fshw/test-runs/<runId>/<Project>.ctrf.json`, and nothing else does — so **the
+  directory IS the run**. A flat shared pile was unreadable in BOTH directions and both
+  directions bit us on the same day: PRESENCE was ambiguous (nine files, and nothing
+  saying which belonged to the run you just did — the only way to answer was forensics
+  on mtimes), and ABSENCE was ambiguous (an empty listing could mean "no tests ran" —
+  the single most important fact an agent can learn — or "cleaned up", or "wrong glob").
+  Two capable readers guessed, an hour apart, and both guessed wrong.
+  - The run-dir is created BEFORE anything executes, so a run that executed and reported
+    nothing leaves an EMPTY DIRECTORY — a stated fact — while a run that never happened
+    leaves none at all. **Absence stops being something the reader has to decode.**
+  - `reportsForRun` replaces any mtime-window heuristic: membership is DECLARED.
+  - `tidyRunsDir` rotates whole RUN DIRECTORIES (newest 10) and purges the pre-129 flat
+    layout. History is evidence — old runs are rotated, never wiped on start.
+
+- feat: **`FsHotWatch.TreeHash` — the content address of the tree fshw verifies.** (AUTOMATION-129)
+  `TreeHash.compute repoRoot excludePatterns` hashes every file under the discovery roots
+  that is not build output, tooling state, or config-excluded — **sources AND
+  content/fixture files** — plus `.fshw.json` itself, by CONTENT (never mtime, per
+  ADR-008). This is what a verdict is addressed by, so that "a green from a different
+  tree" becomes detectable rather than silently reusable. The recipe
+  (`fshw-tree-sha256-v1`) is a documented contract: `relPath + NUL + sha256hex(bytes) +
+  LF` per file in ordinal path order, SHA-256 over the whole. Fixtures are in the hash on
+  purpose — a changed JSON fixture that MSBuild declined to re-copy once let a suite run
+  green against the OLD fixture and put a red commit on `main` for hours (APPLIC-24).
+
+- feat: **`FsHotWatch.Ctrf` — one CTRF reader, and reports that are RETAINED.** (AUTOMATION-129)
+  The summary parser the verdict layer, the flakiness recorder and `.fshw/verdict.json`
+  all read a report through, so they cannot disagree about what it says. Plus report
+  discovery (`reportsSince` — the reports a given run produced, never "the newest file in
+  the directory") and `tidyRunsDir`, which bounds retention to the newest few per project
+  and purges the DEAD `.log` format.
+
+- feat: `FsHwPaths.configFile` / `ConfigFileName` — `.fshw.json`'s path, named in one
+  place. It is an input to the tree hash, and a second spelling is a way for that to stop
+  being true.
+
 - fix!: **a refused `RunExclusive` claim is a value you cannot drop.** (AUTOMATION-99)
   `PluginCtx.RunExclusive` returned `unit` and silently discarded the work when the
   slot was held. The caller could not tell — so a force-run whose claim was refused
