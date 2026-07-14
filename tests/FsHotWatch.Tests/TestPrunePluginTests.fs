@@ -5515,47 +5515,107 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
 // the end-to-end queue tests happen to leave the sidecar in.
 // =============================================================================
 
+module private LedgerHelpers =
+    open FsHotWatch.TestPrune
+
+    /// Write raw bytes to the sidecar — the only way to produce the torn/corrupt
+    /// shapes `save` itself can never write.
+    let writeRawSidecar (tmpDir: string) (contents: string) =
+        let path = PendingVerification.sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, contents)
+
+    /// The queue, or a test failure naming the reason it could not be read.
+    let expectLoaded (tmpDir: string) : Set<string> =
+        match PendingVerification.load tmpDir with
+        | PendingVerification.LoadedQueue.Loaded queue -> queue
+        | PendingVerification.LoadedQueue.Unreadable reason -> failwith $"expected Loaded, got Unreadable: {reason}"
+
+    /// Assert the ledger is UNREADABLE — the fact that must never again be spelled
+    /// with the same value as an empty queue.
+    let expectUnreadable (tmpDir: string) : string =
+        match PendingVerification.load tmpDir with
+        | PendingVerification.LoadedQueue.Unreadable reason -> reason
+        | PendingVerification.LoadedQueue.Loaded queue ->
+            failwith
+                $"expected Unreadable, got Loaded %A{queue} — an unreadable ledger read as an empty queue is AUTOMATION-150 itself"
+
 [<Fact(Timeout = 15000)>]
-let ``PendingVerification: load on a missing file returns the empty queue`` () =
+let ``PendingVerification: load on a MISSING file is Loaded empty, never Unreadable`` () =
     withTempDir "pv-missing" (fun tmpDir ->
-        // No sidecar written → File.Exists is false → empty.
-        let q = FsHotWatch.TestPrune.PendingVerification.load tmpDir
-        test <@ Set.isEmpty q @>)
+        // The fresh-clone boundary. No sidecar has ever been written, so nothing was
+        // ever queued, so nothing is owed — a PROVABLE empty. This must not be
+        // `Unreadable`, or every fresh clone would wedge into a permanent full suite.
+        test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: save then load round-trips the queue`` () =
     withTempDir "pv-roundtrip" (fun tmpDir ->
         let original = Set.ofList [ "Lib.foo"; "Lib.bar"; "Mod.baz" ]
         FsHotWatch.TestPrune.PendingVerification.save tmpDir original
-        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
-        test <@ loaded = original @>)
+        test <@ LedgerHelpers.expectLoaded tmpDir = original @>)
 
 [<Fact(Timeout = 15000)>]
-let ``PendingVerification: save empty then load returns empty`` () =
+let ``PendingVerification: save empty then load is Loaded empty (a provable 'nothing owed')`` () =
     withTempDir "pv-empty" (fun tmpDir ->
+        // `save` of an empty queue writes `[]` — well-formed and readable. It says,
+        // provably, "nothing is owed", and must stay a fast no-op.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
-        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
-        test <@ Set.isEmpty loaded @>)
+        test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
-let ``PendingVerification: load on whitespace-only file returns empty`` () =
+let ``PendingVerification: an EMPTY file is Unreadable (a torn write, not an empty queue)`` () =
     withTempDir "pv-whitespace" (fun tmpDir ->
-        let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
-        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-        File.WriteAllText(path, "   \n  ")
-        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
-        test <@ Set.isEmpty loaded @>)
+        // `save` writes through an atomic tmp+rename and always emits at least `[]`,
+        // so a zero-byte/whitespace file is a TORN WRITE. Pre-fix it read as `empty`
+        // and absorbed whatever the ledger had held.
+        LedgerHelpers.writeRawSidecar tmpDir "   \n  "
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
 [<Fact(Timeout = 15000)>]
-let ``PendingVerification: load on corrupt JSON returns empty (no throw)`` () =
+let ``PendingVerification: corrupt JSON is Unreadable, not empty (and never throws)`` () =
     withTempDir "pv-corrupt" (fun tmpDir ->
-        let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
-        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-        File.WriteAllText(path, "{ this is not valid json [[[")
-        // Must not throw — a corrupt sidecar self-heals to empty (re-tests on
-        // the next edit) rather than crashing the daemon.
-        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
-        test <@ Set.isEmpty loaded @>)
+        LedgerHelpers.writeRawSidecar tmpDir "{ this is not valid json [[["
+        // Must not throw — but the failure to read is REPORTED, not swallowed into
+        // an empty queue that a caller would read as "nothing owed".
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: a TRUNCATED array is Unreadable, not empty`` () =
+    withTempDir "pv-truncated" (fun tmpDir ->
+        // The crash-mid-write shape: valid JSON right up to where it stops.
+        LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", \"Lib.ba"
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: well-formed JSON that is not an array is Unreadable`` () =
+    withTempDir "pv-not-array" (fun tmpDir ->
+        // Parses cleanly, but it is not a queue. `AsArray` throws; the old code caught
+        // that and returned `empty`.
+        LedgerHelpers.writeRawSidecar tmpDir "{\"pending\": [\"Lib.foo\"]}"
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: a bare JSON null is Unreadable`` () =
+    withTempDir "pv-null" (fun tmpDir ->
+        LedgerHelpers.writeRawSidecar tmpDir "null"
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: a NON-STRING entry makes the whole ledger Unreadable`` () =
+    withTempDir "pv-bad-entry" (fun tmpDir ->
+        // The retail version of the same bug: the old `Seq.choose` silently DROPPED an
+        // entry it could not read, quietly absorbing that symbol's debt while the rest
+        // of the queue looked healthy. A symbol we cannot name is a symbol we cannot
+        // verify — the ledger is unreadable.
+        LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", 42, \"Lib.bar\"]"
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: a null entry makes the whole ledger Unreadable`` () =
+    withTempDir "pv-null-entry" (fun tmpDir ->
+        LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", null]"
+        LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: hash is order-independent and empty-distinct`` () =
@@ -5655,8 +5715,16 @@ module private PendingQueueHelpers =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect }
 
-    /// Current durable pending-verification queue for a repo root.
-    let loadQueue (tmpDir: string) : Set<string> = PendingVerification.load tmpDir
+    /// Current durable pending-verification queue for a repo root. An UNREADABLE
+    /// ledger is a test failure, not an empty queue — these tests assert on what is
+    /// owed, and silently reading an unreadable ledger as `empty` is the very bug
+    /// AUTOMATION-150 closes. The tests that WANT the unreadable case match on
+    /// `LoadedQueue` themselves.
+    let loadQueue (tmpDir: string) : Set<string> =
+        match PendingVerification.load tmpDir with
+        | PendingVerification.LoadedQueue.Loaded queue -> queue
+        | PendingVerification.LoadedQueue.Unreadable reason ->
+            failwith $"expected a readable pending-verification ledger, got Unreadable: {reason}"
 
 [<Fact(Timeout = 20000)>]
 let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
@@ -6234,7 +6302,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
             (ReportRequested report)
             false
             (TimeSpan.FromSeconds 30.0)
-            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck"))
+            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck", KillOutcome.Killed))
 
     test <@ TestResult.isTimedOut result @>
 
@@ -6345,6 +6413,158 @@ let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting o
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected an EARNED Completed after the drain, got %A{other}"))
+
+// =============================================================================
+// AUTOMATION-150 — an unreadable ledger is not an empty one.
+//
+// The queue file is the record of what is still OWED. When it cannot be READ,
+// the debt it holds is UNKNOWN — and "unknown" is not "nothing". Pre-fix `load`
+// swallowed a corrupt/truncated sidecar into `empty`, which is byte-identical to
+// the value a genuinely-clean queue produces: the entire outstanding test debt
+// vanished into a `with _ -> empty`, and the module broke the invariant its own
+// header states ("the queue may only err toward OVER-testing, never
+// under-testing").
+//
+// The boundary that keeps the fix honest, and the subtlety of the ticket: "the
+// file does not exist" (first run, fresh clone) and "the file exists and I could
+// not read it" are DIFFERENT facts. The first is legitimately empty. Collapsing
+// them either wedges every fresh clone into a permanent full suite, or re-opens
+// the hole. All three tests below exist to pin that boundary from both sides.
+// =============================================================================
+
+/// The two-project runner used by the AUTOMATION-150 tests. P1 covers `Lib.foo`,
+/// P2 covers `Lib.debt` — so an impact-filtered selection driven by a changed
+/// `Lib.foo` runs P1 and SKIPS P2. A widened (full-suite) run touches both.
+let private ledgerRunner (project: string) (marker: string) : TestConfig =
+    { Project = project
+      Command = "sh"
+      Args = $"-c \"touch {marker}; exit 0\""
+      Group = "default"
+      Environment = []
+      FilterTemplate = None
+      ClassJoin = " "
+      TimeoutSec = None
+      ReportVerificationFormat = AutoDetect }
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than greening on nothing`` () =
+    // THE regression. The sidecar EXISTS but is truncated mid-array — the shape a
+    // crashed/torn write leaves behind. It once held real debt (Lib.debt, covered
+    // by P2, never proven green).
+    //
+    // Pre-fix: `load` caught the parse throw and returned `empty`. The drain gate
+    // (`if Set.isEmpty pendingQueueRef then return`) read that empty queue as
+    // "nothing owed", ran ZERO tests, and the plugin rested on a green verdict. The
+    // debt was absorbed by a corrupt file.
+    //
+    // Post-fix: the ledger loads as `Unreadable`, which is a DIFFERENT VALUE from an
+    // empty `Queue` and cannot be mistaken for one. A selection made without the
+    // ledger cannot be trusted, so the run widens to EVERY configured project in
+    // full — the only scope that can discharge a debt of unknown membership.
+    withTempDir "tp-ledger-unreadable" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
+
+        // A TRUNCATED ledger. The file exists — this is emphatically not a fresh clone.
+        let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, "[\"Lib.deb")
+
+        let p1Ran = Path.Combine(tmpDir, "p1-ran")
+        let p2Ran = Path.Combine(tmpDir, "p2-ran")
+        let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // The cold-scan shape (as in AUTOMATION-95/99): BatchChecked is the cohort
+        // seal, and the only event left that can drain what the scan discovered.
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // It RAN — an unreadable ledger owes MORE testing, never less…
+        test <@ File.Exists p1Ran @>
+        // …and it ran EVERYTHING. P2 is the project the pre-fix filtered selection
+        // skipped, and the one holding the debt the corrupt file swallowed.
+        test <@ File.Exists p2Ran @>
+
+        // And the debt is DISCHARGED: a full suite passed every configured project,
+        // so every symbol the lost ledger could have held is now verified, and the
+        // corrupt file has been rewritten. It self-heals — the next session loads a
+        // readable ledger and goes back to impact filtering, instead of grinding a
+        // full suite forever.
+        test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-150: a MISSING ledger (fresh clone) is legitimately empty and does NOT force a full suite`` () =
+    // The converse, and the trade this fix must NOT make: fail-open swapped for a
+    // stuck full suite. A fresh clone / first run has no ledger at all. That is a
+    // genuine, provable "nothing owed" — not an unreadable one — and it must stay a
+    // fast no-op. Collapsing "missing" into "unreadable" would wedge every fresh
+    // clone into a permanent full-suite run.
+    withTempDir "tp-ledger-missing" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
+
+        // No sidecar written AT ALL — the file does not exist.
+        test <@ not (File.Exists(FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir)) @>
+
+        let p1Ran = Path.Combine(tmpDir, "p1-ran")
+        let p2Ran = Path.Combine(tmpDir, "p2-ran")
+        let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+
+        // Give a run every chance to start before concluding that none did.
+        waitUntil (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000
+        waitForQuiescent host 5000
+
+        // Nothing is owed and nothing was run. The fast no-op is intact.
+        test <@ not (File.Exists p1Ran) @>
+        test <@ not (File.Exists p2Ran) @>)
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-150: a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
+    // The other half of the boundary. `save` of an empty queue writes `[]` — a
+    // well-formed, READABLE ledger that says, provably, "nothing is owed". It must
+    // load as `Loaded empty` and skip, exactly as before. If the fix misclassified
+    // `[]` (or any clean empty queue) as unreadable, every idle daemon would grind
+    // a full suite forever — and this test would fail.
+    withTempDir "tp-ledger-empty" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
+
+        // A clean, well-formed, EMPTY ledger on disk.
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
+        test <@ File.Exists(FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir) @>
+
+        let p1Ran = Path.Combine(tmpDir, "p1-ran")
+        let p2Ran = Path.Combine(tmpDir, "p2-ran")
+        let configs = [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+
+        waitUntil (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000
+        waitForQuiescent host 5000
+
+        test <@ not (File.Exists p1Ran) @>
+        test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the gate red`` () =

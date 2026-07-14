@@ -345,9 +345,12 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 
         $"deps: project.assets.json stale for %s{projName} and 'dotnet restore' failed (exit %d{code}). Fix deps manually, then re-run.",
         tail
-    | TimedOut(after, tail) ->
+    | TimedOut(after, tail, kill) ->
+        // `renderKill` for the same reason as `renderOutput` above: this text is read by
+        // a human about to debug a stuck restore, and a `dotnet restore` tree we failed
+        // to kill is still holding the NuGet locks they are about to fight.
         $"deps: project.assets.json stale for %s{projName} and 'dotnet restore' timed out after %d{int after.TotalSeconds}s. Fix deps manually, then re-run.",
-        renderOutput tail
+        renderOutput tail + renderKill kill
     | Succeeded _ ->
         // Restore reported success but assets are still absent — a different
         // failure mode (e.g. restore didn't regenerate assets for this project).

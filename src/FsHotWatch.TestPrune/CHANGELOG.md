@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- fix!: **an unreadable needs-testing ledger is not an empty one.** (AUTOMATION-150)
+  `PendingVerification.load` answered every failure with `with _ -> empty`, so a corrupt,
+  truncated or unreadable sidecar silently absorbed the ENTIRE outstanding test debt: the
+  value it returned was indistinguishable from the one a genuinely-clean queue returns,
+  the drain gate read it as "nothing owed", ZERO tests ran, and the plugin went green. The
+  module was breaking the invariant its own header states — *"the queue may only err
+  toward OVER-testing, never under-testing"* — since an unreadable ledger causing no tests
+  to run is precisely under-testing.
+
+  `load` now returns `LoadedQueue = Loaded of Queue | Unreadable of reason`, so the two
+  facts are different VALUES and the compiler makes every caller decide which it holds
+  (the same move as `ProcessOutput.DrainTimedOut`). An `Unreadable` ledger WIDENS the run
+  — every configured test project, in full, because a selection made without the record of
+  what is owed cannot be trusted — refuses task-cache participation entirely (or a cached
+  green would replay straight over the unknown debt), and says so loudly in the log rather
+  than recovering in silence. The debt is discharged only by a run that executed every
+  runnable project unfiltered and passed; the corrupt file is deliberately left on disk
+  until then, so a crash mid-recovery leaves the next session the same honest "unknown"
+  instead of a clean, empty, wrong ledger.
+
+  A **missing** file remains `Loaded empty`: "the file does not exist" (first run, fresh
+  clone, nothing ever queued) and "the file exists and I could not read it" are different
+  facts, and only the second is an unknown — so fresh clones keep their fast no-op instead
+  of wedging into a permanent full suite. A non-string or `null` entry now makes the whole
+  ledger unreadable too: the old `Seq.choose` dropped such entries, absorbing that symbol's
+  debt one element at a time.
+
 - fix!: **a run may clear only what it COVERED.** (AUTOMATION-125) A full run failed
   project X; a queued impact-filtered re-run then executed a *narrower* selection,
   passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never

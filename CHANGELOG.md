@@ -4,11 +4,50 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A process tree we failed to kill is no longer reported as killed
+
+**Breaking (API):** `ProcessOutcome.TimedOut` now carries a third field —
+`TimedOut of TimeSpan * ProcessOutput * KillOutcome`, where `KillOutcome` is
+`Killed` | `AlreadyExited` | `KillFailed of exn`.
+
+When a spawned child overran its timeout, `runProcess` killed its process tree
+through a helper whose entire error handling was `with _ -> ()`. Every failure —
+a Win32 permission refusal, anything at all — was swallowed, and the caller was
+handed a `TimedOut` whose own documentation promised the tree had been killed. "I
+could not kill it" was spelled exactly like "I killed it": a failure to *do the
+work*, made indistinguishable from the work succeeding. The same disease as a
+drain that could not measure returning `""` (below), and the runaway tree it hides
+is still holding a lock, a port, a pipe, or a core.
+
+The kill's outcome is now a value, and it is on the `TimedOut` case where a caller
+cannot read the timeout without it. Only the already-exited race — the child
+exiting in the gap between the timeout firing and the kill landing — is treated as
+benign, which is exactly what `isExpectedKillException` had specified since the
+2026-05-02 audit while the call site that was meant to consult it swallowed
+everything instead. A genuine `KillFailed` is now logged at ERROR with the command,
+the pid and the reason, and is named in every human-facing rendering: `outputOf`
+spells it out in full, and one-line plugin statuses and verdicts carry a short
+`(KILL FAILED — process tree STILL RUNNING)` marker so a status line can no longer
+imply the runaway is over.
+
+### A weakened test assertion, restored
+
+`runProcess reports TimedOut on kill` had been loosened to assert only the
+`TimedOut` tag, on the recorded grounds that "capturing pre-kill stdout races
+subprocess startup under load". It did not race subprocess startup — it raced the
+**thread pool**, which is the bug fixed below, and the loosened assertion had been
+passing for months precisely because it had stopped testing the thing that was
+broken. It now asserts again that a child's pre-kill stdout actually reaches the
+`tail`. Verified by breaking the drain and watching the restored assertion go red
+where the weakened one stayed green, and by 30 consecutive runs on a box saturated
+to a load of 56 across 12 cores.
+
 ### A process whose output we failed to read no longer reports an empty output
 
 **Breaking (API):** `ProcessOutcome`'s three cases now carry a `ProcessOutput`
 rather than a `string` — `Succeeded of ProcessOutput`, `Failed of int *
-ProcessOutput`, `TimedOut of TimeSpan * ProcessOutput`. Use `outputOf` /
+ProcessOutput`, `TimedOut of TimeSpan * ProcessOutput * KillOutcome` (that third
+field is from *A process tree we failed to kill*, above). Use `outputOf` /
 `renderOutput` (rendered for humans, and it names an incomplete read) or
 `ProcessOutput.text` (raw bytes, for text-searching) to get a `string` back.
 
