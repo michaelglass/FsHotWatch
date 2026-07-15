@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.4 - 2026-07-15
+
 - feat: **`confirm` HONOURS a verdict it has already earned.** (AUTOMATION-161) `confirm`
   is the pre-merge verb, so it gets run more than once — and on a tree that has not moved,
   the honest answer to *"is the suite green?"* was settled the first time. Asking again is

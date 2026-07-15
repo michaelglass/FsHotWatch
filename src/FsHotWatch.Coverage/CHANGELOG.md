@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.15 - 2026-07-15
+
 - fix!: **`coverage-ratchet` no longer races the check that reads the file it rewrites.**
   (AUTOMATION-99) The command rewrote the thresholds config on the IPC thread while a
   `RunExclusive "coverage-check"` run might be parsing it. It now posts to the mailbox and

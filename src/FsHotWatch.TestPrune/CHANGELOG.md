@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.3 - 2026-07-15
+
 - fix!: **a copy and its origin are compared by CONTENT, so a target-framework mismatch
   cannot be expressed.** (AUTOMATION-169) The freshness gate's copy check asked
   `copyMtime < originMtime` — and **resolved the origin to the wrong target framework**.

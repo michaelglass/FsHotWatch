@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.3 - 2026-07-15
+
 - fix!: **the task cache can no longer DESTROY the result of a run that actually
   happened.** (AUTOMATION-161) `PluginFramework` consulted the cache for *every*
   dispatched event, including a plugin's own `Custom` messages — and a `Custom` message is

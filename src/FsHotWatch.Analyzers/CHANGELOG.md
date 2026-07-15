@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.22 - 2026-07-15
+
 - fix!: adapt to verdict-carrying terminals (AUTOMATION-99): `Failed` statuses carry a
   `RunVerdict` (summary + measured elapsed), and the deleted `CompleteWithSummary`
   side-channel is replaced by the verdict the terminal itself carries.

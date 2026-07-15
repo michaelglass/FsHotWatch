@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.17 - 2026-07-15
+
 - fix!: adapt to the core `RunClaim` / verdict-carrying terminals (AUTOMATION-99): the
   build's `RunExclusive` claim is handled explicitly, and `Running` is reported by the
   framework at the claim.

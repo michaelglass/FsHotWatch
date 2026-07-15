@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.15 - 2026-07-15
+
 - fix: `FormatPreprocessor` gains the same `slowHook` test seam its twin
   (`createFormatCheckWithSlowHook`) already had. Its timeout test could previously only
   RACE the timer against Fantomas (`timeoutSec = 0`) — on a warm, idle box the format won,

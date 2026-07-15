@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.14 - 2026-07-15
+
 - fix!: adapt to verdict-carrying terminals (AUTOMATION-99). The timed-out, failed and
   crashed arms now carry a `RunVerdict` (summary + measured elapsed) instead of setting a
   summary through the deleted side-channel, so a failed command records an honest duration
