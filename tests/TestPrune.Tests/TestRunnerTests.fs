@@ -213,3 +213,66 @@ module ``runFilteredTestsWith`` =
 
         test <@ capturedArgs.Contains("--filter-class \"Ns.A\"") @>
         test <@ capturedArgs.Contains("--filter-class \"Ns.B\"") @>
+
+module ``runProcessWith`` =
+
+    // regression: the default runner used an unbounded WaitForExit, so a
+    // wedged `dotnet exec <testdll>` hung the CLI forever with no diagnostic. The wait is
+    // now a hang detector — a process that outlives the (injected, short) timeout must be
+    // killed and reported as a timeout, NOT silently waited out.
+    //
+    // Confirmed RED before the fix by reverting runProcessWith to `proc.WaitForExit()`:
+    // this test then blocks for the child's full sleep and returns ExitCode 0 (not
+    // timeoutExitCode) with no "wedged" diagnostic, so both asserts fail.
+    [<Fact>]
+    let ``bounds a wedged process: kills it and returns a timeout result`` () =
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let result = runProcessWith 200 "sleep" "30"
+        sw.Stop()
+
+        // Returned far inside the child's 30s sleep => it was killed, not waited out.
+        test <@ sw.Elapsed.TotalSeconds < 10.0 @>
+        test <@ result.ExitCode = timeoutExitCode @>
+        test <@ result.Stderr.Contains "wedged" @>
+
+    // A process that completes inside the bound behaves exactly as an unbounded wait
+    // would: real exit code, no timeout signalling.
+    [<Fact>]
+    let ``runs a process that completes within the bound to a normal result`` () =
+        let result = runProcessWith 30_000 "sleep" "0"
+        test <@ result.ExitCode = 0 @>
+        test <@ result.ExitCode <> timeoutExitCode @>
+
+module ``resolveTestRunTimeoutMs`` =
+
+    let private envVar = "TESTPRUNE_TEST_RUN_TIMEOUT_MS"
+
+    [<Fact>]
+    let ``falls back to the generous default when the env var is unset`` () =
+        let prior = Environment.GetEnvironmentVariable envVar
+        Environment.SetEnvironmentVariable(envVar, null)
+
+        try
+            test <@ resolveTestRunTimeoutMs () = defaultTestRunTimeoutMs @>
+        finally
+            Environment.SetEnvironmentVariable(envVar, prior)
+
+    [<Fact>]
+    let ``honours a positive integer env override`` () =
+        let prior = Environment.GetEnvironmentVariable envVar
+        Environment.SetEnvironmentVariable(envVar, "1234")
+
+        try
+            test <@ resolveTestRunTimeoutMs () = 1234 @>
+        finally
+            Environment.SetEnvironmentVariable(envVar, prior)
+
+    [<Fact>]
+    let ``ignores a non-positive or malformed override`` () =
+        let prior = Environment.GetEnvironmentVariable envVar
+        Environment.SetEnvironmentVariable(envVar, "not-a-number")
+
+        try
+            test <@ resolveTestRunTimeoutMs () = defaultTestRunTimeoutMs @>
+        finally
+            Environment.SetEnvironmentVariable(envVar, prior)

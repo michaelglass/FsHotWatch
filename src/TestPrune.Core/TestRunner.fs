@@ -29,7 +29,41 @@ let findTestDll (projectPath: string) : string =
 /// that `.Result` would rethrow.
 let internal awaitOutput (t: Task<string>) : string = t.GetAwaiter().GetResult()
 
-let private runProcess (fileName: string) (arguments: string) : TestResult =
+/// Exit code returned when a test run is killed for exceeding its timeout.
+/// Follows the POSIX `timeout(1)` convention (124 = "the command timed out"), so a
+/// wedged run surfaces as a clear, distinct non-zero exit rather than a silent hang.
+[<Literal>]
+let timeoutExitCode = 124
+
+/// Default hang-detector timeout for a single test-project run, in milliseconds.
+///
+/// This is deliberately generous (30 minutes): a legitimate suite may run for many
+/// minutes, and a too-tight bound that kills a slow-but-valid run is a worse bug than
+/// the silent hang it replaces. Override per-run with the
+/// `TESTPRUNE_TEST_RUN_TIMEOUT_MS` environment variable.
+let defaultTestRunTimeoutMs = 30 * 60 * 1000
+
+/// Resolve the effective test-run timeout: the `TESTPRUNE_TEST_RUN_TIMEOUT_MS`
+/// environment variable when it parses to a positive integer, otherwise
+/// `defaultTestRunTimeoutMs`.
+let internal resolveTestRunTimeoutMs () : int =
+    match Environment.GetEnvironmentVariable "TESTPRUNE_TEST_RUN_TIMEOUT_MS" with
+    | null
+    | "" -> defaultTestRunTimeoutMs
+    | raw ->
+        match Int32.TryParse raw with
+        | true, ms when ms > 0 -> ms
+        | _ -> defaultTestRunTimeoutMs
+
+/// Run a process bounded by `timeoutMs`, capturing stdout/stderr separately.
+///
+/// The bound is a HANG DETECTOR, not a run-cap: a real suite may legitimately run for
+/// many minutes (hence the generous default), so on a normal run this behaves exactly
+/// as an unbounded wait. But a runner WEDGED on a test DLL would otherwise block the
+/// CLI forever with no diagnostic; on expiry the process tree is killed, a diagnostic
+/// is written to stderr, and a result carrying `timeoutExitCode` is returned instead of
+/// hanging.
+let internal runProcessWith (timeoutMs: int) (fileName: string) (arguments: string) : TestResult =
     let psi = ProcessStartInfo(fileName, arguments)
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
@@ -41,17 +75,33 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
 
     let stdoutTask = proc.StandardOutput.ReadToEndAsync()
     let stderrTask = proc.StandardError.ReadToEndAsync()
-    proc.WaitForExit()
+    let completed = proc.WaitForExit(timeoutMs)
     sw.Stop()
 
-    let stdout = awaitOutput stdoutTask
-    let stderr = awaitOutput stderrTask
+    if not completed then
+        proc.Kill(entireProcessTree = true)
 
-    eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
+        let diagnostic =
+            $"test run exceeded %d{timeoutMs / 1000}s \u2014 the runner appears wedged on `%s{fileName} %s{arguments}`; killed the process tree"
 
-    { ExitCode = proc.ExitCode
-      Stdout = stdout
-      Stderr = stderr }
+        eprintfn "%s" diagnostic
+
+        { ExitCode = timeoutExitCode
+          Stdout = ""
+          Stderr = diagnostic }
+    else
+        let stdout = awaitOutput stdoutTask
+        let stderr = awaitOutput stderrTask
+
+        eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
+
+        { ExitCode = proc.ExitCode
+          Stdout = stdout
+          Stderr = stderr }
+
+/// Default process runner: bounds the wait with the resolved (env-overridable) timeout.
+let private runProcess (fileName: string) (arguments: string) : TestResult =
+    runProcessWith (resolveTestRunTimeoutMs ()) fileName arguments
 
 /// Build the filter arguments string from a list of test class names.
 let buildFilterArgs (testClasses: string list) : string =

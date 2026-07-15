@@ -91,6 +91,10 @@ let showHelp () =
 
 let private buildTimeoutMs = 600_000
 
+/// Hang-detector timeout for the `jj diff` spawn, in milliseconds. `jj diff` is
+/// normally near-instant, so 60s is generous; it only fires if jj is wedged.
+let private jjDiffTimeoutMs = 60_000
+
 /// Default build runner: runs `dotnet build` on the solution with a 10-minute timeout.
 /// Reads stdout and stderr asynchronously to avoid deadlock when buffers fill.
 let dotnetBuildRunner: BuildRunner =
@@ -161,14 +165,24 @@ let jjDiffProvider: DiffProvider =
             psi.CreateNoWindow <- true
 
             use proc = Process.Start(psi)
-            let output = proc.StandardOutput.ReadToEnd()
-            let _stderr = proc.StandardError.ReadToEnd()
-            proc.WaitForExit()
 
-            if proc.ExitCode = 0 then
-                Ok output
+            // Read async so a full pipe can't deadlock the wait, and bound the wait so a
+            // wedged jj can't hang the CLI forever.
+            let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+            let stderrTask = proc.StandardError.ReadToEndAsync()
+
+            if not (proc.WaitForExit(jjDiffTimeoutMs)) then
+                proc.Kill(entireProcessTree = true)
+                eprintfn $"jj diff exceeded {jjDiffTimeoutMs / 1000}s — jj appears wedged; aborting"
+                Error "jj diff timed out — jj appears wedged"
             else
-                Error "jj diff failed — is this a jj repository?"
+                let output = stdoutTask.Result
+                let _stderr = stderrTask.Result
+
+                if proc.ExitCode = 0 then
+                    Ok output
+                else
+                    Error "jj diff failed — is this a jj repository?"
         with ex ->
             Error $"Failed to run jj: %s{ex.Message}"
 
