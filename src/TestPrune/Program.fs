@@ -154,37 +154,46 @@ let runIndex (repoRoot: string) (parallelism: int) : int =
     let auditSink = createAuditSinkForRepo repoRoot
     runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink
 
+/// Run a `jj diff`-style command, capturing stdout, bounded by a hang-detector `timeoutMs`.
+///
+/// The command name and arguments are parameters (rather than hard-coded `jj diff --git`)
+/// solely so the bounded-wait path added for the tracked issue is unit-testable with a stub
+/// command: a hanging stub proves the timeout branch kills the process tree instead of
+/// hanging the CLI, and a fast stub proves the normal read/exit-code path. `jjDiffProvider`
+/// is the only production caller and always passes `"jj" "diff --git"`.
+let runBoundedDiff (timeoutMs: int) (fileName: string) (arguments: string) : Result<string, string> =
+    try
+        let psi = ProcessStartInfo(fileName, arguments)
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.UseShellExecute <- false
+        psi.CreateNoWindow <- true
+
+        use proc = Process.Start(psi)
+
+        // Read async so a full pipe can't deadlock the wait, and bound the wait so a
+        // wedged jj can't hang the CLI forever.
+        let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+        let stderrTask = proc.StandardError.ReadToEndAsync()
+
+        if not (proc.WaitForExit(timeoutMs)) then
+            proc.Kill(entireProcessTree = true)
+            eprintfn $"jj diff exceeded {timeoutMs / 1000}s — jj appears wedged; aborting"
+            Error "jj diff timed out — jj appears wedged"
+        else
+            let output = stdoutTask.Result
+            let _stderr = stderrTask.Result
+
+            if proc.ExitCode = 0 then
+                Ok output
+            else
+                Error "jj diff failed — is this a jj repository?"
+    with ex ->
+        Error $"Failed to run jj: %s{ex.Message}"
+
 /// Get jj diff output.
 let jjDiffProvider: DiffProvider =
-    fun () ->
-        try
-            let psi = ProcessStartInfo("jj", "diff --git")
-            psi.RedirectStandardOutput <- true
-            psi.RedirectStandardError <- true
-            psi.UseShellExecute <- false
-            psi.CreateNoWindow <- true
-
-            use proc = Process.Start(psi)
-
-            // Read async so a full pipe can't deadlock the wait, and bound the wait so a
-            // wedged jj can't hang the CLI forever.
-            let stdoutTask = proc.StandardOutput.ReadToEndAsync()
-            let stderrTask = proc.StandardError.ReadToEndAsync()
-
-            if not (proc.WaitForExit(jjDiffTimeoutMs)) then
-                proc.Kill(entireProcessTree = true)
-                eprintfn $"jj diff exceeded {jjDiffTimeoutMs / 1000}s — jj appears wedged; aborting"
-                Error "jj diff timed out — jj appears wedged"
-            else
-                let output = stdoutTask.Result
-                let _stderr = stderrTask.Result
-
-                if proc.ExitCode = 0 then
-                    Ok output
-                else
-                    Error "jj diff failed — is this a jj repository?"
-        with ex ->
-            Error $"Failed to run jj: %s{ex.Message}"
+    fun () -> runBoundedDiff jjDiffTimeoutMs "jj" "diff --git"
 
 /// Run the status command: show what would run without executing.
 let runStatus (repoRoot: string) : int =

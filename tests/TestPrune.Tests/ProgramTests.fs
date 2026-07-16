@@ -1915,3 +1915,48 @@ module ``Example solution integration`` =
                 suppressError (fun () -> runRunWith fakeDiff root (createNoopSink ()))
 
             test <@ exitCode = 0 @>)
+
+module ``runBoundedDiff`` =
+
+    // `jjDiffProvider` delegates to `runBoundedDiff jjDiffTimeoutMs "jj" "diff --git"`.
+    // The command/timeout are injectable so the bounded-wait path is
+    // testable with stub commands instead of a real `jj` (which is absent on CI runners).
+    // Stubs mirror the sibling TestRunner.runProcessWith `sleep` tests.
+
+    // Happy path: a command that exits 0 within the bound returns Ok with its stdout.
+    // `sleep 0` exits 0 immediately with empty stdout, so Ok "" exercises the normal
+    // read + zero-exit-code branch without shelling out to jj.
+    [<Fact>]
+    let ``a command that exits 0 within the bound returns Ok with its stdout`` () =
+        test <@ runBoundedDiff 30_000 "sleep" "0" = Ok "" @>
+
+    // Timeout branch (the fix): a process that outlives the bound is killed
+    // and reported as a timeout, NOT waited out. Mirrors the TestRunner `sleep 30` test.
+    [<Fact>]
+    let ``bounds a wedged diff: kills it and returns a timeout Error`` () =
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let result = runBoundedDiff 200 "sleep" "30"
+        sw.Stop()
+
+        // Returned far inside the child's 30s sleep => it was killed, not waited out.
+        test <@ sw.Elapsed.TotalSeconds < 10.0 @>
+
+        match result with
+        | Error msg -> test <@ msg.Contains "timed out" @>
+        | Ok _ -> failwith "expected a timeout Error"
+
+    // Non-zero exit within the bound maps to the jj-diff-failed Error. `sleep` with an
+    // invalid interval exits non-zero on both GNU and BSD sleep.
+    [<Fact>]
+    let ``a command that exits non-zero returns a jj-diff-failed Error`` () =
+        match runBoundedDiff 30_000 "sleep" "not-a-number" with
+        | Error msg -> test <@ msg.Contains "jj diff failed" @>
+        | Ok _ -> failwith "expected a failure Error"
+
+    // A command that cannot be started (missing binary) is caught and surfaced as an Error
+    // rather than crashing the CLI.
+    [<Fact>]
+    let ``a missing binary is caught and returns an Error`` () =
+        match runBoundedDiff 30_000 "testprune-no-such-binary-xyz" "" with
+        | Error msg -> test <@ msg.Contains "Failed to run jj" @>
+        | Ok _ -> failwith "expected a caught Error"
