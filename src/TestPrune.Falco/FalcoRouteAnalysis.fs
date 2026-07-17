@@ -14,6 +14,13 @@ type AffectedTest =
     { TestProject: string
       TestClass: string }
 
+/// A top-level declaration (test class or test module) in a test file, carrying
+/// the text of its own span for per-declaration URL match attribution.
+type private DeclarationSpan =
+    { Name: string
+      IsClass: bool
+      Text: string }
+
 /// Route-based integration test filtering.
 /// Scans integration test source files for URL patterns that map to changed handler files.
 type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string, routeStore: RouteStore) =
@@ -33,25 +40,69 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     let modulePattern =
         Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
 
+    // Textual spellings of the test attributes core's AST analysis recognises
+    // (xUnit / NUnit / MSTest — see `knownTestAttributes` in AstAnalyzer). A
+    // module whose span carries none of these holds no tests, so selecting it
+    // could never run anything.
+    let testAttributePattern =
+        Regex(
+            @"\[<\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*[(>;]",
+            RegexOptions.Compiled
+        )
+
+    // Selection is per-declaration, not per-file: a URL match is attributed to
+    // the top-level declaration whose textual span contains it. A declaration
+    // starts at a `classPattern`/`modulePattern` match (both anchor at column 0)
+    // and its span runs to the next such match or EOF. Each span's OWN text is
+    // matched (never global match positions: a `{param}` wildcard is greedy, so
+    // a whole-file scan can swallow the text between two URL occurrences and
+    // hide the second declaration's match). Classes are always selectable;
+    // modules only when their span carries a test attribute — a helper module
+    // without tests can never run anything. When the file matches only OUTSIDE
+    // every selectable span (file header, helper module, top-level lets), we
+    // cannot tell which tests exercise the route, so we fall back to every
+    // selectable declaration in the file: over-selection wastes time,
+    // under-selection silently skips affected tests.
     let findTestClassesInFiles (testFiles: string list) (regexes: Regex list) : string list =
         testFiles
         |> List.collect (fun testFile ->
             let content = File.ReadAllText(testFile)
 
-            if regexes |> List.exists (fun regex -> regex.IsMatch(content)) then
-                let classes =
-                    classPattern.Matches(content)
-                    |> Seq.map (fun m -> m.Groups.[1].Value)
-                    |> Seq.toList
-
-                let modules =
-                    modulePattern.Matches(content)
-                    |> Seq.map (fun m -> m.Groups.[1].Value)
-                    |> Seq.toList
-
-                classes @ modules
+            if regexes |> List.exists (fun regex -> regex.IsMatch(content)) |> not then
+                []
             else
-                [])
+                let declarations =
+                    [ for m in classPattern.Matches(content) -> m.Index, m.Groups.[1].Value, true
+                      for m in modulePattern.Matches(content) -> m.Index, m.Groups.[1].Value, false ]
+                    |> List.sortBy (fun (start, _, _) -> start)
+
+                let spans =
+                    declarations
+                    |> List.mapi (fun i (start, name, isClass) ->
+                        let finish =
+                            match declarations |> List.tryItem (i + 1) with
+                            | Some(nextStart, _, _) -> nextStart
+                            | None -> content.Length
+
+                        { Name = name
+                          IsClass = isClass
+                          Text = content.Substring(start, finish - start) })
+
+                let selectable =
+                    spans
+                    |> List.filter (fun span -> span.IsClass || testAttributePattern.IsMatch(span.Text))
+
+                let directlyMatched =
+                    selectable
+                    |> List.filter (fun span -> regexes |> List.exists (fun regex -> regex.IsMatch(span.Text)))
+
+                let selected =
+                    if directlyMatched.IsEmpty then
+                        selectable
+                    else
+                        directlyMatched
+
+                selected |> List.map (fun span -> span.Name))
         |> List.distinct
 
     let findTestFiles (repoRoot: string) : string list =

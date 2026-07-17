@@ -430,8 +430,10 @@ module ``changed handler with module-style test file`` =
 
     [<Fact>]
     let ``module-style test is found when URL matches`` () =
+        // The module carries a [<Fact>]: a module without test attributes is a
+        // helper, not a test container, and is deliberately never selected.
         let testContent =
-            "module UsersTests =\n    let getUser () =\n        let url = \"/api/users/123\"\n        ()\n"
+            "module UsersTests =\n    [<Fact>]\n    let getUser () =\n        let url = \"/api/users/123\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
@@ -511,6 +513,134 @@ type AdminUsersTests(output: ITestOutputHelper) =
                 test <@ result.Length = 2 @>
                 let classes = result |> List.map (fun r -> r.TestClass) |> Set.ofList
                 test <@ classes = set [ "UsersTests"; "AdminUsersTests" ] @>)
+
+module ``per-declaration selection`` =
+
+    /// R1: a URL match is attributed to the declaration whose textual span
+    /// contains it — the sibling class in the same file is NOT dragged in.
+    [<Fact>]
+    let ``URL inside only one class's span selects only that class`` () =
+        let testContent =
+            """type UsersTests(output: ITestOutputHelper) =
+    member _.GetUser() =
+        let url = "/api/users/123"
+        ()
+
+type OrdersTests(output: ITestOutputHelper) =
+    member _.GetOrder() =
+        let url = "/api/orders/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// R2: the URL lives only in a helper module with no test attributes. The
+    /// conservative fallback fires (the match is outside every test span), so
+    /// the file's test class IS selected — but the helper module never is.
+    [<Fact>]
+    let ``match only inside a non-test helper module falls back to the file's test classes`` () =
+        let testContent =
+            """module Urls =
+    let users = "/api/users/123"
+
+type UsersTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.GetUser() = ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// R3: a test-bearing module stays selectable, and selection is per-module —
+    /// the sibling test module without the URL is not selected.
+    [<Fact>]
+    let ``URL inside one of two test-bearing modules selects only that module`` () =
+        let testContent =
+            """module UsersTests =
+    [<Fact>]
+    let ``gets a user`` () =
+        let url = "/api/users/123"
+        ()
+
+module OrdersTests =
+    [<Fact>]
+    let ``gets an order`` () =
+        let url = "/api/orders/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// R4: when a test class's own span matches, no fallback is needed — and
+    /// the helper module that also contains the URL is still excluded.
+    [<Fact>]
+    let ``helper module is excluded even when a class span also matches`` () =
+        let testContent =
+            """module Urls =
+    let users = "/api/users/123"
+
+type UsersTests(output: ITestOutputHelper) =
+    member _.GetUser() =
+        let url = "/api/users/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
 
 module ``multiple handlers affecting different test files`` =
 
