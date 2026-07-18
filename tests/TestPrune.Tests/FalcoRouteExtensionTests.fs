@@ -709,6 +709,37 @@ type UsersDirectTests(output: ITestOutputHelper) =
                                      TestClass = "UsersTests" } ]
                     @>)
 
+    /// B8: an attribute-like name in ORDINARY code (`[ users; TestCase(1) ]`)
+    /// must not make a helper module count as test-bearing. If it does, the
+    /// helper's URL match registers as a direct match instead of an out-of-span
+    /// one, the fallback is suppressed, and the truly-affected indirect test
+    /// class is dropped while the non-runnable helper is selected.
+    [<Fact>]
+    let ``attribute-like name in ordinary code does not make a helper module selectable`` () =
+        let testContent =
+            """module Urls =
+    let users = "/api/users/123"
+    let cases = [ users; TestCase(1) ]
+
+type UsersIndirectTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.GetUser() = ignore Urls.users
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                let classes = result |> List.map (fun r -> r.TestClass)
+                test <@ List.contains "UsersIndirectTests" classes @>
+                test <@ not (List.contains "Urls" classes) @>)
+
 module ``multiple handlers affecting different test files`` =
 
     [<Fact>]

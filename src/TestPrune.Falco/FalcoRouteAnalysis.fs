@@ -40,17 +40,35 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     let modulePattern =
         Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
 
+    // An attribute block: `[<` up to the FIRST `>]`, possibly spanning lines.
+    // Purely textual, consistent with the rest of this file: a `>]` inside a
+    // string argument would close the block early (and a block whose `>]` only
+    // ever appears inside a string would never close) — both are rare enough
+    // to accept.
+    let attributeBlockPattern =
+        Regex(@"\[<(.*?)>\]", RegexOptions.Compiled ||| RegexOptions.Singleline)
+
     // Textual spellings of the test attributes core's AST analysis recognises
-    // (xUnit / NUnit / MSTest — see `knownTestAttributes` in AstAnalyzer). A
-    // module whose span carries none of these holds no tests, so selecting it
-    // could never run anything. The attribute name may open the list (`[<Fact>]`)
-    // or follow a `;` inside a combined list (`[<Trait(...); Fact>]`) — both are
-    // test markers.
-    let testAttributePattern =
+    // (xUnit / NUnit / MSTest — see `knownTestAttributes` in AstAnalyzer),
+    // matched against the CONTENTS of one `[<...>]` block. The name may open
+    // the block (`[<Fact>]`) or follow a `;` inside a combined list
+    // (`[<Trait(...); Fact>]`), with an optional dotted qualifier and
+    // `Attribute` suffix, and is terminated by an argument list, the next
+    // `;`, or the end of the block.
+    let testAttributeNamePattern =
         Regex(
-            @"(?:\[<|;)\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*[(>;]",
+            @"(?:^|;)\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*(?:[(;]|$)",
             RegexOptions.Compiled
         )
+
+    // A span holds a test marker only when one of its ATTRIBUTE BLOCKS names a
+    // test attribute. A module whose span carries no such block holds no
+    // tests, so selecting it could never run anything — and an attribute-like
+    // name in ordinary code (`let cases = [ users; TestCase(1) ]`) is not an
+    // attribute and must not make a helper module count as test-bearing.
+    let hasTestAttribute (text: string) : bool =
+        attributeBlockPattern.Matches(text)
+        |> Seq.exists (fun m -> testAttributeNamePattern.IsMatch(m.Groups.[1].Value))
 
     // Selection is per-declaration, not per-file: a URL match is attributed to
     // the top-level declaration whose textual span contains it. A declaration
@@ -93,8 +111,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                           Text = content.Substring(start, finish - start) })
 
                 let selectable, nonSelectable =
-                    spans
-                    |> List.partition (fun span -> span.IsClass || testAttributePattern.IsMatch(span.Text))
+                    spans |> List.partition (fun span -> span.IsClass || hasTestAttribute span.Text)
 
                 let directlyMatched =
                     selectable
