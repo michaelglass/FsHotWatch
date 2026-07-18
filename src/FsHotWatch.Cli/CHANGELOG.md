@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- chore(deps): bundle TestPrune.Falco 3.0.1 — route→test selection is now
+  per-declaration, not per-file: only test classes/test-bearing modules whose own
+  span matches the route are selected (conservative fallback for out-of-span
+  matches; non-test helper modules never returned; attributes recognized only
+  inside `[<...>]` blocks). Fixes the over-selection where one changed handler
+  pulled every class and module of every matching test file (AUTOMATION-86).
+- chore(deps): bundle TestPrune.Core 6.1.0 — `runProcessWith` bounds the test-run
+  wait (default 30 min, `TESTPRUNE_TEST_RUN_TIMEOUT_MS` override); a wedged runner
+  is killed (entire tree) with exit 124 instead of hanging forever (AUTOMATION-98).
+
 ## 0.14.0-alpha.4 - 2026-07-15
 
 - feat: **`confirm` HONOURS a verdict it has already earned.** (AUTOMATION-161) `confirm`

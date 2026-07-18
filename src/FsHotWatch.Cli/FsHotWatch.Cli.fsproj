@@ -69,14 +69,14 @@
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
         <PackageReference Include="CommandTree" Version="0.7.0" />
-        <PackageReference Include="TestPrune.Falco" Version="3.0.0" />
+        <PackageReference Include="TestPrune.Falco" Version="3.0.1" />
         <!-- Direct refs for `fshw dead-code`: TestPrune.Core's DeadCode analysis +
              SymbolStore (transitive via FsHotWatch.TestPrune, made explicit for
              compile-time access), and Microsoft.Data.Sqlite to probe the DB's
              schema version before opening (so we never recreate the daemon's DB). -->
         <!-- Keep in lockstep with FsHotWatch.TestPrune's TestPrune.Core pin so
              NuGet doesn't see a downgrade. -->
-        <PackageReference Include="TestPrune.Core" Version="6.0.0" />
+        <PackageReference Include="TestPrune.Core" Version="6.1.0" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
         <!-- Explicit top-level pin: Microsoft.Data.Sqlite (and TestPrune.Core's
              SqliteSymbolStore) pull SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively,
