@@ -612,8 +612,10 @@ module OrdersTests =
                                      TestClass = "UsersTests" } ]
                     @>)
 
-    /// R4: when a test class's own span matches, no fallback is needed — and
-    /// the helper module that also contains the URL is still excluded.
+    /// R4: the helper module's URL is an out-of-span match, so the fallback
+    /// fires — but the fallback set is every SELECTABLE declaration, and the
+    /// helper module is not one, so it is still excluded. The class is both
+    /// directly matched and the whole fallback set: either way, [UsersTests].
     [<Fact>]
     let ``helper module is excluded even when a class span also matches`` () =
         let testContent =
@@ -623,6 +625,71 @@ module OrdersTests =
 type UsersTests(output: ITestOutputHelper) =
     member _.GetUser() =
         let url = "/api/users/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// C1: a helper module holds the shared route constant, one test class
+    /// exercises the route through the helper (no literal of its own), and a
+    /// sibling test class inlines a literal for the SAME route. The helper's
+    /// match lies outside every selectable span, so the fallback must union in
+    /// ALL selectable declarations — a direct match elsewhere in the file must
+    /// not suppress it and silently drop the indirect test class.
+    [<Fact>]
+    let ``out-of-span helper match selects indirect test classes alongside the direct match`` () =
+        let testContent =
+            """module Urls =
+    let users = "/api/users/123"
+
+type UsersIndirectTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.GetUser() = ignore Urls.users
+
+type UsersDirectTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.GetOther() =
+        let url = "/api/users/999"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                let classes = result |> List.map (fun r -> r.TestClass) |> Set.ofList
+                test <@ classes = set [ "UsersIndirectTests"; "UsersDirectTests" ] @>)
+
+    /// C2: a combined attribute list (`[<Trait(...); Fact>]`) is still a test
+    /// marker — a module whose only tests are attributed that way must count as
+    /// test-bearing and be selected when its span matches the URL.
+    [<Fact>]
+    let ``module whose only test marker is a combined attribute list is selected`` () =
+        let testContent =
+            """module UsersTests =
+    [<Trait("Category", "Integration"); Fact>]
+    let ``gets a user`` () =
+        let url = "/api/users/123"
         ()
 """
 

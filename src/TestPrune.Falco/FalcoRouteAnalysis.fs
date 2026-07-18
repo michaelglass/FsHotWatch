@@ -43,10 +43,12 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // Textual spellings of the test attributes core's AST analysis recognises
     // (xUnit / NUnit / MSTest — see `knownTestAttributes` in AstAnalyzer). A
     // module whose span carries none of these holds no tests, so selecting it
-    // could never run anything.
+    // could never run anything. The attribute name may open the list (`[<Fact>]`)
+    // or follow a `;` inside a combined list (`[<Trait(...); Fact>]`) — both are
+    // test markers.
     let testAttributePattern =
         Regex(
-            @"\[<\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*[(>;]",
+            @"(?:\[<|;)\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*[(>;]",
             RegexOptions.Compiled
         )
 
@@ -58,11 +60,13 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // a whole-file scan can swallow the text between two URL occurrences and
     // hide the second declaration's match). Classes are always selectable;
     // modules only when their span carries a test attribute — a helper module
-    // without tests can never run anything. When the file matches only OUTSIDE
-    // every selectable span (file header, helper module, top-level lets), we
-    // cannot tell which tests exercise the route, so we fall back to every
-    // selectable declaration in the file: over-selection wastes time,
-    // under-selection silently skips affected tests.
+    // without tests can never run anything. When the file matches anywhere
+    // OUTSIDE the selectable spans (file header, helper module, top-level lets),
+    // we cannot tell which tests exercise the route through that shared text —
+    // a helper constant may feed test classes that never mention the URL — so
+    // we select every selectable declaration in the file, even when some other
+    // span also matched directly: over-selection wastes time, under-selection
+    // silently skips affected tests.
     let findTestClassesInFiles (testFiles: string list) (regexes: Regex list) : string list =
         testFiles
         |> List.collect (fun testFile ->
@@ -88,16 +92,28 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                           IsClass = isClass
                           Text = content.Substring(start, finish - start) })
 
-                let selectable =
+                let selectable, nonSelectable =
                     spans
-                    |> List.filter (fun span -> span.IsClass || testAttributePattern.IsMatch(span.Text))
+                    |> List.partition (fun span -> span.IsClass || testAttributePattern.IsMatch(span.Text))
 
                 let directlyMatched =
                     selectable
                     |> List.filter (fun span -> regexes |> List.exists (fun regex -> regex.IsMatch(span.Text)))
 
+                // The text outside every selectable span: the header before the
+                // first declaration plus each non-selectable span. Each piece is
+                // matched on its own, like the spans above.
+                let headerText =
+                    match declarations with
+                    | (firstStart, _, _) :: _ -> content.Substring(0, firstStart)
+                    | [] -> content
+
+                let matchesOutsideSelectable =
+                    headerText :: (nonSelectable |> List.map (fun span -> span.Text))
+                    |> List.exists (fun text -> regexes |> List.exists (fun regex -> regex.IsMatch(text)))
+
                 let selected =
-                    if directlyMatched.IsEmpty then
+                    if matchesOutsideSelectable then
                         selectable
                     else
                         directlyMatched
