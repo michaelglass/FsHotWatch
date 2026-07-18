@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.0 - 2026-07-18
+
 - fix: **`runProcessWith` bounds the test-run wait.** A wedged test
   runner can no longer block the CLI forever: `WaitForExit` is bounded (default
   30 minutes, `TESTPRUNE_TEST_RUN_TIMEOUT_MS` to override), and on expiry the process

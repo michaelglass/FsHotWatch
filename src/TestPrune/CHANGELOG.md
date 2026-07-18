@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.0 - 2026-07-18
+
 - fix: **Bounded waits for spawned `dotnet build` and `jj diff`.**
   The index-time solution build is bounded (10 minutes) and `jj diff` runs through
   `runBoundedDiff`; a wedged child process is killed (entire tree) with a diagnostic

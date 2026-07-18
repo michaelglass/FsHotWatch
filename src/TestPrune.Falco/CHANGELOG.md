@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.0.1 - 2026-07-18
+
 - fix: **Route→test selection is per-declaration, not per-file.** A
   matched test file no longer selects every class and module it contains: only test
   classes and test-bearing modules whose own span matches the route URL are selected,
