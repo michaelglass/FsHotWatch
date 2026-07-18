@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: **Bounded waits for spawned `dotnet build` and `jj diff`.**
+  The index-time solution build is bounded (10 minutes) and `jj diff` runs through
+  `runBoundedDiff`; a wedged child process is killed (entire tree) with a diagnostic
+  instead of hanging the CLI silently.
+
 ## 6.0.0 - 2026-07-15
 
 - fix: `Orchestration.indexProject` built its per-file accumulator as an anonymous record

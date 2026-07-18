@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: **`runProcessWith` bounds the test-run wait.** A wedged test
+  runner can no longer block the CLI forever: `WaitForExit` is bounded (default
+  30 minutes, `TESTPRUNE_TEST_RUN_TIMEOUT_MS` to override), and on expiry the process
+  tree is killed with a diagnostic and a POSIX-`timeout(1)`-style exit code 124. On a
+  healthy run this behaves exactly like the previous unbounded wait.
+
 ## 6.0.0 - 2026-07-15
 
 - feat!: **SchemaVersion 7→8** (`route_handlers` left the core schema). This is the

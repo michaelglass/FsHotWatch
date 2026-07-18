@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: **Route→test selection is per-declaration, not per-file.** A
+  matched test file no longer selects every class and module it contains: only test
+  classes and test-bearing modules whose own span matches the route URL are selected,
+  with a conservative fallback — any match outside every selectable span (file header,
+  a shared URL-constant/helper module) selects all of the file's test declarations, so
+  a test that exercises the route only indirectly is never dropped. Non-test helper
+  modules (fixtures, URL holders) are never returned as affected. Test attributes are
+  recognized only inside `[<...>]` blocks — combined lists like
+  `[<Trait("a","b"); Fact>]` included — so attribute-like names in ordinary code
+  (`[ users; TestCase(1) ]`) can no longer make a helper module selectable and
+  suppress the fallback. Known residual (documented in the code): a literal `>]`
+  inside an attribute string argument closes the block early and can hide a
+  module-style test's only marker.
+
 ## 3.0.0 - 2026-07-15
 
 - fix: **`findTestFiles` no longer hangs forever.** It scanned the integration-test
