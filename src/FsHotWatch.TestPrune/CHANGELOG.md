@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.4 - 2026-07-18
+
 - chore(deps): TestPrune.Core 6.1.0 — bounded test-run wait (`WaitForExit` with a
   30-minute default hang detector, `TESTPRUNE_TEST_RUN_TIMEOUT_MS` override, exit
   124 + process-tree kill on expiry) (AUTOMATION-98).

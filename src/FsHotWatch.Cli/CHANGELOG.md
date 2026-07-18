@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.5 - 2026-07-18
+
 - chore(deps): bundle TestPrune.Falco 3.0.1 — route→test selection is now
   per-declaration, not per-file: only test classes/test-bearing modules whose own
   span matches the route are selected (conservative fallback for out-of-span
