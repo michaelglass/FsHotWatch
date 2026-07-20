@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.6 - 2026-07-20
+
 - chore(deps): bundle TestPrune.Core 6.1.1 — `runProcessWith` bounds its post-exit
   stdout/stderr drain (30s wedge-detector), so a grandchild that inherited the pipe
   and outlives the direct child can no longer wedge the daemon's test-run drain

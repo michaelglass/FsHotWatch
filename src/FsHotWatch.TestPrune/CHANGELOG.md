@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.5 - 2026-07-20
+
 - chore(deps): TestPrune.Core 6.1.1 — bounded post-exit output drain in
   `runProcessWith` (grandchild-held pipe can't wedge the drain) (AUTOMATION-98).
 
