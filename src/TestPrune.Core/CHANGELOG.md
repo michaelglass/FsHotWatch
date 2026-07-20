@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: **`runProcessWith` bounds the post-exit output drain.** 6.1.0
+  bounded the `WaitForExit`, but the success-path drain of stdout/stderr was still an
+  unbounded read — and `ReadToEndAsync` only completes when every process inheriting the
+  write handle closes it, so a grandchild (an MSBuild worker, VBCSCompiler, a testhost)
+  that outlives the direct child wedges the drain forever, silently. The drain is now
+  bounded by `drainOutputWithin` (30s wedge-detector, `internal`): on expiry it emits a
+  stderr diagnostic and returns the partial capture with a `Completed = false` signal
+  rather than blocking. `runProcessWith` keeps its exit-code verdict (a drain-timeout
+  never turns a passing run into a failure); a caller for whom the drained text is
+  authoritative data can branch on `Completed`. Original read exceptions still surface
+  unwrapped.
+
 ## 6.1.0 - 2026-07-18
 
 - fix: **`runProcessWith` bounds the test-run wait.** A wedged test
