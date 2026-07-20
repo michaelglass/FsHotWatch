@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.1 - 2026-07-20
+
 - fix: **`runProcessWith` bounds the post-exit output drain.** 6.1.0
   bounded the `WaitForExit`, but the success-path drain of stdout/stderr was still an
   unbounded read — and `ReadToEndAsync` only completes when every process inheriting the

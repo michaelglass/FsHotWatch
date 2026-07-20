@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.1 - 2026-07-20
+
 - fix: **Bounded post-exit output drain.** After a spawned process exits,
   reading its redirected stdout/stderr can still block forever if a grandchild (an MSBuild
   worker, VBCSCompiler, or a testhost) inherited the write handle and outlives the direct
