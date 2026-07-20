@@ -55,6 +55,52 @@ let internal resolveTestRunTimeoutMs () : int =
         | true, ms when ms > 0 -> ms
         | _ -> defaultTestRunTimeoutMs
 
+/// Post-exit output-drain bound, in milliseconds.
+///
+/// This is a WEDGE DETECTOR, not a perf knob. `WaitForExit` returns the instant the
+/// DIRECT child exits, but the redirected stdout/stderr read tasks complete only once
+/// EVERY process that inherited the write handle (an MSBuild worker, VBCSCompiler, or a
+/// testhost grandchild) has closed it. Draining an already-exited process is normally
+/// instant, so 30s behaves exactly as an unbounded read on every healthy run and only
+/// fires on the grandchild-pipe wedge that this bound exists to break.
+[<Literal>]
+let drainOutputTimeoutMs = 30_000
+
+/// Bound the post-exit drain of a process's redirected stdout/stderr.
+///
+/// Call this AFTER a successful `WaitForExit`, passing the two `ReadToEndAsync` tasks.
+/// An unbounded `.Result` / `awaitOutput` here is the wedge: a grandchild
+/// that outlived the direct child keeps the stdout/stderr pipe open, so the read never
+/// completes and the caller blocks forever, silently (the 16h grandchild-pipe hang).
+/// You cannot kill your way out — the direct child has already exited, so there is no
+/// live process-tree root to signal; give-up-with-diagnostic IS the fix.
+///
+/// If the drain completes within `drainTimeoutMs` the captured stdout/stderr are returned
+/// exactly as an unbounded read would (each task's ORIGINAL exception surfaces via
+/// `awaitOutput`, not the `AggregateException` `.Result` would wrap). If it expires, a
+/// diagnostic naming the command and the bound is written to stderr (mirroring the
+/// timeout-branch voice) and the output captured so far is returned — never blocking.
+let internal drainOutputWithin
+    (drainTimeoutMs: int)
+    (commandLabel: string)
+    (stdoutTask: Task<string>)
+    (stderrTask: Task<string>)
+    : string * string =
+    let drained = Task.WhenAll(stdoutTask, stderrTask)
+
+    // WaitAny (not `drained.Wait`) so a genuinely faulted read does not throw an
+    // AggregateException here — awaitOutput below rethrows each task's ORIGINAL exception.
+    if Task.WaitAny([| (drained :> Task) |], drainTimeoutMs) >= 0 then
+        awaitOutput stdoutTask, awaitOutput stderrTask
+    else
+        eprintfn
+            $"output drain exceeded %d{drainTimeoutMs / 1000}s after `%s{commandLabel}` exited \u2014 a grandchild process is still holding the stdout/stderr pipe open; abandoning the drain with the output captured so far"
+
+        let capturedSoFar (t: Task<string>) =
+            if t.IsCompletedSuccessfully then t.Result else ""
+
+        capturedSoFar stdoutTask, capturedSoFar stderrTask
+
 /// Run a process bounded by `timeoutMs`, capturing stdout/stderr separately.
 ///
 /// The bound is a HANG DETECTOR, not a run-cap: a real suite may legitimately run for
@@ -90,8 +136,8 @@ let internal runProcessWith (timeoutMs: int) (fileName: string) (arguments: stri
           Stdout = ""
           Stderr = diagnostic }
     else
-        let stdout = awaitOutput stdoutTask
-        let stderr = awaitOutput stderrTask
+        let stdout, stderr =
+            drainOutputWithin drainOutputTimeoutMs $"%s{fileName} %s{arguments}" stdoutTask stderrTask
 
         eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 

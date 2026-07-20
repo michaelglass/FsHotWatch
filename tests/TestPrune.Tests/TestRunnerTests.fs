@@ -243,6 +243,51 @@ module ``runProcessWith`` =
         test <@ result.ExitCode = 0 @>
         test <@ result.ExitCode <> timeoutExitCode @>
 
+module ``drainOutputWithin`` =
+
+    open System.Diagnostics
+
+    // regression: `WaitForExit` returns when the DIRECT child exits, but an
+    // unbounded read of its redirected stdout blocks until every grandchild that inherited
+    // the write handle closes it. This spawns exactly that shape without MSBuild: a shell
+    // that backgrounds a long `sleep` (which inherits stdout) and then exits, so the stdout
+    // read task cannot complete until the sleep dies. `sleep`'s stderr is sent to /dev/null
+    // so the STDERR pipe DOES reach EOF on shell exit — exercising both the
+    // "captured-so-far" (stdout: still running) and the completed (stderr: empty) arms of
+    // the give-up branch.
+    //
+    // The drain is run off-thread and given far longer (10s) than its own 500ms bound: a
+    // correctly-bounded drain returns almost immediately, so `.Wait(10s)` is true. The old
+    // unbounded drain blocks on the 30s grandchild sleep and never returns inside 10s, so
+    // `.Wait(10s)` is false and this test fails — the verbatim RED before the bound landed.
+    [<Fact>]
+    let ``bounds a drain wedged by a grandchild holding the stdout pipe open`` () =
+        let psi = ProcessStartInfo("/bin/sh")
+        psi.ArgumentList.Add("-c")
+        psi.ArgumentList.Add("sleep 30 2>/dev/null & echo done")
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.UseShellExecute <- false
+        psi.CreateNoWindow <- true
+
+        use proc = Process.Start(psi)
+        let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+        let stderrTask = proc.StandardError.ReadToEndAsync()
+
+        // The direct shell exits after `echo done`; the backgrounded `sleep 30` keeps the
+        // inherited stdout pipe open, so an unbounded stdout read would block ~30s.
+        proc.WaitForExit() |> ignore
+
+        let drainTask =
+            Task.Run(fun () ->
+                drainOutputWithin 500 "/bin/sh -c 'sleep 30 2>/dev/null & echo done'" stdoutTask stderrTask)
+
+        let finishedWithinTestBound = drainTask.Wait(10_000)
+
+        // The bounded drain gave up on its 500ms bound rather than waiting out the 30s
+        // grandchild sleep; the unbounded baseline never gets here inside 10s.
+        test <@ finishedWithinTestBound @>
+
 module ``resolveTestRunTimeoutMs`` =
 
     let private envVar = "TESTPRUNE_TEST_RUN_TIMEOUT_MS"

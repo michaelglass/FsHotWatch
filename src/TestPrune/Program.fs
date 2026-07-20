@@ -124,8 +124,12 @@ let dotnetBuildRunner: BuildRunner =
             eprintfn $"Build timed out after {buildTimeoutMs / 60_000} minutes — aborting index"
             1
         else
-            let stdoutOutput = stdoutTask.Result
-            let stderrOutput = stderrTask.Result
+            // Bound the post-exit drain: `dotnet build` spawns MSBuild-worker / VBCSCompiler
+            // grandchildren that inherit stdout and can outlive the direct build process,
+            // wedging an unbounded read forever.
+            let stdoutOutput, stderrOutput =
+                TestRunner.drainOutputWithin TestRunner.drainOutputTimeoutMs "dotnet build" stdoutTask stderrTask
+
             sw.Stop()
 
             if buildProc.ExitCode <> 0 then
@@ -181,8 +185,14 @@ let runBoundedDiff (timeoutMs: int) (fileName: string) (arguments: string) : Res
             eprintfn $"jj diff exceeded {timeoutMs / 1000}s — jj appears wedged; aborting"
             Error "jj diff timed out — jj appears wedged"
         else
-            let output = stdoutTask.Result
-            let _stderr = stderrTask.Result
+            // Bound the post-exit drain so a grandchild that inherited jj's stdout cannot
+            // wedge an unbounded read after jj itself has exited.
+            let output, _stderr =
+                TestRunner.drainOutputWithin
+                    TestRunner.drainOutputTimeoutMs
+                    $"%s{fileName} %s{arguments}"
+                    stdoutTask
+                    stderrTask
 
             if proc.ExitCode = 0 then
                 Ok output
