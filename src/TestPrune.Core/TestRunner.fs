@@ -80,18 +80,33 @@ let drainOutputTimeoutMs = 30_000
 /// `awaitOutput`, not the `AggregateException` `.Result` would wrap). If it expires, a
 /// diagnostic naming the command and the bound is written to stderr (mirroring the
 /// timeout-branch voice) and the output captured so far is returned — never blocking.
+///
+/// The `Completed` flag is the load-bearing signal: on timeout the returned text is only a
+/// PARTIAL capture, so a caller that treats the drained text as AUTHORITATIVE DATA (rather
+/// than as diagnostic output alongside an exit-code verdict) MUST branch on `Completed` and
+/// refuse the partial read. Without it a wedged drain masquerades as an empty-but-complete
+/// read — the silent under-selection (a truncated `jj diff` read as "no
+/// changed files"). See `TestPrune.Program.runBoundedDiff`.
+[<Struct>]
+type internal DrainResult =
+    { Completed: bool
+      Stdout: string
+      Stderr: string }
+
 let internal drainOutputWithin
     (drainTimeoutMs: int)
     (commandLabel: string)
     (stdoutTask: Task<string>)
     (stderrTask: Task<string>)
-    : string * string =
+    : DrainResult =
     let drained = Task.WhenAll(stdoutTask, stderrTask)
 
     // WaitAny (not `drained.Wait`) so a genuinely faulted read does not throw an
     // AggregateException here — awaitOutput below rethrows each task's ORIGINAL exception.
     if Task.WaitAny([| (drained :> Task) |], drainTimeoutMs) >= 0 then
-        awaitOutput stdoutTask, awaitOutput stderrTask
+        { Completed = true
+          Stdout = awaitOutput stdoutTask
+          Stderr = awaitOutput stderrTask }
     else
         eprintfn
             $"output drain exceeded %d{drainTimeoutMs / 1000}s after `%s{commandLabel}` exited \u2014 a grandchild process is still holding the stdout/stderr pipe open; abandoning the drain with the output captured so far"
@@ -99,7 +114,9 @@ let internal drainOutputWithin
         let capturedSoFar (t: Task<string>) =
             if t.IsCompletedSuccessfully then t.Result else ""
 
-        capturedSoFar stdoutTask, capturedSoFar stderrTask
+        { Completed = false
+          Stdout = capturedSoFar stdoutTask
+          Stderr = capturedSoFar stderrTask }
 
 /// Run a process bounded by `timeoutMs`, capturing stdout/stderr separately.
 ///
@@ -136,14 +153,18 @@ let internal runProcessWith (timeoutMs: int) (fileName: string) (arguments: stri
           Stdout = ""
           Stderr = diagnostic }
     else
-        let stdout, stderr =
+        // Verdict here is the EXIT CODE, so a drain-timeout keeps the same exit-code path with
+        // the partial output + the helper's diagnostic \u2014 it must NOT fail a genuinely-passing
+        // run. (Only the diff path, where the drained TEXT is authoritative, maps timeout to a
+        // hard failure; see runBoundedDiff.)
+        let drain =
             drainOutputWithin drainOutputTimeoutMs $"%s{fileName} %s{arguments}" stdoutTask stderrTask
 
         eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 
         { ExitCode = proc.ExitCode
-          Stdout = stdout
-          Stderr = stderr }
+          Stdout = drain.Stdout
+          Stderr = drain.Stderr }
 
 /// Default process runner: bounds the wait with the resolved (env-overridable) timeout.
 let private runProcess (fileName: string) (arguments: string) : TestResult =

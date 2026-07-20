@@ -1918,8 +1918,10 @@ module ``Example solution integration`` =
 
 module ``runBoundedDiff`` =
 
-    // `jjDiffProvider` delegates to `runBoundedDiff jjDiffTimeoutMs "jj" "diff --git"`.
-    // The command/timeout are injectable so the bounded-wait path is
+    // `jjDiffProvider` delegates to
+    // `runBoundedDiff jjDiffTimeoutMs drainOutputTimeoutMs "jj" "diff --git"`.
+    // The command, the WaitForExit bound, AND the post-exit drain bound are injectable so
+    // both wedge paths (a hung `jj` and a grandchild-held stdout pipe) are
     // testable with stub commands instead of a real `jj` (which is absent on CI runners).
     // Stubs mirror the sibling TestRunner.runProcessWith `sleep` tests.
 
@@ -1928,14 +1930,14 @@ module ``runBoundedDiff`` =
     // read + zero-exit-code branch without shelling out to jj.
     [<Fact>]
     let ``a command that exits 0 within the bound returns Ok with its stdout`` () =
-        test <@ runBoundedDiff 30_000 "sleep" "0" = Ok "" @>
+        test <@ runBoundedDiff 30_000 drainOutputTimeoutMs "sleep" "0" = Ok "" @>
 
     // Timeout branch (the fix): a process that outlives the bound is killed
     // and reported as a timeout, NOT waited out. Mirrors the TestRunner `sleep 30` test.
     [<Fact>]
     let ``bounds a wedged diff: kills it and returns a timeout Error`` () =
         let sw = System.Diagnostics.Stopwatch.StartNew()
-        let result = runBoundedDiff 200 "sleep" "30"
+        let result = runBoundedDiff 200 drainOutputTimeoutMs "sleep" "30"
         sw.Stop()
 
         // Returned far inside the child's 30s sleep => it was killed, not waited out.
@@ -1949,7 +1951,7 @@ module ``runBoundedDiff`` =
     // invalid interval exits non-zero on both GNU and BSD sleep.
     [<Fact>]
     let ``a command that exits non-zero returns a jj-diff-failed Error`` () =
-        match runBoundedDiff 30_000 "sleep" "not-a-number" with
+        match runBoundedDiff 30_000 drainOutputTimeoutMs "sleep" "not-a-number" with
         | Error msg -> test <@ msg.Contains "jj diff failed" @>
         | Ok _ -> failwith "expected a failure Error"
 
@@ -1957,6 +1959,28 @@ module ``runBoundedDiff`` =
     // rather than crashing the CLI.
     [<Fact>]
     let ``a missing binary is caught and returns an Error`` () =
-        match runBoundedDiff 30_000 "testprune-no-such-binary-xyz" "" with
+        match runBoundedDiff 30_000 drainOutputTimeoutMs "testprune-no-such-binary-xyz" "" with
         | Error msg -> test <@ msg.Contains "Failed to run jj" @>
         | Ok _ -> failwith "expected a caught Error"
+
+    // round-2: the process exits 0 but a grandchild keeps the stdout pipe
+    // open, so the post-exit drain never reaches EOF and times out with a NON-empty-but-
+    // unclosed stream ("done\n" is buffered, EOF never arrives). Round-1 returned that as
+    // Ok "" — a wedged `jj diff` then flowed as "zero changed files", silently under-selecting
+    // and running ZERO tests green. The drain wedge is the same wedge as a WaitForExit hang and
+    // must be equally loud: this asserts Error, NOT a silent empty Ok. The grandchild shape is
+    // driven from a temp script so `/bin/sh <path>` needs no arguments-string quoting, and the
+    // drain bound is injected small (500ms) so the wedge surfaces fast instead of at 30s.
+    [<Fact>]
+    let ``a grandchild-wedged drain surfaces as Error, never a silent empty Ok`` () =
+        let script = Path.GetTempFileName()
+        File.WriteAllText(script, "sleep 30 2>/dev/null & echo done\n")
+
+        try
+            let result = runBoundedDiff 30_000 500 "/bin/sh" script
+
+            match result with
+            | Error msg -> test <@ msg.Contains "drain" @>
+            | Ok o -> failwithf "a wedged drain must surface as Error, not a silent Ok %A" o
+        finally
+            File.Delete script

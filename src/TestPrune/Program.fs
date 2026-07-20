@@ -126,9 +126,15 @@ let dotnetBuildRunner: BuildRunner =
         else
             // Bound the post-exit drain: `dotnet build` spawns MSBuild-worker / VBCSCompiler
             // grandchildren that inherit stdout and can outlive the direct build process,
-            // wedging an unbounded read forever.
-            let stdoutOutput, stderrOutput =
+            // wedging an unbounded read forever. Verdict here is the EXIT CODE,
+            // so a drain-timeout keeps the same exit-code path with the partial output (the
+            // helper already emits its own loud diagnostic naming `dotnet build`) — it must NOT
+            // turn a successful build into a failure. Only the diff path treats the drained TEXT
+            // as authoritative and maps a wedge to Error; see runBoundedDiff.
+            let drain =
                 TestRunner.drainOutputWithin TestRunner.drainOutputTimeoutMs "dotnet build" stdoutTask stderrTask
+
+            let stdoutOutput, stderrOutput = drain.Stdout, drain.Stderr
 
             sw.Stop()
 
@@ -163,9 +169,16 @@ let runIndex (repoRoot: string) (parallelism: int) : int =
 /// The command name and arguments are parameters (rather than hard-coded `jj diff --git`)
 /// solely so the bounded-wait path added for the tracked issue is unit-testable with a stub
 /// command: a hanging stub proves the timeout branch kills the process tree instead of
-/// hanging the CLI, and a fast stub proves the normal read/exit-code path. `jjDiffProvider`
-/// is the only production caller and always passes `"jj" "diff --git"`.
-let runBoundedDiff (timeoutMs: int) (fileName: string) (arguments: string) : Result<string, string> =
+/// hanging the CLI, and a fast stub proves the normal read/exit-code path. The post-exit
+/// `drainTimeoutMs` is injectable for the same reason: a stub that leaves a grandchild
+/// holding the stdout pipe proves the drain-wedge maps to `Error`, not a silent empty diff.
+/// `jjDiffProvider` is the only production caller and always passes `"jj" "diff --git"`.
+let runBoundedDiff
+    (timeoutMs: int)
+    (drainTimeoutMs: int)
+    (fileName: string)
+    (arguments: string)
+    : Result<string, string> =
     try
         let psi = ProcessStartInfo(fileName, arguments)
         psi.RedirectStandardOutput <- true
@@ -187,15 +200,20 @@ let runBoundedDiff (timeoutMs: int) (fileName: string) (arguments: string) : Res
         else
             // Bound the post-exit drain so a grandchild that inherited jj's stdout cannot
             // wedge an unbounded read after jj itself has exited.
-            let output, _stderr =
-                TestRunner.drainOutputWithin
-                    TestRunner.drainOutputTimeoutMs
-                    $"%s{fileName} %s{arguments}"
-                    stdoutTask
-                    stderrTask
+            let drain =
+                TestRunner.drainOutputWithin drainTimeoutMs $"%s{fileName} %s{arguments}" stdoutTask stderrTask
 
-            if proc.ExitCode = 0 then
-                Ok output
+            // A drain wedge is the SAME wedge as a WaitForExit hang and must be equally loud:
+            // here the drained TEXT is authoritative data (it becomes the changed-file set), so a
+            // truncated read must NOT surface as a valid diff. Round-1 returned the partial "" as
+            // Ok (exit code was 0), which flowed as "no changed files" → zero tests run green:
+            // silent under-selection. Checked BEFORE the exit code precisely because a wedged jj
+            // still exits 0.
+            if not drain.Completed then
+                Error
+                    $"jj diff output drain exceeded {drainTimeoutMs / 1000}s — a grandchild is still holding jj's stdout pipe open; jj appears wedged and the diff is truncated"
+            elif proc.ExitCode = 0 then
+                Ok drain.Stdout
             else
                 Error "jj diff failed — is this a jj repository?"
     with ex ->
@@ -203,7 +221,7 @@ let runBoundedDiff (timeoutMs: int) (fileName: string) (arguments: string) : Res
 
 /// Get jj diff output.
 let jjDiffProvider: DiffProvider =
-    fun () -> runBoundedDiff jjDiffTimeoutMs "jj" "diff --git"
+    fun () -> runBoundedDiff jjDiffTimeoutMs TestRunner.drainOutputTimeoutMs "jj" "diff --git"
 
 /// Run the status command: show what would run without executing.
 let runStatus (repoRoot: string) : int =

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: **Bounded post-exit output drain.** After a spawned process exits,
+  reading its redirected stdout/stderr can still block forever if a grandchild (an MSBuild
+  worker, VBCSCompiler, or a testhost) inherited the write handle and outlives the direct
+  child. That drain is now bounded. Crucially, on the `jj diff` path a drain wedge now
+  surfaces as an `Error` (jj appears wedged) rather than an empty diff: previously a wedged
+  drain returned a truncated read that flowed as "no changed files" and ran **zero tests
+  green** — silent under-selection. The `dotnet build` and test-run paths keep their exit-code
+  verdict on a drain-timeout (partial output plus a diagnostic), never turning a passing run
+  into a failure.
+
 ## 6.1.0 - 2026-07-18
 
 - fix: **Bounded waits for spawned `dotnet build` and `jj diff`.**
