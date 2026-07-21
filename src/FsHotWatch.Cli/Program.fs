@@ -1750,6 +1750,11 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
         RepoIndependent 0
     | Error VersionRequested ->
         printfn "%s" (CommandTree.renderVersion cliName)
+        // AUTOMATION-123: name the source ref this binary was built from — the
+        // human-readable complement to the binary-identity handshake. "Is my
+        // gate running my fix?" is answered by `fshw --version`, not by
+        // strings-probing a cached DLL.
+        printfn "%s" (SourceRef.line (CommandTree.entryAssemblyVersion ()))
         RepoIndependent 0
     // ROOT-level unknown command (empty groupPath) is the only error that defers to
     // the daemon; everything else fails hard here, BEFORE any repo-root lookup, so

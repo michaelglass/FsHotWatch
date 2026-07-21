@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw --version` prints a second line naming the source ref the binary
+  was built from (AUTOMATION-123) — a RefStamp `-ref.<change-id>.g<commit-id>[.dirty]`
+  pack stamp, the `+<sha>` commit metadata of a release/CI build, or an honest
+  `unknown`. New pure module `FsHotWatch.Cli.SourceRef` (`parse`/`describe`/`line`).
+
 ## 0.14.0-alpha.6 - 2026-07-20
 
 - chore(deps): bundle TestPrune.Core 6.1.1 — `runProcessWith` bounds its post-exit

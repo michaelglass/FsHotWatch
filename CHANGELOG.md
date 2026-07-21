@@ -23,6 +23,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### `fshw --version` names the source ref it was built from (AUTOMATION-123)
+
+`fshw --version` now prints a second line naming the SOURCE this binary was
+built from, in words — the human-readable complement to the binary-identity
+handshake (AUTOMATION-147) and the verdict's producer hash (AUTOMATION-129):
+
+- a RefStamp local pack: `source ref: <change-id>.g<commit-id>[.dirty] (local ref-stamped pack…)`
+- a release/CI build: `source ref: <sha> (commit metadata, release/CI build)`
+- anything else: `source ref: unknown …` — stated, never guessed.
+
+"Is my gate running my fix?" is now one command, not a `strings`-probe of a
+cached DLL. The ref arrives via the version RefStamp embeds at pack time
+(`X.Y.Z-ref.<change-id>.g<commit-id>[.dirty]`) or the `+<sha>` metadata
+CommandTree's build stamp records for plain dev builds.
+
 ### The verdict is a FILE — `.fshw/verdict.json` and `fshw verdict`
 
 The headline of this release. Every `check` and `confirm` now publishes its result to
