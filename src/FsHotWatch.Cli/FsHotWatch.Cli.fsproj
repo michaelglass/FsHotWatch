@@ -50,6 +50,7 @@
         <Compile Include="Verdict.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="IpcOutput.fs" />
+        <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
         <Compile Include="Program.fs" />
