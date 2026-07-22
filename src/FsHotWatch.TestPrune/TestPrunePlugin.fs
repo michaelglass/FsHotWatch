@@ -116,9 +116,9 @@ let internal symbolGraphLooksIncomplete (ingested: int) (skipped: int) : bool =
 /// is identical for every project (DaemonConfig points every project at one
 /// shared file), so emitting once at the end is the single source of truth.
 ///
-/// Invariants preserved from the old per-line merge:
+/// Invariants:
 /// - An empty / aborted raw cobertura parses to zero rows → ingests nothing →
-///   cannot clobber the DB or the emitted file (Issue 3).
+///   cannot clobber the DB or the emitted file.
 /// - If NO raw inputs exist on disk, the shared cobertura is NOT written, so a
 ///   prior good emission is never overwritten with nothing.
 let internal ingestAndEmitCoverage
@@ -371,11 +371,10 @@ type TestPruneState =
         ///
         /// Keyed by repo-relative path; the value carries what the ledger entry needs,
         /// so every `TestsFinished` can RE-REPORT the diagnostic after clearing the
-        /// plugin's slice (AUTOMATION-125). It used to be a bare `Set<string>` and the
-        /// warning was simply lost to the first test run that followed.
+        /// plugin's slice.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
         /// `run-tests` force-runs that arrived while another run held the
-        /// "tests" slot (AUTOMATION-99). A force-run is OWED work — `test-rerun`
+        /// "tests" slot. A force-run is OWED work — `test-rerun`
         /// is the explicit "prove it ran" verb, so a busy slot must QUEUE the
         /// run, never refuse it (a refusal that exits 0 is a vacuous green).
         /// Drained FIFO by the `TestsFinished` handler, one per completed run
@@ -620,12 +619,11 @@ let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) :
             elif not (Directory.Exists rootFull) then
                 []
             else
-                // Repo-root-rooted walk of EVERY file — the other live instance
-                // of the 2026-07-13 wedge class. `SearchOption.AllDirectories`
-                // here followed `.devenv/profile` into the /nix/store symlink
-                // cycle just as the freshness scan did. SafeWalk owns the
-                // recursion (no symlinked-dir descent, depth-capped), and its
-                // per-subtree IO errors are already swallowed internally.
+                // Repo-root-rooted walk of EVERY file. `SearchOption.AllDirectories`
+                // here would follow `.devenv/profile` into the /nix/store symlink
+                // cycle, so SafeWalk owns the recursion (no symlinked-dir descent,
+                // depth-capped), and its per-subtree IO errors are already swallowed
+                // internally.
                 SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs "*" rootFull
                 |> Seq.filter (fun abs ->
                     let rel = toRel abs
@@ -716,9 +714,9 @@ let private formatTestResultsJson (results: TestResults) =
     )
 
 /// Default slot-wait budget (ms) for the manual `run-tests` command when the
-/// payload carries no `waitSec` — well above the old fixed 120 s so a long
-/// `tests.beforeRun` chain (90 s+) held by a prior in-flight run can't make an
-/// explicit `test-rerun` give up and report `busy` before the slot frees. The
+/// payload carries no `waitSec` — generous so a long `tests.beforeRun` chain
+/// (90 s+) held by a prior in-flight run can't make an explicit `test-rerun` give
+/// up and report `busy` before the slot frees. The
 /// CLI always sends `waitSec` (default `DefaultTestRerunWaitSec`); this fallback
 /// covers a missing/malformed field (an older CLI or hand-crafted payload).
 [<Literal>]
@@ -752,12 +750,12 @@ let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
 let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
     configs |> List.map (fun c -> c.Project) |> Set.ofList
 
-/// The coarse fallback for files the symbol analyser could not read (AUTOMATION-113).
+/// The coarse fallback for files the symbol analyser could not read.
 ///
 /// A file whose analysis FAILED contributes no symbols. The impact graph therefore
 /// cannot see it, the symbol diff finds nothing changed in it, and the selection it
-/// deserves is EMPTY — so an edit to such a file used to select zero tests and the
-/// check went green having run nothing relevant. That is silent UNDER-selection: "the
+/// deserves is EMPTY — so an edit to such a file would select zero tests and the
+/// check would go green having run nothing relevant. That is silent UNDER-selection: "the
 /// one failure mode a test-impact tool must not have" (`TestPrune.EdgeEmission`).
 ///
 /// The honest reading of an unanalysable file is not "nothing is affected" — it is
@@ -1563,14 +1561,14 @@ let private executeTests
         let mutable coverageOutput: string option = None
         let coverageRawPathsLock = obj ()
 
-        // AUTOMATION-98: per-test flakiness records, COLLECTED here and written ONCE
-        // after the parallel section — exactly like `coverageRawPaths` above, and for
-        // both of the same reasons. `Flakiness.appendRecords` is a full parse + full
-        // rewrite of the whole history file (5.5 MB live), and it used to be called
-        // per CONFIG from inside the parallel group body: 6 projects → 6 sequential
-        // parse+rewrite cycles per run, AND a read-modify-write racing itself across
-        // parallel groups, where two projects finishing together could each load the
-        // same history and the second writer would silently drop the first's records.
+        // Per-test flakiness records, COLLECTED here and written ONCE after the
+        // parallel section — exactly like `coverageRawPaths` above, and for both of
+        // the same reasons. `Flakiness.appendRecords` is a full parse + full rewrite
+        // of the whole history file, so a per-config call from inside the parallel
+        // group body would mean one parse+rewrite cycle per project, AND a
+        // read-modify-write racing itself across parallel groups (two projects
+        // finishing together each load the same history, and the second writer drops
+        // the first's records).
         let mutable flakinessRecords: Flakiness.TestRunRecord list = []
         let flakinessLock = obj ()
 
@@ -1926,17 +1924,10 @@ let private executeTests
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            // Report the failure in full. The raw runner output used to
-                            // ALSO be dumped to `.fshw/test-runs/<Project>-<ts>.log` —
-                            // that format is GONE (AUTOMATION-129). It was written only
-                            // when something broke, so the newest one dated from the last
-                            // red run, and anyone listing the directory read that date as
-                            // "when tests last ran". (It said 2026-06-30, and produced the
-                            // confident, false conclusion that no test had run in weeks.)
-                            // A stale artifact that looks authoritative is worse than
-                            // none. Nothing is lost: the failing tests, with messages and
-                            // traces, are in the RETAINED CTRF report the verdict points
-                            // at, and the failure report is logged here in full.
+                            // Report the failure in full: the failing tests, with
+                            // messages and traces, are in the RETAINED CTRF report the
+                            // verdict points at, and the failure report is logged here
+                            // in full.
                             match result with
                             | TestsFailed _
                             | TestsTimedOut _
@@ -1968,15 +1959,11 @@ let private executeTests
                             // `flakinessRecords`). Best-effort — exceptions never fail
                             // the run.
                             //
-                            // The report is RETAINED (AUTOMATION-129). It used to be
-                            // `File.Delete`d the instant its records had been folded into
-                            // the flakiness history — so the reports an operator found in
-                            // `.fshw/test-runs/` were the ones whose deletion had FAILED:
-                            // orphans, months old, indistinguishable from a current run's
-                            // evidence. The verdict file now POINTS at these reports, and
-                            // a pointer into a directory of accidental survivors is worse
-                            // than no pointer at all. `Ctrf.tidyRunsDir` (post-run) keeps
-                            // the newest few per project, so retention stays bounded.
+                            // The report is RETAINED — the verdict file POINTS at these
+                            // reports rather than deleting them once their records are
+                            // folded into the flakiness history. `Ctrf.tidyRunsDir`
+                            // (post-run) keeps the newest few per project, so retention
+                            // stays bounded.
                             match ctrfPath, reportJson with
                             | Some _, Some json ->
                                 try
@@ -2363,8 +2350,8 @@ let internal cacheKeyFor
         | _, _, false -> None
         | None, false, true -> Some(outcomeKey "succeeded")
     | Custom(TestsFinished(_, completed, _)) ->
-        // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be served from
-        // cache as a current verdict. Unlike BuildPlugin — whose result is a pure
+        // A FAILED test outcome must never be served from cache as a current
+        // verdict. Unlike BuildPlugin — whose result is a pure
         // function of its content-merkle inputs, so replaying a cached failure on an
         // identical tree is correct — a test outcome is NOT pinned by the
         // changed-symbols merkle: the same key recurs after the tree is fixed (or for
@@ -3781,9 +3768,9 @@ let create
 
                             return newState
                         | Error msg ->
-                            // AUTOMATION-113. This branch used to `return state` — the file
-                            // was DROPPED: it contributed no symbols, a change to it diffed
-                            // against nothing and selected NO tests, and the check reported
+                            // On analysis failure the file must NOT be dropped: a
+                            // dropped file contributes no symbols, a change to it diffs
+                            // against nothing and selects NO tests, and the check reports
                             // green having run nothing relevant. Silent under-selection:
                             // the one failure mode a test-impact tool must not have. See
                             // `markUnanalysable` for the treatment.
@@ -3846,11 +3833,11 @@ let create
                         // verify them. Convergence, not reporting. A verdict is only
                         // ever earned by a run.
                         //
-                        // AUTOMATION-150: the skip asks whether anything is owed, so it
-                        // must ask `nothingOwed`, not `Set.isEmpty`. An UNREADABLE ledger
-                        // leaves the in-memory queue empty (we cannot name what it held)
-                        // — and reading that empty set as "nothing to drain" is exactly
-                        // how a corrupt sidecar used to run ZERO tests and still go green.
+                        // The skip asks whether anything is owed, so it must ask
+                        // `nothingOwed`, not `Set.isEmpty`. An UNREADABLE ledger leaves
+                        // the in-memory queue empty (we cannot name what it held) — and
+                        // reading that empty set as "nothing to drain" would let a
+                        // corrupt sidecar run ZERO tests and still go green.
                         if nothingOwed () then
                             return flushedState
                         else
@@ -3997,7 +3984,8 @@ let create
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
 
                             // Flush/query before announcing Running so the reported status never
-                            // lies (the old order would flash Running even on schema-drifted DBs).
+                            // lies: announcing Running before the flush would flash Running even
+                            // on a schema-drifted DB.
                             // The framework catches uncaught throws and forces Failed as a
                             // defense-in-depth net; we still trap locally here so we can run
                             // the schema-drift self-heal and preserve the idle transition.
@@ -4562,9 +4550,8 @@ let create
             // racing the same change. By the time the agent processes
             // BatchChecked, every FileChecked update has been folded in, so
             // changedSymbolsRef is consistent with state.ChangedSymbols and
-            // any cache key derived from it is well-formed. This is the seal
-            // point that let the old `RequireWarmStart` gate retire (commit 4).
-            // BuildCompleted is now subscribed unconditionally so the
+            // any cache key derived from it is well-formed.
+            // BuildCompleted is subscribed unconditionally so the
             // Item 3 freshness-stamp gate works even when the plugin is
             // configured analysis-only (no testConfigs). When testConfigs is
             // None / empty, the BuildCompleted handler still runs

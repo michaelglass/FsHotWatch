@@ -314,21 +314,13 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     /// Serialises "decide whether a live run owns the status" + "publish it"
     /// against "claim a run slot" + "publish the `Running` that claim earns".
     ///
-    /// AUTOMATION-118. The ownership guard used to be a check-then-act: it read
-    /// the run slots under `runSlotsLock`, then reported the status AFTER
-    /// releasing it. A claim landing in that window publishes `Running`, and the
-    /// stale terminal then lands ON TOP of the live run — the "content-free ✓
-    /// while tests are still running" signature (`started:` with no `elapsed:`)
-    /// that AUTOMATION-95/99 exist to make impossible.
-    ///
-    /// That window was REAL and reproduced against this code. The only thing that
-    /// closed it was that every shipped plugin happens to call `ctx.RunExclusive`
-    /// and `ctx.ReportStatus` from inside `Update`, which the agent loop runs one
-    /// at a time — so the check, the claim and the report were totally ordered on
-    /// one logical thread. But `PluginCtx` is a record of closures: nothing in the
-    /// type system confines it to the mailbox. That was soundness by CONVENTION,
-    /// and a plugin claiming a slot from a `work` async or a spawned task — a
-    /// legal use of the API — reopened it.
+    /// Without this, the ownership guard is a check-then-act: it reads the run slots
+    /// under `runSlotsLock`, then reports the status AFTER releasing it. A claim
+    /// landing in that window publishes `Running`, and the stale terminal then lands
+    /// ON TOP of the live run — the "content-free ✓ while tests are still running"
+    /// signature (`started:` with no `elapsed:`). `PluginCtx` is a record of closures
+    /// nothing in the type system confines to the mailbox, so a plugin claiming a slot
+    /// from a `work` async or a spawned task — a legal use of the API — can reach it.
     ///
     /// With `statusLock` the ownership DECISION and the REPORT are ONE critical
     /// section, so a terminal either wins the race (published while genuinely no
@@ -429,12 +421,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         async {
             let mutable completion: 'Msg voption = ValueNone
 
-            // F15 (audit 2026-05-02): the work async is plugin-supplied — a
-            // third-party-extension boundary that may raise anything. The
-            // broad catch is what guarantees the surrounding `finally` runs
-            // (releasing the runSlots entry); without it, an unhandled
-            // exception would skip the `with` and still hit the `finally`
-            // via async-exception propagation, but the `completion` post
+            // The work async is plugin-supplied — a third-party-extension
+            // boundary that may raise anything. The broad catch is what
+            // guarantees the surrounding `finally` runs (releasing the runSlots
+            // entry); without it, an unhandled exception would skip the `with`
+            // and still hit the `finally` via async-exception propagation, but
+            // the `completion` post
             // path ahead of `finally` would never receive a value, leaving
             // the agent hanging waiting for the result. We log ex.ToString()
             // so the type and stack trace are preserved for diagnosing the
@@ -950,10 +942,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             | Choice1Of2 event ->
                                 // Compute the cache key ONCE per dispatched event and thread the
                                 // single value to both the lookup (tryReplayCache) and the store
-                                // (runAndCache). The framework used to call `cacheKeyFn event`
-                                // twice per dispatch; for BuildPlugin that key is a full
-                                // content-hash of the project graph, so a miss paid two SHA-256
-                                // passes per trigger. Threading one value also guarantees the
+                                // (runAndCache). Computing it twice would pay two SHA-256 passes
+                                // per trigger for BuildPlugin (whose key is a full content-hash of
+                                // the project graph); threading one value also guarantees the
                                 // lookup key equals the store key by construction.
                                 let cacheKeyOpt =
                                     match handler.CacheKey with
@@ -975,16 +966,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 //
                                 // So a hit here is not a proof of equivalence; it is a COLLISION.
                                 // And serving it skips the handler, which is the only thing that
-                                // folds the finished run into the plugin's state.
-                                //
-                                // Observed on an unchanged tree: `confirm` forced the full suite,
-                                // ran it for 102 seconds, passed 1965 tests and wrote a complete
-                                // CTRF report — and the framework replayed a cached terminal over
-                                // the `TestsFinished` carrying it. The plugin never learned the run
-                                // had happened, `test-scope` still answered "no tests ran", and
-                                // `confirm` refused to give a verdict on evidence it had just spent
-                                // 102 seconds producing. A cache that can DESTROY evidence is worse
-                                // than no cache.
+                                // folds the finished run into the plugin's state — a cache that can
+                                // DESTROY evidence (replaying a cached terminal over the
+                                // `TestsFinished` carrying a real completed run) is worse than no
+                                // cache.
                                 //
                                 // The WRITE below keeps the real key: a Custom window is how the
                                 // entry the next `BuildCompleted` hits gets minted at all.

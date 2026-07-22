@@ -21,26 +21,19 @@ open FsHotWatch.Cli.IpcParsing
 //     convergence — real problems are reported immediately.
 // ----------------------------------------------------------------------------
 
-/// WHY the check is running — and therefore what it is allowed to claim
-/// (AUTOMATION-112).
-///
-/// These are two different questions, and the whole bug was answering the second with
-/// the first:
+/// WHY the check is running — and therefore what it is allowed to claim.
 ///
 ///   `InnerLoop` — "did my change break anything it plausibly touches?" An
-///   impact-filtered run answers this well, and that is what impact filtering is
-///   genuinely FOR: it is a LATENCY OPTIMIZATION.
+///   impact-filtered run answers this well; impact filtering is a LATENCY
+///   OPTIMIZATION.
 ///
-///   `Confirmation` — "is the suite green?" That is a CORRECTNESS CLAIM, and a heuristic
-///   selector may not be its sole basis unless the selector is PROVEN sound. Ours
-///   demonstrably isn't: 35 tests sat red on `main` for an unknown period, never
-///   selected, every run green throughout.
+///   `Confirmation` — "is the suite green?" That is a CORRECTNESS CLAIM, and a
+///   heuristic selector may not be its sole basis unless proven sound. Ours isn't.
 ///
-/// Enforced in the TYPE, not by convention. "Remember to also run an unfiltered
-/// test-rerun before merging" is precisely the discipline that has already failed —
-/// a check that depends on someone remembering confirms nothing. So `Confirmation`
-/// demands a `FullSuite` scope as EVIDENCE and has no branch that can reach `Clean`
-/// without one.
+/// Enforced in the TYPE, not by convention: a check that depends on someone
+/// remembering to also run an unfiltered test-rerun before merging confirms
+/// nothing. So `Confirmation` demands a `FullSuite` scope as EVIDENCE and has no
+/// branch that can reach `Clean` without one.
 type CheckMode =
     /// The inner dev loop. Keeps impact filtering, which is what it is good at.
     | InnerLoop
@@ -78,18 +71,11 @@ let exitCode (outcome: CheckOutcome) : int =
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
 ///
-/// WHY A RECORD AND NOT A `bool`. `verdict` used to take `hasFailures: bool`, computed
-/// by the caller. The daemon path computed `anyPluginFailed || failingDiagnostics`; the
-/// `--run-once` path — which is what CI runs — computed ONLY the second term. So a
-/// plugin that CRASHED (PluginFramework's crash-nets force `Failed` with no
-/// `ErrorEntry`: the framework cannot invent a file and line for someone else's stack
-/// trace) exited 1 under `fshw check` and 0 under `fshw confirm --run-once`, with
-/// `outcome: green` and `plugins: [{"outcome":"fail"}]` in the same verdict file.
-///
 /// The two transports differ ONLY in how they observe the daemon — a socket or an
 /// in-process host. They may not differ in what they DECIDE. So the observations are
-/// what they hand over, the disjunction is computed once, here, and a transport that
-/// forgets a term no longer produces a green: it fails to compile.
+/// what they hand over, the disjunction (crashed plugin OR failing ledger) is
+/// computed once, here, and a transport that forgets a term no longer produces a
+/// green: it fails to compile.
 type CheckInputs =
     {
         /// Per-plugin status, as the transport observed it. A plugin in here can be
@@ -158,7 +144,7 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         match coverage with
         | Complete ->
             match testScope with
-            // NO TESTS RAN — in EITHER mode (AUTOMATION-129).
+            // NO TESTS RAN — in EITHER mode.
             //
             // `NoTestsRun` does not mean "impact analysis selected nothing this
             // time"; it means the daemon holds NO TEST EVIDENCE AT ALL — no run has
@@ -167,11 +153,10 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // is the vacuous green in its purest form: nothing was verified, and the
             // exit code said everything was fine.
             //
-            // Observed in the wild the same day this was written, twice. It is not a
-            // scope question ("did we test enough?") but an evidence question ("did we
-            // test AT ALL?"), so unlike `ImpactFiltered` it is refused in the inner
-            // loop too. The inner loop is allowed to test LESS; it is not allowed to
-            // test NOTHING and call it green.
+            // It is not a scope question ("did we test enough?") but an evidence
+            // question ("did we test AT ALL?"), so unlike `ImpactFiltered` it is
+            // refused in the inner loop too. The inner loop is allowed to test LESS;
+            // it is not allowed to test NOTHING and call it green.
             | NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
             | FullSuite _
             | ImpactFiltered _
@@ -192,13 +177,12 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
 
 /// Must `confirm` go and PRODUCE the evidence it is about to demand?
 ///
-/// A DEMAND NOBODY CAN SATISFY IS NOT A CHECK, IT IS AN OBSTACLE (AUTOMATION-117).
-/// Setting full-suite scope makes the next run unfiltered; it does not make a run
-/// HAPPEN. So a `confirm` asked "may I merge this?" on a tree whose suite has not run —
-/// a fresh CI checkout, or a warm daemon whose impact DB says nothing changed — would
-/// refuse for want of evidence while offering no way to produce any. The documented
-/// workaround for that is the 40-line bash harness this whole release exists to delete.
-/// So `confirm` RUNS the suite it demands, and only then judges it.
+/// A demand nobody can satisfy is not a check, it is an obstacle. Setting
+/// full-suite scope makes the next run unfiltered; it does not make a run HAPPEN.
+/// So a `confirm` asked "may I merge this?" on a tree whose suite has not run — a
+/// fresh CI checkout, or a warm daemon whose impact DB says nothing changed — would
+/// refuse for want of evidence while offering no way to produce any. So `confirm`
+/// RUNS the suite it demands, and only then judges it.
 ///
 /// Deliberately expressed as the exact negation of what `verdict` will accept: this
 /// says "go and earn a `FullSuite`", `verdict` says "only a `FullSuite` may pass". Two

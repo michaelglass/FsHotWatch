@@ -6,14 +6,14 @@
 ///   FSHW-CLAIM-001 — a `RunClaim` (the result of `PluginCtx.RunExclusive`)
 ///   must be handled, never discarded. FS0020 + TreatWarningsAsErrors force
 ///   the value to be acknowledged, but `|> ignore` remains a legal escape —
-///   and "silently drop the refused claim" IS the AUTOMATION-99 bug.
+///   and "silently drop the refused claim" is the dropped-work bug this rule
+///   exists to catch.
 ///
-///   FSHW-CLOCK-001 — no local clocks. Every timestamp in the daemon is UTC;
-///   a lone `DateTime.Now` (CoveragePlugin, 2026-07) skewed the one elapsed a
-///   human reads when coverage gates them, while the package CHANGELOG claimed
-///   "timestamps now use UTC". Unrepresentable would beat detected (host-
-///   stamped transition times), but that refactor is out of scope — so the
-///   class is banned here instead.
+///   FSHW-CLOCK-001 — no local clocks. Every timestamp in the daemon is UTC; a
+///   lone `DateTime.Now` skews the one elapsed a human reads when coverage gates
+///   them. Making it unrepresentable would beat detecting it (host-stamped
+///   transition times), but that refactor is out of scope — so the class is banned
+///   here instead.
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK

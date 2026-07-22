@@ -118,10 +118,10 @@ let renderIpcResult
     (noWarnFail: bool)
     (result: string)
     : int =
-    // F8 (audit 2026-05-02): renderIpcResult tolerates non-JSON output (the
-    // daemon emits plain text for some commands; the None branch falls through
-    // to eprintfn). Narrow to :? JsonException so a real programming bug
-    // (e.g. null arg) propagates instead of silently rendering raw text.
+    // renderIpcResult tolerates non-JSON output (the daemon emits plain text for
+    // some commands; the None branch falls through to eprintfn). Narrow to
+    // :? JsonException so a real programming bug (e.g. null arg) propagates instead
+    // of silently rendering raw text.
     let doc =
         try
             Some(JsonDocument.Parse(result))
@@ -163,7 +163,7 @@ let renderIpcResult
                     // didn't finish in time). Distinct from "Tests failed" —
                     // nothing is known to be broken — but it must NEVER exit 0:
                     // `test-rerun` is the explicit "prove it ran" verb, and an
-                    // exit 0 without a run is a vacuous green (AUTOMATION-99).
+                    // exit 0 without a run is a vacuous green.
                     let msg =
                         match root.TryGetProperty("message") with
                         | true, m when m.ValueKind = JsonValueKind.String -> m.GetString()
@@ -505,7 +505,7 @@ let pollAndRender
         let firstRun = getTestRun ()
         finalRun.Value <- firstRun
 
-        // CONFIRM EARNS ITS EVIDENCE (AUTOMATION-117).
+        // CONFIRM EARNS ITS EVIDENCE.
         //
         // `set-scope full` was already sent (before the scan), so any run the scan
         // provoked is unfiltered — and on a cold daemon that is the whole story: the

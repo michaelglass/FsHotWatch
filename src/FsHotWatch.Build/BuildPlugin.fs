@@ -640,7 +640,7 @@ let create
                     // Every terminal below carries its verdict: the same
                     // `buildSummary` line the worker logged, plus the measured
                     // build duration — one channel, worker log and status can
-                    // never disagree (AUTOMATION-99).
+                    // never disagree.
                     match outcome with
                     | BuildPassed _ ->
                         if entries.IsEmpty then

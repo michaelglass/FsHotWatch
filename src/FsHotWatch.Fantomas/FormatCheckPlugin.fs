@@ -20,23 +20,15 @@ let FormatTimeoutDefaultSec = 60
 /// Formats unformatted files and returns the list of files that were rewritten.
 /// Respects .gitignore and .fantomasignore files in the repo root.
 ///
-/// AUTOMATION-98: the Fantomas call here used to run with NO timeout, while its
-/// twin in `createFormatCheck` below wrapped the IDENTICAL call in
-/// `runWithCancellableTimeout` — one bounded, one not, which is precisely the
-/// two-primitives smell. And the unbounded one sat on the worse path: a
-/// preprocessor runs inside the daemon's `processBatch`, so a Fantomas hang here
-/// wedges the CHANGE AGENT — the daemon then never processes another file change,
-/// silently, forever — and it runs inside `performScan`, which `WaitForScan`
-/// blocks on as `check`'s very first step. Same timeout, same cancellation token,
-/// same `WorkTimedOut` handling as the twin: a stuck file is skipped, loudly.
+/// The Fantomas call is bounded (`runWithCancellableTimeout`) because a
+/// preprocessor runs inside the daemon's `processBatch` — a hang here wedges the
+/// CHANGE AGENT, so the daemon silently never processes another file change — and
+/// inside `performScan`, which `WaitForScan` blocks on as `check`'s very first
+/// step. A stuck file is skipped, loudly (`WorkTimedOut`).
 /// `slowHook` is a TEST SEAM, mirroring `createFormatCheckWithSlowHook`: it runs
 /// inside the timeout-guarded region, before formatting, so a test can force the
-/// `WorkTimedOut` branch DETERMINISTICALLY. Without it a test can only try to
-/// win a race — pass `timeoutSec = 0` and hope the timer beats Fantomas — which
-/// is not a guarantee but a coin toss: on a warm, idle box Fantomas formats a
-/// three-line file before a zero-length timer fires, and the "timed out" test
-/// then observes a successful format and fails. (Exactly that flake, exposed by
-/// serialising the gate's build DAG.)
+/// `WorkTimedOut` branch DETERMINISTICALLY rather than racing a zero-length timer
+/// against Fantomas (a coin toss that flakes on a warm box).
 type FormatPreprocessor(?timeoutSec: int, ?slowHook: unit -> unit) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
 
@@ -230,12 +222,10 @@ let internal createFormatCheckWithSlowHook
         // — same source bytes always produce the same formatted output, so two
         // daemons agree on the cache value regardless of working-copy state.
         let tryReadFileForMerkle (f: string) : (string * string) list option =
-            // F2 — see docs/plans/2026-05-02-error-handling-audit.md.
-            // Pre-fix: unreadable files were silently substituted with "",
-            // colliding with real empty files and with each other. Now we
-            // refuse to produce a key when any input is unreadable, so the
-            // cache is bypassed (cache miss + retry on the next event)
-            // instead of poisoning a "format OK" verdict.
+            // Refuse to produce a key when any input is unreadable — substituting
+            // "" would collide with real empty files and with each other, so the
+            // cache is bypassed (cache miss + retry on the next event) instead of
+            // poisoning a "format OK" verdict.
             try
                 let source = File.ReadAllText(f)
                 Some [ $"file:{f}", f; $"source:{f}", source ]

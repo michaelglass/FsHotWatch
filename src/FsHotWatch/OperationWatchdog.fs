@@ -4,40 +4,20 @@ open System
 open System.Collections.Generic
 open System.Threading
 
-/// AUTOMATION-15 — daemon operation watchdog + wedge-aware diagnostics.
+/// Diagnostic-only watchdog over the daemon's in-flight RPC operations: tracks
+/// ops in flight and reports a wedge via `status`; it kills nothing — wedges are
+/// prevented by bounded, cancellable ops (ProcessHelper) and the deadline at
+/// Ipc's `trackedTask` seam. Ops are keyed by `OpToken` so concurrent `Begin`s
+/// can't clobber one another (the IPC server runs several acceptors at once).
+/// Decision logic (is-wedged, log/heartbeat text) is pure and unit-tested; the
+/// live timer + clock are injected.
 ///
-/// The daemon's RPC request loop had no timeout/health path of its own: a
-/// single in-flight op (a wedged FCS/format unit, a deadlocked re-discovery)
-/// would block the socket, and BOTH `status` and `check` then blocked on the
-/// same dead pipe ("could not connect to daemon: operation timed out") with
-/// zero insight into WHAT was stuck. This module makes a wedge:
-///   - PREVENTED elsewhere (bounded + cancellable ops — see ProcessHelper and
-///     the deadline enforced at Ipc's `trackedTask` seam),
-///   - DIAGNOSABLE here: it tracks the operations in flight (name + start time),
-///     a watchdog timer logs a structured "operation exceeded Ns" record once an
-///     op overruns the threshold, and `wedgeReport` lets `status` report the
-///     wedge + stuck op + inline recovery directly instead of the consumer
-///     blindly timing out on the socket.
-///
-/// AUTOMATION-98 — it tracks operationS, plural. It used to hold ONE
-/// `InFlightOp`, which the IPC server's THREE concurrent acceptors corrupted by
-/// design: a second `Begin` overwrote the first's record and the first `End`
-/// erased the second's. Two parallel `fshw check` clients — routine — were
-/// enough. The consequence was the exact inverse of this module's purpose: a
-/// genuinely wedged op heartbeat as `idle` and `WedgeReport()` returned `None`,
-/// so the diagnostic built for wedges went blind precisely under the concurrency
-/// it was built for. Ops are now keyed by an `OpToken` minted at `Begin` and
-/// retired at `End`, so they cannot clobber one another.
-///
-/// The decision logic (is-wedged, the log/heartbeat text) is pure and
-/// unit-tested; the live timer + clock are injected.
 /// A single in-flight operation: its name and when it started (UTC).
 [<NoComparison>]
 type InFlightOp = { Name: string; StartedAt: DateTime }
 
 /// Identifies ONE tracked operation. Minted by `Begin`, retired by `End`, so an
-/// `End` can only ever retire the op its own `Begin` started — the property the
-/// old parameterless `End()` could not have.
+/// `End` retires only the op its own `Begin` started.
 [<Struct>]
 type OpToken = internal OpToken of id: int64
 
@@ -192,7 +172,7 @@ type Watchdog
 
     /// Retire the operation `token` identified (it completed or faulted). Retiring
     /// an already-retired token is a no-op, so a double-`End` cannot erase a
-    /// SIBLING op's record the way the old parameterless `End()` did.
+    /// sibling op's record.
     member _.End(OpToken id) =
         lock gate (fun () ->
             inFlight.Remove id |> ignore

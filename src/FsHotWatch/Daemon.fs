@@ -380,7 +380,7 @@ let private rediscoverAndClearRemoved
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
-    /// F12 (audit 2026-05-02) test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
+    /// Test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
     /// for the rationale. Production messages don't have a natural failure
     /// mode, so this is the only realistic way to verify the agent surfaces
     /// programming bugs instead of swallowing them.
@@ -398,7 +398,7 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                     async {
                         let! msg = inbox.Receive()
 
-                        // F12 (audit 2026-05-02): no inner try/with — the body is a
+                        // No inner try/with — the body is a
                         // typed match over messages we own; tcs.TrySetResult,
                         // List.partition, and Logging.debug do not throw on valid
                         // state. Anything that throws is a programming bug that
@@ -446,8 +446,8 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
     do
         agent.Error.Add(fun ex ->
-            // F12 (audit 2026-05-02): an unhandled exception inside the agent
-            // loop is a programming bug. Log loudly with the full stack trace
+            // An unhandled exception inside the agent loop is a programming bug.
+            // Log loudly with the full stack trace
             // (ex.ToString(), not ex.Message); the agent stops and pending
             // waiters' WaitForGeneration tasks remain unresolved — a visible
             // hang at the next caller, not the previous silent loop-and-drop.
@@ -478,12 +478,11 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
 
-    /// F12 (audit 2026-05-02): unhandled exceptions inside the mailbox loop
-    /// surface here. Subscribe to observe programming bugs that the previous
-    /// inner try/with would have silently swallowed.
+    /// Unhandled exceptions inside the mailbox loop surface here. Subscribe to
+    /// observe programming bugs.
     member _.AgentCrashed: IEvent<exn> = agent.Error
 
-    /// F12 test seam: deterministically raise inside the agent loop. See
+    /// Test seam: deterministically raise inside the agent loop. See
     /// `ErrorLedger.RaiseFaultForTest` for rationale.
     member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
 
@@ -521,8 +520,8 @@ let private getScanStatus (ScanAgent agent) =
 let private setScanStatus (ScanAgent agent) state =
     agent.PostAndReply(fun ch -> SetState(state, ch))
 
-/// F13 (audit 2026-05-02): centralized failure handler for daemon batch/scan
-/// steps. `processBatch` and `performScan` transitively call FCS, MSBuild, and
+/// Centralized failure handler for daemon batch/scan steps.
+/// `processBatch` and `performScan` transitively call FCS, MSBuild, and
 /// arbitrary plugin Update functions — there isn't a smaller exception type
 /// that captures "anything from this layer", so the broad `Exception` catch
 /// is genuinely justified at this boundary. We hoist the policy to one place
@@ -1558,12 +1557,9 @@ type Daemon
                         { new IDisposable with
                             member _.Dispose() = () }
 
-                // Plugin-wedge monitor (AUTOMATION-147). A plugin that reported
-                // Running and posts no completion past the bound is BY DEFINITION
-                // wedged; before this, the daemon knew and said nothing (the
-                // AUTOMATION-92 hang was silent for 8h36m, and the operator's
-                // only wedge detector was grepping for a MISSING `elapsed:`
-                // field). The monitor logs escalating "still running … (no
+                // Plugin-wedge monitor. A plugin that reported Running and posts
+                // no completion past the bound is BY DEFINITION wedged. The monitor
+                // logs escalating "still running … (no
                 // completion posted)" lines every 5 min so a silent log can
                 // never be mistaken for a healthy idle daemon, and past the
                 // bound it names the wedge, writes the last-wedge breadcrumb
@@ -1633,10 +1629,10 @@ type Daemon
 /// scan runs its FCS tiers, the BuildPlugin's `dotnet build` touches
 /// `obj/**/ref/*.dll`; the watcher fires, `processBatch` re-checks the affected
 /// files, and `CancelPreviousCheck` cancels the scan-side in-flight check of the
-/// same file. A cancelled check surfaces as `None` from the pipeline, and the
-/// scan emit loop used to silently drop `None` (`| None -> ()`) — so a scan
-/// could report green while the ErrorLedger never saw diagnostics for the
-/// dropped files (neither reported NOR cleared).
+/// same file. A cancelled check surfaces as `None` from the pipeline, and a naive
+/// scan emit loop that drops `None` (`| None -> ()`) would let a scan report green
+/// while the ErrorLedger never saw diagnostics for the dropped files (neither
+/// reported NOR cleared).
 ///
 /// This helper closes that hole: files whose `check` returned `None` are
 /// re-enqueued and re-checked, up to `maxRetries` additional rounds. The retry
@@ -1921,11 +1917,10 @@ module Daemon =
         // change/scan mailboxes, the plugin handlers registered later. Whichever
         // of them eventually DISPATCHES to a plugin decides the context that
         // plugin's `runProcess` runs in — so installing the registry any later
-        // (it used to happen in the `Daemon` constructor, after all of these
-        // existed) meant a plugin's spawned child resolved NO registry,
-        // `ProcessRegistry.track` dropped it silently, `KillAll` reaped nothing,
-        // and a wedged plugin's process outlived the daemon as an init-reparented
-        // orphan. That is the mess the operator was cleaning up with `kill -9`.
+        // (after these exist) would mean a plugin's spawned child resolves NO
+        // registry, `ProcessRegistry.track` drops it silently, `KillAll` reaps
+        // nothing, and a wedged plugin's process outlives the daemon as an
+        // init-reparented orphan.
         //
         // Installing here, before any context is captured, is what makes
         // `fshw stop` and the wedge self-heal actually reap their children.
@@ -2067,7 +2062,7 @@ module Daemon =
                                         let newDelay = max delayMs (delayForChange change)
                                         return! debouncing (change :: pending) newDelay suppressed
                                     | Some(Choice2Of2 replyChannel) ->
-                                        // F13 (audit 2026-05-02): policy hoisted to runDaemonStep —
+                                        // Policy hoisted to runDaemonStep —
                                         // OperationCanceledException propagates; everything else is
                                         // logged with full stack and we fall back to idle so the
                                         // daemon stays responsive while the user sees the failure.
@@ -2115,7 +2110,7 @@ module Daemon =
 
                                 match msg with
                                 | RequestScan(ct, reply) ->
-                                    // F13 (audit 2026-05-02): policy hoisted to runDaemonStep — see
+                                    // Policy hoisted to runDaemonStep — see
                                     // its docblock for the broad-catch justification at this
                                     // boundary (FCS / MSBuild / plugin Update surface).
                                     match! runDaemonStep "performScan" (performScan batchCtx scanSignal state ct) with

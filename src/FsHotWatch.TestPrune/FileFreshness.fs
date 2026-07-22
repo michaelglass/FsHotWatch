@@ -197,8 +197,8 @@ let markUnverified (relPath: string) (store: Store) : Store =
 
 /// Three-way trust classification for a file's stored symbol rows, consumed by
 /// the `detectChanges` call site to decide whether those rows can be diffed
-/// against. The distinction between `Unknown` and `Dirty` is load-bearing
-/// (AUTOMATION-67 — the seeded-DB under-selection class):
+/// against. The distinction between `Unknown` and `Dirty` is load-bearing (it
+/// guards the seeded-DB under-selection class):
 ///
 ///   - `Clean`   — an explicit "ended its last check FCS-clean" record. Safe to
 ///                 diff: the stored rows are a complete, trustworthy extraction.

@@ -1,13 +1,5 @@
-/// `check` and `confirm` WITHOUT a daemon — the `--run-once` path (AUTOMATION-117).
-///
-/// WHY THIS FILE EXISTS. `confirm` was reachable only over the daemon's IPC socket, and
-/// `--run-once` bypasses the daemon entirely — which is precisely how CI runs fshw. So
-/// our own CI could not invoke the very check it is supposed to be judged by. It happened to
-/// run the full suite anyway, because a CI checkout starts with a COLD impact DB and a
-/// cold DB selects everything; that is an accident of the environment, not a property
-/// of the tool. Warm the cache, restore the DB, or optimise CI at all, and the same
-/// green would silently start coming from a subset — the exact bug this release exists
-/// to eliminate, sitting in the release's own CI config.
+/// `check` and `confirm` WITHOUT a daemon — the `--run-once` path, which is how CI
+/// runs fshw.
 ///
 /// ONE VERDICT, TWO TRANSPORTS. Everything that DECIDES anything here is shared with
 /// the daemon path, not re-implemented beside it:
@@ -45,8 +37,7 @@ let private runHostCommand (host: PluginHost.PluginHost) (name: string) (args: s
 /// Every way of not getting a straight answer — no test-prune plugin, an unparseable
 /// reply, a throw — becomes `ScopeUnknown`, which `confirm` refuses. The failure
 /// direction is safe BY CONSTRUCTION: `confirm` can only go green on a scope it positively
-/// established. But it is never SILENT about it — safe-and-mute is how `fshw confirm`
-/// stayed broken on every repo for its whole life (AUTOMATION-129).
+/// established. But it is never SILENT about it.
 let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
     try
         match runHostCommand host TestScopeCommand [||] with
@@ -118,14 +109,11 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
     with ex ->
         Logging.warn "cli-confirm" $"could not settle after the forced full-suite run: %s{ex.Message}"
 
-/// The plugins' failing-diagnostic count — HALF of "did this run find real problems".
-///
-/// The other half is `CheckVerdict.CheckInputs.anyPluginFailed`, and this path used to
-/// fold in ONLY this one: `hasFailures = failingDiagnostics`, where the daemon path
-/// computed `anyPluginFailed || failingDiagnostics`. A plugin can reach `Failed` without
-/// writing a single `ErrorEntry` — the framework's crash-nets force exactly that — so a
-/// CRASHED plugin exited 1 under `fshw check` and 0 under `fshw confirm --run-once`,
-/// which is what CI runs. Never used alone now; see `checkInputs` below.
+/// The plugins' failing-diagnostic count — HALF of "did this run find real
+/// problems". The other half is `CheckVerdict.CheckInputs.anyPluginFailed`: a plugin
+/// can reach `Failed` without writing a single `ErrorEntry` (the framework's
+/// crash-nets force exactly that), so both terms are needed. Never used alone now;
+/// see `checkInputs` below.
 let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
     let allErrors =
         match pluginName with
@@ -195,8 +183,7 @@ let runOnceAndVerdict
         /// The in-process HALF of the "one verdict, two transports" contract (the daemon's
         /// half is `IpcOutput.checkInputs`). It OBSERVES; it decides nothing. Every term
         /// `CheckVerdict.verdict` needs is a field of the record it hands over, so a
-        /// transport that forgets one — as this one forgot `PluginStatuses`, and greened
-        /// CI on a crashed plugin for it — no longer compiles.
+        /// transport that forgets one no longer compiles.
         let reread () : CheckVerdict.CheckInputs =
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             finalRun.Value <- readTestRun daemon.Host
@@ -274,10 +261,9 @@ let runOnceAndVerdict
             eprintfn "%s" stalenessWarning
 
         // The verdict file — on EVERY terminal path, exactly as the daemon path writes
-        // it, from the same `CheckOutcome` the exit code below comes from. Before this,
-        // `check --run-once` (i.e. CI) wrote no verdict at all, so `fshw verdict` after a
-        // CI run reported "no verdict" — the machine-readable answer was missing from the
-        // one place a machine was reading.
+        // it, from the same `CheckOutcome` the exit code below comes from, so
+        // `fshw verdict` after a CI run has a machine-readable answer that matches the
+        // exit code.
         IpcOutput.publishVerdict repoRoot config.Exclude checkMode noWarnFail finalRun.Value finalStatuses.Value outcome
 
         match outcome with

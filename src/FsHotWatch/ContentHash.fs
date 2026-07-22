@@ -1,11 +1,6 @@
 /// THE content hasher, and THE fail-closed policy for a file that cannot be read.
 ///
-/// Three hashers had grown independently — the test-prune dependency fanout, the
-/// daemon's binary identity, and the verdict's tree hash — each with its own answer
-/// to the only question that actually matters here:
-///
-///     what do you hash when you CANNOT READ the file?
-///
+/// The only question that matters: what do you hash when you CANNOT READ the file?
 /// There is exactly one safe answer, and it must be the same everywhere. An
 /// unreadable file must hash to something that will NOT match the hash of the same
 /// file readable — so a claim made over a tree we could not fully see is DETECTABLY

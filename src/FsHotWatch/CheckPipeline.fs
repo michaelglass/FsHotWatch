@@ -73,7 +73,7 @@ type CheckPipeline
             | true, hash -> hash
             | false, _ -> getProjectOptionsHash options
 
-        // F7: GetFileHash returns None when the file is unreadable. Propagate
+        // GetFileHash returns None when the file is unreadable. Propagate
         // that None upstream so the cache lookup is bypassed and the next
         // call (after the transient lock clears) produces a fresh read
         // instead of poisoning the cache with a synthesized key.
@@ -120,9 +120,9 @@ type CheckPipeline
                     match makeCacheKeyFast filePath options with
                     | Some key -> backend.Invalidate(key)
                     | None ->
-                        // F7: file unreadable; nothing to invalidate (no key
-                        // was ever produced). The next CheckFile will re-try
-                        // on disk read.
+                        // File unreadable; nothing to invalidate (no key was
+                        // ever produced). The next CheckFile will re-try on
+                        // disk read.
                         ()
 
                 Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(AbsFilePath.value filePath)}"

@@ -37,8 +37,8 @@ type AnalyzersState =
 /// SAME `DiagnosticsByFile` set that backs `reportOrClearFile` → ErrorLedger →
 /// the pass/fail verdict for the current cycle.
 ///
-/// Verdict-reliability (2026-06-02 Issue A): the summary count must never be a
-/// monotonic accumulator carried across cycles. A prior cycle's 9 findings on a
+/// The summary count must never be a monotonic accumulator carried across cycles.
+/// A prior cycle's 9 findings on a
 /// file that later re-checks clean must drop to 0 — the file's entry in the map
 /// is replaced (with []) when it passes, so summing the map always reflects the
 /// current gated set. `✓` ⇒ `0 findings`; any non-zero count ⇒ the verdict gates.
@@ -80,15 +80,13 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
     prefixes
     |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal))
 
-/// Content-addressed identity of the analyzer assemblies in the configured
-/// paths — the cache-correctness fix for the "stale-green after analyzer
-/// rebuild" class (2026-06-17). The per-file analyzer cache previously keyed on
-/// the analyzer PATH STRINGS only, so when a custom-analyzer DLL was rebuilt
-/// (a rule changed, or a new analyzer added) but the path stayed the same, every
-/// cached per-file verdict for unchanged source was replayed — the new/changed
-/// rule never re-ran on those files, masking real findings. Folding the DLL
-/// CONTENT into the key invalidates exactly those entries when (and only when)
-/// the analyzer set actually changes.
+/// Content-addressed identity of the analyzer assemblies in the configured paths.
+/// The per-file analyzer cache folds this in so that rebuilding a custom-analyzer
+/// DLL (a rule changed, or a new analyzer added) invalidates the cached per-file
+/// verdicts: keying on the analyzer PATH STRINGS alone would replay stale verdicts
+/// for unchanged source when the DLL changed but its path did not, masking the
+/// new/changed rule's findings. Folding the DLL CONTENT in invalidates exactly
+/// those entries when (and only when) the analyzer set actually changes.
 ///
 /// We hash the same DLL set the loader inspects: every `*.dll` in each existing
 /// path whose filename is NOT a known-non-analyzer prefix (BCL/FCS/shim deps).
@@ -286,14 +284,14 @@ let internal createWithSlowHook
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
-    // Bug C (2026-06-17): a long-lived (warm) daemon loads analyzers ONCE at
-    // construction. When a downstream repo adds a NEW analyzer (a new .fs +
-    // <Compile> entry) and the gate's build refreshes the analyzer DLL on disk,
-    // the in-memory `client` still holds the OLD analyzer set — the new analyzer
-    // never runs, so the gate reports green without ever inspecting the codebase
-    // with it. (Bug A's cache key invalidates stale RESULTS so the loaded set
-    // re-runs; Bug B fails loud on a 0-analyzer load — but neither catches a
-    // PARTIAL stale load that's merely MISSING the newly-added analyzer.)
+    // A long-lived (warm) daemon loads analyzers ONCE at construction. When a
+    // downstream repo adds a NEW analyzer (a new .fs + <Compile> entry) and the
+    // gate's build refreshes the analyzer DLL on disk, the in-memory `client` still
+    // holds the OLD analyzer set — the new analyzer never runs, so the gate reports
+    // green without ever inspecting the codebase with it. (The cache key invalidates
+    // stale RESULTS so the loaded set re-runs, and a 0-analyzer load fails loud — but
+    // neither catches a PARTIAL stale load that's merely MISSING the newly-added
+    // analyzer.)
     //
     // Track the content identity of the loaded assembly set (the same hash Bug A
     // computes for the cache key). At the start of each FileChecked event, if the
@@ -465,7 +463,7 @@ let internal createWithSlowHook
                                                             $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics"
 
                                                         return Choice2Of3 entries
-                                                // F16 (audit 2026-05-02): analyzers are loaded
+                                                // Analyzers are loaded
                                                 // from third-party assemblies (FSharpLint shim,
                                                 // user-supplied analyzers). They may raise
                                                 // anything during execution. The broad catch
@@ -490,9 +488,9 @@ let internal createWithSlowHook
                             // Timed out — terminal status already reported, state unchanged.
                             return state
                         | Choice2Of3 entries ->
-                            // Success — apply the same state updates the old AnalysisComplete handler did,
-                            // then call completeWith inside this event's window so the framework writes the
-                            // cache for FileChecked.
+                            // Success — apply this file's state updates, then call completeWith
+                            // inside this event's window so the framework writes the cache for
+                            // FileChecked.
                             PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
                             // Replace (not merge) this file's entry so a re-check that
@@ -573,8 +571,8 @@ let internal createWithSlowHook
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
 
-        // Cache-correctness (2026-06-17): the key folds in the CONTENT identity of
-        // the loaded analyzer assemblies, not just the path strings. A rebuilt
+        // The key folds in the CONTENT identity of the loaded analyzer assemblies,
+        // not just the path strings. A rebuilt
         // analyzer DLL (rule changed / analyzer added) changes this hash even when
         // the configured paths are byte-identical, invalidating cached per-file
         // verdicts so the new/changed rule re-runs instead of replaying stale-green.

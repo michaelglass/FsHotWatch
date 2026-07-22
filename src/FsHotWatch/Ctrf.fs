@@ -5,20 +5,13 @@
 /// verdict (the process exit code is only a tie-break — see
 /// `TestPrunePlugin.classifyTestOutcome`).
 ///
-/// Two things happen here, and they are the same thing seen from both ends:
-///
 ///   * PARSE — one summary reader for the whole solution (`trySummary`). The
 ///     verdict layer, the flakiness recorder and the verdict FILE all read the
 ///     same block through the same function, so they cannot disagree about what
 ///     a report says.
 ///
-///   * RETAIN — reports are kept on disk (bounded, newest-per-project) so a
-///     consumer can be POINTED AT them. Until AUTOMATION-129 every report was
-///     `File.Delete`d the instant its per-test records had been folded into the
-///     flakiness history: the reports an operator found in `.fshw/test-runs/`
-///     were the ones whose deletion had FAILED — orphans, months old, and
-///     indistinguishable from a current run's evidence. A pointer into a
-///     directory of accidental survivors is worse than no pointer at all.
+///   * RETAIN — reports are kept on disk (bounded, newest-per-run) so a consumer
+///     can be POINTED AT them, rather than deleted once folded into history.
 module FsHotWatch.Ctrf
 
 open System
@@ -67,22 +60,10 @@ let RetainedRuns = 10
 let reportsDir (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "test-runs")
 
-/// THE DIRECTORY IS THE RUN.
-///
-/// `.fshw/test-runs/<runId>/<Project>.ctrf.json` — and nothing else lives there. A
-/// flat shared pile was unreadable in BOTH directions, and both directions bit us:
-///
-///   * PRESENCE was ambiguous — nine files in a directory, and nothing saying which
-///     belonged to the run you just did. The only way to answer was forensics on
-///     mtimes.
-///
-///   * ABSENCE was ambiguous — an empty listing could mean "no tests ran" (the
-///     single most important thing an agent can learn) or "cleaned up" or "wrong
-///     glob". Two capable readers guessed, an hour apart, and both guessed wrong.
-///
-/// With one directory per run: the run-dir EXISTS and is EMPTY when a run executed
-/// nothing, and does not exist at all when no run happened. Absence stops being
-/// something the reader has to decode.
+/// THE DIRECTORY IS THE RUN: `.fshw/test-runs/<runId>/<Project>.ctrf.json`, and
+/// nothing else lives there. With one directory per run, the run-dir EXISTS and
+/// is EMPTY when a run executed nothing, and does not exist at all when no run
+/// happened — so absence is unambiguous and never has to be decoded from mtimes.
 let runDir (repoRoot: string) (runId: Guid) : string =
     Path.Combine(reportsDir repoRoot, runId.ToString("N"))
 
@@ -204,30 +185,21 @@ let latestRunReports (repoRoot: string) : Report list =
         | :? IOException
         | :? UnauthorizedAccessException -> []
 
-/// Bound what `.fshw/test-runs/` accumulates, and purge the DEAD formats.
-///
-/// Three jobs, one sweep, run after every test run:
+/// Bound what `.fshw/test-runs/` accumulates. Three jobs, one sweep, run after
+/// every test run:
 ///
 ///   * keep the newest `keepRuns` RUN DIRECTORIES and delete the rest. History is
 ///     evidence, so old runs are ROTATED, never wiped on start.
 ///
-///   * delete loose files at the top level. Those are the pre-AUTOMATION-129 layout:
-///     `<Project>-<guid>.ctrf.json` reports from a flat shared pile (which nothing
-///     could attribute to a run), and `<Project>-<timestamp>.log` raw output — the
-///     latter written ONLY on a failing run, so the newest one dated from the last
-///     time something broke, and an operator listing the directory read that date as
-///     "when tests last ran". (It said 2026-06-30. Tests had run hundreds of times
-///     since.) A stale artifact that looks authoritative is worse than none.
+///   * delete loose files at the top level — the old flat layout, which nothing
+///     could attribute to a run; a stale artifact that looks authoritative is
+///     worse than none.
 ///
-/// Best-effort throughout — tidying is housekeeping and must never fail the run that
-/// produced the evidence. Which it once could, from its own retention arithmetic: it
-/// enumerated the run directory TWICE and applied the SECOND enumeration's count to the
-/// FIRST enumeration's list. A run-dir appearing between them (a second fshw process, a
-/// concurrent workspace, a parallel suite finishing) pushed the skip count past the
-/// list's length, `List.skip` raised `ArgumentException`, and the tidy faulted the very
-/// run it was tidying up after. ONE enumeration; and the catch is widened to whatever
-/// else housekeeping might one day throw, because "must never fail the run" is a
-/// promise about ALL exceptions or it is not a promise.
+///   * best-effort throughout — tidying is housekeeping and must never fail the
+///     run that produced the evidence, so the catch is widened to ALL exceptions,
+///     and ONE enumeration of the run dirs is used (count and list are the same
+///     observation, so a run-dir appearing mid-sweep can't push `List.skip` past
+///     the list length).
 let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
     let root = reportsDir repoRoot
 

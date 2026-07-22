@@ -257,13 +257,12 @@ let internal mergeRecords
 /// `DefaultHistoryRetention`. Atomic via temp + rename so a daemon crash
 /// mid-write can't corrupt the on-disk file.
 ///
-/// AUTOMATION-98: call this ONCE PER RUN, with every project's records. It is a
-/// full `loadHistory` + full rewrite of the whole file, and it used to be invoked
-/// per test CONFIG from inside `executeTests` — 6 projects meant 6 sequential
-/// parse+rewrite cycles of a 5.5 MB file per run. Worse, those configs run under
-/// `Async.Parallel`, so the read-modify-write raced itself: two projects finishing
-/// together could each load the same `existing` and the second write would silently
-/// drop the first's records. One call, after the parallel section, fixes both.
+/// Call this ONCE PER RUN, with every project's records. It is a full `loadHistory`
+/// + full rewrite of the whole file, so calling it per test CONFIG would mean one
+/// parse+rewrite cycle per project; and since those configs run under
+/// `Async.Parallel`, a per-config read-modify-write would race itself (two projects
+/// finishing together each load the same `existing`, and the second write drops the
+/// first's records). One call, after the parallel section, avoids both.
 let internal appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
     let merged =
         loadHistory path

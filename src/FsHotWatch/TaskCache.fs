@@ -21,15 +21,13 @@ type CachedEvent =
     /// A command completed event captured for replay.
     | CachedCommandCompleted of FsHotWatch.Events.CommandCompletedResult
 
-/// The terminal outcome a cache entry may replay. Scope rule (AUTOMATION-186):
-/// a cache entry may only assert facts derivable from its key's scope.
+/// The terminal outcome a cache entry may replay. Scope rule: a cache entry may
+/// only assert facts derivable from its key's scope.
 ///
 /// Per-file entries (composite key `File = Some _`) are keyed on ONE file's
-/// content, so they cannot testify to a whole-session claim — yet plugins
-/// build their status summaries from whole-session state (analyzers'
-/// `DiagnosticsByFile`, lint's `WarningsByFile`). Storing that summary under a
-/// per-file key replayed "5 findings (cached)" over an empty ledger and a
-/// green verdict. The `CachedFile*` variants therefore carry NO summary — the
+/// content, so they cannot testify to a whole-session claim — yet plugins build
+/// their status summaries from whole-session state (analyzers' `DiagnosticsByFile`,
+/// lint's `WarningsByFile`). So the `CachedFile*` variants carry NO summary — the
 /// replay derives one from the live ledger — and no timestamp either: replay
 /// always re-stamps `now` (a cached instant from a prior session is equally
 /// unreplayable; see the timestamp-rewrite note in `tryReplayCache`).

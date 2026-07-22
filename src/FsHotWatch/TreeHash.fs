@@ -3,30 +3,25 @@
 /// A verdict is only ever a claim about a PARTICULAR tree. A file that says
 /// "green" and cannot say WHICH green will be read as the answer to whatever
 /// question the reader happens to be asking — a green from a different tree is
-/// still a green, and "absence of evidence rendered as evidence" is the bug this
-/// whole subsystem keeps re-learning. So the verdict carries the hash of the tree
-/// it verified, and the consumer's rule becomes total and safe by construction:
+/// still a green. So the verdict carries the hash of the tree it verified, and the
+/// consumer's rule becomes total and safe by construction:
 ///
 ///   read the verdict; if `treeHash ≠ hash(current tree)`, THE VERDICT DOES NOT
 ///   APPLY — never reuse it.
 ///
 /// Staleness stops being something a reader must notice and becomes something the
-/// data itself reports. (Identity derived from content, never asserted by a
-/// label — the same rule as the unreleased-package versioning of AUTOMATION-123.)
+/// data itself reports.
 ///
 /// WHAT IS HASHED — everything under the discovery roots (`src/`, `tests/`) that
 /// is not build output, tooling state, or excluded by config, PLUS `.fshw.json`
 /// itself. That means SOURCES **and CONTENT/FIXTURE FILES**, deliberately: a
-/// changed JSON fixture that MSBuild declines to re-copy (it deems the consuming
-/// project up-to-date) let a test suite run against the OLD fixture and pass —
-/// `5136 tests, 0 failed`, fake green, main red for hours (APPLIC-24). A fixture
-/// is an input to the verdict exactly as a source file is, so it is inside the
-/// hash exactly as a source file is.
+/// fixture is an input to the verdict exactly as a source file is (a changed
+/// fixture MSBuild declines to re-copy can otherwise let a suite run green against
+/// the OLD fixture), so it is inside the hash exactly as a source file is.
 ///
-/// The hash is over CONTENT, never mtimes. mtime is precisely what lied in
-/// APPLIC-24 (MSBuild's up-to-date check believed it), and a checkout, a `touch`
-/// or a filesystem with coarse timestamps all move it without changing what the
-/// compiler sees.
+/// The hash is over CONTENT, never mtimes: a checkout, a `touch`, or a filesystem
+/// with coarse timestamps all move the mtime without changing what the compiler
+/// sees, and MSBuild's up-to-date check trusts exactly that mtime.
 module FsHotWatch.TreeHash
 
 open System

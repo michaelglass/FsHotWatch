@@ -46,15 +46,14 @@ let empty: Queue = Set.empty
 /// The result of READING the sidecar — and the reason a failed read may not be
 /// spelled `empty`.
 ///
-/// AUTOMATION-150. `load` used to answer EVERY failure with `empty` (`with _ ->
-/// empty`). A corrupt, truncated or unreadable file therefore absorbed the entire
-/// outstanding test debt in silence, because the value it handed back was
-/// indistinguishable from the one a genuinely-clean queue hands back. "I could not
-/// read the ledger" collapsed into "nothing is owed" — UNDER-testing, the one
-/// direction this module's header forbids. The code did not obey its own contract.
+/// If `load` answered EVERY failure with `empty`, a corrupt, truncated or unreadable
+/// file would absorb the entire outstanding test debt in silence: the value it hands
+/// back would be indistinguishable from a genuinely-clean queue, collapsing "I could
+/// not read the ledger" into "nothing is owed" — UNDER-testing, the one direction this
+/// module's header forbids.
 ///
-/// So the two facts are now different VALUES, and the compiler makes every caller
-/// decide which one it is holding. (The same move as `ProcessOutput.DrainTimedOut`:
+/// So the two facts are different VALUES, and the compiler makes every caller decide
+/// which one it is holding. (The same move as `ProcessOutput.DrainTimedOut`:
 /// unrepresentable beats detected; detected beats silent.)
 ///
 /// Note what is deliberately NOT an `Unreadable`: a MISSING file. "The file does
@@ -110,9 +109,9 @@ let load (repoRoot: string) : LoadedQueue =
                     let entries = root.AsArray() |> List.ofSeq
 
                     // An entry we cannot read is a SYMBOL WE CANNOT NAME. Skipping it
-                    // (as the old `Seq.choose` did) drops outstanding debt on the floor
-                    // one element at a time — the same bug, retail instead of wholesale.
-                    // One bad entry makes the whole ledger unreadable.
+                    // would drop outstanding debt on the floor one element at a time —
+                    // the same bug, retail instead of wholesale. One bad entry makes
+                    // the whole ledger unreadable.
                     let readEntry (node: JsonNode) : Result<string, string> =
                         if isNull node then
                             Error "a `null` entry where a symbol name was expected"

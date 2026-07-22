@@ -20,8 +20,7 @@ type CoverageVerdict =
     /// project's tests this cycle, so an un-run source file reads `0.0%`
     /// indistinguishably from a genuine zero. We do NOT gate on a filtered
     /// run (raise-only); instead we surface a loud notice naming the count so
-    /// the shortfall is visible without a false red. Verdict-reliability
-    /// 2026-06-02 Issue B.
+    /// the shortfall is visible without a false red.
     | NotGatedFiltered of belowFloorCount: int
 
 [<NoComparison; NoEquality>]
@@ -30,9 +29,9 @@ type CoverageMsg =
     /// A `coverage-ratchet` IPC command asking the MAILBOX to rewrite the
     /// thresholds config. The rewrite runs under the SAME "coverage-check"
     /// exclusive slot as a check, because a check READS the config the ratchet
-    /// rewrites — running it on the IPC thread (as the command used to)
-    /// let the two race (AUTOMATION-99 review, finding 7). `reply` carries the
-    /// outcome back to the awaiting IPC command; every path must resolve it.
+    /// rewrites, so running the two concurrently would let them race. `reply`
+    /// carries the outcome back to the awaiting IPC command; every path must
+    /// resolve it.
     | RatchetRequested of cfgPath: string * reply: System.Threading.Tasks.TaskCompletionSource<string>
     /// Completion of a `RatchetRequested` run — reports the terminal status
     /// (the framework reported Running at the claim).
@@ -103,8 +102,8 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
 
                   ctx.Post(RatchetRequested(cfgPath, reply))
 
-                  // Bounded await (AUTOMATION-98): the ratchet itself is quick,
-                  // but the slot may be held by a full coverage check.
+                  // Bounded await: the ratchet itself is quick, but the slot may
+                  // be held by a full coverage check.
                   let! winner =
                       System.Threading.Tasks.Task.WhenAny(
                           reply.Task,
@@ -274,11 +273,8 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                         ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
 
                     let summary = $"%d{results.Length} file(s) below threshold"
-                    // UtcNow, like every other timestamp in the daemon — this site
-                    // shipped `DateTime.Now` while its own CHANGELOG claimed UTC,
-                    // skewing the one elapsed a human reads when coverage gates
-                    // them (AUTOMATION-99 review, finding 4). The FSHW-CLOCK-001
-                    // analyzer now bans local clocks repo-wide.
+                    // UtcNow, like every other timestamp in the daemon; the
+                    // FSHW-CLOCK-001 analyzer bans local clocks repo-wide.
                     ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
                     return Some false
                 }

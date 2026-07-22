@@ -65,10 +65,10 @@ let private isTimedOut (parsed: ParsedPluginStatus) : bool =
     | Some { Outcome = TimedOut _ } -> true
     | _ -> false
 
-/// Wedge classification for a Running plugin (AUTOMATION-147) — the SAME
-/// ambient bound and the SAME words as the daemon-side monitor, so `fshw
-/// status` and the daemon log can never disagree about a wedge. Past the
-/// bound a plugin is never rendered as merely "running": the fault is named.
+/// Wedge classification for a Running plugin — the SAME ambient bound and the
+/// SAME words as the daemon-side monitor, so `fshw status` and the daemon log can
+/// never disagree about a wedge. Past the bound a plugin is never rendered as
+/// merely "running": the fault is named.
 let private runningWedge (now: DateTime) (since: DateTime) : FsHotWatch.PluginWedge.RunningHealth =
     FsHotWatch.PluginWedge.classifyRunning (FsHotWatch.PluginWedge.ambientBound ()) now since
 
@@ -78,9 +78,8 @@ let private wedgedBody (since: DateTime) (elapsed: TimeSpan) : string =
     FsHotWatch.PluginWedge.wedgedText (since.ToLocalTime()) elapsed
 
 /// The words shown for a Completed status that carries NO run record. A
-/// content-free ✓ is exactly the AUTOMATION-99/147 trap (the operator had to
-/// diagnose a wedge from a MISSING `elapsed:` field), so the renderer fails
-/// closed: no record ⇒ no ✓, and the absence is stated in words.
+/// content-free ✓ is not evidence — there is no `elapsed:` to prove what ran — so
+/// the renderer fails closed: no record ⇒ no ✓, and the absence is stated in words.
 [<Literal>]
 let CompletedNoRecordText =
     "completed, but no run record was posted — cannot verify what ran"
@@ -164,7 +163,7 @@ let private renderCompact
             match runningWedge now since with
             | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
                 // Past the bound a plugin is BY DEFINITION wedged — say so,
-                // never render it as merely running (AUTOMATION-147).
+                // never render it as merely running.
                 $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
             | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
                 let timingStr = UI.timing elapsed
@@ -238,7 +237,7 @@ let private verboseHeader
         match runningWedge now since with
         | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
             // Past the bound: named as wedged, never rendered as merely
-            // running (AUTOMATION-147).
+            // running.
             $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
         | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
             let n = List.length parsed.Subtasks
@@ -344,12 +343,10 @@ let private renderVerbose
                     let startedLine =
                         $"      %s{Color.dim}started: %s{clock (r.StartedAt.ToLocalTime())}%s{Color.reset}"
 
-                    // The `elapsed:` line is ALWAYS present. A `started:` with
-                    // no `elapsed:` was the home-made wedge detector the
-                    // 2026-07-14 operator had to invent — a tool must never
-                    // require its user to detect a fault by noticing what
-                    // ISN'T printed (AUTOMATION-147). Zero elapsed is stated
-                    // as what it is (a replayed/synthetic record), not omitted.
+                    // The `elapsed:` line is ALWAYS present: a tool must never
+                    // require its user to detect a fault by noticing what ISN'T
+                    // printed. Zero elapsed is stated as what it is (a
+                    // replayed/synthetic record), not omitted.
                     if r.Elapsed > TimeSpan.Zero then
                         [ startedLine
                           $"      %s{Color.dim}elapsed: %s{UI.timing r.Elapsed}%s{Color.reset}" ]
@@ -385,7 +382,7 @@ module private Agent =
     /// This IS `Verdict.PluginOutcome` — not a parallel copy of it. The status line an
     /// agent reads and the `plugins[]` array in `.fshw/verdict.json` are two renderings
     /// of ONE value, so they cannot drift into disagreeing about whether a plugin
-    /// passed — or, since AUTOMATION-147, about whether it is WEDGED.
+    /// passed — or about whether it is WEDGED.
     type State = Verdict.PluginOutcome
 
     let private tokenOf = Verdict.PluginOutcome.token
@@ -401,8 +398,8 @@ module private Agent =
 
     /// Determine the state for a plugin. Returns None when the plugin
     /// should be omitted (Idle with no lastRun). ONE implementation, shared with the
-    /// verdict file — see `State`. It carries AUTOMATION-147's wedge detection and its
-    /// fail-closed "Completed with no run record is never ok" rule, so `.fshw/verdict.json`
+    /// verdict file — see `State`. It carries the wedge detection and the fail-closed
+    /// "Completed with no run record is never ok" rule, so `.fshw/verdict.json`
     /// inherits both: a wedge can never be laundered into "running" on either surface.
     let stateToken (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : State option =
         Verdict.pluginOutcomeOf warningsAreFailures now parsed
@@ -544,7 +541,7 @@ let renderPlugin
         | Some line -> [ line ]
         | None -> []
 
-// ----- Steering hints (AUTOMATION-129) -----
+// ----- Steering hints -----
 
 /// Point the reader at the MACHINE-READABLE results, in the output they are
 /// already reading.

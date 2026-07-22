@@ -290,9 +290,9 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         CachedCommandCompleted { Name = name; Outcome = outcome }
     | t -> failwith $"Unknown cached event type: %s{t}"
 
-/// On-disk entry format version. Bumped to 2 by AUTOMATION-186: per-file
-/// entries no longer store a status summary or timestamp (`CachedStatus`
-/// replaced the cached `PluginStatus`). The version is REQUIRED on read —
+/// On-disk entry format version (currently 2): per-file entries store no status
+/// summary or timestamp (`CachedStatus` replaced the cached `PluginStatus`). The
+/// version is REQUIRED on read —
 /// entries written by any other format (including pre-versioned ones, where
 /// the field is absent) deterministically read as a cache MISS (the throw is
 /// caught by `tryGet` and counted as a parse failure), never as a half-parsed
@@ -390,13 +390,11 @@ let private entryKeyOfFileName (fileName: string) =
 /// Delete `superseded` — the entry paths this key was known at before the write
 /// that just landed.
 ///
-/// AUTOMATION-98: entries are named `{plugin--file}@{contentHash}.json` so that
-/// "multiple versions coexist" — but nothing ever removed the predecessors, and only
-/// the entry whose hash matches the CURRENT content can ever be READ (`tryGet`
-/// reconstructs the exact path from the key). So every edit to a file permanently
-/// added a dead, unreachable sibling: 3,126 files / 13 MB measured in a ~1.5-day-old
-/// workspace, across ~6 live workspaces — while `Stats`/`clearFile`/`clearPlugin`
-/// each full-scan the directory and degrade right along with it.
+/// Entries are named `{plugin--file}@{contentHash}.json` so that multiple versions
+/// coexist — but only the entry whose hash matches the CURRENT content can ever be
+/// READ (`tryGet` reconstructs the exact path from the key). Without this cleanup,
+/// every edit to a file permanently adds a dead, unreachable sibling, and that bloat
+/// degrades `Stats`/`clearFile`/`clearPlugin`, which each full-scan the directory.
 ///
 /// No LRU is needed, and an LRU would be the wrong tool: it would retain entries
 /// that are not merely cold but UNREACHABLE. Only the newest content-hash entry for

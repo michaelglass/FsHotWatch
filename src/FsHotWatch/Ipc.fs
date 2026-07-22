@@ -44,9 +44,8 @@ let isUnknownCommandReply (reply: string) : bool =
 /// Default hard bound on a `WaitForComplete` verdict wait when the client
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
 /// full-suite check (build + every test project) finishes well inside an hour,
-/// so this only ever trips on a genuinely-wedged plugin. The alternative was
-/// what the 2026-07-13 test-prune wedge actually did: heartbeat forever, 8h36m
-/// of silent nothing. Bounded-and-legible beats unbounded-and-silent.
+/// so this only ever trips on a genuinely-wedged plugin. Bounded-and-legible beats
+/// unbounded-and-silent.
 let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
 
 /// Resolve the verdict-wait deadline from an optional override string (the
@@ -208,14 +207,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// Bracket a unit of RPC work: the watchdog tracks it, AND it is bounded.
     ///
     /// The bound lives HERE — at the seam every real RPC already passes through —
-    /// rather than being retrofitted method by method. That is the whole point.
-    /// `WaitForComplete` had been given a deadline; `WaitForScan` had not, and was
-    /// therefore able to reproduce the 8h36m wedge exactly (it is `check`'s FIRST
-    /// step, the client passes `-1L` on every convergence re-scan, and any hang
-    /// inside `performScan` — a Fantomas preprocessor, an Ionide design-time
-    /// evaluation, an FCS check — meant "Scanning…" forever, with no timeout, no
-    /// error, and no verdict). Bounding one method at a time is how you get the
-    /// second `WaitForScan`. Bounding the bracket means an unbounded RPC cannot be
+    /// rather than being retrofitted method by method. A per-method bound leaves
+    /// gaps: one method gets a deadline, the next does not and can hang forever (a
+    /// `performScan` stuck in a Fantomas preprocessor, an Ionide design-time
+    /// evaluation, or an FCS check means "Scanning…" forever, with no timeout, no
+    /// error, and no verdict). Bounding the BRACKET means an unbounded RPC cannot be
     /// WRITTEN without deliberately stepping outside it.
     ///
     /// A timed-out RPC faults with `TimeoutException`, which StreamJsonRpc carries
@@ -397,10 +393,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
     /// timeoutMs <= 0 means no CLIENT-imposed timeout — the daemon then applies
     /// its own hard bound (`resolveVerdictDeadline`), so the wait is NEVER
-    /// unbounded. A wedged plugin previously heartbeat-looped here forever (the
-    /// 2026-07-13 test-prune symlink-cycle wedge burned 8h36m, fully silent);
-    /// now it surfaces as a TimeoutException naming the still-running plugin,
-    /// which the CLI renders as a diagnostic non-green exit.
+    /// unbounded: a wedged plugin surfaces as a TimeoutException naming the
+    /// still-running plugin, which the CLI renders as a diagnostic non-green exit.
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
         trackedTask "WaitForComplete" (fun () ->
             task {

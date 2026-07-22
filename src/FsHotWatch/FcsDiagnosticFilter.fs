@@ -2,10 +2,9 @@
 /// error-reporting path (`FsHotWatch.Daemon.reportFcsDiagnostics`) and the
 /// TestPrune cache-poisoning gate (`FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors`).
 ///
-/// Keeping these in one module guarantees the two paths agree on which codes
-/// are considered "noise" — the asymmetry was the root cause of the F38 gate
-/// tripping on phantom errors in projects that rely on `<TreatWarningsAsErrors>`
-/// + `#nowarn` directives (see Phase B cache-miss diagnosis 2026-05-02).
+/// Keeping these in one module guarantees the two paths agree on which codes are
+/// considered "noise": an asymmetry between them trips the gate on phantom errors in
+/// projects that rely on `<TreatWarningsAsErrors>` + `#nowarn` directives.
 module FsHotWatch.FcsDiagnosticFilter
 
 /// Parse `#nowarn` directives from F# source text, returning the set of suppressed

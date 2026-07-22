@@ -41,13 +41,12 @@ type DiagnosticsResponse =
       Statuses: Map<string, ParsedPluginStatus>
       Coverage: Coverage }
 
-/// What the last completed test run actually COVERED (AUTOMATION-112).
+/// What the last completed test run actually COVERED.
 ///
 /// Impact filtering is a latency optimization for the inner dev loop. A merge decision is
 /// a correctness claim. An impact-filtered green means "your change didn't break
-/// anything I chose to look at" — NOT "the suite is green". Those are different claims
-/// and reading one as the other is how 35 tests sat red on `main` for an unknown period
-/// while every run stayed green: they were never selected, so nothing ever ran them.
+/// anything I chose to look at" — NOT "the suite is green". Reading one as the other lets
+/// tests sit red on `main` while every run stays green, because they were never selected.
 ///
 /// So the scope is a VALUE the verdict is a total function over, not an assumption a
 /// caller is trusted to make. `ScopeUnknown` is the cross-version / parse-gap backstop
@@ -80,9 +79,9 @@ module TestScope =
     /// far worse, accept evidence it never demanded). Every non-`FullSuite` case is
     /// listed, so a new scope defaults to "not evidence" only by an explicit edit here.
     ///
-    /// NOTE ON WHAT "FULL" MEANS. `FullSuite n` says every test project THE CONFIG
-    /// KNOWS ABOUT ran unfiltered — it is not a claim about every test in the repo. A
-    /// suite missing from `.fshw.json` is missing from this number too (AUTOMATION-158).
+    /// What "full" means: `FullSuite n` says every test project THE CONFIG KNOWS
+    /// ABOUT ran unfiltered — it is not a claim about every test in the repo. A
+    /// suite missing from `.fshw.json` is missing from this number too.
     let isFullSuite (scope: TestScope) : bool =
         match scope with
         | FullSuite _ -> true
@@ -93,11 +92,10 @@ module TestScope =
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
-/// and resolves to nothing. Passing `"test-prune"` here is precisely the bug
-/// AUTOMATION-129 fixed: the host found no such command, returned the unknown-command
-/// sentinel, and `confirm` read it as `ScopeUnknown` → exit 3 on every repo, forever.
+/// and resolves to nothing, so passing `"test-prune"` here would return the
+/// unknown-command sentinel and `confirm` would read it as `ScopeUnknown` → exit 3.
 ///
-/// They live HERE, next to the parser of their replies, because there are now FOUR
+/// They live HERE, next to the parser of their replies, because there are FOUR
 /// callers — `confirm` and `confirm --run-once`, over two different transports — and a
 /// literal that four call sites can spell independently is a literal three of them can
 /// spell wrong.
@@ -141,10 +139,10 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
 /// see). The verdict isn't carried here at all; it travels in `lastRun`, the one channel.
 ///
 /// The `running`/`since` arm is the one that bites hardest. `since` is the ONLY input to
-/// AUTOMATION-147's wedge classifier — `pluginOutcomeOf` fires it on `StatusView.Running
-/// since` and nowhere else — so a `since` that would not parse used to turn a WEDGED
-/// plugin into an idle one, and 147's entire detection was defeated silently, from a
-/// timestamp. An unparseable `since` is now unreadable, not idle.
+/// the wedge classifier (`pluginOutcomeOf` fires it on `StatusView.Running since` and
+/// nowhere else), so an unparseable `since` must read as unreadable, not idle —
+/// otherwise a WEDGED plugin would silently become an idle one and wedge detection would
+/// be defeated from a timestamp.
 let parseTaggedStatus (el: JsonElement) : StatusView =
     let unreadable (why: string) =
         StatusView.Unreadable $"unreadable plugin status: %s{why}"
@@ -192,10 +190,10 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
 
 /// Parse a lastRun.outcome field (tagged-object shape).
 ///
-/// An outcome tag this build does not recognize becomes `FailedRun`, NOT `CompletedRun`.
-/// It defaulted to `CompletedRun` — a PASS — which is the same fail-open `Verdict.read`
-/// forbids one file away, in words: "an unknown state is not a passing state". A daemon
-/// reporting a run outcome we have no name for has not told us the run succeeded.
+/// An outcome tag this build does not recognize becomes `FailedRun`, NOT `CompletedRun`:
+/// an unknown state is not a passing state, the same fail-closed rule as `Verdict.read`.
+/// A daemon reporting a run outcome we have no name for has not told us the run
+/// succeeded.
 let parseOutcomeField (outcomeEl: JsonElement) : RunOutcome =
     match parseTaggedOutcome outcomeEl with
     | Some outcome -> outcome
@@ -270,12 +268,12 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 /// Parse the top-level JSON object returned by GetStatus into structured per-plugin
 /// status — or say, in a NAMED case, that it could not be read.
 ///
-/// AN UNREADABLE MAP IS NOT AN EMPTY ONE. This used to swallow a `JsonException` and
-/// return `Map.empty`, at which point every plugin vanished: nothing Failed, nothing
-/// Running, nothing to report — and any verdict computed over a clean ledger stayed
-/// green. `Map.empty` is a CLAIM ("no plugin has anything to say"); a parse failure is
-/// the absence of one, and the two must not be spelled the same way. Same shape as
-/// `Verdict.read`, which already refuses to round an unreadable file to a verdict.
+/// AN UNREADABLE MAP IS NOT AN EMPTY ONE. Swallowing a `JsonException` and returning
+/// `Map.empty` would make every plugin vanish — nothing Failed, nothing Running — and
+/// any verdict computed over a clean ledger would stay green. `Map.empty` is a CLAIM
+/// ("no plugin has anything to say"); a parse failure is the absence of one, and the
+/// two must not be spelled the same way. Same shape as `Verdict.read`, which already
+/// refuses to round an unreadable file to a verdict.
 ///
 /// Only `JsonException` is caught. A real programming bug (null, ArgumentException)
 /// still propagates — a fail-closed reader is not a bug-swallowing one.
@@ -335,10 +333,10 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
             |> Map.ofList
         | false, _ -> Map.empty
 
-    // Coverage backstop (requirement #2): a present, numeric `unchecked` field
-    // maps to Complete (0) or Incomplete n (>0); a MISSING or non-numeric field
-    // maps to Unknown — never Complete. So an old daemon that doesn't send the
-    // field, or a schema/parse gap, can never read as green.
+    // Coverage backstop: a present, numeric `unchecked` field maps to Complete (0)
+    // or Incomplete n (>0); a MISSING or non-numeric field maps to Unknown — never
+    // Complete. So an old daemon that doesn't send the field, or a schema/parse gap,
+    // can never read as green.
     let coverage =
         match root.TryGetProperty("unchecked") with
         | true, v when v.ValueKind = JsonValueKind.Number ->
@@ -357,9 +355,7 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
 ///
 /// The run id is what lets the verdict DECLARE which CTRF reports are this run's
 /// (they are the files in `.fshw/test-runs/<runId>/`) instead of inferring
-/// membership from mtimes. Membership by inference is how a directory listing
-/// becomes a forensics exercise — and how two readers, an hour apart, each
-/// mistook another run's artifacts (or an absence) for an answer.
+/// membership from mtimes, which turns a directory listing into a forensics exercise.
 type TestRunReport =
     {
         Scope: TestScope

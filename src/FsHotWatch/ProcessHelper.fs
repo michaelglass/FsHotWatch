@@ -7,18 +7,15 @@ open System.Threading
 open System.Threading.Tasks
 
 /// What a spawned child ACTUALLY said — tagged with whether we managed to hear all
-/// of it (AUTOMATION-126).
+/// of it.
 ///
 /// A child's output is read by stream pumps that end at EOF. When the drain window
 /// closes with a pump still open, whatever we captured is NOT a measurement of the
 /// child's output: an empty capture then means "we read nothing", which is a
-/// different fact from "the child printed nothing" — and the two used to be the
-/// same `string`. A test asserting `Assert.Equal("hi", out)` against a starved
-/// drain saw `""` and reported an empty output as if it had observed one; that is
-/// the same disease as a `top` that cannot sample reporting a healthy box.
+/// different fact from "the child printed nothing".
 ///
-/// So the two facts are now different VALUES. A caller that only renders text says
-/// so (`ProcessOutput.text`); a caller that decides anything must match and handle
+/// So the two facts are different VALUES. A caller that only renders text says so
+/// (`ProcessOutput.text`); a caller that decides anything must match and handle
 /// `DrainTimedOut` explicitly. Unrepresentable beats detected; detected beats silent.
 [<RequireQualifiedAccess>]
 type ProcessOutput =
@@ -26,8 +23,8 @@ type ProcessOutput =
     /// COMPLETE stdout+stderr (trimmed). The only capture you may assert against.
     | Drained of text: string
     /// We never saw EOF on both streams — either the drain window elapsed with a
-    /// pump still blocked on a pipe a GRANDCHILD holds open (the 16 h-wedge shape,
-    /// see `PostExitDrainWindow`), or a pump's read DIED on a pipe torn down by the
+    /// pump still blocked on a pipe a GRANDCHILD holds open (see
+    /// `PostExitDrainWindow`), or a pump's read DIED on a pipe torn down by the
     /// timeout-kill. `captured` is whatever bytes had arrived by then. It is not a
     /// measurement: `""` here means "we read nothing", NEVER "the child printed
     /// nothing".
@@ -48,17 +45,12 @@ module ProcessOutput =
         | ProcessOutput.Drained text -> text
         | ProcessOutput.DrainTimedOut(captured, _) -> captured
 
-/// What happened when we tried to tear down a timed-out child's process tree
-/// (AUTOMATION-149).
+/// What happened when we tried to tear down a timed-out child's process tree.
 ///
 /// "I could not kill it" must never be spelled the same way as "I killed it". A
 /// `TimedOut` PROMISES the tree is dead; a caller — or an operator reading a log —
 /// who believes that promise walks away from a runaway tree that is still holding a
-/// lock, a port, a pipe, or a core. `killTree` used to swallow EVERY exception
-/// (`with _ -> ()`), so a Win32 permission failure and a clean kill left exactly the
-/// same trace: none. That is the same disease as a drain that could not measure
-/// returning `""` (AUTOMATION-126) — a failure to DO the work, rendered
-/// indistinguishable from the work succeeding.
+/// lock, a port, a pipe, or a core.
 /// `NoComparison`: this carries the failing `exn` — the real one, not a lossy
 /// rendering of it — and exceptions do not order. Equality still holds, which is all
 /// any call site (or test) asks of it.
@@ -67,8 +59,8 @@ type KillOutcome =
     /// `Kill(entireProcessTree = true)` returned: the tree is dead.
     | Killed
     /// The child had ALREADY exited when the kill landed — the documented race
-    /// between the timeout firing and the child's natural exit (F17,
-    /// `isExpectedKillException`). Nobody had to kill it and the tree is dead
+    /// between the timeout firing and the child's natural exit
+    /// (`isExpectedKillException`). Nobody had to kill it and the tree is dead
     /// either way, so this is benign: a kill we did not need, NOT a kill we failed.
     | AlreadyExited
     /// The kill FAILED, for a reason that is not the already-exited race. As far as
@@ -100,8 +92,7 @@ type ProcessOutcome =
     ///
     /// `kill` is whether the teardown ACTUALLY happened. It rides on the value
     /// rather than in a log line nobody reads, because "timed out, tree killed" and
-    /// "timed out, tree still running" are different facts about the world and this
-    /// case used to spell them identically.
+    /// "timed out, tree still running" are different facts about the world.
     | TimedOut of after: TimeSpan * tail: ProcessOutput * kill: KillOutcome
 
 /// Outcome of an in-process unit of work bounded by a wall-clock timeout.
@@ -160,10 +151,9 @@ let renderKillBrief (kill: KillOutcome) : string =
     | KillOutcome.KillFailed _ -> " (KILL FAILED — process tree STILL RUNNING)"
 
 /// Combined output regardless of outcome — for callers that just want the text
-/// to render in a status line. Preserves the historical message format, except that
-/// a kill we FAILED to perform is named where the human will see it: every plugin
-/// surfaces its diagnostic through this function, so this is the one place that
-/// reaches an operator no matter which spawn leaked the tree.
+/// to render in a status line. A kill we FAILED to perform is named where the human
+/// will see it: every plugin surfaces its diagnostic through this function, so this
+/// is the one place that reaches an operator no matter which spawn leaked the tree.
 let outputOf (outcome: ProcessOutcome) : string =
     match outcome with
     | Succeeded out -> renderOutput out
@@ -171,22 +161,20 @@ let outputOf (outcome: ProcessOutcome) : string =
     | TimedOut(after, tail, kill) ->
         $"timed out after %d{int after.TotalSeconds}s%s{renderKill kill}\n%s{renderOutput tail}"
 
-/// F17 (audit 2026-05-02): exception classes we treat as benign on the
-/// timeout-kill path. `Process.Kill` raises InvalidOperationException only
-/// when the process has already exited (a race between WaitForExit's
-/// timeout and the child's natural exit). Anything else (Win32Exception
-/// permission failure, NullReferenceException, etc.) is a real problem
-/// and propagates.
+/// Exception classes we treat as benign on the timeout-kill path. `Process.Kill`
+/// raises InvalidOperationException only when the process has already exited (a
+/// race between WaitForExit's timeout and the child's natural exit). Anything else
+/// (Win32Exception permission failure, NullReferenceException, etc.) is a real
+/// problem and propagates.
 let isExpectedKillException (ex: exn) : bool =
     match ex with
     | :? InvalidOperationException -> true
     | _ -> false
 
-/// F18 (audit 2026-05-02): exception classes we treat as benign on the
-/// post-kill drain path. Task.WaitAll bundles task failures as
-/// AggregateException; the underlying stream reads can raise IOException
-/// (pipe broken after kill) or ObjectDisposedException (stream closed by
-/// the kill). All are expected. Anything else propagates.
+/// Exception classes we treat as benign on the post-kill drain path. Task.WaitAll
+/// bundles task failures as AggregateException; the underlying stream reads can
+/// raise IOException (pipe broken after kill) or ObjectDisposedException (stream
+/// closed by the kill). All are expected. Anything else propagates.
 let isExpectedDrainException (ex: exn) : bool =
     match ex with
     | :? AggregateException -> true
@@ -199,7 +187,7 @@ let isExpectedDrainException (ex: exn) : bool =
 /// `None` — the read loop ran to EOF: the stream is exhausted, nothing more will
 /// ever arrive from it, and what we captured from it is complete.
 ///
-/// `Some ex` — the read DIED. On the timeout-kill path that is expected (F18: the
+/// `Some ex` — the read DIED. On the timeout-kill path that is expected (the
 /// kill tears the pipe down under the pump), and it means the capture is NOT
 /// provably complete, so the pump reports `false` and the drain is classified as
 /// timed-out rather than drained. Anything OUTSIDE the expected classes is a real
@@ -216,15 +204,9 @@ let internal pumpReachedEof (failure: exn option) : bool =
     | Some ex -> raise ex
 
 /// Classify the result of `Process.Kill(entireProcessTree = true)` — `None` for a
-/// kill that returned, `Some ex` for one that threw (AUTOMATION-149).
-///
-/// This is where `isExpectedKillException` (F17) finally gets USED. It has been in
-/// this file, documented and unit-tested, since the 2026-05-02 audit — stating that
-/// an `InvalidOperationException` is the benign already-exited race and that
-/// "anything else is a real problem" — while the one call site that was supposed to
-/// consult it swallowed every exception with `with _ -> ()`. The policy was written
-/// down, tested, and never wired up; a permission failure to kill a runaway tree was
-/// spelled exactly like a successful kill.
+/// kill that returned, `Some ex` for one that threw. `isExpectedKillException`
+/// decides which throw is the benign already-exited race and which is a real
+/// failure.
 ///
 /// Pure, so all three arms — including the failure arm, which live-fire would need a
 /// process we are genuinely forbidden to kill — are covered deterministically.
@@ -235,14 +217,13 @@ let internal classifyKill (failure: exn option) : KillOutcome =
     | Some ex -> KillOutcome.KillFailed ex
 
 /// Tear down a child's process tree and SAY what happened — the whole of the kill
-/// policy, with the actual `Process.Kill` injected (AUTOMATION-149).
+/// policy, with the actual `Process.Kill` injected.
 ///
 /// `kill` is a parameter for exactly the reason `classifyDrain`'s EOF flags are: the
 /// arm that matters is the one where the OS REFUSES us, and no test can conjure an
 /// unkillable process reliably on every platform. Injecting the kill lets the unit
 /// suite drive all three outcomes — including the loud-log path — instead of leaving
-/// the failure arm uncovered and calling that "tested". A failure arm nobody has ever
-/// executed is precisely how `with _ -> ()` survived here for as long as it did.
+/// the failure arm uncovered.
 ///
 /// `describe` is a thunk so the (formatting) cost is paid only when we have bad news.
 let internal killTreeWith (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
@@ -394,27 +375,20 @@ let private makeChildProcessStartInfo
     psi
 
 // ---------------------------------------------------------------------------
-// ONE spawn primitive (AUTOMATION-98).
+// ONE spawn primitive.
 //
-// There used to be TWO: `runProcessWithTimeout` (a single blocking
-// `WaitForExit(timeoutMs)` + an UNBOUNDED `Task.WaitAll` drain on the success
-// path) and `runProcessWithLaunchWatchdog` (polled liveness + a bounded
-// post-exit drain). Every caller except TestPrune used the unsafe one, so the
-// two wedges the watchdog was built to close were still wide open everywhere
-// else:
+// `runProcess` is the ONLY spawn: it always polls `HasExited` and always bounds
+// the post-exit drain, closing two wedges that an unbounded wait leaves open:
 //
 //   * `WaitForExit(-1)` never returns if a machine sleep kills the child
 //     mid-launch — nothing raises, the plugin stays `Running` forever.
 //   * `Task.WaitAll(stdout, stderr)` on the SUCCESS path never returns if the
 //     child exited but a GRANDCHILD (an MSBuild node, a Playwright driver)
-//     inherited the stdout pipe and outlives it — EOF never comes. That is the
-//     16 h wedge, and it is reachable from any hook / build / fileCommand.
+//     inherited the stdout pipe and outlives it — EOF never comes. Reachable from
+//     any hook / build / fileCommand.
 //
-// Adding a safe sibling did not work (callers kept reaching for the footgun),
-// so the two are COLLAPSED: `runProcess` is the only spawn, and it always
-// polls `HasExited` and always bounds the post-exit drain. What varies per call
-// site is `ProcessBounds` — and there is no way to construct bounds that mean
-// "wait forever with no escape".
+// What varies per call site is `ProcessBounds` — and there is no way to construct
+// bounds that mean "wait forever with no escape".
 // ---------------------------------------------------------------------------
 
 /// Raised when a launched child never becomes a live, progressing process: it
@@ -487,7 +461,7 @@ let decideLaunchStep
 ///    overall timeout can end the wait. `ProcessBounds.silent` is the only way to
 ///    ask for this, and it demands a finite total timeout in exchange.
 ///
-/// NOTE the `Infinite` handling must be explicit: `InfiniteTimeSpan` is -1 ms, so
+/// The `Infinite` handling must be explicit: `InfiniteTimeSpan` is -1 ms, so
 /// `start.Add launchDeadline` would land in the PAST and stall every spawn on its
 /// first poll.
 let launchWatchdogLoopWith
@@ -553,27 +527,23 @@ let resolveLaunchDeadline (overrideSec: string option) : TimeSpan =
 /// available immediately, but the redirected streams may not have reached EOF —
 /// and if the child spawned a grandchild (an MSBuild/vstest node) that inherited
 /// the stdout pipe and outlives it, EOF NEVER comes. An unbounded `WaitForExit()`
-/// blocks forever on that pipe even though the process itself is gone — the exact
-/// 16 h machine-sleep wedge. So we drain only for a bounded window, then proceed
-/// with whatever output was captured; the verdict rides on the exit code, not on
-/// stream EOF.
+/// blocks forever on that pipe even though the process itself is gone. So we drain
+/// only for a bounded window, then proceed with whatever output was captured; the
+/// verdict rides on the exit code, not on stream EOF.
 ///
-/// AUTOMATION-126: a wall clock is the RIGHT bound here and the only sound one —
-/// a pipe a grandchild holds open has no "work" left to wait for, so no
-/// work-completion signal can ever arrive and only a clock can end the wait. What
-/// was wrong was not the clock but what it was measuring: the pumps used to be
-/// `task {}` continuations on the THREAD POOL, so on a saturated box the reader
-/// was never scheduled and the window expired having read nothing — the clock was
-/// measuring the pool, not the pipe. The pumps now own dedicated threads (below),
-/// so this window once again measures the thing it names; and when it does expire,
-/// it says so (`ProcessOutput.DrainTimedOut`) instead of handing back `""`.
+/// A wall clock is the RIGHT bound and the only sound one — a pipe a grandchild
+/// holds open has no "work" left to wait for, so no work-completion signal can ever
+/// arrive and only a clock can end the wait. The clock measures the PIPE, not the
+/// thread pool, only because the pumps own dedicated threads (below); a saturated
+/// pool would otherwise starve the reader and expire the window having read nothing.
+/// When the window does expire, it says so (`ProcessOutput.DrainTimedOut`) instead
+/// of handing back `""`.
 let internal PostExitDrainWindow = TimeSpan.FromSeconds 2.0
 
 /// The bounds ONE spawned child runs under. Construct only via
 /// `ProcessBounds.streaming` / `ProcessBounds.silent` — the fields are private
 /// precisely so a call site cannot assemble "no bound at all" out of two
-/// `InfiniteTimeSpan`s, which is what `runProcess command args dir env
-/// Timeout.InfiniteTimeSpan` used to mean and what wedged the daemon for 8h36m.
+/// `InfiniteTimeSpan`s.
 ///
 /// The two constructors encode a real property of the CHILD (does its output
 /// prove it is alive?), not two safety levels — every spawn, either way, polls
@@ -673,15 +643,13 @@ let runProcess
 
     // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
     //
-    // AUTOMATION-126: it used to be a `task {}` over `ReadAsync`, whose every
-    // continuation is scheduled on the thread pool. Under a saturated pool — a
-    // `check` running the full suite in parallel, exactly when a spawn's output
-    // matters most — the reader simply never ran, the 2 s drain window expired
-    // having read zero bytes, and the child's output came back as `""`. The clock
-    // was measuring the POOL, not the process. `runWithCancellableTimeout` below
-    // already learned this lesson (its work runs `LongRunning` for the same
-    // reason); the pumps had not. A reader that cannot be scheduled cannot read,
-    // and a read that cannot happen must not be reported as a read of nothing.
+    // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
+    // and under a saturated pool — a `check` running the full suite in parallel,
+    // exactly when a spawn's output matters most — the reader may never run, the 2 s
+    // drain window expire having read zero bytes, and the child's output come back
+    // as `""`: the clock measuring the POOL, not the process. A reader that cannot be
+    // scheduled cannot read, and a read that cannot happen must not be reported as a
+    // read of nothing.
     //
     // Returns TRUE iff the loop ended at EOF — i.e. the stream is exhausted and
     // what we captured from it is all there ever was. See `pumpReachedEof`.
@@ -753,9 +721,8 @@ let runProcess
         // A killed tree still needs draining so partial output is reported.
         //
         // The kill's OUTCOME is returned, never discarded: a tree we could not tear
-        // down is still running, and the caller must not be told otherwise
-        // (AUTOMATION-149). The policy itself lives in `killTreeWith`, where every arm
-        // of it is unit-driven.
+        // down is still running, and the caller must not be told otherwise. The
+        // policy itself lives in `killTreeWith`, where every arm of it is unit-driven.
         let killTree () : KillOutcome =
             killTreeWith (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
                 proc.Kill(entireProcessTree = true))
@@ -799,7 +766,7 @@ let runProcess
 /// `ct.ThrowIfCancellationRequested()`, or an `Async` driven under the token)
 /// then unwinds and releases whatever lock it held — closing the "stuck unit
 /// times out the WAIT but the runaway thread keeps holding a lock → daemon
-/// stays wedged" hole the audit flagged.
+/// stays wedged" hole.
 ///
 /// Work that ignores the token (a tight non-cooperative CPU loop, a P/Invoke
 /// that can't observe cancellation) still cannot be force-killed in-process —

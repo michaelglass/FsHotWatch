@@ -2,13 +2,10 @@
 ///
 /// An agent should learn the verdict by READING STATE, not by spawning a
 /// CLI, not by grepping a progress display written for a human, and above all not
-/// by an act of measurement that can corrupt the thing being measured. That last
-/// one is the decisive argument and it is not hypothetical: the `fshw test-rerun`
-/// calls an orchestrator made *because the verdict looked untrustworthy* were
-/// themselves what corrupted the daemon's busy accounting, which is what made the
-/// next `check` stamp a content-free green (AUTOMATION-99). The act of measuring
-/// created the defect being measured. A file read cannot do that. It also costs
-/// nothing — no ~1-3s dotnet spawn per poll.
+/// by an act of measurement that can corrupt the thing being measured — an extra
+/// `check`/`test-rerun` spawned to double-check a verdict can itself perturb the
+/// daemon's busy accounting and produce the next content-free green. A file read
+/// cannot do that. It also costs nothing — no ~1-3s dotnet spawn per poll.
 ///
 /// THE PROPERTY THAT MAKES IT SAFE. A file that exists can be read when it does
 /// not answer the question being asked, and a green from a different tree is still
@@ -53,10 +50,10 @@ type PluginOutcome =
     | Fail
     | TimedOut
     | Running
-    /// Running past the wedge bound with no completion posted — by definition wedged
-    /// (AUTOMATION-147). Its OWN token, because a wedge read as mere "running" is how
-    /// an 8h36m silence gets waited out. The verdict file inherits this for free: one
-    /// value, rendered on both surfaces.
+    /// Running past the wedge bound with no completion posted — by definition wedged.
+    /// Its OWN token, because a wedge read as mere "running" is how a long silence
+    /// gets waited out. The verdict file inherits this for free: one value, rendered
+    /// on both surfaces.
     | Wedged
 
 module PluginOutcome =
@@ -91,13 +88,12 @@ module PluginOutcome =
 ///
 /// THE one implementation. It drives the agent-mode status line (`ProgressRenderer`)
 /// AND `plugins[]` in `.fshw/verdict.json`, so a plugin cannot report `ok` on one
-/// surface and `wedged` on the other. Both of the fail-closed rules AUTOMATION-147
-/// added to the status line therefore protect the verdict file too, for free:
+/// surface and `wedged` on the other. Both fail-closed rules therefore protect the
+/// verdict file too, for free:
 ///
 ///   * a plugin Running past the wedge bound is `Wedged`, never merely `running`;
 ///   * a `Completed` carrying NO run record can never token as `ok` — a content-free
-///     ✓ is the AUTOMATION-99 trap exactly (an operator had to diagnose a wedge from a
-///     MISSING `elapsed:`). No record ⇒ no green.
+///     ✓ with no `elapsed:` is not evidence. No record ⇒ no green.
 let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : PluginOutcome option =
     let okOrDiag () =
         if ErrorLedger.DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
@@ -122,9 +118,9 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         | PluginWedge.RunningHealth.Wedged _ -> Some PluginOutcome.Wedged
         | PluginWedge.RunningHealth.StillRunning _ -> Some PluginOutcome.Running
     // A status this build could not read is `Fail`, and — crucially — it is `Some`: the
-    // plugin STAYS IN the verdict. Omitting it (which is what rounding down to `Idle`
-    // achieved) is how a plugin nobody could read vanishes from `plugins[]` and the
-    // verdict goes green over a check that never reported.
+    // plugin STAYS IN the verdict. Rounding it down to `Idle` would omit it, and a
+    // plugin nobody could read vanishing from `plugins[]` is how the verdict goes green
+    // over a check that never reported.
     | StatusView.Unreadable _ -> Some PluginOutcome.Fail
     | StatusView.Failed _ when timedOutLastRun () -> Some PluginOutcome.TimedOut
     | StatusView.Failed _ -> Some PluginOutcome.Fail
@@ -145,12 +141,9 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
 
 /// One plugin's line in the verdict.
 ///
-/// `ElapsedMs` is an OPTION, and that is load-bearing. It was an `int64` defaulting
-/// to `0L` when no measurement existed — which is the AUTOMATION-99 signature
-/// exactly (`started:` with no `elapsed:`), rebuilt inside the very file that exists
-/// to prevent it. **A missing number is not zero.** `0` is a measurement — "this ran
-/// instantaneously"; absence is the absence of one, and a reader must be able to
-/// tell them apart. Serialized as `null`.
+/// `ElapsedMs` is an OPTION, and that is load-bearing. **A missing number is not
+/// zero.** `0` is a measurement — "this ran instantaneously"; absence is the absence
+/// of one, and a reader must be able to tell them apart. Serialized as `null`.
 type PluginVerdict =
     { Name: string
       Outcome: PluginOutcome
@@ -211,11 +204,11 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
 
 /// The identity of the fshw that produced a verdict.
 ///
-/// This IS `DaemonIdentity.BinaryIdentity` — 147's type, not a fourth one. `treeHash`
-/// content-addresses the verdict's SUBJECT; this content-addresses its PRODUCER. Both
-/// halves are needed or the provenance chain has a hole in the middle: a stale daemon
-/// writes a verdict for an UNCHANGED tree, the `treeHash` matches, and the verdict
-/// reads as current.
+/// This IS `DaemonIdentity.BinaryIdentity`, reused, not a fourth identity type.
+/// `treeHash` content-addresses the verdict's SUBJECT; this content-addresses its
+/// PRODUCER. Both halves are needed or the provenance chain has a hole in the middle:
+/// a stale daemon writes a verdict for an UNCHANGED tree, the `treeHash` matches, and
+/// the verdict reads as current.
 type Producer = DaemonIdentity.BinaryIdentity
 
 module Producer =
@@ -224,10 +217,9 @@ module Producer =
 
     /// Do two producers refer to the same binary — as far as a VERDICT is concerned?
     ///
-    /// FAIL CLOSED, and note that this deliberately differs from
-    /// `DaemonIdentity.compareIdentity`, which treats two UNHASHABLE binaries as a
-    /// match. Both use the same hash and the same sentinel; they answer different
-    /// questions:
+    /// FAIL CLOSED. This deliberately differs from `DaemonIdentity.compareIdentity`,
+    /// which treats two UNHASHABLE binaries as a match. Both use the same hash and the
+    /// same sentinel; they answer different questions:
     ///
     ///   * "restart the daemon?" — refusing on an unhashable binary would restart it
     ///     on every command and thrash the FCS cache forever. Fail open.
@@ -263,21 +255,15 @@ module Command =
 
 /// The on-disk verdict.
 ///
-/// THE REPRESENTATION IS PRIVATE, and the only door in is `Verdict.create`. `outcome`
-/// and `plugins` used to be assembled side by side from independent sources, and
-/// nothing forbade the one state this file must never be able to express:
+/// THE REPRESENTATION IS PRIVATE, and the only door in is `Verdict.create`. Without
+/// that, `outcome` and `plugins` are assembled from independent sources and nothing
+/// forbids the one state this file must never express:
 ///
 ///     {"outcome": "green", "plugins": [{"outcome": "fail"}]}
 ///
-/// That is not a hypothetical shape — it is exactly what the `--run-once` path wrote
-/// when a plugin crashed, because its `hasFailures` was missing the `anyPluginFailed`
-/// term. Two surfaces, assembled independently, disagreeing about the same run.
-///
-/// So `outcome` is no longer merely CORRELATED with `plugins`; it is CHECKED against
-/// them, once, at the only place a `Verdict` can come into existence. Same move
-/// AUTOMATION-99 made for `RunVerdict` (private record, `create` rejects an empty
-/// summary): if a state is a lie, do not document that it must not be constructed —
-/// make it unconstructible.
+/// So `outcome` is not merely CORRELATED with `plugins`; it is CHECKED against them,
+/// once, at the only place a `Verdict` can come into existence — if a state is a lie,
+/// make it unconstructible rather than documenting that it must not be constructed.
 [<NoComparison>]
 type Verdict =
     private
@@ -795,7 +781,7 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
             )
 
 // ---------------------------------------------------------------------------
-// Has `confirm`'s evidence ALREADY been earned? (AUTOMATION-161)
+// Has `confirm`'s evidence ALREADY been earned?
 // ---------------------------------------------------------------------------
 
 /// Is this verdict, ON ITS OWN TERMS, the claim `confirm` makes?

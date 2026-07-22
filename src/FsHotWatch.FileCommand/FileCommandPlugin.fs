@@ -80,11 +80,10 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
 /// integration test confirms the production reader's failure mode (e.g.
 /// chmod-000) really does throw.
 let internal hashFileWith (read: string -> byte[]) (path: string) : string option =
-    // F5 (audit 2026-05-02): `read` is a file-IO call, so transient IO failures
-    // (file locked by editor, missing, perms) legitimately drop this entry from
-    // the merkle and we tolerate the resulting cache miss. Anything else
-    // (NullReferenceException, programming bugs) must surface — bare `with _`
-    // would silently mask real defects.
+    // `read` is a file-IO call, so transient IO failures (file locked by editor,
+    // missing, perms) legitimately drop this entry from the merkle and we tolerate
+    // the resulting cache miss. Anything else (NullReferenceException, programming
+    // bugs) must surface — bare `with _` would silently mask real defects.
     try
         let bytes = read path
         let hash = System.Security.Cryptography.SHA256.HashData(bytes)
@@ -384,15 +383,10 @@ let create
         // Recomputed per event so mid-session edits to a referenced config
         // file invalidate the cache.
         //
-        // The key is always `Some` for a trigger event (matching BuildPlugin's
-        // always-content-addressed key). An earlier "cold-start bypass" returned
-        // `None` until the command had run once in-session — but the framework
-        // treats a `None` key as *uncacheable* (it neither replays NOR stores),
-        // so the FIRST trigger's result was never stored. The result: the SECOND
-        // trigger (the first with a real key) found nothing cached and re-ran the
-        // command — a double-execution of a side-effecting command. Returning the
-        // content key from the first event lets that run store its result, so the
-        // next identical trigger replays instead of re-running.
+        // Always `Some` for a trigger event, so the first trigger's result is
+        // stored and an identical trigger replays instead of re-running: a `None`
+        // key is uncacheable (neither replays nor stores), which would
+        // double-execute this side-effecting command.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
             | Custom _ -> None

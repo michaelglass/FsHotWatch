@@ -2,21 +2,12 @@ module FsHotWatch.Cli.SourceRef
 
 open System
 
-/// AUTOMATION-123 — the human-readable half of "is my gate running my fix?".
-///
-/// The machine half already exists: the daemon/CLI binary-identity handshake
-/// (AUTOMATION-147) compares version + content hash and restarts a stale
-/// daemon, and the verdict file names its producer by hash (AUTOMATION-129).
-/// What was missing is the HUMAN surface — a way to see, in one command and in
-/// words, which SOURCE this binary was built from, instead of `strings`-probing
-/// a cached DLL. The informational version carries that answer:
-///
-///   * a local RefStamp pack embeds `-ref.<change-id>.g<commit-id>[.dirty]`
-///     (jj) or `-ref.g<head-sha>[.dirty[.g<stash>]]` (git) in the version
-///     itself — the ref names the exact tree the binary was built from;
-///   * a release/CI build carries `+<sha>` build metadata (SourceLink);
-///   * anything else genuinely has no recorded ref, and the honest answer is
-///     "unknown", never a guess.
+/// The human-readable half of "is my gate running my fix?": which SOURCE a
+/// binary was built from, parsed from its assembly informational version so
+/// `fshw --version` can state it in words rather than `strings`-probing a cached
+/// DLL. A local RefStamp pack embeds `-ref.<change-id>.g<commit-id>[.dirty]`
+/// (jj) or `-ref.g<head-sha>[.dirty[.g<stash>]]` (git); a release/CI build
+/// carries `+<sha>` build metadata (SourceLink); anything else is unknown.
 [<RequireQualifiedAccess>]
 type SourceRef =
     /// A RefStamp-stamped local pack: `ref` is the full stamp body (change id +

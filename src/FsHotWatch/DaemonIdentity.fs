@@ -5,24 +5,18 @@ open System.IO
 open System.Security.Cryptography
 open FsHotWatch.Logging
 
-/// AUTOMATION-147 — the daemon/CLI binary-identity handshake.
+/// The daemon/CLI binary-identity handshake: the daemon writes its own binary
+/// identity to `.fshw/daemon.identity` at startup, and every CLI compares that
+/// record against its own binary before reusing a running daemon. The comparison
+/// is UNILATERAL — an old-build daemon needs no cooperation to be found stale —
+/// and a daemon that never recorded an identity reads as `NotRecorded`, which the
+/// caller must treat exactly like a mismatch (an unknown daemon is never assumed
+/// current).
 ///
-/// A new CLI silently talking to a daemon left over from an OLD build is the
-/// AUTOMATION-123 trap (a version label that doesn't match its contents)
-/// reincarnated as a *process*: you cannot tell, from inside, that you're
-/// running the wrong code. The fix is a recorded identity the CLI can compare
-/// UNILATERALLY — the daemon writes its own binary identity to
-/// `.fshw/daemon.identity` at startup, and every CLI compares that record
-/// against its own binary before reusing a running daemon. A daemon that never
-/// recorded an identity (any build predating this handshake) reads as
-/// `NotRecorded`, which the caller must treat exactly like a mismatch: an
-/// unknown daemon can never be assumed current. That unilaterality is what
-/// protects the very next repin — the OLD daemon needs no cooperation to be
-/// found stale.
 /// The identity of an fshw binary: its assembly version AND a content hash of
 /// the binary on disk. BOTH are load-bearing — a locally-repacked build can
-/// share a version string and differ in content (literally AUTOMATION-123), so
-/// a version label alone can lie; the content hash cannot.
+/// share a version string and differ in content, so a version label alone can
+/// lie; the content hash cannot.
 type BinaryIdentity =
     { Version: string; ContentHash: string }
 
@@ -57,8 +51,7 @@ type StaleReason =
     /// The daemon recorded an identity and it differs from this binary's.
     | DifferentBinary of recorded: BinaryIdentity
     /// The daemon never recorded an identity — a build that predates the
-    /// handshake. Unknown is treated exactly like stale (fail closed): this is
-    /// the case that protects the first repin after this feature ships.
+    /// handshake. Treated exactly like stale (fail closed).
     | NotRecorded
 
 /// The CLI's comparison of the running daemon's recorded identity against its
@@ -69,15 +62,15 @@ type IdentityVerdict =
     | Match
     | Stale of StaleReason
 
-/// Pure comparison. `None` (no recorded identity) is `Stale NotRecorded` —
-/// never a match: the whole point is that an old daemon which never wrote an
-/// identity is detected by the NEW CLI alone.
-/// NOTE on the unhashable case: two binaries that both hash to `UnhashableContent`
-/// compare EQUAL here, and therefore MATCH. That is deliberate and it is the opposite
-/// of what the verdict file does with the same sentinel — see `UnhashableContent`. The
-/// question here is "restart the daemon?", and answering "yes, because I cannot tell"
-/// restarts it on every single command, thrashing the FCS cache forever. Fail-open is
-/// the correct answer to THIS question, and it is stated rather than emergent.
+/// Pure comparison. `None` (no recorded identity) is `Stale NotRecorded` — never
+/// a match: an old daemon that never wrote an identity must be detected by the
+/// NEW CLI alone.
+///
+/// Unhashable case: two binaries that both hash to `UnhashableContent` compare
+/// EQUAL here and therefore MATCH — deliberately fail-OPEN, the opposite of the
+/// verdict file (see `UnhashableContent`). The question here is "restart the
+/// daemon?"; answering "yes, can't tell" would restart on every command and
+/// thrash the FCS cache forever.
 let compareIdentity (recorded: BinaryIdentity option) (current: BinaryIdentity) : IdentityVerdict =
     match recorded with
     | None -> IdentityVerdict.Stale StaleReason.NotRecorded
@@ -88,19 +81,11 @@ let compareIdentity (recorded: BinaryIdentity option) (current: BinaryIdentity) 
 let identityFilePath (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "daemon.identity")
 
-/// Sentinel hash used when the binary's bytes cannot be read/hashed.
-///
-/// THE hasher and THE sentinel now live in `FsHotWatch.ContentHash` — one hash of a
-/// file, one value for "I could not read it", repo-wide (AUTOMATION-129/155). Two
-/// hashers with two sentinel policies is precisely the class of bug this release
-/// exists to cure; it would be an odd thing to ship two of.
-///
-/// The VALUE is shared. The CONCLUSION is not, and deliberately so: this module asks
-/// *"should I restart the daemon?"*, so two unhashable binaries MATCH (see
-/// `compareIdentity`) — a refusal here would restart the daemon on every command and
-/// thrash the warm FCS cache forever. The verdict file asks *"does this claim apply?"*
-/// and refuses an unhashable producer outright. Different questions, different
-/// answers, one hash.
+/// Sentinel hash used when the binary's bytes cannot be read/hashed. The hasher
+/// and sentinel live in `FsHotWatch.ContentHash` — one value repo-wide. The VALUE
+/// is shared but the CONCLUSION differs by question: here two unhashable binaries
+/// MATCH (see `compareIdentity`), while the verdict file refuses an unhashable
+/// producer outright.
 [<Literal>]
 let UnhashableContent = ContentHash.UnhashableContent
 

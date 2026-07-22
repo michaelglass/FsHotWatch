@@ -4,16 +4,8 @@ open System
 open System.IO
 open FsHotWatch.Logging
 
-/// AUTOMATION-147 — plugin wedge detection: name it, log it, recover from it.
-///
-/// A plugin that reported `Running` and posts no completion past a bound is BY
-/// DEFINITION wedged. Before this module the daemon knew that and said nothing:
-/// the operator diagnosed the 2026-07-14 wedge by noticing a MISSING field
-/// (`elapsed:` absent from the render) — a deduction from an absence — and the
-/// AUTOMATION-92 hang sat fully silent for 8h36m. A silent log during a wedge
-/// is indistinguishable from a healthy idle daemon.
-///
-/// Three duties, one wording:
+/// Plugin wedge detection: a plugin that reported `Running` and posts no
+/// completion past a bound is BY DEFINITION wedged. Three duties, one wording:
 ///   1. SAY IT — `fshw status` and the daemon log both use `wedgedText`, so
 ///      neither surface ever requires the user to infer a wedge from what
 ///      isn't printed. Under the bound the detector is honest about its own
@@ -23,7 +15,7 @@ open FsHotWatch.Logging
 ///      and gracefully shuts the daemon down (the same `cts.Cancel()` path as
 ///      `fshw stop`, so tracked child processes are reaped and SQLite is never
 ///      killed mid-write). The next fshw command starts a fresh daemon and
-///      prints the breadcrumb: the tool says what it DID.
+///      prints the breadcrumb.
 ///   3. NEVER over-correct — the bound sits above the verdict deadline (the
 ///      longest legitimately-bounded wait in the system) plus grace, so a
 ///      healthy daemon's warm FCS cache is never discarded for a long-but-live
@@ -43,8 +35,7 @@ let formatElapsed (ts: TimeSpan) =
 /// Grace added on top of the verdict deadline before a Running plugin is
 /// treated as wedged. A client blocked on `WaitForComplete` gets its own
 /// TimeoutException (naming the plugin) at the verdict deadline FIRST — the
-/// daemon-side recovery is the backstop for when no client is waiting at all
-/// (the AUTOMATION-92 8h36m case ran unobserved).
+/// daemon-side recovery is the backstop for when no client is waiting at all.
 let WedgeGrace = TimeSpan.FromMinutes 5.0
 
 /// Env var that overrides the wedge bound directly (seconds). Wins over the

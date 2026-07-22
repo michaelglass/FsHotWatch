@@ -29,9 +29,9 @@ type RerunFlag =
         CmdArg("seconds")>] WaitSec of int
 
 /// Default slot-wait budget (seconds) sent to the daemon's `run-tests` command
-/// when `--wait-sec` is not given. Well above the old fixed 120 s so a long
-/// `tests.beforeRun` chain (90 s+) can't make an explicit `test-rerun` give up
-/// before the prior in-flight run releases the slot.
+/// when `--wait-sec` is not given. Generous so a long `tests.beforeRun` chain
+/// (90 s+) can't make an explicit `test-rerun` give up before the prior in-flight
+/// run releases the slot.
 [<Literal>]
 let DefaultTestRerunWaitSec = 600
 
@@ -112,17 +112,14 @@ type Command =
     | [<CmdExample("", "--run-once");
         Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, which is a latency optimization and not the basis for a merge decision (use `confirm` for that)")>] Check of
         RunFlag list
-    /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH (AUTOMATION-112,
-    /// AUTOMATION-160). Same checks as `check`, but the tests run UNFILTERED — and the
-    /// verdict is refused unless they actually did. `check` is the inner loop and keeps
-    /// impact filtering, which is a latency optimization; a merge is a correctness claim
-    /// and cannot be built on a heuristic selection.
+    /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH. Same checks as
+    /// `check`, but the tests run UNFILTERED — and the verdict is refused unless they
+    /// actually did. `check` is the inner loop and keeps impact filtering, which is a
+    /// latency optimization; a merge is a correctness claim and cannot be built on a
+    /// heuristic selection.
     ///
-    /// It was called `gate` until AUTOMATION-160, and the name did real damage: `gate`
-    /// says what the verb BLOCKS, so it got built as a bouncer — pass/fail — and the most
-    /// valuable thing it produces was thrown away as a side-effect. Running the whole
-    /// suite next to an impact-filtered `check` is a COMPARISON, and every disagreement
-    /// between the two is a BUG in one of them:
+    /// Running the whole suite next to an impact-filtered `check` is a COMPARISON, and
+    /// every disagreement between the two is a BUG in one of them:
     ///
     ///   * failed here, never selected by `check` → the SELECTOR missed a test. A
     ///     TestPrune bug, not a test bug.
@@ -130,12 +127,8 @@ type Command =
     ///     test-isolation defect — one that only passes because another test set up the
     ///     state it depends on. There, `check` is the honest one and the full suite lies.
     ///
-    /// Reporting that comparison is AUTOMATION-160 part 2; naming it correctly is what
-    /// makes it obvious there is one to make.
-    ///
-    /// `--run-once` runs it WITHOUT a daemon (AUTOMATION-117) — which is how CI must
-    /// invoke it, because `--run-once` is what CI uses. A merge verdict that is only
-    /// reachable over a socket is a merge verdict CI cannot ask for.
+    /// `--run-once` runs it WITHOUT a daemon — which is how CI must invoke it. A merge
+    /// verdict that is only reachable over a socket is a merge verdict CI cannot ask for.
     | [<CmdExample("", "--run-once");
         Cmd("Run the FULL suite and confirm `check` told the truth.\n"
             + HelpIndent
@@ -149,13 +142,12 @@ type Command =
             + HelpIndent
             + "Refuses a green verdict from anything less than the full suite (exit 3).")>] Confirm of RunFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
-    /// disk (AUTOMATION-129).
+    /// disk.
     ///
     /// Touches NO socket, starts no daemon, triggers no run: reading cannot perturb.
-    /// That is the whole point — the `test-rerun` calls an orchestrator made *because
-    /// the verdict looked untrustworthy* were themselves what corrupted the daemon's
-    /// accounting and produced the next content-free green (AUTOMATION-99). The act of
-    /// measuring created the defect being measured.
+    /// That is the whole point — an extra measurement (a `check`/`test-rerun` spawned
+    /// to double-check a verdict) can itself corrupt the daemon's accounting and
+    /// produce the next content-free green. A read cannot.
     ///
     /// This verb is a CONVENIENCE over the file, not a second source of truth: it
     /// prints the same verdict the check wrote, plus the one judgement a consumer must
@@ -224,9 +216,9 @@ let private renderBlock mode warningsAreFailures statuses =
 ///   2. `dotnet <local-dll>` (processPath is `dotnet`, entry-assembly location is
 ///      a real `.dll` path): spawn THAT SAME DLL — `dotnet "<dll>" start`. This
 ///      makes a local dev build dogfood itself; reconstructing `tool run fshw`
-///      here would silently launch the PINNED tool instead of the running build
-///      (the real 2026-06-05 mis-diagnosis). Note the dll path is quoted because
-///      it may contain spaces, and the caller appends `start` after a space.
+///      here would silently launch the PINNED tool instead of the running build.
+///      The dll path is quoted because it may contain spaces, and the caller
+///      appends `start` after a space.
 ///      The published dotnet tool ALSO resolves a real dll path
 ///      (`~/.nuget/packages/fshotwatch.cli/<ver>/.../FsHotWatch.Cli.dll`), so this
 ///      branch spawns that dll directly for the tool too — equivalent to and more
@@ -413,12 +405,12 @@ let reportDaemonError (ex: exn) : unit =
     | Some h -> eprintfn "  hint: %s" h
     | None -> ()
 
-/// Run one IPC action with corrupted-pipe self-healing (AUTOMATION-147).
+/// Run one IPC action with corrupted-pipe self-healing.
 /// A corrupted-pipe fault means the daemon (or a rogue sibling sharing the
 /// pipe) is emitting garbage frames, and the known cure is `fshw stop` +
-/// `fshw start` — which used to be a manual ritual the human was expected to
-/// know. The tool now performs it: force-restart the daemon (announcing what
-/// it is doing), retry the action ONCE, and only then fail through `onFailure`.
+/// `fshw start`, which the tool performs automatically: force-restart the daemon
+/// (announcing what it is doing), retry the action ONCE, and only then fail through
+/// `onFailure`.
 /// Every other fault goes straight to `onFailure`, unchanged. Internal so the
 /// heal-and-retry contract is unit-testable without a real pipe.
 let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> int) (action: unit -> int) : int =
@@ -497,9 +489,9 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
 /// to go green on. The failure direction is the safe one BY CONSTRUCTION: `confirm` can
 /// only ever go green on a scope it positively established.
 ///
-/// An UNKNOWN-COMMAND reply is now WARNED about rather than folded silently into
-/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a broken check stays
-/// broken for its whole life.
+/// An UNKNOWN-COMMAND reply is WARNED about rather than folded silently into
+/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a broken check
+/// stays broken.
 let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     try
         let reply = ipc.RunCommand pipeName TestScopeCommand "" |> Async.RunSynchronously
@@ -653,12 +645,9 @@ let private ensureAndQueryErrors
                         ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
 
 /// Compute a hash of the `.fshw.json` config content for restart-on-config-change
-/// detection (injectable). The CLI BINARY is deliberately NOT part of this hash
-/// any more: it used to be smuggled in as `Environment.ProcessPath`'s mtime,
-/// which tracked the WRONG file for `dotnet`-hosted invocations (the dotnet
-/// muxer, not the fshw dll) and could not catch a same-mtime repack anyway.
-/// Binary staleness is the DaemonIdentity handshake's job (AUTOMATION-147):
-/// assembly version + content hash, recorded by the daemon, compared by the CLI.
+/// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:
+/// binary staleness is the DaemonIdentity handshake's job (assembly version +
+/// content hash, recorded by the daemon, compared by the CLI), not an mtime here.
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
@@ -841,8 +830,8 @@ let private ensureDaemon
 // mid cold-scan (analyzer reflection load pegging cores), so the FIRST real RPC
 // issued by a check — `ConnectAsync(5000)` inside `IpcClient.invoke` — can time
 // out because the acceptor is starved, or hit a pipe endpoint that was briefly
-// torn down during a stop→start. The old code surfaced that as exit 1
-// ("failures found"), poisoning an autonomous loop's verdict. The gate below
+// torn down during a stop→start. Such a transient fault must not surface as exit 1
+// ("failures found"), which would poison an autonomous loop's verdict. The gate below
 // RETRIES such transient connect faults against a startup deadline (distinct
 // from the per-RPC connect timeout) until the daemon answers, fails FAST (exit
 // 2) if the daemon process is provably gone, and gives up (exit 2) if it never
@@ -1050,11 +1039,10 @@ let defaultGlobalOptions =
       Verbose = false
       DaemonExtraArgs = "" }
 
-/// Delete a file, swallowing any exception. F9 (audit 2026-05-02): in a bulk
-/// cleanup loop one bad item shouldn't halt the rest, but the bare `with _`
-/// previously hid permission and sharing-violation failures. We log the
-/// exception class at debug so a future reader sees this isn't load-bearing
-/// and so failures are diagnosable on `--verbose`.
+/// Delete a file, swallowing any exception. In a bulk cleanup loop one bad item
+/// shouldn't halt the rest; the exception class is logged at debug so a future
+/// reader sees this isn't load-bearing and so failures are diagnosable on
+/// `--verbose`.
 let tryDeleteForCleanup (path: string) : string option =
     try
         File.Delete(path)
@@ -1505,10 +1493,9 @@ let executeCommand
                     if ipc.IsRunning pipeName then
                         consecutiveQuiet <- 0
 
-                        // F9 (audit 2026-05-02): bulk-stop loop tolerates one
-                        // shutdown failing (the OS may be tearing down the pipe
-                        // mid-call), but the bare `with _` hid real permission
-                        // / IPC bugs. Log at debug so failures are diagnosable.
+                        // Bulk-stop loop tolerates one shutdown failing (the OS may
+                        // be tearing down the pipe mid-call). Log at debug so failures
+                        // are diagnosable.
                         try
                             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
                             stopped <- stopped + 1
@@ -1529,8 +1516,8 @@ let executeCommand
                 0)
         | Scan ->
             // A scan runs REAL WORK on the daemon — never on a stale-binary
-            // one (its results would come from the old code). Same decision as
-            // ensureDaemon, which also announces why it restarts (AUTOMATION-147).
+            // one (its results would come from the wrong binary). Same decision as
+            // ensureDaemon, which also announces why it restarts.
             if ipc.IsRunning pipeName then
                 match DaemonIdentity.verdictFor repoRoot with
                 | DaemonIdentity.IdentityVerdict.Stale _ -> ensureDaemonFn () |> ignore
@@ -1744,13 +1731,10 @@ let executeCommand
                 // an answer.
                 //
                 // `Report.Stale`'s second field is the REASON (it says which provenance
-                // link broke: a different tree, or a different fshw). This used to render
-                // it under a `current tree` label, printing a whole sentence where a hash
-                // belongs — and asserting "the verdict describes a DIFFERENT tree" even
-                // when the tree matched perfectly and the binary was what had changed. The
-                // reason already names the fault precisely (and begins "stale: ..."), so it
-                // is printed as-is — exactly like the `NoVerdict` arm below. Say what the
-                // reason supports, and nothing it doesn't.
+                // link broke: a different tree, or a different fshw). It already names
+                // the fault precisely (and begins "stale: ..."), so it is printed as-is
+                // — exactly like the `NoVerdict` arm below. Say what the reason
+                // supports, and nothing it doesn't.
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
                 say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."

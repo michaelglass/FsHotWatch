@@ -87,13 +87,10 @@ type ProjectCheckResult =
 
 /// The evidence EVERY terminal status carries: WHAT the run did and how long
 /// it took. A guard that cannot say what it measured has not measured anything
-/// — so "done, with nothing to report" is unrepresentable by construction
-/// (AUTOMATION-99): every terminal site must state its verdict, and a
-/// content-free `✓` (the observed "started: with no elapsed:" manufactured
-/// terminal) cannot be built. The representation is PRIVATE — the only way to
-/// obtain a value is `RunVerdict.create`, which rejects an empty summary — so
-/// no site (daemon, cache deserializer, test helper, or example) can build a
-/// hollow verdict.
+/// — so "done, with nothing to report" is unrepresentable by construction: the
+/// representation is PRIVATE, and the only way to obtain a value is
+/// `RunVerdict.create`, which rejects an empty summary, so no site (daemon, cache
+/// deserializer, test helper, or example) can build a hollow content-free `✓`.
 [<NoComparison>]
 type RunVerdict =
     private
@@ -113,7 +110,7 @@ type RunVerdict =
 
 module RunVerdict =
     /// The ONLY constructor. Throws on a null/empty/whitespace summary: a
-    /// verdict that says nothing is not a verdict (AUTOMATION-99).
+    /// verdict that says nothing is not a verdict.
     let create (summary: string) (elapsed: System.TimeSpan) : RunVerdict =
         if System.String.IsNullOrWhiteSpace summary then
             invalidArg
@@ -133,8 +130,7 @@ type PluginStatus =
     | Completed of at: System.DateTime * verdict: RunVerdict
     /// Plugin encountered an error. `error` is the diagnosis; the verdict still
     /// carries the run's one-line summary and measured duration, so a failure
-    /// can never record a fabricated zero-length run ("started: with no
-    /// elapsed:" — the AUTOMATION-99 signature).
+    /// can never record a fabricated zero-length run.
     | Failed of error: string * at: System.DateTime * verdict: RunVerdict
 
 module PluginStatus =
@@ -201,9 +197,9 @@ type TestResult =
     | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool * elapsed: System.TimeSpan
     /// The project's tests NEVER RAN because its apphost wasn't produced yet (a
     /// build-ordering race: `dotnet run --no-build` fired before the build
-    /// settled). Split out — like `TestsTimedOut` was split from `TestsFailed`
-    /// — so it can NEVER masquerade as a pass. `isPassed` is FALSE for it: a
-    /// project that didn't run cannot count toward a green verdict (a CI gate
+    /// settled). Distinct so it can NEVER masquerade as a pass. `isPassed` is
+    /// FALSE for it: a project that didn't run cannot count toward a green
+    /// verdict (a CI gate
     /// must not report "safe to merge" when nothing was verified). It is ALSO
     /// not a real test failure, so the verdict surfaces it as an honest
     /// "waiting on build — tests did not run" diagnostic, not "test failed".

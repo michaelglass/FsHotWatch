@@ -2,22 +2,19 @@
 /// every "files under this root" job (project discovery, watch enumeration,
 /// freshness scans, dependsOn globs).
 ///
-/// Why this exists (2026-07-13 RCA): a hand-rolled recursive walk in the
-/// test-prune freshness gate followed SYMLINKED DIRECTORIES. In a devenv/nix
-/// repo `.devenv/profile` links into /nix/store, whose reachable tree contains
-/// TWO SELF-LOOP symlinks in ONE directory (ncurses-6.6-dev/include/{ncurses,
-/// ncursesw} -> `.`). That BRANCHES: each level doubles the path count, so
-/// within the kernel's ~32-symlink ELOOP envelope there are ~2^32 distinct
-/// paths to enumerate. The walk was effectively non-terminating and silently
-/// wedged every `fshw check` (observed: 8h36m, no output, no timeout, no error).
+/// Why this exists: naive recursive walks follow SYMLINKED DIRECTORIES, and in a
+/// devenv/nix repo `.devenv/profile` links into /nix/store, whose reachable tree
+/// contains self-loop symlinks (e.g. ncurses `include/{ncurses,ncursesw} -> .`).
+/// Those BRANCH — each level doubles the path count — so within the kernel's
+/// ~32-symlink ELOOP envelope there are ~2^32 distinct paths, and the walk is
+/// effectively non-terminating (it silently wedged every `fshw check`).
 ///
 /// `SearchOption.AllDirectories` has the SAME defect and is NOT a safe
 /// alternative: the `SearchOption` overloads use `EnumerationOptions.Compatible`
 /// (`AttributesToSkip = 0`), so they descend hidden dirs — `.devenv` included —
-/// and they follow directory symlinks. Measured on the two-self-loop shape:
-/// 800k+ files in 52s and still climbing. So `AllDirectories` and
-/// `Directory.GetDirectories`-plus-recursion are both banned here; route every
-/// repo-scale walk through this module.
+/// and they follow directory symlinks (measured: 800k+ files in 52s and still
+/// climbing). So `AllDirectories` and `Directory.GetDirectories`-plus-recursion
+/// are both banned here; route every repo-scale walk through this module.
 ///
 /// Guarantees:
 ///   * NEVER descends into a symlinked (reparse-point) directory — the real
@@ -38,9 +35,8 @@ let MaxDepth = 64
 
 /// Tooling/VCS directories that never hold repo sources, and that include the
 /// known portals OUT of the repo tree: `.devenv`/`.direnv` symlink into
-/// /nix/store (the 2026-07-13 wedge), `.workspaces` holds sibling jj checkouts
-/// of the same repo. Excluded by NAME so a walk never even reaches the symlink
-/// guard for them.
+/// /nix/store, `.workspaces` holds sibling jj checkouts of the same repo.
+/// Excluded by NAME so a walk never even reaches the symlink guard for them.
 let ToolingExcludedDirs =
     set
         [ ".git"
@@ -66,9 +62,9 @@ let SourceExcludedDirs = Set.union ToolingExcludedDirs (set [ "bin"; "obj" ])
 /// `excludedDirNames`, and never entering symlinked directories. Empty for a
 /// missing root. `searchPattern` carries the same glob semantics as
 /// `DirectoryInfo.GetFiles` (`"*"`, `"*.fsproj"`, ...) but is applied
-/// PER-DIRECTORY — the pattern behaves exactly as before while WE own the
-/// recursion. Lazy, so callers that only need existence (`Seq.exists`) can stop
-/// early without paying for the whole tree.
+/// PER-DIRECTORY — the glob behaves the same while WE own the recursion. Lazy, so
+/// callers that only need existence (`Seq.exists`) can stop early without paying
+/// for the whole tree.
 let enumerateFilesMatching (excludedDirNames: Set<string>) (searchPattern: string) (root: string) : seq<FileInfo> =
     let rec walk (dir: DirectoryInfo) (depth: int) : seq<FileInfo> =
         seq {

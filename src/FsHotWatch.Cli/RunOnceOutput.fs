@@ -10,9 +10,9 @@ open FsHotWatch.ErrorLedger
 /// state tag, timestamps, and the failure diagnosis — the verdict (summary +
 /// elapsed) travels exclusively in the run record (`lastRun`), the ONE channel
 /// the renderer reads. Parsing into the daemon's `PluginStatus` would force
-/// the CLI to fabricate a `RunVerdict` from untrusted wire input — the
-/// content-free ✓ AUTOMATION-99 makes unrepresentable — so the CLI has its own
-/// verdict-free shape instead.
+/// the CLI to fabricate a `RunVerdict` from untrusted wire input — the content-free
+/// ✓ that `RunVerdict` exists to prevent — so the CLI has its own verdict-free shape
+/// instead.
 [<RequireQualifiedAccess; NoComparison>]
 type StatusView =
     | Idle
@@ -23,15 +23,15 @@ type StatusView =
     /// tag, a `since` that will not parse, a status that is not even an object.
     ///
     /// Its own case, because the alternatives all fail OPEN. Rounding it to `Idle`
-    /// (what the parser used to do, in four places) makes the plugin quiescent, clean
-    /// and INVISIBLE — `Verdict.pluginVerdicts` omits an idle plugin with no run
-    /// record, so it vanishes from `plugins[]` altogether, and a verdict over a clean
-    /// ledger goes green. Dropping the plugin from the map is worse still.
+    /// makes the plugin quiescent, clean and INVISIBLE — `Verdict.pluginVerdicts`
+    /// omits an idle plugin with no run record, so it vanishes from `plugins[]`
+    /// altogether, and a verdict over a clean ledger goes green. Dropping the plugin
+    /// from the map is worse still.
     ///
-    /// This is a LIVE cross-version hazard, not a hypothetical: `PluginOutcome` gained
-    /// `Wedged` in this very batch, so "old CLI, new daemon" is a shape that exists.
-    /// `Verdict.read` already states the policy for exactly this — "an unknown state is
-    /// not a passing state" — and the wire parser now obeys the same one.
+    /// This is a LIVE cross-version hazard, not a hypothetical: an "old CLI, new
+    /// daemon" pairing can carry status tags the CLI has no name for. `Verdict.read`
+    /// already states the policy for exactly this — "an unknown state is not a passing
+    /// state" — and the wire parser obeys the same one.
     | Unreadable of reason: string
 
 module StatusView =

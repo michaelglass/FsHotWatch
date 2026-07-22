@@ -18,8 +18,8 @@ let isGeneratedPath (path: string) =
 /// `_content/DefaultRunnerReporters.fs` under `~/.nuget/packages/...`). Such
 /// files are third-party — compiled into the project, but never the repo's own
 /// source. The analyze/lint hosts use this to skip inspecting them (running
-/// FSharpLint over xunit's `_content` crashed the analyzer host — see
-/// AUTOMATION-49); `isExcludedPath` also uses it for its out-of-repo test.
+/// FSharpLint over xunit's `_content` crashed the analyzer host);
+/// `isExcludedPath` also uses it for its out-of-repo test.
 let isOutsideRepo (repoRoot: string) (path: string) : bool =
     let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
     Path.IsPathRooted(rel) || rel.StartsWith("..", System.StringComparison.Ordinal)
@@ -28,7 +28,7 @@ let isOutsideRepo (repoRoot: string) (path: string) : bool =
 /// `path` is outside `root`; `None` → false (no repo scope, so nothing is
 /// "outside" — everything is included). The report-producing plugins (analyzers,
 /// lint) call this to skip third-party out-of-repo compile items by default, and
-/// pass `None` for the `.fshw.json` `includeOutsideRepo` override (AUTOMATION-49).
+/// pass `None` for the `.fshw.json` `includeOutsideRepo` override.
 let isOutsideRepoScoped (repoRoot: string option) (path: string) : bool =
     repoRoot |> Option.exists (fun root -> isOutsideRepo root path)
 

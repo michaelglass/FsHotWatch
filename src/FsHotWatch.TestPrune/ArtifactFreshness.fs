@@ -1,121 +1,51 @@
-/// The freshness gate for a `--no-build` test run (AUTOMATION-122).
+/// The freshness gate for a `--no-build` test run.
 ///
 /// The question this module answers is exactly one: **would running
 /// `dotnet run --project <test> --no-build` execute bits that do not match the
-/// sources on disk?** A "yes" must block the run (that is the `--no-build`-
-/// against-stale-binary hole the gate was added to close, cli alpha.40); a "no"
-/// must let it through.
-///
-/// ## Why the old shape cried wolf
-///
-/// The predecessor (`newestSourceMtime` + `apphostStale`) compared the test
-/// project's DLL against the newest source mtime found ANYWHERE IN THE REPO. So
-/// an edit to any leaf project made EVERY project MSBuild then declined to
-/// rebuild — i.e. every project outside that edit's dependency closure — look
-/// stale. Worse, the accusation was unanswerable: an incremental `dotnet build`
-/// is correctly a no-op for an unrelated project, so its DLL mtime never caught
-/// up with the repo-wide watermark and the gate stayed red forever. The only
-/// escape was `dotnet build -t:Rebuild` — forcing a relink purely to move a
-/// timestamp. A guard that cannot be satisfied by the action it demands teaches
-/// people to bypass it, and this guard is worth keeping.
-///
-/// ## The shape that cannot cry wolf
+/// sources on disk?** A "yes" blocks the run (the `--no-build`-against-stale-binary
+/// hole this gate closes); a "no" lets it through.
 ///
 /// Freshness is decided per-project, over the test project's OWN transitive
-/// `ProjectReference` closure, in terms of the two — and only two — things a
-/// build does to produce a runnable output tree:
+/// `ProjectReference` closure, in terms of the two — and only two — things a build
+/// does to produce a runnable output tree:
 ///
 ///   1. It COMPILES each project's sources into that project's own assembly.
-///      ⇒ `AssemblyOlderThanSource`: a compile input newer than the assembly
-///        built from it means the compile did not run since the edit. A `.fs` and
-///        the `.dll` compiled from it have no content relation, so an mtime is the
-///        ONLY signal available here — and this half of the module is right to use
-///        one.
-///   2. It COPIES files into the test project's output dir — dependency
-///      assemblies, and content/fixture items (transitively, from referenced
-///      projects).
-///      ⇒ `CopyDiffersFromOrigin`: a copy whose BYTES are not the bytes of any
-///        output it could have been copied from means the copy did not happen
-///        since the edit.
+///      ⇒ `AssemblyOlderThanSource`: a compile input newer than the assembly built
+///        from it means the compile did not run since the edit. A `.fs` and the
+///        `.dll` compiled from it have no content relation, so an mtime is the ONLY
+///        signal available here.
+///   2. It COPIES files into the test project's output dir — dependency assemblies,
+///      and content/fixture items (transitively, from referenced projects).
+///      ⇒ `CopyDiffersFromOrigin`: a copy whose BYTES are not the bytes of any output
+///        it could have been copied from means the copy did not happen since the edit.
 ///
-/// ## Why a copy is judged by CONTENT and never by an mtime (AUTOMATION-169)
+/// A copy is judged by CONTENT, never by an mtime. The rule, one rule with two
+/// applications: **a copy is current iff its bytes are the bytes of one of the outputs
+/// the build could have copied it from** — for a content item, the file at that
+/// relative path in a closure project; for a dependency assembly, any of that
+/// project's per-TFM outputs. Content is TFM-agnostic, so a multi-targeted dependency
+/// (whose per-TFM DLLs build at different times and hash differently) cannot be
+/// mis-judged by comparing across TFMs, and neither a working-copy restamp nor a
+/// coarse-timestamp rebuild-within-one-tick can fool it. This is the same doctrine
+/// `TreeHash` states — content, never mtimes — and it uses core's ONE hasher,
+/// `ContentHash`, inheriting its fail-closed sentinel: a file we cannot read is
+/// `InputsUndeterminable`, never "fresh".
 ///
-/// The copy check used to ask `copyMtime < originMtime`. It cried wolf again, and
-/// the second wolf-cry came through the TARGET FRAMEWORK.
+/// Content items are covered too (not just `.fs`/`.cs`): a changed test FIXTURE
+/// copied in from a shared project is a `CopyDiffersFromOrigin`, so it can never run
+/// `--no-build` against a stale copy still sitting in `bin/`. Both checks are exactly
+/// what a plain `dotnet build` fixes, and NOTHING else is asserted — a file outside
+/// the closure cannot make the gate fire.
 ///
-/// A multi-targeted dependency (`netstandard2.0; net8.0; net9.0; net10.0` — a
-/// vendored SqlHydra fork) was consumed by a test project on net10.0. MSBuild
-/// copies the dependency's net10.0 output; this gate resolved the origin to
-/// whichever per-TFM output was NEWEST — which was net8.0, built nine minutes
-/// later. So it compared a net10.0 copy against a net8.0 origin and condemned a
-/// PERFECT copy. The message indicted itself: the origin it printed ended
-/// `/net8.0/`, the destination `/net10.0/`. And no plain `dotnet build` could
-/// answer it — a correct rebuild re-copies net10.0, so the accusation re-fired
-/// forever. Four of six test projects refused to run.
+/// Shadowing: a relative path can be claimed by SEVERAL projects in one closure
+/// (MSBuild copies them all to one destination, last writer wins). A copy is checked
+/// against EVERY claimant and is current if it matches ANY — otherwise a shadowed
+/// project would be condemned for a build doing exactly what it means to do.
 ///
-/// Different TFMs of one project build at DIFFERENT TIMES, so an mtime comparison
-/// ACROSS TFMs is not a bad heuristic — it is a CATEGORY ERROR. Correcting the
-/// resolution would leave the error expressible; so the mtimes are gone from the
-/// copy verdict entirely, and with them the whole bug class:
-///
-///   * TFM confusion — the question "which TFM did MSBuild pick?" is one this
-///     graph-free module cannot answer (nearest-compatible-framework, netstandard
-///     fallback), and it no longer has to ASK. Content is TFM-agnostic.
-///   * a `jj`/`git` working-copy restamp of an unchanged file;
-///   * coarse filesystem timestamps, and a rebuild inside one timestamp tick.
-///
-/// The rule, and it is ONE rule with two applications: **a copy is current iff its
-/// bytes are the bytes of one of the outputs the build could have copied it from**
-/// — for a content item, the file at that relative path in a closure project; for
-/// a dependency assembly, any of that project's per-TFM outputs. That question
-/// never mentions a target framework, so it cannot get one wrong. (Confirmed
-/// against the real consumer, 2026-07-14: the fork's four per-TFM DLLs hash to
-/// four DIFFERENT digests, and every consumer's copy is byte-identical to
-/// net10.0's — so a genuinely stale copy matches NONE of them and is still caught.)
-///
-/// This is the same doctrine `TreeHash` already states — *"The hash is over
-/// CONTENT, never mtimes. mtime is precisely what lied in APPLIC-24"* — and the
-/// two sibling modules no longer give opposite advice. It uses core's ONE hasher,
-/// `ContentHash`, and so inherits its fail-closed sentinel: a file we cannot read
-/// is `InputsUndeterminable`, never "fresh".
-///
-/// Both are exactly what a plain `dotnet build` fixes, and NOTHING else is
-/// asserted — so a file outside the closure cannot make the gate fire, and every
-/// firing names a file a normal build will re-emit. Verified against real MSBuild
-/// (2026-07-14): an out-of-closure edit leaves the test DLL untouched across
-/// repeated incremental builds (the old false positive, now unrepresentable); an
-/// in-closure edit re-emits the dependency's DLL and re-copies it into the
-/// consumer's output dir; and a changed content item is re-copied likewise.
-///
-/// ## Content items — the fake green this also closes
-///
-/// The predecessor looked at `.fs`/`.cs` files only, so a changed test FIXTURE
-/// copied in from a shared project was invisible to it: the tests ran
-/// `--no-build` against the OLD copy still sitting in `bin/`, PASSED, and the red
-/// only surfaced after a forced rebuild (intelligence, `dsa-scope-4.json`,
-/// 2026-07-14 — a green merge that left main red for hours). `CopyDiffersFromOrigin`
-/// covers content and dependency assemblies alike, because it keys on the COPY:
-/// a file in a project's directory is only ever compared against a destination
-/// that the build actually produced. A file the build does not copy has no
-/// destination, so it can never make the gate fire.
-///
-/// ## Shadowing — when two projects claim one destination
-///
-/// A relative path can be claimed by SEVERAL projects in one closure
-/// (`xunit.runner.json` sits in five of them in the consumer above). MSBuild copies
-/// them all to the same destination and the last writer wins, so one copy survives
-/// and the others are shadowed. A copy is therefore checked against EVERY claimant
-/// in the closure and is current if it matches ANY — otherwise the shadowed project
-/// would be condemned for a build doing exactly what it means to do, and no build
-/// could answer the charge. (Under the old mtime rule this misfired only when the
-/// shadowed file happened to be newer; under a content rule it would have been
-/// PERMANENT, so the fix for one bug had to bring the guard for the other.)
-///
-/// This module is deliberately self-contained (on-disk `.fsproj` parse rather
-/// than `IProjectGraphReader`): `executeTests` is graph-free — it is shared with
-/// the one-off `run-tests` command, which has no daemon and no discovered graph —
-/// and the graph tracks `Compile` items only, so it could not see content items
-/// even if it were reachable.
+/// This module is deliberately self-contained (on-disk `.fsproj` parse rather than
+/// `IProjectGraphReader`): `executeTests` is graph-free — shared with the one-off
+/// `run-tests` command, which has no daemon and no discovered graph — and the graph
+/// tracks `Compile` items only, so it could not see content items even if reachable.
 module FsHotWatch.TestPrune.ArtifactFreshness
 
 open System
@@ -167,7 +97,7 @@ type StaleInput =
     /// Deliberately carries NO MTIMES. Two per-TFM outputs of one project are
     /// built minutes apart, so comparing a copy's mtime against an origin's is
     /// meaningless unless their frameworks match — and this module cannot know
-    /// which framework MSBuild chose (AUTOMATION-169). A verdict that has no
+    /// which framework MSBuild chose. A verdict that has no
     /// mtimes in it cannot compare two of them across a TFM boundary: the error is
     /// not corrected here, it is UNREPRESENTABLE.
     | CopyDiffersFromOrigin of origin: string * copy: string
@@ -349,8 +279,7 @@ type Cache() =
     /// (a net10.0 consumer takes a netstandard2.0 dependency's netstandard2.0
     /// output quite happily), and a graph-free on-disk parse cannot answer it. It
     /// does not need to: the copy is judged against these outputs by CONTENT, and
-    /// content does not care which framework produced it. Guessing here — picking
-    /// the newest — is exactly what condemned four test projects in AUTOMATION-169.
+    /// content does not care which framework produced it.
     ///
     /// Empty when the project has not been built yet. That is NOT staleness: a
     /// missing artifact is the presence probe's business (a build in flight may
@@ -376,7 +305,7 @@ type Cache() =
     /// conservative-against-false-stale — choice: if any framework was compiled
     /// after the edit, the compile ran. It must never be used as the ORIGIN of a
     /// copy: across TFMs, "newest" and "the one that was copied" are different
-    /// files (AUTOMATION-169).
+    /// files.
     member this.OwnAssembly(projectDir: string, assemblyName: string) : (string * DateTime) option =
         assemblies.GetOrAdd(
             Path.Combine(projectDir, assemblyName),
@@ -409,9 +338,8 @@ let private projectLabel (projectDir: string) =
 ///
 /// There is deliberately no mtime anywhere in here, and no attempt to work out
 /// WHICH candidate MSBuild picked. Both are the same mistake in different clothes:
-/// the module cannot know the chosen target framework, and the moment it guesses
-/// (AUTOMATION-169: it took the newest, which was net8.0, and condemned a perfect
-/// net10.0 copy) it starts making accusations no build can answer. It does not
+/// the module cannot know the chosen target framework, and the moment it guesses it
+/// starts making accusations no build can answer. It does not
 /// need to know. If the copy's bytes are the bytes of ANY current output of its
 /// origin, then the run loads code that matches the sources on disk — which is the
 /// only question this gate was ever asking. If they match NONE of them, the copy
@@ -442,8 +370,7 @@ let private copyVerdict (cache: Cache) (project: string) (copy: string) (candida
 /// The origin candidates, ordered so the one the consumer most likely consumes is
 /// FIRST — purely so a stale message names the framework the reader is looking at.
 /// The VERDICT does not depend on this order (it is content, over the whole set);
-/// only the wording does. Naming a net8.0 origin to a reader staring at a net10.0
-/// output dir is what made the AUTOMATION-169 message read as nonsense.
+/// only the wording does.
 let private consumerTfmFirst (tfmDir: string) (candidates: string list) : string list =
     let consumerTfm =
         Path.GetFileName(tfmDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))

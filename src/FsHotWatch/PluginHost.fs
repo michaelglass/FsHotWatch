@@ -130,13 +130,6 @@ type PluginHost
                         // Every terminal status CARRIES its verdict — the run's own
                         // sworn statement of what it did and how long it took — so
                         // the run record derives startedAt from it and never guesses.
-                        // The old shape tracked a per-plugin RunStartedAt map and,
-                        // on a Failed with no preceding Running, fell back to
-                        // `startedAt = at`: an elapsed of ZERO, rendered as the
-                        // manufactured "started: with no elapsed:" signature — the
-                        // AUTOMATION-99 diagnostic tell, still reachable on the
-                        // Failed path until the verdict moved onto the terminal
-                        // TRANSITION itself.
                         match status with
                         | Completed(at, verdict) ->
                             activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
@@ -546,11 +539,10 @@ type PluginHost
         for p in registeredPlugins do
             match p.Teardown with
             | Some teardown ->
-                // F14 (audit 2026-05-02): plugin Teardown is a third-party-
-                // extension boundary; the broad catch is what keeps one
-                // misbehaving plugin from preventing the rest from cleaning
-                // up. Log ex.ToString() so the type and stack trace are
-                // preserved for diagnosing the offending plugin.
+                // Plugin Teardown is a third-party-extension boundary; the broad
+                // catch is what keeps one misbehaving plugin from preventing the
+                // rest from cleaning up. Log ex.ToString() so the type and stack
+                // trace are preserved for diagnosing the offending plugin.
                 try
                     teardown ()
                 with ex ->
