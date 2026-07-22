@@ -118,10 +118,10 @@ let renderIpcResult
     (noWarnFail: bool)
     (result: string)
     : int =
-    // F8 (audit 2026-05-02): renderIpcResult tolerates non-JSON output (the
-    // daemon emits plain text for some commands; the None branch falls through
-    // to eprintfn). Narrow to :? JsonException so a real programming bug
-    // (e.g. null arg) propagates instead of silently rendering raw text.
+    // renderIpcResult tolerates non-JSON output (the daemon emits plain text for
+    // some commands; the None branch falls through to eprintfn). Narrow to
+    // :? JsonException so a real programming bug (e.g. null arg) propagates instead
+    // of silently rendering raw text.
     let doc =
         try
             Some(JsonDocument.Parse(result))

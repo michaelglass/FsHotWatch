@@ -91,10 +91,9 @@ let private ancestorDirs (fsprojPath: string) (repoRoot: string) : string list =
 /// `.config/dotnet-tools.json` is deliberately NOT included: a project's
 /// `obj/project.assets.json` is derived only from the fsproj + paket/nuget
 /// inputs — the dotnet-tools manifest never participates in a project's package
-/// graph. Counting it here made every project look stale on any dotnet-tool
-/// version bump, triggering per-project restore recovery and skipped scans.
-/// (See `toolsManifest` below for the restore-runner's separate, freshness-
-/// independent need to know whether a tool manifest is in scope.)
+/// graph, so counting it would make every project look stale on any dotnet-tool
+/// version bump. (See `toolsManifest` below for the restore-runner's separate,
+/// freshness-independent need to know whether a tool manifest is in scope.)
 ///
 /// The ancestor-scoped dep files that exist for `fsprojPath` (nearest match per
 /// name), WITHOUT the project's own `.fsproj`. Shared by `dependencyFiles` (which
@@ -240,7 +239,7 @@ let private depRelevantFsprojDigest (fsprojPath: string) : string =
 ///      signature (no re-restore loop), while ANY package-graph change moves it
 ///      forward and re-arms recovery. mtime is NOT a content oracle (`rsync -a` /
 ///      `cp -p` / `git checkout` restore an old mtime after a content rewrite),
-///      so this hashes CONTENT, matching BuildInputsHasher (Bug 1) and
+///      so this hashes CONTENT, matching BuildInputsHasher and
 ///      CheckCache.TimestampCacheKeyProvider.
 ///   2. False-positive SUPPRESSION — because it EXCLUDES fsproj source items, a
 ///      compile-item-only fsproj edit (which bumps the fsproj mtime → the mtime
@@ -443,10 +442,10 @@ let evaluateProject
         Proceed
     | Stale -> handleStale sig_
 
-/// Per-step restore timeout. A hung `dotnet`/`paket` restore (seen in practice:
-/// a `paket restore` wedged ~17 min at 0% CPU) would otherwise block the whole
-/// scan indefinitely; bounding each step surfaces it as a `TimedOut` fail-fast
-/// instead. Generous enough for a cold restore of a large solution.
+/// Per-step restore timeout. A hung `dotnet`/`paket` restore would otherwise
+/// block the whole scan indefinitely; bounding each step surfaces it as a
+/// `TimedOut` fail-fast instead. Generous enough for a cold restore of a large
+/// solution.
 let restoreStepTimeout = TimeSpan.FromMinutes 5.0
 
 /// Group names declared in a `paket.lock`. The first/implicit group is always
@@ -486,7 +485,7 @@ type RestoreStep =
 /// execution so it is unit-testable without shelling out. `productionRestoreRunner`
 /// composes this with `runRestoreSteps`.
 ///
-/// Ordering & inclusion (unchanged from the shell-out it was extracted from):
+/// Ordering & inclusion:
 ///   1. always `dotnet restore "<fsproj>"` in the project directory;
 ///   2. when a `paket.dependencies` is in scope, one `dotnet paket restore
 ///      --group <g>` per group enumerated from the in-scope `paket.lock` (via
@@ -494,7 +493,7 @@ type RestoreStep =
 ///      Passing an explicit `--group` makes paket skip its full-repo
 ///      project-discovery walk (`FindAllProjects`), which otherwise recurses
 ///      forever through symlink loops such as a Nix `.devenv` profile's macOS-SDK
-///      ncurses links (a bare `paket restore` wedged on exactly that). Per-project
+///      ncurses links. Per-project
 ///      reference injection — for repos that use `paket.references` — is already
 ///      handled by the `restore` step above via Paket.Restore.targets'
 ///      `paket restore --project`.

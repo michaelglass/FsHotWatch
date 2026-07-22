@@ -193,8 +193,7 @@ module FileWatcher =
             else
                 // SafeWalk, not `SearchOption.AllDirectories`: this fires on every
                 // coalesced FSEvents batch, so a symlinked dir under a watch root
-                // would drag the cycle blow-up (2026-07-13 wedge) into the hot
-                // watch path.
+                // would drag the symlink-cycle blow-up into the hot watch path.
                 let onCoalesced (dirPath: string) =
                     try
                         if Directory.Exists(dirPath) then

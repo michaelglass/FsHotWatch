@@ -127,11 +127,11 @@ type private LedgerMsg =
     | GetCountsByPlugin of AsyncReplyChannel<Map<string, DiagnosticCounts>>
     | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
-    /// F12 (audit 2026-05-02) test seam: only path that can deterministically
-    /// raise inside the typed match. Production messages don't have a natural
-    /// failure mode (Map/list/Reply ops don't throw on valid state), so without
-    /// this seam the "agent surfaces programming bugs" contract is unobservable.
-    /// Posted only by `ErrorLedger.RaiseFaultForTest`, which is itself internal.
+    /// Test seam: the only path that can deterministically raise inside the typed
+    /// match. Production messages don't have a natural failure mode (Map/list/Reply
+    /// ops don't throw on valid state), so without this seam the "agent surfaces
+    /// programming bugs" contract is unobservable. Posted only by
+    /// `ErrorLedger.RaiseFaultForTest`, which is itself internal.
     | RaiseFaultForTest of exn
 
 /// Plugin name under which the ledger self-reports its own reporter failures.
@@ -184,17 +184,15 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     // global-state dependency entirely.
     let logError = defaultArg logError Logging.error
 
-    // F11 (audit 2026-05-02): IErrorReporter is a third-party-extension
-    // boundary — implementations are user-supplied and may raise anything.
-    // The broad catch keeps a misbehaving reporter from taking down the
-    // ledger agent; log ex.ToString() (not ex.Message) so the type and
-    // stack trace are preserved for diagnosing the offending reporter.
-    //
-    // 2026-06-01: surviving the crash must NOT also erase the verdict. The
-    // logging stays, but callers now also receive the exceptions so a failed
-    // *persist* of a diagnostic can be self-reported as a synthetic error the
-    // aggregate verdict / exit code observes (see syntheticReporterFailure).
-    // Returns the exceptions raised by reporters (empty when all succeeded).
+    // IErrorReporter is a third-party-extension boundary — implementations are
+    // user-supplied and may raise anything. The broad catch keeps a misbehaving
+    // reporter from taking down the ledger agent; log ex.ToString() (not
+    // ex.Message) so the type and stack trace are preserved for diagnosing the
+    // offending reporter. Surviving the crash must not erase the verdict either,
+    // so callers also receive the exceptions — a failed *persist* of a diagnostic
+    // is self-reported as a synthetic error the aggregate verdict / exit code
+    // observes (see syntheticReporterFailure). Returns the exceptions raised by
+    // reporters (empty when all succeeded).
     let notifyReporters action : exn list =
         let mutable failures = []
 
@@ -214,12 +212,12 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
                     let! msg = inbox.Receive()
 
                     let newState =
-                        // F12 (audit 2026-05-02): no inner try/with here — the body
-                        // is a typed match over messages we own and field operations
-                        // that don't throw on valid state. Anything that throws is a
-                        // programming bug; swallowing it would let the bug recur
-                        // forever silently. Unhandled exceptions surface through
-                        // `agent.Error` (exposed publicly as `AgentCrashed`).
+                        // No inner try/with here — the body is a typed match over
+                        // messages we own and field operations that don't throw on
+                        // valid state. Anything that throws is a programming bug;
+                        // swallowing it would let the bug recur forever silently.
+                        // Unhandled exceptions surface through `agent.Error`
+                        // (exposed publicly as `AgentCrashed`).
                         match msg with
                         | Report(plugin, file, entries, version) ->
                             let key = struct (plugin, file)
@@ -270,10 +268,10 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
                                 | None -> true, state
 
                             if accepted then
-                                // Symmetry note (2026-06-01): a failed Clear is logged but not
-                                // self-reported. Unlike a failed Report, it can only leave a
-                                // stale-red on-disk file — never a false-green — and the verdict
-                                // reads the in-memory ledger (cleared here) regardless.
+                                // A failed Clear is logged but not self-reported: unlike a
+                                // failed Report, it can only leave a stale-red on-disk file —
+                                // never a false-green — and the verdict reads the in-memory
+                                // ledger (cleared here) regardless.
                                 notifyReporters (fun r -> r.Clear plugin file) |> ignore
 
                                 { state' with
@@ -377,12 +375,10 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
     do
         agent.Error.Add(fun ex ->
-            // F12 (audit 2026-05-02): an unhandled exception inside the agent
-            // loop is a programming bug. Log loudly with the full stack trace
-            // (ex.ToString(), not ex.Message) so the bug is debuggable; the
-            // agent then stops and subsequent posts queue up unconsumed —
-            // making the failure visible at the next caller rather than
-            // silently dropped as the previous inner try/with did.
+            // An unhandled exception inside the agent loop is a programming bug.
+            // Log loudly with the full stack trace (ex.ToString(), not ex.Message)
+            // so the bug is debuggable; the agent then stops and subsequent posts
+            // queue up unconsumed — making the failure visible at the next caller.
             Logging.error "error-ledger" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Set errors for a plugin + file. Replaces previous. Empty list clears.
@@ -420,15 +416,14 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     member _.HasFailingReasons(warningsAreFailures: bool) =
         agent.PostAndReply(fun rc -> HasFailingReasons(warningsAreFailures, rc))
 
-    /// F12 (audit 2026-05-02): unhandled exceptions inside the mailbox loop
-    /// surface here. Subscribe to observe programming bugs that the previous
-    /// inner try/with would have silently swallowed. The default subscriber
-    /// (wired in `do agent.Error.Add ...`) logs with the full stack.
+    /// Unhandled exceptions inside the mailbox loop surface here. Subscribe to
+    /// observe programming bugs. The default subscriber (wired in
+    /// `do agent.Error.Add ...`) logs with the full stack.
     member _.AgentCrashed: IEvent<exn> = agent.Error
 
-    /// F12 test seam: deterministically raise inside the agent loop. Used by
-    /// tests to verify the "agent surfaces programming bugs" contract; the
-    /// production messages don't have a natural failure mode (Map/list/Reply
-    /// ops don't throw on valid state). Internal — only `FsHotWatch.Tests`
-    /// can call this via `InternalsVisibleTo`.
+    /// Test seam: deterministically raise inside the agent loop. Used by tests to
+    /// verify the "agent surfaces programming bugs" contract; the production
+    /// messages don't have a natural failure mode (Map/list/Reply ops don't throw
+    /// on valid state). Internal — only `FsHotWatch.Tests` can call this via
+    /// `InternalsVisibleTo`.
     member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)

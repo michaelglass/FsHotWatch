@@ -116,12 +116,10 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
     | IdleExitConfig.Disabled -> None
     | IdleExitConfig.Minutes n -> if n > 0 then Some n else None
 
-/// Atomic fire-once latch. `0` = armed, `1` = fired. The transition is performed
-/// with `Interlocked.CompareExchange` so that under concurrent timer ticks
-/// exactly one caller observes the arming-to-fired transition; every other
-/// caller (including re-fires after shutdown begins) is rejected. This is the
-/// fix for the prior experiment's non-atomic latch, which fired repeatedly under
-/// concurrent ticks.
+/// Atomic fire-once latch. `0` = armed, `1` = fired. The transition uses
+/// `Interlocked.CompareExchange` so that under concurrent timer ticks exactly one
+/// caller observes the arming-to-fired transition; every other caller (including
+/// re-fires after shutdown begins) is rejected.
 [<NoComparison; NoEquality>]
 type FireLatch = { mutable state: int }
 

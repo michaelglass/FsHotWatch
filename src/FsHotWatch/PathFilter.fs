@@ -18,8 +18,8 @@ let isGeneratedPath (path: string) =
 /// `_content/DefaultRunnerReporters.fs` under `~/.nuget/packages/...`). Such
 /// files are third-party — compiled into the project, but never the repo's own
 /// source. The analyze/lint hosts use this to skip inspecting them (running
-/// FSharpLint over xunit's `_content` crashed the analyzer host — see
-/// the tracked issue); `isExcludedPath` also uses it for its out-of-repo test.
+/// FSharpLint over xunit's `_content` crashed the analyzer host);
+/// `isExcludedPath` also uses it for its out-of-repo test.
 let isOutsideRepo (repoRoot: string) (path: string) : bool =
     let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
     Path.IsPathRooted(rel) || rel.StartsWith("..", System.StringComparison.Ordinal)

@@ -14,25 +14,16 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 
 /// Cache backend for the FCS check pipeline.
 ///
-/// The tracked issue removed the `FileBackend` (`"cache": "file"` / `"jj"`), which was
-/// the DEFAULT and a structural NO-OP: FCS types are not serializable, so its
-/// `TryGet` always reconstructed `CheckResults = ParseOnly`, and `ParseOnly` is the
-/// one thing `CheckPipeline.tryGetCachedFullCheck` treats as a MISS. It could not
-/// hit — ever, by construction, on any input. What it DID do was write and
-/// enumerate a JSON file per checked file per daemon restart (1,051 dead entries
-/// measured in one repo, 110 in this one), and mislead the code downstream that
-/// reasoned about it as if it were real (`clearFcsCheckCache` "so cache-hit files
-/// re-index" — vacuous; there are no cache-hit files).
-///
-/// Making it real would mean serialising FCS check results, which is a large
-/// redesign with no demonstrated need. So it is gone, and the config value that
-/// selected it is rejected out loud rather than silently accepted.
+/// There is no file backend: FCS check results are not serializable (a deserialized
+/// entry always reconstructs as `ParseOnly`, which
+/// `CheckPipeline.tryGetCachedFullCheck` treats as a MISS), so it could never hit. A
+/// config value that selects the removed `"cache": "file"` / `"jj"` backend is
+/// rejected out loud rather than silently accepted.
 type CacheBackendConfig =
-    /// No check-result cache. This is the DEFAULT, and — being honest about it — it
-    /// is also exactly what the old `FileBackend` default actually did.
+    /// No check-result cache. This is the DEFAULT.
     | NoCache
-    /// In-memory LRU cache (lost on restart). Unlike the removed file backend this
-    /// one really works: it holds the live `FileCheckResult`, FCS types and all.
+    /// In-memory LRU cache (lost on restart). Holds the live `FileCheckResult`, FCS
+    /// types and all.
     | InMemoryOnly of maxSize: int
 
 /// Create cache backend and key provider from config.
@@ -98,13 +89,12 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
 /// Default global per-operation timeout (seconds) applied when neither a
 /// per-entry `timeoutSec` nor the global `.fshw.json` `timeoutSec` is set.
 ///
-/// This is the PRIMARY wedge cure: process-spawning plugins (build / tests /
-/// fileCommands) previously fell back to `Timeout.InfiniteTimeSpan` when no
-/// timeout was configured, so an op that hung (a deadlocked `dotnet build`, a
-/// test runner stuck on a socket) hung the daemon FOREVER with no recovery
-/// short of `fshw stop` + cold restart. With a non-`None` default, an unbounded
-/// op becomes `TimedOut` — the process tree is killed and the daemon stays
-/// responsive.
+/// This bounds process-spawning plugins (build / tests / fileCommands): without a
+/// default they could fall back to `Timeout.InfiniteTimeSpan`, so an op that hung
+/// (a deadlocked `dotnet build`, a test runner stuck on a socket) would hang the
+/// daemon with no recovery short of `fshw stop` + cold restart. With a non-`None`
+/// default, an unbounded op becomes `TimedOut` — the process tree is killed and the
+/// daemon stays responsive.
 ///
 /// 600s (10 min) is deliberately generous: large builds and full test suites
 /// legitimately run for minutes, so the default must never falsely kill real
@@ -803,8 +793,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
 ///
-/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec` hooks
-/// are DELIBERATELY preserved (they pass through `{ config with ... }` untouched):
+/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec` hooks are DELIBERATELY
+/// preserved (they pass through `{ config with ... }` untouched):
 /// `--run-once` is exactly the transport CI uses, so the box-wide gate-lock those
 /// hooks bracket must fire on the run-once path too, not only over the daemon.
 let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
@@ -876,8 +866,7 @@ let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (re
 /// fire). Extracted (like `invokeOnChangeWith` above) so BOTH arms are
 /// unit-testable with an injected clock: the suppressed arm only executes in
 /// production when the OS double-fires events within the window, which is
-/// nondeterministic and used to coin-flip this file's branch coverage in the
-/// ratchet.
+/// nondeterministic.
 let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: TimeSpan) (now: DateTime) : bool =
     lock gate (fun () ->
         if now - lastFire.Value > window then
@@ -986,19 +975,14 @@ let shellInvocation (cmd: string) : string * string =
 
 /// Wrap a shell command string into a callback that runs it as a bounded child.
 ///
-/// this used to call `runProcess` with `InfiniteTimeSpan`, which
-/// made the `beforeRun` hook the single most dangerous spawn in the daemon. It
-/// runs INSIDE the `RunExclusive "tests"` slot, so a hook that hangs — a
-/// `dotnet restore` stuck on the network, or (worse) a hook that EXITS while a
-/// grandchild MSBuild node still holds the inherited stdout pipe, which the old
-/// unbounded success-path `Task.WaitAll` waited on forever — held the tests slot
-/// for good: the plugin stayed `Running`, every later `check` burned its full
-/// deadline, and the only recovery was a daemon restart.
-///
-/// Now it is a `ProcessBounds.silent` child (`dotnet restore --verbosity quiet`
-/// prints nothing, so output cannot prove liveness) bounded by `timeoutSec` —
-/// which carries the same `DefaultGlobalTimeoutSec` default as every other spawn.
-/// A hung hook now TIMES OUT into `Failed`/`Aborted` with a legible diagnostic.
+/// This runs INSIDE the `RunExclusive "tests"` slot, so a hook that hangs — a
+/// `dotnet restore` stuck on the network, or a hook that EXITS while a grandchild
+/// MSBuild node still holds the inherited stdout pipe — would hold the tests slot
+/// for good (the plugin stays `Running`, every later `check` burns its full
+/// deadline). So it is a `ProcessBounds.silent` child (`dotnet restore --verbosity
+/// quiet` prints nothing, so output cannot prove liveness) bounded by `timeoutSec`,
+/// which carries the same `DefaultGlobalTimeoutSec` default as every other spawn. A
+/// hung hook TIMES OUT into `Failed`/`Aborted` with a legible diagnostic.
 let internal makeShellHookWithResult
     (label: string)
     (timeoutSec: int option)
@@ -1043,8 +1027,8 @@ let private makeShellHook
             // command string: a failing `beforeRun` throw propagates through
             // TestPrune's Aborted lifecycle into the plugin's Failed status, so
             // including the hook's stdout/stderr here is what makes `fshw check`
-            // / `fshw errors` show WHY the preflight failed,
-            // rather than only that it did.
+            // / `fshw errors` show WHY the preflight failed, rather than only
+            // that it did.
             failwith $"%s{label} failed: %s{cmd}\n%s{output}"
 
 /// Register plugins on the daemon based on the loaded configuration.

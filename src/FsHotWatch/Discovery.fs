@@ -20,10 +20,9 @@ let existingDiscoveryRoots (repoRoot: string) : string list =
 /// their own exclude semantics (`PathFilter.isExcludedPath`).
 ///
 /// Walks via `SafeWalk` (never descends a symlinked dir, depth-capped): a
-/// naive `SearchOption.AllDirectories` follows dir symlinks into cycles and is
-/// what wedged the daemon on 2026-07-13. These roots (`src`/`tests`) don't
-/// reach `.devenv` today, but the walk must be safe by construction, not by
-/// luck of where it happens to be rooted.
+/// naive `SearchOption.AllDirectories` follows dir symlinks into cycles. These
+/// roots (`src`/`tests`) don't reach `.devenv` today, but the walk must be safe
+/// by construction, not by luck of where it happens to be rooted.
 let findFsprojFiles (repoRoot: string) : string list =
     existingDiscoveryRoots repoRoot
     |> List.collect (fun dir ->

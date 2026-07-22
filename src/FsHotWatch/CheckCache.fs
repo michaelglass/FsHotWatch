@@ -37,16 +37,14 @@ type ICheckCacheBackend =
 /// resolves on retry produces a real read instead of a poisoned cache entry.
 type ICacheKeyProvider =
     /// Compute a content hash for a file. Returns None on read failure
-    /// (cache miss + retry; see audit F7).
+    /// (cache miss + retry).
     abstract member GetFileHash: filePath: string -> string option
 
 /// Content-addressed cache key provider. SHA-256 of the file bytes — two files
 /// with identical content hash the same regardless of mtime, size-only metadata,
-/// or VCS state. This was the original design intent for the FCS cache key
-/// (matching what the plugin task cache already does at the merkle level).
-///
-/// `TimestampCacheKeyProvider` is preserved as a name for backward compatibility;
-/// the implementation now reads and hashes file content.
+/// or VCS state (matching what the plugin task cache does at the merkle level).
+/// Despite the "Timestamp" in the name (kept for backward compatibility), the
+/// implementation reads and hashes file CONTENT.
 type TimestampCacheKeyProvider() =
     interface ICacheKeyProvider with
         member _.GetFileHash(filePath: string) : string option =
@@ -57,7 +55,6 @@ type TimestampCacheKeyProvider() =
                 let hash = System.Security.Cryptography.SHA256.HashData(bytes)
                 Some(System.Convert.ToHexString(hash).ToLowerInvariant())
             with ex ->
-                // F7 — see docs/plans/2026-05-02-error-handling-audit.md.
                 // Returning None forces the caller to treat this as a cache
                 // miss (no key, no write). A transient lock (editor save,
                 // antivirus scan) that resolves on retry then produces a real
@@ -103,8 +100,8 @@ let hashDiagnosticSignatures (signatures: DiagnosticSignature seq) : string =
 /// Hash a thunk that produces diagnostic signatures. If the thunk throws,
 /// fold the exception's type and message into a synthesized hash payload so
 /// distinct failure modes produce distinct cache keys (instead of all
-/// collapsing to a single magic literal — see audit F1). The exception is
-/// logged at error so a real bug isn't silently absorbed.
+/// collapsing to a single magic literal). The exception is logged at error so a
+/// real bug isn't silently absorbed.
 ///
 /// Extracted as a thunk-taking helper so the failure path is unit-testable
 /// without constructing a real (or breakable) FSharpCheckFileResults.
@@ -150,8 +147,7 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
             :> DiagnosticSignature seq)
 
 /// Compute a CacheKey for a file using the given provider. Returns None when
-/// the file cannot be read — callers must treat this as a cache miss
-/// (see audit F7).
+/// the file cannot be read — callers must treat this as a cache miss.
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
     provider.GetFileHash(filePath)
     |> Option.map (fun fileHash ->

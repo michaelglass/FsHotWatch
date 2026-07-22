@@ -70,17 +70,16 @@ let internal computeProjectFingerprint (graph: ProjectGraphAccessor) (testFsproj
     let referenced = collectRefs Set.empty (graph.GetProjectReferences testFsproj)
 
     // `List.map`, NOT `List.choose`. A project whose DLL path the graph cannot resolve
-    // used to be DROPPED — and a dropped project contributes nothing to the
-    // fingerprint, so the fingerprint never moves when it changes, so a dependency bump
-    // inside it never fans out and its tests are never selected. That is
-    // UNDER-SELECTION: the exact failure this module exists to prevent, rebuilt inside
-    // it. `ContentHash` names it as unsafe answer #1 — "SKIP the file — the hash
-    // matches, and the claim silently covers a file nobody looked at."
+    // must NOT be dropped: a dropped project contributes nothing to the fingerprint, so
+    // the fingerprint never moves when it changes, so a dependency bump inside it never
+    // fans out and its tests are never selected — UNDER-SELECTION, the exact failure this
+    // module exists to prevent. `ContentHash` names it as unsafe answer #1 — "SKIP the
+    // file — the hash matches, and the claim silently covers a file nobody looked at."
     //
     // So an unresolvable DLL hashes to `UnhashableContent`, exactly as an unreadable one
-    // does: ONE value for I-could-not-read-it, repo-wide (`DaemonIdentity`'s words), and
-    // one that can never collide with a real digest — so missing→present still flips the
-    // fingerprint exactly once, which is the "rebuilt" signal.
+    // does: ONE value for I-could-not-read-it, repo-wide, and one that can never collide
+    // with a real digest — so missing→present still flips the fingerprint exactly once,
+    // which is the "rebuilt" signal.
     let dllHashes =
         referenced
         |> Set.toList
