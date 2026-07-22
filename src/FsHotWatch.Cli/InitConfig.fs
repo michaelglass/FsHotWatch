@@ -111,7 +111,10 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       TimeoutSec = None
       IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent
-      FsEventsLatencyMs = 250 }
+      FsEventsLatencyMs = 250
+      BeforeRun = None
+      AfterRun = None
+      RunHookTimeoutSec = None }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =

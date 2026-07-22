@@ -67,6 +67,7 @@
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
+    <Compile Include="RunLevelHookGapTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
     <Compile Include="LoggingTests.fs" />
   </ItemGroup>
