@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.8 - 2026-07-22
+
 - feat: **generic run-level `beforeRun` / `afterRun` hook pair** (AUTOMATION-188). Two new
   optional top-level `.fshw.json` keys let a consumer bracket a whole `fshw check`/`confirm`
   run with external shell-outs — `beforeRun` before any plugin work, `afterRun` as a true
