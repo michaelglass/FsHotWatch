@@ -1603,7 +1603,10 @@ let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
 let private cacheEntry (summary: string) : FsHotWatch.TaskCache.TaskCacheResult =
     { CacheKey = ContentHash.create "k"
       Errors = []
-      Status = Completed(DateTime.UtcNow, RunVerdict.create summary TimeSpan.Zero)
+      // This fixture feeds a cache-CLEARING test only (entries are never
+      // replayed), so the CachedStatus content is immaterial — a run verdict
+      // keeps the distinguishing `summary` meaningful.
+      Status = FsHotWatch.TaskCache.CachedRunCompleted(RunVerdict.create summary TimeSpan.Zero)
       EmittedEvents = [] }
 
 [<Fact(Timeout = 15000)>]
