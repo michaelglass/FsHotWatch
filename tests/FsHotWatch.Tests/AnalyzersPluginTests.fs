@@ -463,6 +463,153 @@ let ``regression: FileChecked replays from cache on second emission with same co
     test <@ computedKey = computedKey2 @>
 
 [<Fact(Timeout = 15000)>]
+let ``regression AUTOMATION-186: cache replay must not resurrect a stale global findings summary`` () =
+    // Field incident (2026-07-21, fshotwatch.cli 0.14.0-alpha.6): `fshw confirm`
+    // rendered "✓ analyzers — analyzed 1044 files, 5 findings (5 errors,
+    // 0 warnings) (cached)" while `fshw status analyzers` had ZERO accumulated
+    // diagnostics and the verdict was green. The 5 findings had been found AND
+    // fixed earlier in the same daemon session.
+    //
+    // Mechanism: the plugin's per-FileChecked cache entry stores a terminal
+    // status whose summary is a snapshot of GLOBAL state (the whole
+    // DiagnosticsByFile map + RunAnalyzed) at write time, keyed only by
+    // per-file content. Fixing findings in file A rewrites A's entry, but every
+    // OTHER file's entry still carries the old global count — and the framework
+    // replays that stored string verbatim (PluginFramework.tryReplayCache),
+    // while the error replay for the clean file correctly leaves the ledger
+    // empty. Summary and ledger diverge; the verdict gates on the ledger.
+    //
+    // The fix (AUTOMATION-186) makes the stale shape UNREPRESENTABLE: a per-file
+    // entry (`File = Some`) is a `CachedFileCompleted` carrying only its measured
+    // duration — no summary field exists to snapshot global state into. The
+    // replay DERIVES the summary from the live ledger at report time, so it
+    // cannot re-assert a count the ledger no longer holds.
+    //
+    // This test distills the incident timeline: pre-populate the cache with the
+    // exact per-file entry the plugin's capture window writes for a clean file
+    // (its own error replay is a clear), re-check that file (cache hit → replay),
+    // and demand any findings count the rendered summary asserts agrees with the
+    // currently-valid (empty) diagnostics set.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler = create None [] None DiagnosticSeverity.Hint
+    host.RegisterHandler(handler)
+
+    let cleanFile = "/tmp/test/StaleSummary.fs"
+    let checkResult = fakeResult cleanFile
+    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let cleanEntry: FsHotWatch.TaskCache.TaskCacheResult =
+        { CacheKey = cacheKey
+          // The clean file's own error replay is a clear — correct, and the
+          // reason the ledger (and thus the verdict) stays green. In the
+          // incident session, findings in OTHER files were live when this entry
+          // was minted; under the old shape its summary snapshotted the global
+          // "5 findings" count, which then replayed verbatim over this clear.
+          Errors = [ cleanFile, [] ]
+          Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 11.0)
+          EmittedEvents = [] }
+
+    let compKey: FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = "analyzers"
+          File = Some cleanFile }
+
+    cacheIface.Set compKey cacheKey cleanEntry
+
+    // Re-check the unchanged clean file: cache HIT → framework replay path.
+    host.EmitFileChecked(checkResult)
+    waitForTerminalStatus host "analyzers" 15000
+
+    // Premise of the incident: after replay the currently-valid findings set is
+    // EMPTY — this is the set `fshw status` lists and the verdict validates.
+    let liveFindings =
+        host.GetErrorsByPlugin("analyzers")
+        |> Map.toList
+        |> List.sumBy (fun (_, entries) -> List.length entries)
+
+    test <@ liveFindings = 0 @>
+
+    let summary =
+        match host.GetStatus("analyzers") with
+        | Some(Completed(_, v)) -> v.Summary
+        | Some(Failed(_, _, v)) -> v.Summary
+        | other -> failwith $"expected a terminal analyzers status, got %A{other}"
+
+    // THE INVARIANT: the rendered summary must derive from the CURRENT findings
+    // set. Any findings count it asserts has to match the live diagnostics —
+    // a summary claiming findings the ledger doesn't have is the false
+    // "5 findings (cached)" over a green verdict.
+    let claimedFindings =
+        let m = System.Text.RegularExpressions.Regex.Match(summary, @"(\d+) findings")
+        if m.Success then int m.Groups.[1].Value else 0
+
+    Assert.True(
+        (claimedFindings = liveFindings),
+        $"cache replay re-asserted a stale findings count: summary=\"%s{summary}\" claims %d{claimedFindings} findings, but the currently-valid diagnostics set has %d{liveFindings}"
+    )
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-186: per-file replay WITH findings derives EXACTLY those findings, not a hardcoded zero`` () =
+    // The inverse of the clean-file case. A per-file entry that replays REAL
+    // findings must derive a summary reporting EXACTLY those findings — proving
+    // the derivation reads the live ledger (populated by the entry's own error
+    // replay) rather than emitting a constant. A summary hardcoded to
+    // "0 findings" would pass the clean-file regression above yet lie here.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler = create None [] None DiagnosticSeverity.Hint
+    host.RegisterHandler(handler)
+
+    let dirtyFile = "/tmp/test/WithFindings.fs"
+    let checkResult = fakeResult dirtyFile
+    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let findings = [ for i in 1..5 -> ErrorEntry.error $"finding %d{i}" ]
+
+    let dirtyEntry: FsHotWatch.TaskCache.TaskCacheResult =
+        { CacheKey = cacheKey
+          // The entry replays five live findings for this file into the ledger.
+          Errors = [ dirtyFile, findings ]
+          Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 11.0)
+          EmittedEvents = [] }
+
+    let compKey: FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = "analyzers"
+          File = Some dirtyFile }
+
+    cacheIface.Set compKey cacheKey dirtyEntry
+
+    // Re-check the file: cache HIT → framework replay path lands the findings.
+    host.EmitFileChecked(checkResult)
+    waitForTerminalStatus host "analyzers" 15000
+
+    let liveFindings =
+        host.GetErrorsByPlugin("analyzers")
+        |> Map.toList
+        |> List.sumBy (fun (_, entries) -> List.length entries)
+
+    test <@ liveFindings = 5 @>
+
+    let summary =
+        match host.GetStatus("analyzers") with
+        | Some(Completed(_, v)) -> v.Summary
+        | Some(Failed(_, _, v)) -> v.Summary
+        | other -> failwith $"expected a terminal analyzers status, got %A{other}"
+
+    let claimedFindings =
+        let m = System.Text.RegularExpressions.Regex.Match(summary, @"(\d+) findings")
+        if m.Success then int m.Groups.[1].Value else 0
+
+    Assert.True(
+        (claimedFindings = liveFindings),
+        $"derived summary must report the live findings exactly: summary=\"%s{summary}\" claims %d{claimedFindings}, live diagnostics has %d{liveFindings}"
+    )
+
+[<Fact(Timeout = 15000)>]
 let ``regression: FileChecked with TaskCache writes a cache entry on terminal status`` () =
     // Before this fix, AnalyzersPlugin used Async.Start to dispatch its work,
     // which returned `state` synchronously while the analysis ran in the

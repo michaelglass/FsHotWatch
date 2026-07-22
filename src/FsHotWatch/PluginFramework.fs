@@ -247,6 +247,11 @@ type PluginHostServices =
         ReportErrors: PluginName -> string -> ErrorEntry list -> unit
         ClearErrors: PluginName -> string -> unit
         ClearPlugin: PluginName -> unit
+        /// Read this plugin's CURRENT ledger set (file -> entries) — the same
+        /// set `fshw status` lists and the verdict gates on. The cache-replay
+        /// path derives per-file entries' summaries from it (AUTOMATION-186):
+        /// a per-file cache entry carries no summary of its own.
+        GetPluginDiagnostics: PluginName -> Map<string, ErrorEntry list>
         EmitBuildCompleted: BuildResult -> unit
         EmitTestRunStarted: TestRunStarted -> unit
         EmitTestProgress: TestProgress -> unit
@@ -271,6 +276,20 @@ type PluginHostServices =
         /// until the daemon installs the live graph.
         ProjectGraph: ProjectGraphAccessor
     }
+
+/// The replay summary for a per-file cache entry (AUTOMATION-186), derived
+/// from the plugin's LIVE ledger set — the same findings the verdict is
+/// computed from, read AFTER the entry's own error replay has landed. Never
+/// taken from the stored entry: a per-file key cannot testify to a
+/// whole-session claim (the scope rule on `TaskCache.CachedStatus`).
+/// Non-empty by construction (counts always render), so `RunVerdict.create`
+/// can never throw on it.
+let internal ledgerSummary (diagnosticsByFile: Map<string, ErrorEntry list>) : string =
+    let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
+    let counts = DiagnosticCounts.ofEntries allEntries
+    let findings = List.length allEntries
+
+    $"%d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings)"
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
@@ -344,6 +363,25 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 false
             else
                 services.ReportStatus handler.Name s
+                true)
+
+    /// A replayed terminal whose summary is DERIVED from the live ledger (a
+    /// per-file cache entry, AUTOMATION-186) must build that summary at the same
+    /// instant the report decision is made: if an exclusive run owns the plugin
+    /// the replay is suppressed and the ledger is never read; otherwise the
+    /// summary reflects exactly the ledger snapshot this report lands on. Unlike
+    /// `reportUnlessRunOwns`, the ownership gate runs FIRST and `mkTerminal` is
+    /// evaluated only on the report path — the derive-and-report is one atomic
+    /// step under `statusLock`, so summary and verdict cannot diverge across the
+    /// read. `mkTerminal` is TERMINAL by construction (the replay only ever
+    /// builds `Completed`/`Failed`), so no `isTerminal` re-check is needed.
+    let reportDerivedTerminalUnlessRunOwns (onSuppressed: unit -> unit) (mkTerminal: unit -> PluginStatus) : bool =
+        lock statusLock (fun () ->
+            if anyRunSlotBusy () then
+                onSuppressed ()
+                false
+            else
+                services.ReportStatus handler.Name (mkTerminal ())
                 true)
 
     /// Publish `s` WITHOUT the ownership check, still serialised against claims
@@ -625,11 +663,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // "completed" instantly via cache replay.
                                 let nowAt = System.DateTime.UtcNow
 
-                                // The replayed verdict is the ORIGINAL run's evidence —
-                                // keep it (summary + true duration) and mark it as
-                                // served from cache so the rendering never passes a
-                                // replay off as a fresh run. Idempotent: a re-cached
-                                // replay doesn't stack suffixes.
+                                // Mark every replayed verdict as served from cache so
+                                // the rendering never passes a replay off as a fresh
+                                // run. Idempotent: a re-cached replay doesn't stack
+                                // suffixes.
                                 let cachedSuffix = " (cached)"
 
                                 let markCached (v: RunVerdict) =
@@ -638,11 +675,43 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     else
                                         RunVerdict.create (v.Summary + cachedSuffix) v.Elapsed
 
-                                let replayStatus =
+                                // AUTOMATION-186 — what the replayed verdict may say
+                                // is bounded by the entry's scope:
+                                //
+                                // • Whole-run entries (`CachedRun*`) store a verdict
+                                //   that is a pure function of the key — the ORIGINAL
+                                //   run's evidence (summary + true duration) replays
+                                //   verbatim.
+                                // • Per-file entries (`CachedFile*`) carry no summary
+                                //   BY CONSTRUCTION. Their summary is derived from the
+                                //   plugin's live ledger set — the same findings the
+                                //   verdict gates on — AFTER the error replay above has
+                                //   landed this entry's findings in the ledger. The
+                                //   derivation runs INSIDE the ownership guard below
+                                //   (never here), so the ledger snapshot the summary
+                                //   reflects is exactly the one the report lands on and
+                                //   summary and verdict cannot diverge across the read.
+                                //   (Field evidence: "analyzed 1044 files, 5 findings
+                                //   (cached)" rendered over an empty ledger and a green
+                                //   verdict — the 5 were found and fixed earlier in the
+                                //   same session.)
+                                let derivedVerdict elapsed =
+                                    RunVerdict.create
+                                        (ledgerSummary (services.GetPluginDiagnostics handler.Name))
+                                        elapsed
+
+                                // Built lazily: `reportDerivedTerminalUnlessRunOwns`
+                                // evaluates this only on the report path, so the
+                                // per-file ledger read never happens when the replay
+                                // is suppressed (an exclusive run owns the status).
+                                let mkReplayTerminal () =
                                     match result.Status with
-                                    | Completed(_, v) -> Completed(nowAt, markCached v)
-                                    | Failed(err, _, v) -> Failed(err, nowAt, markCached v)
-                                    | s -> s
+                                    | TaskCache.CachedRunCompleted v -> Completed(nowAt, markCached v)
+                                    | TaskCache.CachedRunFailed(err, v) -> Failed(err, nowAt, markCached v)
+                                    | TaskCache.CachedFileCompleted elapsed ->
+                                        Completed(nowAt, markCached (derivedVerdict elapsed))
+                                    | TaskCache.CachedFileFailed(err, elapsed) ->
+                                        Failed(err, nowAt, markCached (derivedVerdict elapsed))
 
                                 // AUTOMATION-95/99: a cached TERMINAL status must never
                                 // claim the plugin is at rest while it is mid-exclusive-run.
@@ -666,12 +735,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // replay — only the status claim is suppressed. Same
                                 // ownership rule as `reportStatusGuarded`, kept explicit
                                 // here for the replay-specific diagnostic.
-                                reportUnlessRunOwns
+                                reportDerivedTerminalUnlessRunOwns
                                     (fun () ->
                                         FsHotWatch.Logging.debug
                                             (PluginName.value handler.Name)
                                             "cache replay: suppressing cached terminal status — an exclusive run is in flight")
-                                    replayStatus
+                                    mkReplayTerminal
                                 |> ignore
 
                                 // Replay emitted events. Cached test-lifecycle events carry the
@@ -837,15 +906,30 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // Only cache when the status reached a terminal state AND
                                 // the handler did not launch a new run in the same window
                                 // (see `launchedRunInWindow`).
-                                match capturedStatus with
-                                | Some(Completed _ as s)
-                                | Some(Failed _ as s) when not launchedRunInWindow ->
-                                    let compKey = compositeKey event
+                                // The mint site is where the scope rule is enforced
+                                // (AUTOMATION-186): a per-file entry (`File = Some`)
+                                // may not store the status summary — it is a
+                                // whole-session claim a per-file key cannot back —
+                                // nor the timestamp (replay re-stamps `now`). Only a
+                                // whole-run entry keeps its verdict, which IS a pure
+                                // function of its key.
+                                let compKey = compositeKey event
 
+                                let cachedStatus =
+                                    match capturedStatus, compKey.File with
+                                    | Some(Completed(_, v)), Some _ -> Some(TaskCache.CachedFileCompleted v.Elapsed)
+                                    | Some(Failed(err, _, v)), Some _ ->
+                                        Some(TaskCache.CachedFileFailed(err, v.Elapsed))
+                                    | Some(Completed(_, v)), None -> Some(TaskCache.CachedRunCompleted v)
+                                    | Some(Failed(err, _, v)), None -> Some(TaskCache.CachedRunFailed(err, v))
+                                    | (Some(Idle | Running _) | None), _ -> None
+
+                                match cachedStatus with
+                                | Some status when not launchedRunInWindow ->
                                     let result: TaskCache.TaskCacheResult =
                                         { CacheKey = cacheKey
                                           Errors = capturedErrors |> Seq.toList
-                                          Status = s
+                                          Status = status
                                           EmittedEvents = capturedEvents |> Seq.toList }
 
                                     cache.Set compKey cacheKey result

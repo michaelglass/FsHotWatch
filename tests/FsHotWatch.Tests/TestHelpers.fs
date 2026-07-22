@@ -647,6 +647,17 @@ let completedAt (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
 let failedAt (error: string) (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
     FsHotWatch.Events.Failed(error, at, testVerdict)
 
+/// Cached per-file terminal for cache-entry fixtures. Per-file entries carry
+/// no summary or timestamp BY CONSTRUCTION (AUTOMATION-186) — only the
+/// measured duration; the replay derives the summary from the live ledger.
+let cachedFileDone: FsHotWatch.TaskCache.CachedStatus =
+    FsHotWatch.TaskCache.CachedFileCompleted System.TimeSpan.Zero
+
+/// Cached whole-run terminal carrying the canonical test verdict (run entries
+/// are keyed on their full input, so the verdict replays verbatim).
+let cachedRunDone: FsHotWatch.TaskCache.CachedStatus =
+    FsHotWatch.TaskCache.CachedRunCompleted testVerdict
+
 /// `IpcParsing.parsePluginStatuses`, for tests that are asserting on the CONTENTS of a
 /// payload they already know parses. It FAILS the test on an unreadable payload rather
 /// than degrading to an empty map — which is the same rule the production callers now

@@ -20,6 +20,7 @@ let private defaultServices: PluginHostServices =
       ReportErrors = fun _ _ _ -> ()
       ClearErrors = fun _ _ -> ()
       ClearPlugin = fun _ -> ()
+      GetPluginDiagnostics = fun _ -> Map.empty
       EmitBuildCompleted = fun _ -> ()
       EmitTestRunStarted = fun _ -> ()
       EmitTestProgress = fun _ -> ()
@@ -415,7 +416,7 @@ let ``pre-populated cache replays on the very first dispatch`` () =
             cacheKey
             { CacheKey = cacheKey
               Errors = []
-              Status = completedAt System.DateTime.UtcNow
+              Status = cachedRunDone
               EmittedEvents = [] }
 
         let updateCalls = ref 0
@@ -514,7 +515,7 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
             cacheKey
             { CacheKey = cacheKey
               Errors = []
-              Status = completedAt System.DateTime.UtcNow
+              Status = cachedRunDone
               EmittedEvents = [] }
 
         let keyCalls = ref 0
@@ -671,7 +672,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                 [ ("*", [])
                   ("/tmp/clear-me.fs", [])
                   ("/tmp/has-errors.fs", [ ErrorEntry.error "x" ]) ]
-              Status = completedAt System.DateTime.UtcNow
+              Status = cachedRunDone
               EmittedEvents = emitted }
 
         let buildSeen = ref 0
@@ -1614,11 +1615,11 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
     test <@ cached.IsSome @>
 
     match cached.Value.Status with
-    | Failed(err, _, v) ->
+    | TaskCache.CachedRunFailed(err, v) ->
         test <@ err = "2 failed: Foo, Bar" @>
         test <@ v.Summary = "1 passed, 2 failed" @>
         test <@ v.Elapsed = System.TimeSpan.FromSeconds 7.0 @>
-    | other -> failwithf "expected a cached Failed carrying its verdict, got %A" other
+    | other -> failwithf "expected a cached run Failed carrying its verdict, got %A" other
 
 [<Fact(Timeout = 25000)>]
 let ``cache path: only an EARNED terminal is written — every other shape is skipped`` () =
@@ -1935,7 +1936,7 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
             cacheKey
             { CacheKey = cacheKey
               Errors = []
-              Status = completedAt System.DateTime.UtcNow
+              Status = cachedRunDone
               EmittedEvents = [] }
 
         let customHandled = ref 0
@@ -1979,3 +1980,33 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
         test <@ !customHandled = 1 @>
     }
     |> Async.RunSynchronously
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-186: the derived per-file replay summary feeds `RunVerdict.create`,
+// which THROWS on an empty summary. `ledgerSummary` must therefore render a
+// non-empty string for EVERY ledger state — including the empty ledger, where a
+// clean per-file replay derives its summary — or the replay path would crash
+// instead of reporting a green "0 findings".
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``ledgerSummary is non-empty on an empty ledger and survives RunVerdict.create`` () =
+    let emptySummary = ledgerSummary Map.empty
+    test <@ emptySummary <> "" @>
+
+    // The replay path builds exactly this; RunVerdict.create must not throw.
+    let verdict = RunVerdict.create emptySummary System.TimeSpan.Zero
+    test <@ verdict.Summary = emptySummary @>
+
+[<Fact(Timeout = 15000)>]
+let ``ledgerSummary counts a populated ledger and stays non-empty`` () =
+    let populated =
+        Map.ofList
+            [ "/a.fs", [ ErrorEntry.error "boom"; ErrorEntry.warningWithDetail "meh" "d" ]
+              "/b.fs", [ ErrorEntry.error "kaput" ] ]
+
+    let summary = ledgerSummary populated
+    test <@ summary <> "" @>
+    // Three findings total across the two files (two errors, one warning).
+    test <@ summary.Contains "3 findings" @>
+    test <@ (RunVerdict.create summary System.TimeSpan.Zero).Summary = summary @>

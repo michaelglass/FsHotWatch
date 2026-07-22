@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- fix: **a cached per-file plugin result can no longer replay a stale whole-session
+  summary that contradicts the verdict** (AUTOMATION-186). The analyzers plugin computed
+  its `summary:` line from the whole-session diagnostics map + run counter, but the
+  framework cached that terminal status under a *per-file* key whose content hash covers
+  only that one file. Fixing a finding in file A rewrote only A's cache entry; every other
+  file's entry kept the old "5 findings" summary string, and on the next cache hit
+  `tryReplayCache` re-reported it verbatim as the plugin's current status — so `confirm`
+  and `verdict.json` rendered "5 findings (cached)" while the diagnostics ledger the
+  verdict actually gates on was empty and green. Same defect reached lint (also per-file).
+  - The stale state is now **unrepresentable**: a per-file cache entry (`CachedFile*`)
+    carries elapsed only — no summary, no timestamp. On replay the summary is *derived*
+    from the live diagnostics ledger at report time, inside the same status-lock guard that
+    reports it (atomic derive-and-report), so a summary that claims findings the verdict
+    can't see cannot occur. Run-level (`File=None`) entries — e.g. Build, whose summary
+    carries pass counts that are not in the error ledger — keep replaying their stored
+    summary verbatim. The scope rule: *a cache entry may only assert facts derivable from
+    its key's scope.*
+  - `FileTaskCache` serialization is versioned (format 2); pre-existing on-disk entries in
+    the old shape deterministically miss (telemetry counter increments) rather than
+    half-parsing. First check per workspace after upgrade is a cold cache — self-healing.
+  - Format-check has the same defect but sits on the shared `File=None` path and needs a
+    per-plugin "summary is ledger-derived" signal to distinguish it from Build; deliberately
+    scoped to a follow-up (AUTOMATION-191) rather than bundled here.
+
 ## 0.10.0-alpha.3 - 2026-07-15
 
 - fix!: **the task cache can no longer DESTROY the result of a run that actually

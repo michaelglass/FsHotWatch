@@ -38,50 +38,48 @@ let private deserializeErrorEntry (obj: JsonObject) : ErrorEntry =
         | true -> Some(obj["detail"].GetValue<string>())
         | false -> None }
 
-let private serializeStatus (status: PluginStatus) =
+let private serializeStatus (status: CachedStatus) =
     let obj = JsonObject()
 
     match status with
-    | Idle -> obj["type"] <- "idle"
-    | Running since ->
-        obj["type"] <- "running"
-        obj["at"] <- since.ToString("o")
-    | Completed(at, verdict) ->
-        obj["type"] <- "completed"
-        obj["at"] <- at.ToString("o")
+    | CachedFileCompleted elapsed ->
+        obj["type"] <- "fileCompleted"
+        obj["elapsedMs"] <- elapsed.TotalMilliseconds
+    | CachedFileFailed(msg, elapsed) ->
+        obj["type"] <- "fileFailed"
+        obj["message"] <- msg
+        obj["elapsedMs"] <- elapsed.TotalMilliseconds
+    | CachedRunCompleted verdict ->
+        obj["type"] <- "runCompleted"
         obj["summary"] <- verdict.Summary
         obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
-    | Failed(msg, at, verdict) ->
-        obj["type"] <- "failed"
+    | CachedRunFailed(msg, verdict) ->
+        obj["type"] <- "runFailed"
         obj["message"] <- msg
-        obj["at"] <- at.ToString("o")
         obj["summary"] <- verdict.Summary
         obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
 
     obj
 
-/// Verdict fields are REQUIRED on both terminal shapes: an entry written
-/// before RunVerdict existed (or with an empty summary — `RunVerdict.create`
-/// throws) has no evidence to replay, so it must read as a cache MISS (the
-/// throw is caught by `tryGet` and counted as a parse failure), never as a
-/// verdict-free terminal.
+/// Verdict fields are REQUIRED on both run-entry shapes: an entry with an
+/// empty summary (`RunVerdict.create` throws) has no evidence to replay, so it
+/// must read as a cache MISS (the throw is caught by `tryGet` and counted as a
+/// parse failure), never as a verdict-free terminal.
 let private deserializeVerdict (obj: JsonObject) : RunVerdict =
     RunVerdict.create
         (obj["summary"].GetValue<string>())
         (TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()))
 
-let private deserializeStatus (obj: JsonObject) : PluginStatus =
+let private deserializeStatus (obj: JsonObject) : CachedStatus =
     match obj["type"].GetValue<string>() with
-    | "idle" -> Idle
-    | "running" -> Running(since = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime())
-    | "completed" ->
-        Completed(at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(), verdict = deserializeVerdict obj)
-    | "failed" ->
-        Failed(
-            error = obj["message"].GetValue<string>(),
-            at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(),
-            verdict = deserializeVerdict obj
+    | "fileCompleted" -> CachedFileCompleted(TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()))
+    | "fileFailed" ->
+        CachedFileFailed(
+            obj["message"].GetValue<string>(),
+            TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
         )
+    | "runCompleted" -> CachedRunCompleted(deserializeVerdict obj)
+    | "runFailed" -> CachedRunFailed(obj["message"].GetValue<string>(), deserializeVerdict obj)
     | t -> failwith $"Unknown status type: %s{t}"
 
 let private serializeTestResult (key: string) (result: TestResult) =
@@ -292,8 +290,19 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         CachedCommandCompleted { Name = name; Outcome = outcome }
     | t -> failwith $"Unknown cached event type: %s{t}"
 
+/// On-disk entry format version. Bumped to 2 by AUTOMATION-186: per-file
+/// entries no longer store a status summary or timestamp (`CachedStatus`
+/// replaced the cached `PluginStatus`). The version is REQUIRED on read —
+/// entries written by any other format (including pre-versioned ones, where
+/// the field is absent) deterministically read as a cache MISS (the throw is
+/// caught by `tryGet` and counted as a parse failure), never as a half-parsed
+/// result carrying a claim the new scope rule forbids.
+[<Literal>]
+let private EntryFormatVersion = 2
+
 let private serializeResult (result: TaskCacheResult) =
     let root = JsonObject()
+    root["format"] <- EntryFormatVersion
     root["cacheKey"] <- ContentHash.value result.CacheKey
     root["status"] <- serializeStatus result.Status
 
@@ -322,6 +331,15 @@ let private serializeResult (result: TaskCacheResult) =
 
 let private deserializeResult (json: string) : TaskCacheResult =
     let root = JsonNode.Parse(json).AsObject()
+
+    let formatVersion =
+        match root["format"] with
+        | null -> 0 // pre-versioned entry (format 1 had no field)
+        | node -> node.GetValue<int>()
+
+    if formatVersion <> EntryFormatVersion then
+        failwith
+            $"task-cache entry format %d{formatVersion} (expected %d{EntryFormatVersion}) — stale entry, read as miss"
 
     let errors =
         root["errors"].AsArray()

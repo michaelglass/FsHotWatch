@@ -231,6 +231,7 @@ type PluginHost
                 fun name file entries -> ledger.Report(PluginFramework.PluginName.value name, file, entries)
               ClearErrors = fun name file -> ledger.Clear(PluginFramework.PluginName.value name, file)
               ClearPlugin = fun name -> ledger.ClearPlugin(PluginFramework.PluginName.value name)
+              GetPluginDiagnostics = fun name -> ledger.GetByPlugin(PluginFramework.PluginName.value name)
               EmitBuildCompleted = fun result -> dispatchToAll (PluginFramework.DispatchBuildCompleted result)
               EmitTestRunStarted = fun started -> dispatchToAll (PluginFramework.DispatchTestRunStarted started)
               EmitTestProgress = fun progress -> dispatchToAll (PluginFramework.DispatchTestProgress progress)

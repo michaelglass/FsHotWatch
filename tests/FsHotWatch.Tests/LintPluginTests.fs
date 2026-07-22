@@ -292,3 +292,60 @@ let ``warnings command reflects warning count after lint with warnings`` () =
     test <@ cmdResult.IsSome @>
     test <@ cmdResult.Value.Contains("\"files\": 1") @>
     test <@ cmdResult.Value.Contains("\"warnings\": 2") @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-186: lint per-file cache replay derives its summary from the live ledger`` () =
+    // Lint is a `FileChecked` plugin (per-file, `File = Some`), so it shares the
+    // analyzers' defect class: its status summary is built from whole-session
+    // accumulation. The framework fix reaches it through the SAME per-file
+    // derive path — a replayed per-file entry must report EXACTLY the findings
+    // the live ledger holds, never a stale stored count.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler = create None None None None
+    host.RegisterHandler(handler)
+
+    let file = "/tmp/test/LintReplay.fs"
+    let checkResult = fakeFileCheckResult file
+    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    // Three live warnings for this file replay into the ledger.
+    let findings =
+        [ ErrorEntry.warningWithDetail "w1" "d"
+          ErrorEntry.warningWithDetail "w2" "d"
+          ErrorEntry.warningWithDetail "w3" "d" ]
+
+    let entry: FsHotWatch.TaskCache.TaskCacheResult =
+        { CacheKey = cacheKey
+          Errors = [ file, findings ]
+          Status = FsHotWatch.TaskCache.CachedFileCompleted(System.TimeSpan.FromMilliseconds 7.0)
+          EmittedEvents = [] }
+
+    cacheIface.Set { Plugin = "lint"; File = Some file } cacheKey entry
+
+    host.EmitFileChecked(checkResult)
+    waitForTerminalStatus host "lint" 15000
+
+    let liveFindings =
+        host.GetErrorsByPlugin("lint")
+        |> Map.toList
+        |> List.sumBy (fun (_, entries) -> List.length entries)
+
+    test <@ liveFindings = 3 @>
+
+    let summary =
+        match host.GetStatus("lint") with
+        | Some(Completed(_, v)) -> v.Summary
+        | Some(Failed(_, _, v)) -> v.Summary
+        | other -> failwith $"expected a terminal lint status, got %A{other}"
+
+    let claimedFindings =
+        let m = System.Text.RegularExpressions.Regex.Match(summary, @"(\d+) findings")
+        if m.Success then int m.Groups.[1].Value else 0
+
+    Assert.True(
+        (claimedFindings = liveFindings),
+        $"lint replay summary must match the live ledger: summary=\"%s{summary}\" claims %d{claimedFindings}, live diagnostics has %d{liveFindings}"
+    )

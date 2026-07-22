@@ -21,6 +21,35 @@ type CachedEvent =
     /// A command completed event captured for replay.
     | CachedCommandCompleted of FsHotWatch.Events.CommandCompletedResult
 
+/// The terminal outcome a cache entry may replay. Scope rule (AUTOMATION-186):
+/// a cache entry may only assert facts derivable from its key's scope.
+///
+/// Per-file entries (composite key `File = Some _`) are keyed on ONE file's
+/// content, so they cannot testify to a whole-session claim — yet plugins
+/// build their status summaries from whole-session state (analyzers'
+/// `DiagnosticsByFile`, lint's `WarningsByFile`). Storing that summary under a
+/// per-file key replayed "5 findings (cached)" over an empty ledger and a
+/// green verdict. The `CachedFile*` variants therefore carry NO summary — the
+/// replay derives one from the live ledger — and no timestamp either: replay
+/// always re-stamps `now` (a cached instant from a prior session is equally
+/// unreplayable; see the timestamp-rewrite note in `tryReplayCache`).
+///
+/// Whole-run entries (`File = None`, e.g. BuildPlugin keyed on the full
+/// project-graph content hash) store a verdict that IS a pure function of the
+/// key, so `CachedRun*` keeps it for verbatim replay. Non-terminal statuses
+/// (Idle/Running) are unrepresentable here by construction — an entry that
+/// asserts nothing terminal is not a result.
+[<NoComparison>]
+type CachedStatus =
+    /// Per-file completion: elapsed only — the summary is derived at replay.
+    | CachedFileCompleted of elapsed: System.TimeSpan
+    /// Per-file failure: the diagnosis and elapsed — the summary is derived at replay.
+    | CachedFileFailed of error: string * elapsed: System.TimeSpan
+    /// Whole-run completion: the stored verdict is a pure function of the key.
+    | CachedRunCompleted of verdict: FsHotWatch.Events.RunVerdict
+    /// Whole-run failure: diagnosis plus the key-pure verdict.
+    | CachedRunFailed of error: string * verdict: FsHotWatch.Events.RunVerdict
+
 /// The full result of a plugin processing an event, captured for replay.
 [<NoComparison>]
 type TaskCacheResult =
@@ -29,8 +58,8 @@ type TaskCacheResult =
         CacheKey: ContentHash
         /// Errors produced by the plugin, keyed by file path.
         Errors: (string * FsHotWatch.ErrorLedger.ErrorEntry list) list
-        /// Final status of the plugin after processing.
-        Status: FsHotWatch.Events.PluginStatus
+        /// Terminal outcome of the plugin after processing, scoped to the key.
+        Status: CachedStatus
         /// Side-effect events emitted by the plugin during processing.
         EmittedEvents: CachedEvent list
     }
