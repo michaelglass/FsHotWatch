@@ -8,11 +8,13 @@
     <NoWarn>$(NoWarn);NU1608</NoWarn>
   </PropertyGroup>
 
-  <!-- Pin transitive System.Security.Cryptography.Xml to a patched version
-       (9.0.0 has CVEs GHSA-w3x6-4m5h-cxqf and GHSA-37gx-xxp4-5rgx). Applied
-       repo-wide because multiple plugin projects pull it in via FCS/FSharpLint. -->
+  <!-- Pin transitive System.Security.Cryptography.Xml to a patched version.
+       9.0.0 had GHSA-w3x6-4m5h-cxqf / GHSA-37gx-xxp4-5rgx; then 10.0.9 itself
+       became affected by GHSA-8q5v-6pqq-x66h / GHSA-23rf-6693-g89p / -cvvh /
+       -g8r8 / -mmjf (high severity, patched in 10.0.10). Applied repo-wide
+       because multiple plugin projects pull it in via FCS/FSharpLint. -->
   <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.9" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
   </ItemGroup>
   <!-- Pin transitive Nerdbank.MessagePack to a patched version (1.0.2 has
        GHSA-2cwq-pwfr-wcw3 — attacker-controlled stackalloc in DateTime
