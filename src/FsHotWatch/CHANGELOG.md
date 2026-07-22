@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.4 - 2026-07-22
+
 - chore(deps): bump the transitive `System.Security.Cryptography.Xml` pin 10.0.9 → 10.0.10
   (10.0.9 became affected by GHSA-8q5v-6pqq-x66h / GHSA-23rf-6693-g89p and siblings, high
   severity, patched in 10.0.10).

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.7 - 2026-07-22
+
 - feat: `fshw --version` prints a second line naming the source ref the binary
   was built from (AUTOMATION-123) — a RefStamp `-ref.<change-id>.g<commit-id>[.dirty]`
   pack stamp, the `+<sha>` commit metadata of a release/CI build, or an honest
