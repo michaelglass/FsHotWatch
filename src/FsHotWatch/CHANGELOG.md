@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- chore(deps): bump the transitive `System.Security.Cryptography.Xml` pin 10.0.9 → 10.0.10
+  (10.0.9 became affected by GHSA-8q5v-6pqq-x66h / GHSA-23rf-6693-g89p and siblings, high
+  severity, patched in 10.0.10).
+
 - fix: **a cached per-file plugin result can no longer replay a stale whole-session
   summary that contradicts the verdict** (AUTOMATION-186). The analyzers plugin computed
   its `summary:` line from the whole-session diagnostics map + run counter, but the
