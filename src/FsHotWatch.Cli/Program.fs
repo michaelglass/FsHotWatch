@@ -2,6 +2,7 @@ module FsHotWatch.Cli.Program
 
 open System
 open System.IO
+open System.Runtime.InteropServices
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
@@ -1081,6 +1082,164 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
             |> List.filter File.Exists
             |> List.choose tryDeleteForCleanup)
 
+// ----------------------------------------------------------------------------
+// Run-level hooks (AUTOMATION-188).
+//
+// A `beforeRun`/`afterRun` pair that brackets a WHOLE `check`/`confirm` run —
+// distinct from `tests.beforeRun`, which the daemon runs per test run inside its
+// tests slot. The first consumer (intelligence) uses them to acquire and release
+// a box-wide gate-lock so two concurrent runs serialize with zero manual lock
+// commands, replacing a hand-rolled bracket in its own CI glue.
+//
+//   * `beforeRun` is a FAIL-CLOSED preflight: it runs BEFORE the daemon is
+//     contacted (it IS the lock acquire), and a non-zero exit aborts with exit 2
+//     (un-completable, NOT the "failures found" exit 1) and runs no plugin work.
+//   * `afterRun` is a `finally`: it fires on success, on a red verdict, and on a
+//     throw. A plain `finally` does NOT run when the process is signalled, so
+//     SIGINT/SIGTERM handlers fire it too — sharing ONE idempotency latch, so it
+//     runs EXACTLY once. Its own exit code is best-effort: a failing afterRun is
+//     logged loudly but never flips the run's verdict.
+//
+// SIGKILL is explicitly OUT OF SCOPE — it cannot be trapped, so a lock leaked by
+// a `kill -9` is the consumer's TTL problem to reclaim, not something a signal
+// handler here can help with.
+// ----------------------------------------------------------------------------
+
+/// The timeout (seconds) bounding each run-level hook: `runHookTimeoutSec` →
+/// global `timeoutSec` → `DefaultGlobalTimeoutSec`. A run-level hook is ALWAYS
+/// bounded — even when the global timeout is explicitly disabled — because a lock
+/// hook that hangs forever is worse than the lock it guards.
+let internal resolveRunHookTimeoutSec (config: DaemonConfiguration) : int =
+    config.RunHookTimeoutSec
+    |> Option.orElse config.TimeoutSec
+    |> Option.defaultValue DefaultGlobalTimeoutSec
+
+/// Wrap a run-hook callback in an idempotency latch: the returned closure runs
+/// `run` at most ONCE, no matter how many times (or from how many threads) it is
+/// invoked. The `finally` and every signal handler call the SAME latched closure,
+/// so afterRun fires exactly once. Pure wrt the injected `run`, so the
+/// exactly-once contract is unit-testable without a real shell-out or signal.
+let internal makeRunOnce (run: unit -> unit) : unit -> unit =
+    let latch = ref 0
+
+    fun () ->
+        if Interlocked.Exchange(latch, 1) = 0 then
+            run ()
+
+/// What a run-level signal handler does: run `afterRun` (once, via the shared
+/// latch the caller wove into it) then `exitWith code`. Extracted from the
+/// registration lambdas so the "fire afterRun then exit" contract — and the
+/// exactly-once sharing with the `finally` — is unit-testable WITHOUT delivering a
+/// real OS signal (which in a test host could trip the runner's own signal
+/// handling). `128 + signum` is the shell convention for "killed by signal N".
+let internal onRunSignal (afterRun: unit -> unit) (exitWith: int -> unit) (code: int) : unit =
+    afterRun ()
+    exitWith code
+
+/// Install SIGINT (via `Console.CancelKeyPress`) and SIGTERM (via POSIX
+/// `PosixSignalRegistration`) handlers that run `onRunSignal afterRun exitWith` —
+/// a plain `finally` does NOT run when the process is signalled, so without this
+/// afterRun would be skipped on exactly the abort path a gate-lock release cannot
+/// afford to miss. Each handler cancels the default terminate
+/// (`e.Cancel`/`ctx.Cancel <- true`) so the process stays alive long enough to run
+/// afterRun. Returns a disposable that unregisters both.
+///
+/// `exitWith` is INJECTED so a test can send a real signal to itself, observe
+/// afterRun fire, and record the intended exit code WITHOUT the handler
+/// terminating the test process; production passes `exit`.
+let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int -> unit) : IDisposable =
+    let onCancelKey =
+        ConsoleCancelEventHandler(fun _ (e: ConsoleCancelEventArgs) ->
+            e.Cancel <- true
+            onRunSignal afterRun exitWith 130) // 128 + SIGINT(2)
+
+    Console.CancelKeyPress.AddHandler onCancelKey
+
+    let sigterm =
+        PosixSignalRegistration.Create(
+            PosixSignal.SIGTERM,
+            fun (ctx: PosixSignalContext) ->
+                ctx.Cancel <- true
+                onRunSignal afterRun exitWith 143 // 128 + SIGTERM(15)
+        )
+
+    { new IDisposable with
+        member _.Dispose() =
+            Console.CancelKeyPress.RemoveHandler onCancelKey
+            sigterm.Dispose() }
+
+/// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun`
+/// hooks (AUTOMATION-188). See the section header above for the full contract.
+///
+/// When NEITHER hook is configured this is a straight `action ()` — no latch, no
+/// signal handlers, no shell machinery. Otherwise the hooks reuse `.fshw.json`'s
+/// existing bounded-child spawn (`makeShellHookWithResult`, `/bin/sh -c`); no new
+/// spawn machinery is introduced.
+///
+/// Works for BOTH transports because it wraps the ACTION, whatever it is: the
+/// daemon path (`queryPluginIn`) and `--run-once` (`RunOnceCheck.runOnceAndVerdict`)
+/// are the same `action ()` from here, so the hook logic is transport-agnostic by
+/// construction.
+let withRunHooks (repoRoot: string) (config: DaemonConfiguration) (action: unit -> int) : int =
+    match config.BeforeRun, config.AfterRun with
+    | None, None -> action ()
+    | beforeRunCmd, afterRunCmd ->
+        let timeoutSec = Some(resolveRunHookTimeoutSec config)
+
+        // afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
+        // already logs a failure (and its output) at error; the extra line here says
+        // the ONE thing that matters at this layer — the verdict is unchanged.
+        let afterRun =
+            makeRunOnce (fun () ->
+                match afterRunCmd with
+                | None -> ()
+                | Some cmd ->
+                    let (success, _) = makeShellHookWithResult "afterRun" timeoutSec repoRoot cmd ()
+
+                    if not success then
+                        FsHotWatch.Logging.error
+                            "afterRun"
+                            "afterRun hook exited non-zero (see the failure above) — the run's exit code is \
+                             UNCHANGED; a run-level teardown failure never alters the verdict.")
+
+        // Trap signals only when there is an afterRun to run; otherwise leave the
+        // default SIGINT/SIGTERM behaviour untouched.
+        use _signals =
+            match afterRunCmd with
+            | Some _ -> installRunSignalHandlers afterRun exit
+            | None ->
+                { new IDisposable with
+                    member _.Dispose() = () }
+
+        // beforeRun FIRST — before `action`, hence before the daemon is contacted —
+        // and FAIL-CLOSED. Surface the captured output like `tests.beforeRun` does,
+        // so a refused preflight shows WHY, not just that it refused.
+        let proceed =
+            match beforeRunCmd with
+            | None -> true
+            | Some cmd ->
+                let (success, output) =
+                    makeShellHookWithResult "beforeRun" timeoutSec repoRoot cmd ()
+
+                if not success then
+                    eprintfn
+                        "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
+
+                    eprintfn "%s" output
+
+                success
+
+        if not proceed then
+            // Fail-closed: exit 2, NOT 1. afterRun does NOT fire here — beforeRun is
+            // the acquire, and a failed acquire has nothing for afterRun to release
+            // (afterRun brackets the ACTION, which never began).
+            2
+        else
+            try
+                action ()
+            finally
+                afterRun ()
+
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
     (createDaemon: string -> Daemon)
@@ -1498,8 +1657,11 @@ let executeCommand
             with :? IOException ->
                 eprintfn "%s already exists" configPath
                 1
-        | Check flags when isRunOnce flags -> runOnceIn CheckVerdict.InnerLoop
-        | Check flags -> queryPluginWith (mode) ""
+        // Both `check` arms bracket the run with the run-level hooks (AUTOMATION-188).
+        // Wrapping at the ACTION means both transports — `--run-once` and the daemon
+        // path — get the identical beforeRun/afterRun bracket with no per-transport code.
+        | Check flags when isRunOnce flags -> withRunHooks repoRoot config (fun () -> runOnceIn CheckVerdict.InnerLoop)
+        | Check flags -> withRunHooks repoRoot config (fun () -> queryPluginWith (mode) "")
         | Confirm flags ->
             // AUTOMATION-161 — the evidence may ALREADY have been earned.
             //
@@ -1522,6 +1684,13 @@ let executeCommand
             // not through one that merely happens to be lying around.
             match Verdict.priorConfirmation repoRoot config.Exclude with
             | Verdict.PriorConfirmation.StillApplies v ->
+                // DELIBERATELY UNWRAPPED by run-level hooks (AUTOMATION-188): this
+                // fast path starts no daemon, sets no scope, runs no test — it only
+                // reads `.fshw/verdict.json` and re-checks it against the tree. There
+                // is no heavy work to serialize, so there is nothing for a gate-lock
+                // to guard; bracketing it would acquire and release the lock for a
+                // pure read. Only the `MustEarn` arm below, which actually runs the
+                // suite, is wrapped.
                 UI.success $"confirm — %s{Verdict.describeStillApplies v}"
                 eprintfn ""
                 eprintfn "  AGENTS: don't parse this output. Machine-readable results:"
@@ -1536,10 +1705,15 @@ let executeCommand
                 //
                 // Both transports, one verdict. `--run-once` needs no daemon — which is the
                 // only reason CI can invoke `confirm` at all (AUTOMATION-117).
-                if isRunOnce flags then
-                    runOnceIn CheckVerdict.Confirmation
-                else
-                    queryPluginIn CheckVerdict.Confirmation mode ""
+                //
+                // Bracketed with the run-level hooks (AUTOMATION-188): this arm does the
+                // heavy work, so it is the one a gate-lock must guard. The `StillApplies`
+                // fast path above is deliberately left unwrapped.
+                withRunHooks repoRoot config (fun () ->
+                    if isRunOnce flags then
+                        runOnceIn CheckVerdict.Confirmation
+                    else
+                        queryPluginIn CheckVerdict.Confirmation mode "")
         | Verdict ->
             // Pure read. No daemon, no IPC, no run — so it cannot perturb the thing it
             // is measuring, and it costs nothing to call in a loop.

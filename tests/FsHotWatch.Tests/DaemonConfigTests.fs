@@ -139,6 +139,49 @@ let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
     let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
     test <@ config.FsEventsLatencyMs = 250 @>
 
+// --- parseConfig: run-level hooks (AUTOMATION-188) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig run-level beforeRun/afterRun/runHookTimeoutSec round-trip to Some`` () =
+    let config =
+        parseConfig """{"beforeRun": "acquire-lock", "afterRun": "release-lock", "runHookTimeoutSec": 30}""" defaults
+
+    test <@ config.BeforeRun = Some "acquire-lock" @>
+    test <@ config.AfterRun = Some "release-lock" @>
+    test <@ config.RunHookTimeoutSec = Some 30 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig run-level hooks absent yield None`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.BeforeRun = None @>
+    test <@ config.AfterRun = None @>
+    test <@ config.RunHookTimeoutSec = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig run-level hook set to false yields None (opt-out without deleting)`` () =
+    let config = parseConfig """{"beforeRun": false, "afterRun": false}""" defaults
+    test <@ config.BeforeRun = None @>
+    test <@ config.AfterRun = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookTimeoutSec false or zero yields None (falls through the chain)`` () =
+    let viaFalse = parseConfig """{"runHookTimeoutSec": false}""" defaults
+    test <@ viaFalse.RunHookTimeoutSec = None @>
+    let viaZero = parseConfig """{"runHookTimeoutSec": 0}""" defaults
+    test <@ viaZero.RunHookTimeoutSec = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig keeps the run-level beforeRun separate from tests.beforeRun`` () =
+    // The top-level `beforeRun` (run-level, AUTOMATION-188) and `tests.beforeRun`
+    // (TestPrune, per test run) are DIFFERENT scopes and must not fold into each other.
+    let config =
+        parseConfig
+            """{"beforeRun": "run-level", "tests": {"beforeRun": "test-level", "projects": [{"project": "P"}]}}"""
+            defaults
+
+    test <@ config.BeforeRun = Some "run-level" @>
+    test <@ config.Tests |> Option.map (fun t -> t.BeforeRun) = Some(Some "test-level") @>
+
 // --- parseConfig: includeOutsideRepo ---
 
 [<Fact(Timeout = 15000)>]
@@ -1030,6 +1073,21 @@ let ``stripConfig caller can restore build config`` () =
 
     test <@ stripped.Build = defaults.Build @>
     test <@ stripped.Build.Value.Length = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``stripConfig preserves the run-level hooks (run-once must honor them)`` () =
+    // `--run-once` is the transport CI uses, so the run-level gate-lock the hooks
+    // bracket must survive the run-once strip untouched (AUTOMATION-188).
+    let withHooks =
+        { defaults with
+            BeforeRun = Some "acquire-lock"
+            AfterRun = Some "release-lock"
+            RunHookTimeoutSec = Some 45 }
+
+    let stripped = stripConfig withHooks
+    test <@ stripped.BeforeRun = Some "acquire-lock" @>
+    test <@ stripped.AfterRun = Some "release-lock" @>
+    test <@ stripped.RunHookTimeoutSec = Some 45 @>
 
 [<Fact(Timeout = 15000)>]
 let ``registerPlugins with build config registers build plugin`` () =

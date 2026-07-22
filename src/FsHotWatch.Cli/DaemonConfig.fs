@@ -221,6 +221,32 @@ type DaemonConfiguration =
         /// lower fseventsd load per change, at the cost of slightly higher
         /// change-to-rebuild latency. Only affects the macOS FSEvents watcher.
         FsEventsLatencyMs: int
+        /// Run-level `beforeRun` hook (AUTOMATION-188), from the top-level
+        /// `beforeRun` key. A shell command run ONCE at the very start of a
+        /// `check`/`confirm` run — BEFORE the daemon is contacted — as a
+        /// FAIL-CLOSED preflight: a non-zero exit aborts the run with exit 2 and
+        /// runs no plugin work. DISTINCT from `tests.beforeRun`, which the daemon
+        /// runs per test run inside the tests slot; this one brackets the WHOLE
+        /// run. The first consumer (intelligence) uses it to acquire a box-wide
+        /// gate-lock. Absent / `false` → None.
+        BeforeRun: string option
+        /// Run-level `afterRun` hook (AUTOMATION-188), from the top-level
+        /// `afterRun` key. A shell command run ONCE at the END of a
+        /// `check`/`confirm` run as a `finally` — it fires on success, on a red
+        /// verdict, AND on abort (including SIGINT/SIGTERM). Its own exit code is
+        /// BEST-EFFORT: a non-zero `afterRun` is logged loudly but NEVER changes
+        /// the run's verdict (a lock-release hiccup must not flip green↔red). The
+        /// first consumer uses it to release the gate-lock its `beforeRun`
+        /// acquired. Absent / `false` → None.
+        AfterRun: string option
+        /// Timeout (seconds) bounding EACH run-level hook (`beforeRun`/`afterRun`),
+        /// from the top-level `runHookTimeoutSec` key. Resolution chain: this →
+        /// global `timeoutSec` → `DefaultGlobalTimeoutSec`; a run-level hook is
+        /// ALWAYS bounded — even when the global timeout is disabled — because a
+        /// lock hook that hangs forever is worse than the lock it guards. A
+        /// `number` → Some; `false` / absent → None (fall through the chain),
+        /// mirroring the global `timeoutSec` tristate.
+        RunHookTimeoutSec: int option
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -244,7 +270,10 @@ let private defaultConfigFor (repoRoot: string) =
       TimeoutSec = Some DefaultGlobalTimeoutSec
       IdleExitMin = IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
-      FsEventsLatencyMs = 250 }
+      FsEventsLatencyMs = 250
+      BeforeRun = None
+      AfterRun = None
+      RunHookTimeoutSec = None }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -728,6 +757,30 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             IdleExit.PressureFloorConfig.Disabled
             defaults.PressureIdleFloorMin
 
+    // Run-level hooks (AUTOMATION-188): a `beforeRun`/`afterRun` pair that
+    // brackets the WHOLE `check`/`confirm` run — deliberately TOP-LEVEL keys,
+    // kept separate from `tests.beforeRun` (a different scope/cadence: inside
+    // the daemon, per test run). Both are shell-command STRINGS; a present `false`
+    // or an absent key → None, so a repo can opt a hook out without deleting it.
+    let parseRunHook (key: string) : string option =
+        match root.TryGetProperty(key) with
+        | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+        | _ -> None
+
+    let beforeRun = parseRunHook "beforeRun"
+    let afterRun = parseRunHook "afterRun"
+
+    // `runHookTimeoutSec`: the same `number | false` tristate as the global
+    // `timeoutSec`. A positive `number` → Some N; `0` / `false` / absent → None,
+    // which `withRunHooks` resolves through global `timeoutSec` → the baked-in
+    // default (a run-level hook is always bounded).
+    let runHookTimeoutSec =
+        match root.TryGetProperty("runHookTimeoutSec") with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let n = v.GetInt32()
+            if n > 0 then Some n else None
+        | _ -> None
+
     { Build = build
       Format = format
       Lint = lint
@@ -742,10 +795,18 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       TimeoutSec = timeoutSec
       IdleExitMin = idleExitMin
       PressureIdleFloorMin = pressureIdleFloorMin
-      FsEventsLatencyMs = fsEventsLatencyMs }
+      FsEventsLatencyMs = fsEventsLatencyMs
+      BeforeRun = beforeRun
+      AfterRun = afterRun
+      RunHookTimeoutSec = runHookTimeoutSec }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
+///
+/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec` hooks (AUTOMATION-188)
+/// are DELIBERATELY preserved (they pass through `{ config with ... }` untouched):
+/// `--run-once` is exactly the transport CI uses, so the box-wide gate-lock those
+/// hooks bracket must fire on the run-once path too, not only over the daemon.
 let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
     { config with
         Build = Some []

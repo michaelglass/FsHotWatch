@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- feat: **generic run-level `beforeRun` / `afterRun` hook pair** (AUTOMATION-188). Two new
+  optional top-level `.fshw.json` keys let a consumer bracket a whole `fshw check`/`confirm`
+  run with external shell-outs — `beforeRun` before any plugin work, `afterRun` as a true
+  `finally` that fires on success, failure, AND abort (build failure, watchdog kill,
+  cancellation). fshw stays agnostic about what they do; the first consumer is a box-wide
+  gate-lock that serializes concurrent checks with zero manual commands.
+  - The bracket is CLI-side (one `check`/`confirm` process = one run), so every daemon-side
+    abort — which surfaces to the CLI as an exit code — is caught by the finally; SIGINT/SIGTERM
+    get an explicit handler (a plain finally won't run on signal) sharing a fire-once latch with
+    the finally. `beforeRun` is fail-closed (non-zero ⇒ exit 2, no plugin work); `afterRun` is
+    best-effort and never alters the run's verdict (a lock-release hiccup can't flip green↔red);
+    both are timeout-bounded. `confirm`'s prior-confirmation fast-path (no heavy work) is left
+    unbracketed. The existing per-test-run `tests.beforeRun` is unchanged and independent.
+
 ## 0.14.0-alpha.7 - 2026-07-22
 
 - feat: `fshw --version` prints a second line naming the source ref the binary
