@@ -4,4 +4,11 @@
     <EnableSourceLink Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceLink>
     <EnableSourceControlManagerQueries Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceControlManagerQueries>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- RefStamp: ref-stamp guard consumed by fsprojlint's "local packs are ref-stamped"
+         check. Versionless here because Central Package Management supplies the version
+         from Directory.Packages.props. PrivateAssets=all keeps it inert and out of the
+         published package's dependency graph. -->
+    <PackageReference Include="RefStamp" PrivateAssets="all" />
+  </ItemGroup>
 </Project>
