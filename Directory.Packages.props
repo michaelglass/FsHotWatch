@@ -26,7 +26,7 @@
         <!-- RefStamp: inert build-time guard that stamps a ref onto local packs so
              fsprojlint's "local packs are ref-stamped" check is satisfied. PrivateAssets=all
              keeps it out of published package dependencies. -->
-        <PackageVersion Include="RefStamp" Version="0.1.0-alpha.1" />
+        <PackageVersion Include="RefStamp" Version="0.1.0-alpha.2" />
         <PackageVersion Include="Unquote" Version="7.0.1" />
         <PackageVersion Include="xunit.v3" Version="3.2.2" />
         <PackageVersion Include="xunit.v3.mtp-v2" Version="3.2.2" />
