@@ -92,6 +92,13 @@ let edges =
    serving it, so a one-function change to a multi-route file no longer
    drags in every route's tests
 
+A class or module counts as a test declaration only when its own span carries a
+test attribute (`[<Fact>]`, `[<Theory>]`, a `FactAttribute` subclass such as
+`[<SkippableFact>]`, the NUnit/MSTest equivalents) or — for a class — an
+`inherit` clause, since xUnit also runs the test methods a base class declares.
+Fixtures, `[<CollectionDefinition>]` markers and plain helpers declare no tests
+and are never returned as affected test classes.
+
 ## Documentation
 
 - [Full documentation](https://michaelglass.github.io/TestPrune/Falco/)

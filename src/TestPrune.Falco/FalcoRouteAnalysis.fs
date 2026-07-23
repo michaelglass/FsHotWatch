@@ -21,6 +21,37 @@ type private DeclarationSpan =
       IsClass: bool
       Text: string }
 
+/// The two DIFFERENT answers a route match has to give, kept apart because
+/// conflating them is a bug in one direction or the other.
+///
+/// The extension asks two questions of the same scan, and they are not the same
+/// question:
+///
+///   1. "Which classes should I RUN as test classes?" — a fixture holds no test
+///      method, so naming it runs nothing; it belongs in `TestClasses` only if
+///      `isTestBearing` says it can hold a runnable test.
+///   2. "Whose symbols carry this route across the HTTP boundary?" — a fixture
+///      that hits the URL is exactly such a carrier. Its members are what the
+///      tests in other files depend on, and core's `QueryAffectedTests` is a
+///      TRANSITIVE reverse-walk that only ever reports rows joined to
+///      `test_methods`. So a fixture symbol on this path can never make a
+///      non-test run: it can only widen the set of real tests reached.
+///
+/// Answering (2) with (1)'s set drops truly-affected tests. In the intelligence
+/// consumer `IntegrationTestFixture` authenticates via `/login/verify`, and the
+/// reverse-walk through its members reaches 37 test classes / 324 test methods
+/// (of 50 / 520) — every test that logs in. Answering (1) with (2)'s set is the
+/// original over-selection: fixtures returned as "test classes".
+type private RouteMatch =
+    {
+        /// Declarations to run as test classes. Test-bearing spans only.
+        TestClasses: string list
+        /// Declarations whose symbols participate in the route's dependency edge.
+        /// A superset of `TestClasses`: every span whose OWN text matches the
+        /// route, test-bearing or not.
+        EdgeParticipants: string list
+    }
+
 /// Route-based integration test filtering.
 /// Scans integration test source files for URL patterns that map to changed handler files.
 type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string, routeStore: RouteStore) =
@@ -55,9 +86,15 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // (`[<Trait(...); Fact>]`), with an optional dotted qualifier and
     // `Attribute` suffix, and is terminated by an argument list, the next
     // `;`, or the end of the block.
+    //
+    // The `\w*` before `Fact`/`Theory` also admits the xUnit convention of
+    // SUBCLASSING `FactAttribute` (`[<SkippableFact>]`, `[<WindowsTheory>]`):
+    // those declare real tests, and a span with no recognised marker is now
+    // DROPPED rather than kept, so failing to recognise one would lose tests.
+    // The alternatives are capitalised, so `[<Artifact>]` does not match.
     let testAttributeNamePattern =
         Regex(
-            @"(?:^|;)\s*(?:[\w.]+\.)?(?:Fact|Theory|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*(?:[(;]|$)",
+            @"(?:^|;)\s*(?:[\w.]+\.)?(?:\w*(?:Fact|Theory)|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*(?:[(;]|$)",
             RegexOptions.Compiled
         )
 
@@ -70,73 +107,127 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         attributeBlockPattern.Matches(text)
         |> Seq.exists (fun m -> testAttributeNamePattern.IsMatch(m.Groups.[1].Value))
 
+    // An `inherit BaseType(...)` clause opening a class body. Only the keyword
+    // at the start of an indented line counts, so the word inside a comment or
+    // a string does not.
+    let inheritPattern = Regex(@"^[ \t]+inherit[ \t]+\S", RegexOptions.Multiline)
+
+    /// A declaration is selectable only when its OWN span shows evidence that it
+    /// can contribute a runnable test: a test attribute, or — classes only — an
+    /// `inherit` clause, because xUnit also runs the test methods a BASE class
+    /// declares (`type PostgresContractTests() = inherit ContractTests(pg)` has
+    /// no marker of its own yet runs the base's facts).
+    ///
+    /// A class with neither is positively identifiable as a non-test
+    /// declaration: a fixture (`type IntegrationTestFixture()`), a collection
+    /// marker (`[<CollectionDefinition(..)>] type FooCollection() = class end`),
+    /// or a plain helper (`type TestServer(..)`, `type BrowserErrorTracker()`).
+    /// Naming one as an affected "test class" filters to zero tests. Merely
+    /// implementing `IClassFixture`/`ICollectionFixture` is not evidence either:
+    /// that wires a fixture in, it does not declare a test.
+    ///
+    /// This governs RUN SELECTION only. A fixture excluded here still
+    /// participates in the route's dependency edges — see `RouteMatch`, and do
+    /// not reuse this predicate on that path.
+    let isTestBearing (span: DeclarationSpan) : bool =
+        hasTestAttribute span.Text
+        || (span.IsClass && inheritPattern.IsMatch(span.Text))
+
     // Selection is per-declaration, not per-file: a URL match is attributed to
     // the top-level declaration whose textual span contains it. A declaration
     // starts at a `classPattern`/`modulePattern` match (both anchor at column 0)
     // and its span runs to the next such match or EOF. Each span's OWN text is
     // matched (never global match positions: a `{param}` wildcard is greedy, so
     // a whole-file scan can swallow the text between two URL occurrences and
-    // hide the second declaration's match). Classes are always selectable;
-    // modules only when their span carries a test attribute — a helper module
-    // without tests can never run anything. When the file matches anywhere
-    // OUTSIDE the selectable spans (file header, helper module, top-level lets),
-    // we cannot tell which tests exercise the route through that shared text —
-    // a helper constant may feed test classes that never mention the URL — so
-    // we select every selectable declaration in the file, even when some other
-    // span also matched directly: over-selection wastes time, under-selection
-    // silently skips affected tests.
-    let findTestClassesInFiles (testFiles: string list) (regexes: Regex list) : string list =
-        testFiles
-        |> List.collect (fun testFile ->
-            let content = File.ReadAllText(testFile)
+    // hide the second declaration's match). Classes and modules alike are
+    // selectable only when `isTestBearing` says their span can hold a runnable
+    // test — a fixture or helper without tests can never run anything. When the
+    // file matches anywhere OUTSIDE the selectable spans (file header, helper
+    // module or fixture, top-level lets), we cannot tell which tests exercise
+    // the route through that shared text — a helper constant may feed test
+    // classes that never mention the URL — so we select every selectable
+    // declaration in the file, even when some other span also matched directly:
+    // over-selection wastes time, under-selection silently skips affected tests.
+    // A file whose ONLY declarations are non-selectable therefore contributes no
+    // TEST CLASS: there is no test in it to run. It can still contribute EDGE
+    // PARTICIPANTS — see `RouteMatch`.
+    let matchDeclarationsInFiles (testFiles: string list) (regexes: Regex list) : RouteMatch =
+        let perFile =
+            testFiles
+            |> List.map (fun testFile ->
+                let content = File.ReadAllText(testFile)
 
-            if regexes |> List.exists (fun regex -> regex.IsMatch(content)) |> not then
-                []
-            else
-                let declarations =
-                    [ for m in classPattern.Matches(content) -> m.Index, m.Groups.[1].Value, true
-                      for m in modulePattern.Matches(content) -> m.Index, m.Groups.[1].Value, false ]
-                    |> List.sortBy (fun (start, _, _) -> start)
+                if regexes |> List.exists (fun regex -> regex.IsMatch(content)) |> not then
+                    [], []
+                else
+                    let declarations =
+                        [ for m in classPattern.Matches(content) -> m.Index, m.Groups.[1].Value, true
+                          for m in modulePattern.Matches(content) -> m.Index, m.Groups.[1].Value, false ]
+                        |> List.sortBy (fun (start, _, _) -> start)
 
-                let spans =
-                    declarations
-                    |> List.mapi (fun i (start, name, isClass) ->
-                        let finish =
-                            match declarations |> List.tryItem (i + 1) with
-                            | Some(nextStart, _, _) -> nextStart
-                            | None -> content.Length
+                    let spans =
+                        declarations
+                        |> List.mapi (fun i (start, name, isClass) ->
+                            let finish =
+                                match declarations |> List.tryItem (i + 1) with
+                                | Some(nextStart, _, _) -> nextStart
+                                | None -> content.Length
 
-                        { Name = name
-                          IsClass = isClass
-                          Text = content.Substring(start, finish - start) })
+                            { Name = name
+                              IsClass = isClass
+                              Text = content.Substring(start, finish - start) })
 
-                let selectable, nonSelectable =
-                    spans |> List.partition (fun span -> span.IsClass || hasTestAttribute span.Text)
+                    let matchesText (text: string) =
+                        regexes |> List.exists (fun regex -> regex.IsMatch(text))
 
-                let directlyMatched =
-                    selectable
-                    |> List.filter (fun span -> regexes |> List.exists (fun regex -> regex.IsMatch(span.Text)))
+                    let selectable, nonSelectable = spans |> List.partition isTestBearing
 
-                // The text outside every selectable span: the header before the
-                // first declaration plus each non-selectable span. Each piece is
-                // matched on its own, like the spans above.
-                let headerText =
-                    match declarations with
-                    | (firstStart, _, _) :: _ -> content.Substring(0, firstStart)
-                    | [] -> content
+                    let directlyMatched = selectable |> List.filter (fun span -> matchesText span.Text)
 
-                let matchesOutsideSelectable =
-                    headerText :: (nonSelectable |> List.map (fun span -> span.Text))
-                    |> List.exists (fun text -> regexes |> List.exists (fun regex -> regex.IsMatch(text)))
+                    // The text outside every selectable span: the header before the
+                    // first declaration plus each non-selectable span. Each piece is
+                    // matched on its own, like the spans above.
+                    let headerText =
+                        match declarations with
+                        | (firstStart, _, _) :: _ -> content.Substring(0, firstStart)
+                        | [] -> content
 
-                let selected =
-                    if matchesOutsideSelectable then
-                        selectable
-                    else
-                        directlyMatched
+                    let matchesOutsideSelectable =
+                        headerText :: (nonSelectable |> List.map (fun span -> span.Text))
+                        |> List.exists matchesText
 
-                selected |> List.map (fun span -> span.Name))
-        |> List.distinct
+                    let testClasses =
+                        if matchesOutsideSelectable then
+                            selectable
+                        else
+                            directlyMatched
+
+                    // Every span holding the route URL carries the route across the
+                    // HTTP boundary, whether or not it can run a test: a fixture that
+                    // calls the endpoint is precisely the symbol the tests in other
+                    // files depend on.
+                    //
+                    // This path has no narrower "selectable" subset — every
+                    // declaration participates — so a match inside ANY span is
+                    // attributable to it and the run path's fallback must NOT fire
+                    // here. Only the file HEADER belongs to no declaration, and a
+                    // route matched there could be reached by any of them, so that
+                    // (and only that) makes every declaration a carrier.
+                    let routeCarriers =
+                        if matchesText headerText then
+                            spans
+                        else
+                            spans |> List.filter (fun span -> matchesText span.Text)
+
+                    // Unioned with the test classes so a class the run path picked up
+                    // only through its own fallback still gets its edge.
+                    let edgeParticipants = routeCarriers @ testClasses
+
+                    testClasses |> List.map (fun span -> span.Name),
+                    edgeParticipants |> List.map (fun span -> span.Name))
+
+        { TestClasses = perFile |> List.collect fst |> List.distinct
+          EdgeParticipants = perFile |> List.collect snd |> List.distinct }
 
     let findTestFiles (repoRoot: string) : string list =
         let testDir = Path.Combine(repoRoot, integrationTestDir)
@@ -155,6 +246,12 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
 
     /// Find affected test classes using route-based matching.
     /// Returns AffectedTest list for backward compatibility.
+    ///
+    /// This is the RUN-SELECTION question, so it reads `RouteMatch.TestClasses`
+    /// and nothing else: every name returned here is meant to be turned into a
+    /// test filter, and a fixture would filter to zero tests. `AnalyzeEdges`
+    /// deliberately reads the OTHER field — see `RouteMatch` before merging the
+    /// two call sites back together.
     member _.FindAffectedTestClasses(changedFiles: string list, repoRoot: string) : AffectedTest list =
         let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
 
@@ -172,9 +269,8 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         else
             let regexes = affectedUrlPatterns |> List.map urlPatternToRegex
             let testFiles = findTestFiles repoRoot
-            let classes = findTestClassesInFiles testFiles regexes
 
-            classes
+            (matchDeclarationsInFiles testFiles regexes).TestClasses
             |> List.map (fun cls ->
                 { TestProject = integrationTestProject
                   TestClass = cls })
@@ -194,13 +290,13 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 let testFiles = findTestFiles repoRoot
                 let allSymbols = symbolStore.GetAllSymbols()
 
-                // Resolve the test-method symbols for a single test class by the same
+                // Resolve the symbols belonging to a single declaration by the same
                 // suffix/contains idiom the file-level path uses.
-                let testMethodsForClass (testClass: string) =
+                let symbolsForDeclaration (declaration: string) =
                     allSymbols
                     |> List.filter (fun s ->
-                        s.FullName.Contains($".%s{testClass}.")
-                        || s.FullName.EndsWith($".%s{testClass}"))
+                        s.FullName.Contains($".%s{declaration}.")
+                        || s.FullName.EndsWith($".%s{declaration}"))
 
                 // Edges for one route served by a changed handler file. Tests are matched by
                 // THIS route's URL only (per-route regex), so an unrelated route in the same
@@ -209,10 +305,18 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 // that cannot name the function) falls back to the whole file's symbols; so
                 // does a name that no longer resolves, since dropping the route's tests
                 // entirely would under-select.
+                //
+                // This is the EDGE question, so it reads `RouteMatch.EdgeParticipants`, NOT
+                // `TestClasses` — a fixture that calls the endpoint must contribute its
+                // symbols even though it is not a test class, or every test that reaches the
+                // route through that fixture is silently dropped. Emitting a non-test symbol
+                // here is safe by construction: `QueryAffectedTests` reports only rows joined
+                // to `test_methods`, so a fixture symbol can only ever be a conduit to real
+                // tests, never a selected test itself. See `RouteMatch`.
                 let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
                     let regex = urlPatternToRegex entry.UrlPattern
-                    let testClasses = findTestClassesInFiles testFiles [ regex ]
-                    let routeTestMethods = testClasses |> List.collect testMethodsForClass
+                    let participants = (matchDeclarationsInFiles testFiles [ regex ]).EdgeParticipants
+                    let routeTestMethods = participants |> List.collect symbolsForDeclaration
 
                     let target =
                         match entry.HandlerFunction with

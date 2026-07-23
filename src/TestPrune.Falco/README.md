@@ -92,7 +92,12 @@ let edges =
    (`/api/users/{id}` matches `/api/users/123` in your test code)
 4. Returns the test classes from files that reference affected routes
    (`FindAffectedTestClasses`), or those couplings as graph edges
-   (`AnalyzeEdges`)
+   (`AnalyzeEdges`). A class or module counts as a test declaration only when its
+   own span carries a test attribute (`[<Fact>]`, `[<Theory>]`, a `FactAttribute`
+   subclass such as `[<SkippableFact>]`, the NUnit/MSTest equivalents) or — for a
+   class — an `inherit` clause, since xUnit runs test methods a base class
+   declares. Fixtures, `[<CollectionDefinition>]` markers and plain helpers
+   declare no tests and are never returned
 
 ## Documentation
 

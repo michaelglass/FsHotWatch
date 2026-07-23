@@ -364,7 +364,7 @@ module ``debug db roundtrip`` =
             Directory.CreateDirectory(testDir) |> ignore
 
             let testContent =
-                "type UsersTests(output: obj) =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+                "type UsersTests(output: obj) =\n    [<Fact>]\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
 
             File.WriteAllText(Path.Combine(testDir, "UsersTests.fs"), testContent)
 
@@ -390,7 +390,7 @@ module ``no changed handler files returns empty`` =
     [<Fact>]
     let ``changed files not in handler source files produces empty result`` () =
         let testContent =
-            "type UsersTests() =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+            "type UsersTests() =\n    [<Fact>]\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
@@ -408,7 +408,7 @@ module ``changed handler file returns affected test classes`` =
     [<Fact>]
     let ``type-style test class is found when URL matches`` () =
         let testContent =
-            "type UsersTests(output: ITestOutputHelper) =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+            "type UsersTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
@@ -456,7 +456,7 @@ module ``no matching URL in test files returns empty`` =
     [<Fact>]
     let ``handler changed but no test file contains the URL`` () =
         let testContent =
-            "type OrderTests() =\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
+            "type OrderTests() =\n    [<Fact>]\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
@@ -490,11 +490,13 @@ module ``multiple test classes in one file`` =
     let ``both classes are returned when URL matches`` () =
         let testContent =
             """type UsersTests(output: ITestOutputHelper) =
+    [<Fact>]
     member _.GetUser() =
         let url = "/api/users/123"
         ()
 
 type AdminUsersTests(output: ITestOutputHelper) =
+    [<Fact>]
     member _.GetAdmin() =
         let url = "/api/users/admin"
         ()
@@ -522,11 +524,13 @@ module ``per-declaration selection`` =
     let ``URL inside only one class's span selects only that class`` () =
         let testContent =
             """type UsersTests(output: ITestOutputHelper) =
+    [<Fact>]
     member _.GetUser() =
         let url = "/api/users/123"
         ()
 
 type OrdersTests(output: ITestOutputHelper) =
+    [<Fact>]
     member _.GetOrder() =
         let url = "/api/orders/456"
         ()
@@ -623,6 +627,7 @@ module OrdersTests =
     let users = "/api/users/123"
 
 type UsersTests(output: ITestOutputHelper) =
+    [<Fact>]
     member _.GetUser() =
         let url = "/api/users/456"
         ()
@@ -740,15 +745,213 @@ type UsersIndirectTests(output: ITestOutputHelper) =
                 test <@ List.contains "UsersIndirectTests" classes @>
                 test <@ not (List.contains "Urls" classes) @>)
 
+module ``fixture classes are not test classes`` =
+
+    /// THE REGRESSION: a fixture-shaped class carries no test attribute, so it
+    /// holds no runnable test — yet before this change EVERY class was
+    /// selectable, and the consumer's `IntegrationTestFixture` (whose span holds
+    /// the login URL every authenticated test goes through) was returned as an
+    /// "affected test class". This test FAILS pre-change (result has two entries)
+    /// and PASSES post-change.
+    [<Fact>]
+    let ``fixture class without test attributes is not selected while the real test class is`` () =
+        let testContent =
+            """type IntegrationTestFixture() =
+    let httpClient = new HttpClient()
+
+    member _.Login() =
+        let url = "/api/users/123"
+        ()
+
+type UsersTests(fixture: IntegrationTestFixture) =
+    [<Fact>]
+    member _.GetUser() =
+        let url = "/api/users/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// A file that is ONLY fixtures and helpers contributes nothing, even though
+    /// its text matches the route. There is no test in it to run, so returning
+    /// its class names could only fabricate edges out of fixture members.
+    [<Fact>]
+    let ``file of nothing but fixtures contributes no test classes`` () =
+        let testContent =
+            """type TestErrorSink() =
+    member _.Clear() = ()
+
+type TestServer(dbName: string) =
+    member _.Login() =
+        let url = "/api/users/123"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("TestServerFixture.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+    /// UNDER-SELECTION GUARD: xUnit runs the test methods a BASE class declares,
+    /// so a derived class with no attribute of its own is still test-bearing. An
+    /// `inherit` clause is the evidence, and dropping such a class would lose a
+    /// real test — the one failure mode this tool must not have.
+    [<Fact>]
+    let ``class with no attributes of its own but an inherit clause is selected`` () =
+        let testContent =
+            """type PostgresUsersTests() =
+    inherit UsersContractTests(postgres)
+
+    member _.Endpoint = "/api/users/123"
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "PostgresUsersTests" } ]
+                    @>)
+
+    /// A collection marker (`[<CollectionDefinition>] type FooCollection() = class end`)
+    /// and a bare `IClassFixture` implementation both declare zero tests. Neither
+    /// counts as evidence — only the sibling class carrying a `[<Fact>]` does.
+    [<Fact>]
+    let ``collection marker and IClassFixture implementation are not selected`` () =
+        let testContent =
+            """[<CollectionDefinition("Users", DisableParallelization = true)>]
+type UsersCollection() =
+    class
+    end
+
+type UsersFixtureOnly(fixture: IntegrationTestFixture) =
+    interface IClassFixture<IntegrationTestFixture>
+
+    member _.Endpoint = "/api/users/123"
+
+type UsersTests(fixture: IntegrationTestFixture) =
+    interface IClassFixture<IntegrationTestFixture>
+
+    [<Fact>]
+    member _.GetUser() =
+        let url = "/api/users/456"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// A `FactAttribute` SUBCLASS (`[<SkippableFact>]`) declares real tests. Now
+    /// that an unmarked class is dropped, failing to recognise it would silently
+    /// lose those tests, so the marker match admits a prefix before `Fact`.
+    [<Fact>]
+    let ``custom Fact subclass attribute counts as a test marker`` () =
+        let testContent =
+            """type UsersTests(fixture: IntegrationTestFixture) =
+    [<SkippableFact>]
+    member _.GetUser() =
+        let url = "/api/users/123"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+    /// FALLBACK PRESERVED: with fixtures now non-selectable, a URL that lives
+    /// only in the fixture's span is an OUT-OF-SPAN match, so the conservative
+    /// fallback fires and every test-bearing declaration in the file is selected
+    /// — including the one that reaches the route only through the fixture.
+    [<Fact>]
+    let ``URL only in a fixture span still falls back to the file's test classes`` () =
+        let testContent =
+            """type UsersFixture() =
+    member _.Endpoint = "/api/users/123"
+
+type UsersIndirectTests(fixture: UsersFixture) =
+    [<Fact>]
+    member _.GetUser() = ignore fixture.Endpoint
+
+type OrdersTests(fixture: UsersFixture) =
+    [<Fact>]
+    member _.GetOrder() = ignore "/api/orders/456"
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                let classes = result |> List.map (fun r -> r.TestClass) |> Set.ofList
+                test <@ classes = set [ "UsersIndirectTests"; "OrdersTests" ] @>)
+
 module ``multiple handlers affecting different test files`` =
 
     [<Fact>]
     let ``returns tests from all affected files`` () =
         let usersTest =
-            "type UsersTests() =\n    member _.Get() =\n        let url = \"/api/users/1\"\n        ()\n"
+            "type UsersTests() =\n    [<Fact>]\n    member _.Get() =\n        let url = \"/api/users/1\"\n        ()\n"
 
         let ordersTest =
-            "type OrdersTests() =\n    member _.Get() =\n        let url = \"/api/orders/1\"\n        ()\n"
+            "type OrdersTests() =\n    [<Fact>]\n    member _.Get() =\n        let url = \"/api/orders/1\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
@@ -773,7 +976,7 @@ module ``URL pattern with path parameters matches correctly`` =
     [<Fact>]
     let ``multi-segment path parameters match concrete values`` () =
         let testContent =
-            "type UserPostsTests() =\n    member _.GetUserPosts() =\n        let url = \"/api/users/abc/posts/123\"\n        ()\n"
+            "type UserPostsTests() =\n    [<Fact>]\n    member _.GetUserPosts() =\n        let url = \"/api/users/abc/posts/123\"\n        ()\n"
 
         withTestSetup
             [ { UrlPattern = "/api/users/{id}/posts/{postId}"
@@ -843,10 +1046,10 @@ let private withAnalyzeEdges
 
 /// Test files for a two-route handler file: one class per route's URL.
 let private usersTestFile =
-    "type UsersTests() =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+    "type UsersTests() =\n    [<Fact>]\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
 
 let private ordersTestFile =
-    "type OrdersTests() =\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
+    "type OrdersTests() =\n    [<Fact>]\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
 
 module ``AnalyzeEdges function-scoped routes`` =
 
@@ -903,7 +1106,7 @@ module ``AnalyzeEdges function-scoped routes`` =
               fn "App.Tests.RobotsTests.GetRobots" "tests/IntTests/RobotsTests.fs" ]
 
         let robotsTest =
-            "type RobotsTests() =\n    member _.GetRobots() =\n        let url = \"/robots.txt\"\n        ()\n"
+            "type RobotsTests() =\n    [<Fact>]\n    member _.GetRobots() =\n        let url = \"/robots.txt\"\n        ()\n"
 
         withAnalyzeEdges
             [ { UrlPattern = "/robots.txt"
@@ -920,6 +1123,182 @@ module ``AnalyzeEdges function-scoped routes`` =
 
                 // The sibling function in the same file is NOT linked.
                 test <@ not (pairs.Contains("App.Tests.RobotsTests.GetRobots", "App.Handlers.WellKnown.humans")) @>)
+
+module ``run selection and edge participation are different questions`` =
+
+    /// THE DISTINCTION, pinned in one test. The same file, the same route, the
+    /// same scan — two different right answers:
+    ///
+    ///   * `FindAffectedTestClasses` must NOT return the fixture. It holds no
+    ///     test method, so filtering to it would run nothing.
+    ///   * `AnalyzeEdges` MUST emit the fixture's symbols. The fixture is what
+    ///     calls the endpoint, and it is what the tests in every other file
+    ///     depend on; core's `QueryAffectedTests` is a transitive reverse-walk
+    ///     that reports only rows joined to `test_methods`, so the fixture
+    ///     symbol is a conduit to real tests and can never be run as one.
+    ///
+    /// Answering the edge question with the run-selection set drops truly
+    /// affected tests — in the intelligence consumer, every test that
+    /// authenticates through `IntegrationTestFixture`.
+    ///
+    /// Note the test class here reaches the route ONLY through the fixture: its
+    /// own span carries no URL literal, exactly like a real integration test.
+    [<Fact>]
+    let ``fixture is excluded from the test-class list but included in the route's edges`` () =
+        let fixtureAndTest =
+            """type IntegrationTestFixture() =
+    member _.Login() =
+        let url = "/api/users/123"
+        ()
+
+type UsersTests(fixture: IntegrationTestFixture) =
+    [<Fact>]
+    member _.GetUser() = ignore (fixture.Login())
+"""
+
+        let routes =
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "Users.getUser" } ]
+
+        // (1) run selection: the fixture is not a test class.
+        withTestSetup
+            routes
+            [ ("UsersTests.fs", fixtureAndTest) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
+        // (2) edges: the fixture's symbols DO participate, alongside the test's.
+        let symbols =
+            [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
+              fn "App.Tests.IntegrationTestFixture.Login" "tests/IntTests/UsersTests.fs"
+              fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs" ]
+
+        withAnalyzeEdges routes symbols [ ("UsersTests.fs", fixtureAndTest) ] [ "src/Handlers/Users.fs" ] (fun edges ->
+            let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+            test
+                <@
+                    pairs = set
+                        [ "App.Tests.IntegrationTestFixture.Login", "App.Handlers.Users.getUser"
+                          "App.Tests.UsersTests.GetUser", "App.Handlers.Users.getUser" ]
+                @>)
+
+    /// The same asymmetry where the fixture is the ONLY declaration that can
+    /// reach the route: a file of pure fixtures yields no test class to run, yet
+    /// still carries the route on the edge path. Returning nothing from BOTH
+    /// would strand every test that depends on that fixture.
+    [<Fact>]
+    let ``file of nothing but fixtures still contributes edges`` () =
+        let fixtureOnly =
+            """type TestServer(dbName: string) =
+    member _.Login() =
+        let url = "/api/users/123"
+        ()
+"""
+
+        let routes =
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "Users.getUser" } ]
+
+        let symbols =
+            [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
+              fn "App.Tests.TestServer.Login" "tests/IntTests/TestServerFixture.fs" ]
+
+        withAnalyzeEdges
+            routes
+            symbols
+            [ ("TestServerFixture.fs", fixtureOnly) ]
+            [ "src/Handlers/Users.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+                test <@ pairs = set [ "App.Tests.TestServer.Login", "App.Handlers.Users.getUser" ] @>)
+
+    /// The one case where the edge path must still fall back: a URL in the file
+    /// HEADER belongs to no declaration, so any of them could reach the route
+    /// through it. Every declaration becomes a carrier — here the fixture, which
+    /// is the file's only declaration and yields no test class to run.
+    [<Fact>]
+    let ``URL in the file header makes every declaration an edge carrier`` () =
+        let headerUrl =
+            """module Tests.Fixtures.BrowserFixtures
+
+let loginUrl = "/api/users/123"
+
+type BrowserErrorTracker() =
+    member _.Track() = ()
+"""
+
+        let routes =
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "Users.getUser" } ]
+
+        // No test-bearing declaration, so nothing to run...
+        withTestSetup
+            routes
+            [ ("BrowserFixtures.fs", headerUrl) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+        // ...yet the fixture still carries the route on the edge path.
+        let symbols =
+            [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
+              fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs" ]
+
+        withAnalyzeEdges routes symbols [ ("BrowserFixtures.fs", headerUrl) ] [ "src/Handlers/Users.fs" ] (fun edges ->
+            let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+            test <@ pairs = set [ "App.Tests.BrowserErrorTracker.Track", "App.Handlers.Users.getUser" ] @>)
+
+    /// Edge participation stays scoped to the route: a fixture that mentions a
+    /// DIFFERENT route contributes nothing to this one. Widening the edge path
+    /// must not resurrect the file-level cross-product the tracked issue removed.
+    [<Fact>]
+    let ``fixture matching a different route contributes no edges to this one`` () =
+        let fixtureAndTest =
+            """type OrdersFixture() =
+    member _.Setup() =
+        let url = "/api/orders/456"
+        ()
+
+type UsersTests(fixture: OrdersFixture) =
+    [<Fact>]
+    member _.GetUser() =
+        let url = "/api/users/123"
+        ()
+"""
+
+        let symbols =
+            [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
+              fn "App.Tests.OrdersFixture.Setup" "tests/IntTests/UsersTests.fs"
+              fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs" ]
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "Users.getUser" } ]
+            symbols
+            [ ("UsersTests.fs", fixtureAndTest) ]
+            [ "src/Handlers/Users.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+                test <@ pairs = set [ "App.Tests.UsersTests.GetUser", "App.Handlers.Users.getUser" ] @>
+                test <@ not (pairs.Contains("App.Tests.OrdersFixture.Setup", "App.Handlers.Users.getUser")) @>)
 
 module ``AnalyzeEdges fallback`` =
 

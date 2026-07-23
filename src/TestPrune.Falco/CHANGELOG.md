@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- fix: **A class must show evidence that it holds tests to be selected.**
+  3.0.1 made module selection depend on a test attribute but
+  left every `type X(...)` unconditionally selectable, so fixtures and helpers
+  were still returned as affected "test classes" — in the intelligence consumer,
+  `IntegrationTestFixture`, `TestServer` and `BrowserErrorTracker`. Selecting one
+  runs nothing on the filter path, and on the edge path fabricates test→handler
+  edges out of fixture members that `QueryAffectedTests`' transitive reverse-walk
+  then amplifies into every test touching the fixture. Classes and modules now
+  share one rule: a span is selectable when it carries a test attribute, or —
+  classes only — an `inherit` clause, because xUnit also runs test methods a base
+  class declares. Two safe-direction guards come with it: a `FactAttribute`
+  subclass (`[<SkippableFact>]`, `[<WindowsTheory>]`) now counts as a marker, and
+  an `inherit`ing class with no marker of its own stays selectable. Merely
+  implementing `IClassFixture`/`ICollectionFixture`, or being a
+  `[<CollectionDefinition>]` marker, is not evidence. The conservative fallback is
+  unchanged: a URL matched outside every selectable span still selects all of the
+  file's test declarations, so a test reaching the route only through a fixture
+  constant is never dropped. A file whose only declarations are fixtures now
+  contributes nothing — there is no test in it to run.
+
 ## 3.0.1 - 2026-07-18
 
 - fix: **Route→test selection is per-declaration, not per-file.** A
