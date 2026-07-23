@@ -23,4 +23,14 @@
   <ItemGroup>
     <PackageReference Include="Nerdbank.MessagePack" Version="1.2.4" />
   </ItemGroup>
+
+  <!-- RefStamp: embeds the source ref (change-id.commit-id[.dirty]) into the
+       package version at pack time, so a local pack advertises exactly which
+       tree it was built from. Applied repo-wide so every packable project is
+       ref-stamped (satisfies fsprojlint's "local packs are ref-stamped"
+       check). PrivateAssets="all" — build/test-time only, never flows to
+       consumers and inert during ordinary build/test. -->
+  <ItemGroup>
+    <PackageReference Include="RefStamp" Version="0.1.0-alpha.1" PrivateAssets="all" />
+  </ItemGroup>
 </Project>
