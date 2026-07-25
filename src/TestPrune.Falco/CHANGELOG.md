@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.0.2 - 2026-07-26
+
 - fix: **A class must show evidence that it holds tests to be selected.**
   3.0.1 made module selection depend on a test attribute but
   left every `type X(...)` unconditionally selectable, so fixtures and helpers
