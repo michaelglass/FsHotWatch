@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.6 - 2026-08-03
+
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+
+
 ## 0.13.0-alpha.5 - 2026-07-20
 
 - chore(deps): TestPrune.Core 6.1.1 — bounded post-exit output drain in

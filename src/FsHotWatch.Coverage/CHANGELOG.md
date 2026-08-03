@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.16 - 2026-08-03
+
+- chore(deps): bump ecosystem tools to latest (fssemantictagger 0.13.0-alpha.20 incl. isCommitPushed fix, coverageratchet 0.15.0-alpha.11, syncdocs 0.13.0-alpha.4, fsprojlint 0.10.0-alpha.14, RefStamp 0.1.0-alpha.2)
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+- deps: bump CoverageRatchet.Core 0.1.0-alpha.3 -> 0.1.0-alpha.4
+
+
 ## 0.7.0-alpha.15 - 2026-07-15
 
 - fix!: **`coverage-ratchet` no longer races the check that reads the file it rewrites.**

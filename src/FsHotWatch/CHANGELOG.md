@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.5 - 2026-08-03
+
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+
+
 ## 0.10.0-alpha.4 - 2026-07-22
 
 - chore(deps): bump the transitive `System.Security.Cryptography.Xml` pin 10.0.9 → 10.0.10
