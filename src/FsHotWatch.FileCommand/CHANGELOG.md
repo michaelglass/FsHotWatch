@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.15 - 2026-08-03
+
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+
+
 ## 0.7.0-alpha.14 - 2026-07-15
 
 - fix!: adapt to verdict-carrying terminals (AUTOMATION-99). The timed-out, failed and

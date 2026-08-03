@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.9 - 2026-08-03
+
+- chore(deps): bump bundled TestPrune.Falco 3.0.1 -> 3.0.2 (AUTOMATION-86)
+- chore(deps): bump ecosystem tools to latest (fssemantictagger 0.13.0-alpha.20 incl. isCommitPushed fix, coverageratchet 0.15.0-alpha.11, syncdocs 0.13.0-alpha.4, fsprojlint 0.10.0-alpha.14, RefStamp 0.1.0-alpha.2)
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+- deps: bump CoverageRatchet.Core 0.1.0-alpha.3 -> 0.1.0-alpha.4
+- deps: bump CommandTree 0.7.0 -> 0.8.0
+
+
 ## 0.14.0-alpha.8 - 2026-07-22
 
 - feat: **generic run-level `beforeRun` / `afterRun` hook pair** (AUTOMATION-188). Two new

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.17 - 2026-08-03
+
+- chore(deps): update dev-tools + external dependencies
+
+
 ## 0.7.0-alpha.16 - 2026-07-15
 
 - fix!: adapt to verdict-carrying terminals (AUTOMATION-99): `Failed` statuses carry a

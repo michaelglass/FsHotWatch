@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.18 - 2026-08-03
+
+- chore(deps): update dev-tools + external dependencies
+- chore: trim stale/historical comments to minimal current-state context
+
+
 ## 0.7.0-alpha.17 - 2026-07-15
 
 - fix!: adapt to the core `RunClaim` / verdict-carrying terminals (AUTOMATION-99): the
