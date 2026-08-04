@@ -818,7 +818,8 @@ module RunCoverage =
         | Some(CoveredClasses classes), Some c -> Set.contains c classes
 
     /// Derive the coverage of a completed run: what it was LAUNCHED against
-    /// (`selection`), intersected with what it actually EXECUTED (`results`).
+    /// (`selection`), intersected with what it actually EXECUTED — the results, plus
+    /// the run's own per-test report (`passedClasses`, see `passedClassesOfRun`).
     ///
     /// Per project, in order:
     ///   * no result / deferred / errored / zero-match-under-filter → NO coverage.
@@ -828,13 +829,29 @@ module RunCoverage =
     ///     whatever the selection asked for (a project with selected classes but no
     ///     `filterTemplate` runs in FULL) → `CoveredWholeProject`. The RESULT, not
     ///     the request, is the receipt.
+    ///   * absent from the selection → NO coverage, unconditionally. The project was
+    ///     never LAUNCHED (impact-skipped, recorded as a filtered pass), so no file on
+    ///     disk may speak for it — this is AUTOMATION-125's laundering guard and it is
+    ///     checked BEFORE any report evidence.
     ///   * `wasFiltered = true` and the selection named classes → `CoveredClasses`.
-    ///   * `wasFiltered = true` otherwise → NO coverage. This is the `run-tests
-    ///     --filter <raw>` passthrough: an arbitrary filter string whose reach we
-    ///     cannot compute, so we claim nothing for it. Conservative in the safe
-    ///     direction — a red it did clear stays red until an unfiltered run
-    ///     (`dotnet fshw test-rerun`) proves it, which is one command away.
-    let ofRun (selection: Map<string, ProjectSelection>) (results: Map<string, TestResult>) : RunCoverage =
+    ///   * `wasFiltered = true` otherwise → the `run-tests --filter <raw>` passthrough:
+    ///     an arbitrary filter string whose reach the LAUNCH REQUEST cannot express
+    ///     (every project goes down as `ProjectInFull`). Ask the run's own evidence
+    ///     instead — the classes its CTRF report shows actually RAN AND PASSED
+    ///     (AUTOMATION-225). Without that the request claimed nothing, so
+    ///     `test-rerun --filter-class X` could re-run X, pass, and STILL leave X's red
+    ///     standing forever — an environmental failure became permanently sticky.
+    ///     Evidence is a RECEIPT, not a guess: it names only classes this run executed
+    ///     and saw pass. Fail-closed everywhere it is absent, unreadable or incomplete
+    ///     (`passedClassesOfReport`), which degrades to the old "claims nothing".
+    ///   * a TIMED-OUT project is excluded from the evidence path: a project killed
+    ///     for being stuck is a fact about the PROJECT, and a report flushed by a
+    ///     process we shot is not a receipt for anything.
+    let ofRun
+        (selection: Map<string, ProjectSelection>)
+        (results: Map<string, TestResult>)
+        (passedClasses: Map<string, Set<string>>)
+        : RunCoverage =
         results
         |> Map.toList
         |> List.choose (fun (project, result) ->
@@ -844,16 +861,24 @@ module RunCoverage =
                 | TestsErrored _ -> false
                 | _ -> not (isZeroMatchResult result)
 
+            let fromEvidence () =
+                if TestResult.isTimedOut result then
+                    None
+                else
+                    match Map.tryFind project passedClasses with
+                    | Some classes when not (Set.isEmpty classes) -> Some(project, CoveredClasses classes)
+                    | _ -> None
+
             if not ran then
                 None
             elif not (TestResult.wasFiltered result) then
                 Some(project, CoveredWholeProject)
             else
                 match Map.tryFind project selection with
+                | None -> None
                 | Some(ProjectClasses classes) when not (Set.isEmpty classes) -> Some(project, CoveredClasses classes)
                 | Some(ProjectClasses _)
-                | Some ProjectInFull
-                | None -> None)
+                | Some ProjectInFull -> fromEvidence ())
         |> Map.ofList
 
 /// The SCOPE `fshw confirm` reads, as a pure PROJECTION of `RunCoverage`.
@@ -1330,6 +1355,24 @@ let internal looksLikeApphostMissing (output: string) : bool =
 
         hasStartProcessFailure && not looksLikeRealTestFailure
 
+/// Split a fully-qualified test name into (class, method): the LAST dotted segment is
+/// the method, the one before it the class. A name with no dot is its own class.
+///
+/// ONE derivation, used by BOTH sides of the ledger: the class a red is FILED under
+/// (`parseFailedTests`, off the runner's `failed <name>` console lines) and the class a
+/// run's report VINDICATES (`passedClassesOfReport`, off the CTRF `name` field). The two
+/// read the same runner's rendering of the same fully-qualified name, so sharing the
+/// split is what makes retirement match filing — an xUnit display name that defeats the
+/// heuristic defeats it identically on both sides, and a key that fails to match simply
+/// leaves the red standing.
+let internal splitTestName (name: string) : string * string =
+    let parts = name.Split('.')
+
+    if parts.Length >= 2 then
+        parts.[parts.Length - 2], parts.[parts.Length - 1]
+    else
+        name, name
+
 /// Parse "failed Namespace.Class.Method (Xms)" lines from test output.
 /// Returns (className, methodName, fullLine) tuples.
 let parseFailedTests (output: string) : (string * string * string) list =
@@ -1346,18 +1389,81 @@ let parseFailedTests (output: string) : (string * string * string) list =
                 | -1 -> rest
                 | i -> rest.Substring(0, i)
 
-            // Split qualified name: last segment is method, second-to-last is class
-            let parts = name.Split('.')
-
-            if parts.Length >= 2 then
-                let methodName = parts.[parts.Length - 1]
-                let className = parts.[parts.Length - 2]
-                Some(className, methodName, trimmed)
-            else
-                Some(name, name, trimmed)
+            let className, methodName = splitTestName name
+            Some(className, methodName, trimmed)
         else
             None)
     |> Array.toList
+
+/// The classes ONE project's CTRF report proves RAN AND PASSED in this run
+/// (AUTOMATION-225) — the receipt `RunCoverage.ofRun` reads for a raw `--filter`
+/// passthrough, whose launch REQUEST claims nothing.
+///
+/// A class is claimed only when the report holds at least one PASSED test for it and
+/// NO failed/other test for it. Everything else fails CLOSED — an empty set, which
+/// leaves every red exactly as it was:
+///
+///   * no parseable SUMMARY block → the report was truncated or never flushed;
+///   * per-test array shorter (or longer) than the summary's total → the array is
+///     INCOMPLETE. A real report omits per-test entries for tests that threw a raw
+///     (non-assertion) exception while still counting them in the summary, so a class
+///     could look all-green here while one of its tests exploded. Counting is the only
+///     way to see the omission, so an array that does not account for every test in the
+///     summary is not evidence about ANY class in it;
+///   * a class with a failed/other entry, or with no passed entry at all (all skipped)
+///     → not claimed.
+///
+/// Skips are neutral rather than disqualifying, because the unfiltered arm they must
+/// agree with is: a full run whose report contains skips still returns
+/// `CoveredWholeProject` and clears everything. A rule that let a skip block a class
+/// here would be stricter than the whole-project path it is a refinement of.
+let internal passedClassesOfReport (json: string) : Set<string> =
+    match Ctrf.trySummary json with
+    | None -> Set.empty
+    | Some summary ->
+        let records = Flakiness.parseCtrfTests json
+
+        if records.IsEmpty || records.Length <> summary.Total then
+            Set.empty
+        else
+            records
+            |> List.groupBy (fun r -> fst (splitTestName r.Name))
+            |> List.choose (fun (cls, forClass) ->
+                let anyPassed = forClass |> List.exists (fun r -> r.Outcome = Flakiness.Passed)
+
+                let anyUnvindicated =
+                    forClass
+                    |> List.exists (fun r ->
+                        match r.Outcome with
+                        | Flakiness.Failed
+                        | Flakiness.Other -> true
+                        | Flakiness.Passed
+                        | Flakiness.Skipped -> false)
+
+                if anyPassed && not anyUnvindicated then Some cls else None)
+            |> Set.ofList
+
+/// The per-project passed-class evidence for a completed run, read back from the CTRF
+/// reports THAT RUN wrote (`.fshw/test-runs/<runId>/<Project>.ctrf.json`).
+///
+/// Scoped by RUN DIRECTORY, so a previous run's report can never be mistaken for this
+/// one's: the directory IS the run. A project with no readable report contributes no
+/// entry, and a project absent from the map claims nothing — the absence of evidence is
+/// never evidence of a pass.
+let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string>> =
+    Ctrf.reportsForRun repoRoot runId
+    |> List.choose (fun report ->
+        let json =
+            try
+                Some(File.ReadAllText report.Path)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+
+        match json |> Option.map passedClassesOfReport with
+        | Some classes when not (Set.isEmpty classes) -> Some(report.Project, classes)
+        | _ -> None)
+    |> Map.ofList
 
 /// The reds a completed run FOUND, as outstanding failures (AUTOMATION-125). Pure:
 /// the same run always yields the same set, so the ledger projection is a function
@@ -4080,7 +4186,20 @@ let create
                     // coverage is derived from the run's own launch selection — so a red
                     // dies only to evidence that actually executed it, and dies the
                     // moment such evidence exists (no stuck-red: cf. AUTOMATION-99).
-                    let coverage = RunCoverage.ofRun launch.Selection completed.Results
+                    //
+                    // AUTOMATION-225: the launch selection cannot express the reach of a
+                    // raw `--filter` passthrough (it records every project as
+                    // `ProjectInFull`), so `test-rerun --filter-class X` used to re-run X,
+                    // pass, and leave X's red standing — for good. The run's OWN report
+                    // knows what it executed, so hand `ofRun` the classes it shows passing.
+                    // Read from THIS run's directory only, and empty whenever the report is
+                    // missing or incomplete.
+                    let coverage =
+                        RunCoverage.ofRun
+                            launch.Selection
+                            completed.Results
+                            (passedClassesOfRun repoRoot completed.RunId)
+
                     let foundFailures = failuresOf state.TestClassFiles testResults
 
                     let carriedFailures =

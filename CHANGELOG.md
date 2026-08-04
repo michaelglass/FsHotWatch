@@ -23,6 +23,37 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### A green re-run retires the red it just disproved (AUTOMATION-225)
+
+`fshw test-rerun --filter-class '*BrowserIntegrationTests'` re-ran those tests, they
+**all passed**, and the verdict stayed **RED** — forever. The run went down as
+`ProjectInFull` with the filter as an opaque passthrough string, so the launch
+*request* could not describe what the run had reached, and a run that claims no reach
+retires nothing. An environmentally-caused failure (`ERR_NETWORK_IO_SUSPENDED` after a
+machine suspend) therefore became **permanently sticky**, with no command short of a
+full-suite run able to clear it. It blocked a production deploy three times.
+
+The launch request was the wrong witness. A run's **own CTRF report** knows exactly
+which classes it executed, so that is what the coverage is now derived from: the
+classes the report shows **ran and passed** in this run. The re-run-and-passed reds
+retire; every other red stands.
+
+It fails **closed** at each step, because the alternative to a stuck red must never be
+a false green:
+
+- only classes with a PASS **and no failure** in this run's report are claimed —
+  a class that ran and failed stays red on its own evidence;
+- a project **absent from the launch selection** (impact-skipped) is claimed by
+  nothing, whatever reports exist on disk;
+- a **project-level** red (timeout, errored, deferred, unparseable failure) still
+  requires a full-project run, exactly as before;
+- a report that is **missing, unparseable, or shorter than its own summary total**
+  (the runner omits per-test entries for raw-throw failures) claims **nothing** — the
+  pre-fix behaviour, reached by default.
+
+`confirm` is untouched: a filtered run is still a filtered scope, and a merge verdict
+built on one is still **exit 3**.
+
 ### `fshw --version` names the source ref it was built from (AUTOMATION-123)
 
 `fshw --version` now prints a second line naming the SOURCE this binary was

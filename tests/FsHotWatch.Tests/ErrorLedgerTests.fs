@@ -439,3 +439,27 @@ let ``DiagnosticSeverity order is hint lt info lt warning lt error`` () =
     test <@ DiagnosticSeverity.order Hint < DiagnosticSeverity.order Info @>
     test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order Warning @>
     test <@ DiagnosticSeverity.order Warning < DiagnosticSeverity.order Error @>
+
+[<Fact>]
+let ``DiagnosticSeverity: every severity round-trips through its wire name, and Deferred ranks between Info and Warning``
+    ()
+    =
+    // The wire name is how a severity survives the IPC hop, so a severity that does not
+    // round-trip is one the CLI silently loses — `Deferred` losing its name would route a
+    // "waiting on build" back to a plain failure, which is the exact confusion it exists
+    // to end. Every case, both directions, in one assertion.
+    let all = [ Hint; Info; Deferred; Warning; Error ]
+
+    test
+        <@
+            all
+            |> List.forall (fun s -> DiagnosticSeverity.fromString (DiagnosticSeverity.toString s) = Some s)
+        @>
+
+    // A name from no severity is `None`, never a default — an unrecognised tag from a
+    // newer peer must not be silently read as one of ours.
+    test <@ DiagnosticSeverity.fromString "not-a-severity" = None @>
+
+    // Deferred is louder than informational (it denies a green) but is not a defect.
+    test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order Deferred @>
+    test <@ DiagnosticSeverity.order Deferred < DiagnosticSeverity.order Warning @>
