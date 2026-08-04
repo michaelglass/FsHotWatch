@@ -1401,11 +1401,16 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                       File = file
                       Entry = ErrorLedger.ErrorEntry.errorWithDetail line output })
         | TestsDeferred reason ->
-            // Issue 1: NOT a test failure — surface an honest "waiting on
-            // build / did not run" diagnostic so the verdict is non-green
-            // (nothing was verified) WITHOUT claiming a test failed.
+            // NOT a test failure — surface an honest "waiting on build / did not
+            // run" diagnostic at `Deferred` severity so the verdict is NON-green
+            // (nothing was verified) yet NOT a red: the CLI routes any
+            // `Deferred`-severity entry to `Incomplete`/exit 2, distinct from the
+            // exit 1 a real failure earns. This entry still joins the Outstanding
+            // failure list, so cache participation stays refused (a deferred run is
+            // never replayed as a green) — the severity governs the VERDICT, the
+            // outstanding LIST governs the CACHE, and the two are decoupled.
             [ projectLevel (
-                  ErrorLedger.ErrorEntry.errorWithDetail
+                  ErrorLedger.ErrorEntry.deferredWithDetail
                       $"%s{project}: waiting on build — %s{reason}"
                       $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure."
               ) ]
@@ -4354,17 +4359,42 @@ let create
                                             results.Elapsed
                                     )
                                 elif failed = 0 then
-                                    // Issue 1: only deferred projects — nothing FAILED,
-                                    // but nothing was verified either. Non-green, with an
-                                    // honest "waiting on build" message (never "failed").
+                                    // Only deferred projects — nothing FAILED, but
+                                    // nothing was verified either. Non-green, honest
+                                    // "waiting on build" (never "failed").
                                     let names = deferredList |> List.map fst |> String.concat ", "
 
-                                    ctx.ReportStatus(
-                                        PluginStatus.failedNow
-                                            $"%d{deferred} waiting on build (tests did not run): %s{names}%s{carriedNote}"
-                                            $"%s{runSummary}%s{carriedNote}"
-                                            results.Elapsed
-                                    )
+                                    if carriedCount = 0 then
+                                        // PURE defer: no red at all this run OR carried.
+                                        // Report a NON-failing terminal so the verdict
+                                        // reads the `Deferred`-severity ledger entry (from
+                                        // `failuresOf`) and routes it to
+                                        // `Incomplete`/exit 2 ("waiting on build"), NOT the
+                                        // exit 1 a red earns. The status is not "failed" —
+                                        // the run did what it could; a build-ordering race
+                                        // left one project unrun. The deferred projects
+                                        // stay in the pending-verification queue
+                                        // (`isPassed`=false, so their symbols never commit),
+                                        // so the next build re-runs them, and the result is
+                                        // UNCACHEABLE (`isPassed`=false), so no green is ever
+                                        // pinned. The `OutstandingFailure` list still carries
+                                        // the defer, so cache participation stays refused.
+                                        ctx.ReportStatus(
+                                            PluginStatus.completedNow
+                                                $"%s{runSummary} — %d{deferred} waiting on build (tests did not run): %s{names}"
+                                                results.Elapsed
+                                        )
+                                    else
+                                        // A carried RED from an earlier run is still
+                                        // outstanding — that dominates a defer. Stay
+                                        // Failed/red (exit 1); the ledger's carried Error
+                                        // entry independently keeps the verdict red.
+                                        ctx.ReportStatus(
+                                            PluginStatus.failedNow
+                                                $"%d{deferred} waiting on build (tests did not run): %s{names}%s{carriedNote}"
+                                                $"%s{runSummary}%s{carriedNote}"
+                                                results.Elapsed
+                                        )
                                 else
                                     let names = failedList |> List.map fst |> String.concat ", "
 

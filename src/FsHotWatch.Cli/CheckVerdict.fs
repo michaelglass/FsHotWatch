@@ -52,6 +52,14 @@ type CheckOutcome =
     | FailuresFound
     /// No failures, but completeness could not be achieved.
     | Incomplete of unchecked: int
+    /// No failures — but a test project was WAITING ON BUILD (its build artifact
+    /// wasn't produced, so its tests did not run: the build-ordering "deferred"
+    /// case). Nothing was verified, so this is NON-green; nothing FAILED, so it is
+    /// not a red. A distinct exit-2 outcome (like `Incomplete`) with its own
+    /// verdict-file reason, so a deploy preflight reads "could not complete —
+    /// retry", never "tests failed". A real failure alongside a defer still
+    /// short-circuits to `FailuresFound` (failures are checked first).
+    | WaitingOnBuild
     /// A CONFIRMATION run whose tests did not cover the whole suite. Nothing failed —
     /// but the run did not produce the evidence a merge verdict is made of, so there
     /// is no verdict to give. Distinct from `FailuresFound` (nothing is known to be
@@ -67,6 +75,9 @@ let exitCode (outcome: CheckOutcome) : int =
     | CheckOutcome.Clean -> 0
     | CheckOutcome.FailuresFound -> 1
     | CheckOutcome.Incomplete _ -> 2
+    // "Waiting on build" is the same class of answer as `Incomplete`: the run
+    // could not be completed, not that it failed. Same exit 2.
+    | CheckOutcome.WaitingOnBuild -> 2
     | CheckOutcome.UnearnedScope _ -> 3
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
@@ -85,6 +96,13 @@ type CheckInputs =
         /// Failing entries in the diagnostic ledger. Whether warnings count is
         /// resolved by the transport (`--no-warn-fail`), because only it knows.
         FailingDiagnostics: int
+        /// Is a test project WAITING ON BUILD — deferred because its build artifact
+        /// wasn't produced, so its tests did not run? Non-green (nothing verified)
+        /// but NOT a failure. A distinct term, not folded into `FailingDiagnostics`,
+        /// so the verdict can route it to `WaitingOnBuild`/exit 2 instead of a red.
+        /// Both transports compute it the same way (any `Deferred`-severity ledger
+        /// entry); a transport that forgets it fails to compile.
+        WaitingOnBuild: bool
         /// Did the run actually check every file it is responsible for? `Unknown` is
         /// never `Complete`.
         Coverage: Coverage
@@ -140,6 +158,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
 
     if CheckInputs.hasFailures inputs then
         CheckOutcome.FailuresFound
+    elif inputs.WaitingOnBuild then
+        // No real failure, but a project's tests DID NOT RUN because its build
+        // artifact wasn't ready. Non-green, but "could not complete", never a red.
+        // Checked AFTER failures (a genuine failure alongside a defer is still a
+        // red) and BEFORE coverage/scope (this answer is more specific than "some
+        // files unchecked" or "scope not full"): the run's incompleteness has a
+        // known, nameable cause.
+        CheckOutcome.WaitingOnBuild
     else
         match coverage with
         | Complete ->
@@ -240,6 +266,10 @@ let converge
     match initOutcome with
     | CheckOutcome.FailuresFound
     | CheckOutcome.Clean
+    // `WaitingOnBuild` is terminal here for the same reason as `UnearnedScope`:
+    // re-scanning does not retroactively run a test the settled run already
+    // deferred. exit 2 says "could not complete — retry", which is the answer.
+    | CheckOutcome.WaitingOnBuild
     | CheckOutcome.UnearnedScope _ -> initOutcome
     | CheckOutcome.Incomplete _ ->
         // Enter convergence. `prevMagnitude` is the unchecked magnitude we're

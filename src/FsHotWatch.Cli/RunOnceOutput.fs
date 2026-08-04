@@ -121,7 +121,10 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
             |> List.filter (fun (_, e) ->
                 match e.Severity with
                 | Error
-                | Warning -> true
+                | Warning
+                // A "waiting on build" deferral is actionable context worth
+                // showing (it explains a non-green run), so render it too.
+                | Deferred -> true
                 | Info
                 | Hint -> false))
         |> Map.filter (fun _ entries -> not entries.IsEmpty)
@@ -147,6 +150,7 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                     match entry.Severity with
                     | Error -> $"%s{Color.red}error%s{Color.reset}: "
                     | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
+                    | Deferred -> $"%s{Color.yellow}waiting on build%s{Color.reset}: "
                     | Info
                     | Hint -> ""
 

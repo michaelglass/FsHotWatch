@@ -4878,24 +4878,35 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             | Some(Failed _) -> Assert.Fail("transient apphost-missing was reported as FAILED")
             | _ -> ()
         else
-            // Issue 1 regression: a persistently-missing apphost means the tests
-            // NEVER RAN — it must be DEFERRED, which is NON-GREEN (nothing was
-            // verified; a CI check must not silent-green it), with an honest
-            // "waiting on build" diagnostic rather than a "test failed" one.
-            // On pre-Issue-1 code this returned TestsPassed → a false green.
-            test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+            // A persistently-missing apphost means the tests NEVER RAN — DEFERRED,
+            // which is NON-GREEN (nothing was verified; a CI check must not
+            // silent-green it) but NOT a failure. Exit-code reclassification
+            // (Commit 2): the diagnostic is `Deferred` severity (the verdict routes
+            // it to Incomplete/exit 2), NOT a failing `Error` (exit 1), and the
+            // status is a non-failing terminal, NOT `Failed`. The non-green
+            // guarantee now lives in the Deferred diagnostic + CLI verdict, never a
+            // red. (On pre-Issue-1 code this returned TestsPassed → a false green;
+            // that guarantee is preserved — it is simply exit 2, not exit 1.)
+            test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+
+            let allEntries =
+                host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
 
             let waitingDiagnostic =
-                failingReasons
-                |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
+                allEntries
+                |> List.exists (fun e ->
+                    e.Severity = FsHotWatch.ErrorLedger.Deferred
+                    && e.Message.ToLowerInvariant().Contains("waiting on build"))
 
             test <@ waitingDiagnostic @>
+            // A defer is never a red: no Error entries.
+            test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
 
-            // Status must be non-green (Failed) — but the message must say
-            // "waiting on build", not "failed".
+            // Status is a NON-failing terminal whose summary still says "waiting on
+            // build" — never `Failed`, never a silent green.
             match host.GetStatus("test-prune") with
-            | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
-            | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
+            | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
+            | other -> Assert.Fail($"expected a non-failing Completed status for a pure deferred project, got %A{other}"))
 
 // =============================================================================
 // Freshness gate. `tryApphostPresent`/`detectApphostMissing` only fired on a
@@ -5743,30 +5754,37 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 15.0
 
-        let failingReasons =
-            host.GetErrorsByPlugin("test-prune")
-            |> Map.toList
-            |> List.collect snd
-            |> List.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error)
+        let allEntries =
+            host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
 
         // Stale bits must be DEFERRED — non-green, with an honest "waiting on
-        // build" diagnostic — exactly like a missing apphost; never a pass.
-        test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+        // build" diagnostic — exactly like a missing apphost; never a pass. Under
+        // the exit-code reclassification (Commit 2) a defer is `Deferred` severity
+        // (verdict routes it to Incomplete/exit 2), NOT a failing `Error`, so it
+        // no longer registers as a failing reason.
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
         let waitingDiagnostic =
-            failingReasons
-            |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
+            allEntries
+            |> List.exists (fun e ->
+                e.Severity = FsHotWatch.ErrorLedger.Deferred
+                && e.Message.ToLowerInvariant().Contains("waiting on build"))
 
         test <@ waitingDiagnostic @>
 
+        // Status is a NON-failing terminal (the run did what it could; a
+        // build-ordering race left the project unrun) whose summary still says
+        // "waiting on build" — never `Failed`, never a silent green.
         match host.GetStatus("test-prune") with
-        | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
-        | other -> Assert.Fail($"expected non-green Failed status for the stale-artifact defer, got %A{other}")
+        | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
+        | other -> Assert.Fail($"expected a non-failing Completed status for the stale-artifact defer, got %A{other}")
 
-        // And it must never masquerade as a test failure.
+        // And it must never masquerade as a test failure: no Error entries at all.
+        test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
+
         test
             <@
-                failingReasons
+                allEntries
                 |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
             @>)
 
@@ -7917,6 +7935,38 @@ let ``RunCoverage: deferred, errored and zero-match results cover nothing — th
     test <@ coverage = Map.empty @>
 
 [<Fact(Timeout = 10000)>]
+let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on build' entry, never a failing Error`` () =
+    // 224 reclassification AT THE SOURCE: a deferred project (its build artifact was
+    // not produced, so its tests did not run) must surface as a NON-failing
+    // `Deferred` diagnostic the verdict routes to Incomplete/exit 2 — never a failing
+    // `Error` (exit 1). Pre-fix this was `errorWithDetail` (Error severity), which is
+    // exactly what made the deploy preflight read a build-ordering defer as a test
+    // failure. A genuine failure MUST still be a failing `Error` (no regression).
+    let deferred: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsDeferred "apphost not produced" ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry = (failuresOf Map.empty deferred |> List.exactlyOne).Entry
+
+    test <@ entry.Severity = FsHotWatch.ErrorLedger.Deferred @>
+    test <@ FsHotWatch.ErrorLedger.ErrorEntry.isWaitingOnBuild entry @>
+    // Never counted as a failure — in either warn-fail policy.
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing true entry) @>
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing false entry) @>
+    test <@ entry.Message.ToLowerInvariant().Contains "waiting on build" @>
+
+    // A genuine test failure is STILL a failing `Error` — the reclassification is
+    // surgical to the defer case, not a blanket downgrade.
+    let failed: TestResults =
+        { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let realFailures = failuresOf Map.empty failed
+    test <@ not realFailures.IsEmpty @>
+    test <@ realFailures |> List.forall (fun f -> f.Entry.Severity = FsHotWatch.ErrorLedger.Error) @>
+    test <@ realFailures |> List.forall (fun f -> FsHotWatch.ErrorLedger.ErrorEntry.isFailing true f.Entry) @>
+
+[<Fact(Timeout = 10000)>]
 let ``RunCoverage: a raw --filter passthrough claims no coverage (its reach is unknowable)`` () =
     // `run-tests --filter <raw>` launches every project in full but hands the runner an
     // arbitrary filter string. `wasFiltered` is true and the selection names no classes,
@@ -8043,6 +8093,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                 FsHotWatch.Cli.CheckVerdict.Confirmation
                 { PluginStatuses = Map.empty
                   FailingDiagnostics = 0
+                  WaitingOnBuild = false
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
@@ -8072,6 +8123,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
     let noTestsRan: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
+          WaitingOnBuild = false
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
 
