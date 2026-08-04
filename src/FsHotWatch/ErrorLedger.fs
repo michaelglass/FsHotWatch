@@ -6,6 +6,14 @@ type DiagnosticSeverity =
     | Warning
     | Info
     | Hint
+    /// NOT a defect and NOT a pass: the work this entry describes DID NOT RUN
+    /// (a test project deferred because its build artifact wasn't produced yet —
+    /// the "waiting on build" build-ordering case). It must DENY a green verdict
+    /// (nothing was verified) WITHOUT being counted as a failure: the verdict
+    /// routes it to `Incomplete`/exit 2, never `FailuresFound`/exit 1. Distinct
+    /// from `Info`/`Hint` (which are green-compatible) precisely because it is
+    /// non-green, and distinct from `Error`/`Warning` because nothing failed.
+    | Deferred
 
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
@@ -32,6 +40,7 @@ module DiagnosticSeverity =
         | Warning -> "warning"
         | Info -> "info"
         | Hint -> "hint"
+        | Deferred -> "deferred"
 
     let fromString (s: string) =
         match s with
@@ -39,23 +48,35 @@ module DiagnosticSeverity =
         | "warning" -> Some Warning
         | "info" -> Some Info
         | "hint" -> Some Hint
+        | "deferred" -> Some Deferred
         | _ -> None
 
     let order (severity: DiagnosticSeverity) =
         match severity with
         | Hint -> 0
         | Info -> 1
-        | Warning -> 2
-        | Error -> 3
+        // Deferred ranks between Info and Warning: louder than informational (it
+        // denies a green) but not a defect (nothing failed).
+        | Deferred -> 2
+        | Warning -> 3
+        | Error -> 4
 
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
+    /// `Deferred` is NEVER a failure — it is "waiting on build / did not run",
+    /// routed to `Incomplete` (exit 2) by the verdict, never a red.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
         match e.Severity with
         | Error -> true
         | Warning -> warningsAreFailures
         | Info
-        | Hint -> false
+        | Hint
+        | Deferred -> false
+
+    /// True iff this entry is a "waiting on build" deferral — the signal the
+    /// verdict maps to `Incomplete`/exit 2 (tests did not run because a build
+    /// artifact wasn't ready). NOT a failure; see `isFailing`.
+    let isWaitingOnBuild (e: ErrorEntry) : bool = e.Severity = Deferred
 
     /// Create an Error-severity entry with no source location.
     let error (message: string) : ErrorEntry =
@@ -80,6 +101,17 @@ module ErrorEntry =
     let warningWithDetail (message: string) (detail: string) : ErrorEntry =
         { Message = message
           Severity = Warning
+          Line = 0
+          Column = 0
+          Detail = Some detail }
+
+    /// Create a `Deferred`-severity entry with detail. For the "waiting on build"
+    /// case: a test project whose build artifact wasn't ready, so its tests did
+    /// NOT run. Non-green (nothing was verified) but NOT a failure — the verdict
+    /// routes it to `Incomplete`/exit 2, distinct from a red.
+    let deferredWithDetail (message: string) (detail: string) : ErrorEntry =
+        { Message = message
+          Severity = Deferred
           Line = 0
           Column = 0
           Detail = Some detail }

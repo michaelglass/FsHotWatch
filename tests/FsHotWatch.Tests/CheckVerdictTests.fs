@@ -33,6 +33,7 @@ let private statusOf (status: StatusView) : Map<string, ParsedPluginStatus> =
 let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) : CheckInputs =
     { PluginStatuses = Map.empty
       FailingDiagnostics = (if hasFailures then 1 else 0)
+      WaitingOnBuild = false
       Coverage = coverage
       Scope = scope }
 
@@ -50,6 +51,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
     let crashed =
         { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
           FailingDiagnostics = 0
+          WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -64,6 +66,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
     let unreadable =
         { PluginStatuses = statusOf (StatusView.Unreadable "a status tag this build does not recognize")
           FailingDiagnostics = 0
+          WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -77,11 +80,57 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
     let healthy =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
+          WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
 
     test <@ verdict InnerLoop healthy = CheckOutcome.Clean @>
     test <@ verdict Confirmation healthy = CheckOutcome.Clean @>
+
+// ----------------------------------------------------------------------------
+// 224 — "waiting on build" is INCOMPLETE (exit 2), never a red (exit 1). A test
+// project deferred because its build artifact wasn't produced did not run: nothing
+// was verified (non-green), nothing failed (not a red). It must route to exit 2 so
+// a deploy preflight retries rather than reading a test failure.
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, never a red`` () =
+    // The plugin reports a NON-failing terminal for a pure defer (Commit 2), and the
+    // deferred diagnostic is `Deferred` severity — so FailingDiagnostics is 0 and no
+    // plugin is Failed. The distinct `WaitingOnBuild` term carries the non-green.
+    let waiting =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 0
+          WaitingOnBuild = true
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild @>
+    test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild @>
+    test <@ exitCode (verdict InnerLoop waiting) = 2 @>
+    test <@ exitCode (verdict Confirmation waiting) = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: a REAL failure alongside waiting on build still short-circuits to FailuresFound / exit 1`` () =
+    // A defer never LAUNDERS a red. Failures are checked first, so a genuine failing
+    // diagnostic (or a crashed plugin) dominates a co-occurring defer.
+    let failureAndWaiting =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 1
+          WaitingOnBuild = true
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop failureAndWaiting = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation failureAndWaiting = CheckOutcome.FailuresFound @>
+    test <@ exitCode (verdict InnerLoop failureAndWaiting) = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``verdict: a clean full run is still Clean / exit 0 — no regression from the waiting-on-build term`` () =
+    let clean = inputs false Complete (FullSuite 4)
+    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+    test <@ exitCode (verdict Confirmation clean) = 0 @>
 
 // ----------------------------------------------------------------------------
 // Pure verdict mapping. The exit code is a TOTAL function over an explicit

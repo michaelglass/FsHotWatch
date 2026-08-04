@@ -4878,24 +4878,36 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             | Some(Failed _) -> Assert.Fail("transient apphost-missing was reported as FAILED")
             | _ -> ()
         else
-            // Issue 1 regression: a persistently-missing apphost means the tests
-            // NEVER RAN — it must be DEFERRED, which is NON-GREEN (nothing was
-            // verified; a CI check must not silent-green it), with an honest
-            // "waiting on build" diagnostic rather than a "test failed" one.
-            // On pre-Issue-1 code this returned TestsPassed → a false green.
-            test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+            // A persistently-missing apphost means the tests NEVER RAN — DEFERRED,
+            // which is NON-GREEN (nothing was verified; a CI check must not
+            // silent-green it) but NOT a failure. Exit-code reclassification
+            // (Commit 2): the diagnostic is `Deferred` severity (the verdict routes
+            // it to Incomplete/exit 2), NOT a failing `Error` (exit 1), and the
+            // status is a non-failing terminal, NOT `Failed`. The non-green
+            // guarantee now lives in the Deferred diagnostic + CLI verdict, never a
+            // red. (On pre-Issue-1 code this returned TestsPassed → a false green;
+            // that guarantee is preserved — it is simply exit 2, not exit 1.)
+            test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+
+            let allEntries =
+                host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
 
             let waitingDiagnostic =
-                failingReasons
-                |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
+                allEntries
+                |> List.exists (fun e ->
+                    e.Severity = FsHotWatch.ErrorLedger.Deferred
+                    && e.Message.ToLowerInvariant().Contains("waiting on build"))
 
             test <@ waitingDiagnostic @>
+            // A defer is never a red: no Error entries.
+            test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
 
-            // Status must be non-green (Failed) — but the message must say
-            // "waiting on build", not "failed".
+            // Status is a NON-failing terminal whose summary still says "waiting on
+            // build" — never `Failed`, never a silent green.
             match host.GetStatus("test-prune") with
-            | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
-            | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
+            | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
+            | other ->
+                Assert.Fail($"expected a non-failing Completed status for a pure deferred project, got %A{other}"))
 
 // =============================================================================
 // Freshness gate. `tryApphostPresent`/`detectApphostMissing` only fired on a
@@ -5743,30 +5755,37 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 15.0
 
-        let failingReasons =
-            host.GetErrorsByPlugin("test-prune")
-            |> Map.toList
-            |> List.collect snd
-            |> List.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error)
+        let allEntries =
+            host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
 
         // Stale bits must be DEFERRED — non-green, with an honest "waiting on
-        // build" diagnostic — exactly like a missing apphost; never a pass.
-        test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+        // build" diagnostic — exactly like a missing apphost; never a pass. Under
+        // the exit-code reclassification (Commit 2) a defer is `Deferred` severity
+        // (verdict routes it to Incomplete/exit 2), NOT a failing `Error`, so it
+        // no longer registers as a failing reason.
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
         let waitingDiagnostic =
-            failingReasons
-            |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
+            allEntries
+            |> List.exists (fun e ->
+                e.Severity = FsHotWatch.ErrorLedger.Deferred
+                && e.Message.ToLowerInvariant().Contains("waiting on build"))
 
         test <@ waitingDiagnostic @>
 
+        // Status is a NON-failing terminal (the run did what it could; a
+        // build-ordering race left the project unrun) whose summary still says
+        // "waiting on build" — never `Failed`, never a silent green.
         match host.GetStatus("test-prune") with
-        | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
-        | other -> Assert.Fail($"expected non-green Failed status for the stale-artifact defer, got %A{other}")
+        | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
+        | other -> Assert.Fail($"expected a non-failing Completed status for the stale-artifact defer, got %A{other}")
 
-        // And it must never masquerade as a test failure.
+        // And it must never masquerade as a test failure: no Error entries at all.
+        test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
+
         test
             <@
-                failingReasons
+                allEntries
                 |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
             @>)
 
@@ -7664,6 +7683,11 @@ let private impactSkipped = TestsPassed("", true, TimeSpan.Zero)
 let private passed (filtered: bool) =
     TestsPassed("ok", filtered, TimeSpan.FromSeconds 1.0)
 
+/// No per-test report evidence at all — the fail-closed default `RunCoverage.ofRun`
+/// reads whenever a run wrote no readable/complete CTRF report (AUTOMATION-225). With
+/// this, a raw `--filter` run claims exactly what it claimed before the fix: nothing.
+let private noReportEvidence: Map<string, Set<string>> = Map.empty
+
 /// Drive the plugin through a sequence of completed runs, returning the ctx
 /// recorders and the final state. Starts from the handler's own initial state, so
 /// every invariant the real plugin carries in state is carried here too.
@@ -7872,6 +7896,7 @@ let ``RunCoverage: an impact-SKIPPED project (filtered pass, absent from the sel
         RunCoverage.ofRun
             (Map.ofList [ "ProjB", ProjectClasses(Set.ofList [ "ProjBTests" ]) ])
             (Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ])
+            noReportEvidence
 
     test <@ not (RunCoverage.covers "ProjA" (Some "ProjATests") coverage) @>
     test <@ not (RunCoverage.covers "ProjA" None coverage) @>
@@ -7885,6 +7910,7 @@ let ``RunCoverage: an UNFILTERED result covers the whole project whatever the se
         RunCoverage.ofRun
             (Map.ofList [ "ProjA", ProjectClasses(Set.ofList [ "OneClass" ]) ])
             (Map.ofList [ "ProjA", passed false ])
+            noReportEvidence
 
     test <@ RunCoverage.covers "ProjA" (Some "AnyOtherClass") coverage @>
     test <@ RunCoverage.covers "ProjA" None coverage @>
@@ -7895,6 +7921,7 @@ let ``RunCoverage: a class-filtered pass covers ONLY the classes it ran`` () =
         RunCoverage.ofRun
             (Map.ofList [ "ProjA", ProjectClasses(Set.ofList [ "Alpha" ]) ])
             (Map.ofList [ "ProjA", passed true ])
+            noReportEvidence
 
     test <@ RunCoverage.covers "ProjA" (Some "Alpha") coverage @>
     test <@ not (RunCoverage.covers "ProjA" (Some "Beta") coverage) @>
@@ -7910,6 +7937,7 @@ let ``RunCoverage: deferred, errored and zero-match results cover nothing — th
                 [ "ProjA", TestsDeferred "apphost not produced"
                   "ProjB", TestsErrored "no parseable report"
                   "ProjC", TestsPassed(ZeroMatchMarker + "no tests matched", true, TimeSpan.Zero) ])
+            noReportEvidence
 
     test <@ not (RunCoverage.covers "ProjA" None coverage) @>
     test <@ not (RunCoverage.covers "ProjB" None coverage) @>
@@ -7917,15 +7945,365 @@ let ``RunCoverage: deferred, errored and zero-match results cover nothing — th
     test <@ coverage = Map.empty @>
 
 [<Fact(Timeout = 10000)>]
-let ``RunCoverage: a raw --filter passthrough claims no coverage (its reach is unknowable)`` () =
+let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on build' entry, never a failing Error`` () =
+    // 224 reclassification AT THE SOURCE: a deferred project (its build artifact was
+    // not produced, so its tests did not run) must surface as a NON-failing
+    // `Deferred` diagnostic the verdict routes to Incomplete/exit 2 — never a failing
+    // `Error` (exit 1). Pre-fix this was `errorWithDetail` (Error severity), which is
+    // exactly what made the deploy preflight read a build-ordering defer as a test
+    // failure. A genuine failure MUST still be a failing `Error` (no regression).
+    let deferred: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsDeferred "apphost not produced" ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry = (failuresOf Map.empty deferred |> List.exactlyOne).Entry
+
+    test <@ entry.Severity = FsHotWatch.ErrorLedger.Deferred @>
+    test <@ FsHotWatch.ErrorLedger.ErrorEntry.isWaitingOnBuild entry @>
+    // Never counted as a failure — in either warn-fail policy.
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing true entry) @>
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing false entry) @>
+    test <@ entry.Message.ToLowerInvariant().Contains "waiting on build" @>
+
+    // A genuine test failure is STILL a failing `Error` — the reclassification is
+    // surgical to the defer case, not a blanket downgrade.
+    let failed: TestResults =
+        { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let realFailures = failuresOf Map.empty failed
+    test <@ not realFailures.IsEmpty @>
+
+    test
+        <@
+            realFailures
+            |> List.forall (fun f -> f.Entry.Severity = FsHotWatch.ErrorLedger.Error)
+        @>
+
+    test
+        <@
+            realFailures
+            |> List.forall (fun f -> FsHotWatch.ErrorLedger.ErrorEntry.isFailing true f.Entry)
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``RunCoverage: a raw --filter passthrough with NO report evidence claims no coverage`` () =
     // `run-tests --filter <raw>` launches every project in full but hands the runner an
     // arbitrary filter string. `wasFiltered` is true and the selection names no classes,
-    // so we claim nothing rather than guess. Conservative in the safe direction: the red
-    // survives until an unfiltered `test-rerun` proves it.
+    // so the LAUNCH REQUEST can say nothing about its reach. With no report to ask
+    // either, we claim nothing rather than guess — the fail-closed floor AUTOMATION-225
+    // is built on top of, not a replacement for.
     let coverage =
-        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull ]) (Map.ofList [ "ProjA", passed true ])
+        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull ]) (Map.ofList [ "ProjA", passed true ]) noReportEvidence
 
     test <@ coverage = Map.empty @>
+
+// --- AUTOMATION-225: a green re-run retires the red it just disproved ---
+
+/// A CTRF report in the shape fshw's runners really emit — summary counts and the
+/// per-test array, both nested under `results`. The summary is DERIVED from the
+/// entries unless `declaredTotal` overrides it, so a fixture cannot accidentally
+/// disagree with itself (and can deliberately, to pin the truncation guard).
+let private ctrfReportWithTotal (declaredTotal: int option) (tests: (string * string) list) : string =
+    let count status =
+        tests |> List.filter (fun (_, s) -> s = status) |> List.length
+
+    let entries =
+        tests
+        |> List.map (fun (name, status) ->
+            sprintf """{"name":%s,"status":"%s","duration":1}""" (JsonSerializer.Serialize<string>(name)) status)
+        |> String.concat ","
+
+    sprintf
+        """{"results":{"summary":{"tests":%d,"passed":%d,"failed":%d,"pending":0,"skipped":%d,"other":%d},"tests":[%s]}}"""
+        (declaredTotal |> Option.defaultValue tests.Length)
+        (count "passed")
+        (count "failed")
+        (count "skipped")
+        (count "other")
+        entries
+
+let private ctrfReport (tests: (string * string) list) : string = ctrfReportWithTotal None tests
+
+/// A completed run whose CTRF reports sit exactly where the real runner writes them:
+/// `<repoRoot>/.fshw/test-runs/<runId>/<Project>.ctrf.json`. That directory is the only
+/// route by which a run's own per-test evidence reaches the ledger, so these tests drive
+/// the whole path — disk → `passedClassesOfRun` → `ofRun` → `covers` → `carriedOver` —
+/// rather than handing `ofRun` a hand-made map.
+let private testsFinishedEventWithReports
+    (repoRoot: string)
+    (reports: (string * string) list)
+    (results: (string * TestResult) list)
+    (launch: TestRunLaunch)
+    =
+    let runId = Guid.NewGuid()
+    let dir = Path.Combine(repoRoot, ".fshw", "test-runs", runId.ToString("N"))
+    Directory.CreateDirectory(dir) |> ignore
+
+    for project, json in reports do
+        File.WriteAllText(Path.Combine(dir, project + ".ctrf.json"), json)
+
+    let started: TestRunStarted =
+        { RunId = runId
+          StartedAt = DateTime.UtcNow }
+
+    let completed: TestRunCompleted =
+        { RunId = runId
+          TotalElapsed = TimeSpan.FromSeconds 1.0
+          Outcome = Normal
+          Results = Map.ofList results
+          RanFullSuite = TestResult.ranFullSuite (Map.ofList results) }
+
+    Custom(TestsFinished(started, completed, launch))
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: a report's PASSED classes are the receipt a raw-filter run is credited with`` () =
+    let report =
+        ctrfReport
+            [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
+              "Acme.Tests.BrowserIntegrationTests.signs in", "passed" ]
+
+    test <@ passedClassesOfReport report = Set.ofList [ "BrowserIntegrationTests" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: a class that RAN AND FAILED is claimed by nothing, not even its own passes`` () =
+    // Per-class judgement, on that class's own evidence. The class with a failure is not
+    // vindicated by its siblings' greens; the sibling class IS vindicated by its own.
+    let report =
+        ctrfReport
+            [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
+              "Acme.Tests.BrowserIntegrationTests.signs in", "failed"
+              "Acme.Tests.SmokeTests.pings", "passed" ]
+
+    test <@ passedClassesOfReport report = Set.ofList [ "SmokeTests" ] @>
+
+    // An `other` status is an individually-ERRORED test — not a pass, so not a receipt.
+    let errored =
+        ctrfReport
+            [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
+              "Acme.Tests.BrowserIntegrationTests.explodes", "other" ]
+
+    test <@ passedClassesOfReport errored = Set.empty @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: a class with nothing but skips proves nothing; a skip beside a pass is neutral`` () =
+    let allSkipped =
+        ctrfReport [ "Acme.Tests.BrowserIntegrationTests.disabled for now", "skipped" ]
+
+    test <@ passedClassesOfReport allSkipped = Set.empty @>
+
+    // Neutral, not disqualifying — the unfiltered arm this refines returns
+    // `CoveredWholeProject` for a full run whose report contains skips, so a rule where a
+    // skip blocked a class here would be stricter than the path it is a refinement of.
+    let mixed =
+        ctrfReport
+            [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
+              "Acme.Tests.BrowserIntegrationTests.disabled for now", "skipped" ]
+
+    test <@ passedClassesOfReport mixed = Set.ofList [ "BrowserIntegrationTests" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: report evidence that is missing, unparseable or INCOMPLETE claims nothing`` () =
+    // Fail CLOSED, four ways. A bug here must degrade to "the red stays red".
+    test <@ passedClassesOfReport "" = Set.empty @>
+    test <@ passedClassesOfReport "not json at all" = Set.empty @>
+
+    // A per-test array with NO summary block: the report was truncated or never flushed,
+    // and completeness cannot be checked, so it is not evidence.
+    test <@ passedClassesOfReport """{"results":{"tests":[{"name":"A.BTests.c","status":"passed"}]}}""" = Set.empty @>
+
+    // THE dangerous case: a real report OMITS per-test entries for tests that threw a raw
+    // (non-assertion) exception while still counting them in the summary. Counting is the
+    // only way to see the omission — a class could otherwise look all-green here while one
+    // of its tests exploded. An array that does not account for every test in the summary
+    // is evidence about NO class in it.
+    let truncated =
+        ctrfReportWithTotal
+            (Some 3)
+            [ "Acme.Tests.BrowserIntegrationTests.one", "passed"
+              "Acme.Tests.BrowserIntegrationTests.two", "passed" ]
+
+    test <@ passedClassesOfReport truncated = Set.empty @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: a raw --filter run is credited with the classes its own report shows passing`` () =
+    let evidence = Map.ofList [ "ProjA", Set.ofList [ "BrowserIntegrationTests" ] ]
+
+    let coverage =
+        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull ]) (Map.ofList [ "ProjA", passed true ]) evidence
+
+    test <@ RunCoverage.covers "ProjA" (Some "BrowserIntegrationTests") coverage @>
+
+    // ... and with NOTHING else. A class the report never mentions is untouched, and a
+    // PROJECT-level red (timeout / errored / unparseable failure) still needs a full run.
+    test <@ not (RunCoverage.covers "ProjA" (Some "SomeOtherTests") coverage) @>
+    test <@ not (RunCoverage.covers "ProjA" None coverage) @>
+
+    // The merge gate is unmoved: this is a FILTERED scope, never a whole-suite claim.
+    test <@ not (RunCoverage.coversWholeSuite [ "ProjA" ] coverage) @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: report evidence never speaks for a project the run did not LAUNCH`` () =
+    // AUTOMATION-125's laundering vector, re-checked against the new input: ProjA was
+    // impact-SKIPPED (absent from the selection, recorded as a filtered pass). A report
+    // bearing its name must not resurrect it as coverage — the selection is consulted
+    // BEFORE any evidence, and absence from it is final.
+    let evidence = Map.ofList [ "ProjA", Set.ofList [ "ProjATests" ] ]
+
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjB", ProjectInFull ])
+            (Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ])
+            evidence
+
+    test <@ not (RunCoverage.covers "ProjA" (Some "ProjATests") coverage) @>
+    test <@ not (RunCoverage.covers "ProjA" None coverage) @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225: a TIMED-OUT project is credited with nothing, report or no report`` () =
+    // A project killed for being stuck is a fact about the PROJECT, and whatever a shot
+    // process managed to flush is not a receipt for anything.
+    let evidence = Map.ofList [ "ProjA", Set.ofList [ "ProjATests" ] ]
+
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectInFull ])
+            (Map.ofList [ "ProjA", TestsTimedOut("killed", TimeSpan.FromSeconds 60.0, true, TimeSpan.FromSeconds 60.0) ])
+            evidence
+
+    test <@ coverage = Map.empty @>
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran — and only that one`` () =
+    // The deadlock, end to end. An environmental failure (`ERR_NETWORK_IO_SUSPENDED`
+    // after a machine suspend) reds a class; `fshw test-rerun --filter-class
+    // '*BrowserIntegrationTests'` re-runs it and it passes — and before this fix the red
+    // STAYED, because the launch records every project as `ProjectInFull` and the raw
+    // filter string's reach was unknowable. Sticky forever; it blocked a production
+    // deploy three times.
+    let repoRoot =
+        Path.Combine(Path.GetTempPath(), "fshw-a225-" + Guid.NewGuid().ToString("N"))
+
+    Directory.CreateDirectory(repoRoot) |> ignore
+
+    try
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA" ]) None None None None []
+
+        // A full run reds TWO classes: the environmental one, and an unrelated one.
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA",
+                  TestsFailed(
+                      "failed Acme.Tests.BrowserIntegrationTests.loads the dashboard (12ms)\nfailed Acme.Tests.LedgerTests.balances (3ms)",
+                      false,
+                      TimeSpan.FromSeconds 1.0
+                  ) ]
+                (fullSuiteLaunch [ "ProjA" ])
+
+        let _c1, _s1, _l1, afterFull = driveRuns handler [ fullRun ]
+
+        test
+            <@
+                afterFull.OutstandingFailures |> List.map (fun f -> f.Class) |> List.sort = [ Some
+                                                                                                  "BrowserIntegrationTests"
+                                                                                              Some "LedgerTests" ]
+            @>
+
+        // The re-run: `ProjectInFull` selection + an opaque filter string, exactly as
+        // `commandForceRun` builds it. Only the run's own report knows what executed.
+        let filteredRerun =
+            testsFinishedEventWithReports
+                repoRoot
+                [ "ProjA", ctrfReport [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed" ] ]
+                [ "ProjA", passed true ]
+                (fullSuiteLaunch [ "ProjA" ])
+
+        let _c2, _s2, ledger, afterRerun = driveRuns handler [ fullRun; filteredRerun ]
+
+        // THE FIX: the class that re-ran and passed is retired ...
+        test
+            <@
+                not (
+                    afterRerun.OutstandingFailures
+                    |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+                )
+            @>
+
+        // ... and the red the re-run never touched is still standing, in the state AND in
+        // the ledger the verdict reads.
+        test <@ afterRerun.OutstandingFailures |> List.map (fun f -> f.Class) = [ Some "LedgerTests" ] @>
+
+        let ledgerMessages =
+            ledger
+            |> Seq.collect (fun kv -> kv.Value)
+            |> Seq.map (fun e -> e.Message)
+            |> Seq.toList
+
+        test <@ ledgerMessages |> List.exists (fun m -> m.Contains "LedgerTests") @>
+        test <@ not (ledgerMessages |> List.exists (fun m -> m.Contains "BrowserIntegrationTests")) @>
+    finally
+        try
+            Directory.Delete(repoRoot, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retires NOTHING`` () =
+    // Fail closed at the top of the stack too: with no usable evidence the run is back to
+    // claiming nothing, and every red survives. A defect here must cost a stuck red, never
+    // a false green.
+    let repoRoot =
+        Path.Combine(Path.GetTempPath(), "fshw-a225-closed-" + Guid.NewGuid().ToString("N"))
+
+    Directory.CreateDirectory(repoRoot) |> ignore
+
+    try
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA" ]) None None None None []
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA",
+                  TestsFailed(
+                      "failed Acme.Tests.BrowserIntegrationTests.loads the dashboard (12ms)",
+                      false,
+                      TimeSpan.FromSeconds 1.0
+                  ) ]
+                (fullSuiteLaunch [ "ProjA" ])
+
+        // (a) the run wrote no report at all.
+        let noReport =
+            testsFinishedEventWithReports repoRoot [] [ "ProjA", passed true ] (fullSuiteLaunch [ "ProjA" ])
+
+        let _c1, _s1, _l1, afterNoReport = driveRuns handler [ fullRun; noReport ]
+
+        test
+            <@
+                afterNoReport.OutstandingFailures
+                |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+            @>
+
+        // (b) the run wrote an unparseable one.
+        let garbage =
+            testsFinishedEventWithReports
+                repoRoot
+                [ "ProjA", "{ this is not a ctrf report" ]
+                [ "ProjA", passed true ]
+                (fullSuiteLaunch [ "ProjA" ])
+
+        let _c2, _s2, _l2, afterGarbage = driveRuns handler [ fullRun; garbage ]
+
+        test
+            <@
+                afterGarbage.OutstandingFailures
+                |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+            @>
+    finally
+        try
+            Directory.Delete(repoRoot, true)
+        with _ ->
+            ()
 
 // --- OutstandingFailure.carry: the ledger algebra (unit) ---
 
@@ -8033,6 +8411,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
         RunCoverage.ofRun
             (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectClasses(Set.ofList [ "SomeTests" ]) ])
             filteredResults.Results
+            noReportEvidence
 
     match scopeOf (configs |> List.map (fun c -> c.Project)) coverage with
     | ScopeFiltered(ran, total) ->
@@ -8043,6 +8422,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                 FsHotWatch.Cli.CheckVerdict.Confirmation
                 { PluginStatuses = Map.empty
                   FailingDiagnostics = 0
+                  WaitingOnBuild = false
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
@@ -8050,13 +8430,16 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
     | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
 
 [<Fact(Timeout = 10000)>]
-let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate sees no scope at all`` () =
+let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO coverage, so the gate sees no scope at all``
+    ()
+    =
     // Sharper than the case above, and worth pinning: `run-tests --filter <raw>` is an
-    // arbitrary filter string whose reach `RunCoverage.ofRun` cannot compute, so it
-    // credits the run with NOTHING. Projecting that gives `ScopeNone` — not
-    // `ScopeFiltered` — and the CLI refuses to call it green in EITHER mode. Strictly
-    // safer than the `classifyRunScope` it replaces, which would have called this a
-    // SUBSET (still exit 3, but for the weaker reason).
+    // arbitrary filter string whose reach the LAUNCH REQUEST cannot express, so with no
+    // report to ask either (`noReportEvidence`) `RunCoverage.ofRun` credits the run with
+    // NOTHING. Projecting that gives `ScopeNone` — not `ScopeFiltered` — and the CLI
+    // refuses to call it green in EITHER mode. Strictly safer than the `classifyRunScope`
+    // it replaces, which would have called this a SUBSET (still exit 3, but for the
+    // weaker reason).
     let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
 
     let rawFiltered: TestResults =
@@ -8064,7 +8447,10 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
           Elapsed = TimeSpan.FromSeconds 1.0 }
 
     let coverage =
-        RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ]) rawFiltered.Results
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ])
+            rawFiltered.Results
+            noReportEvidence
 
     test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeNone 2 @>
 
@@ -8072,6 +8458,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
     let noTestsRan: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
+          WaitingOnBuild = false
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
 
@@ -8083,6 +8470,38 @@ let ``AUTOMATION-125 x 129: a RAW-filter run claims NO coverage, so the gate see
 
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode confirmed = 3 @>
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode inner = 3 @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, and confirm still refuses it`` () =
+    // The honest consequence of crediting a raw-filter run with what its report proves:
+    // the scope projection stops saying "nothing ran" and says what actually did. That is
+    // a report of MORE evidence, not a weaker gate — and the gate is where it matters:
+    // `confirm` still demands a full-suite scope and still exits 3 (UnearnedScope). The
+    // ONE source of truth (`scopeOf` as a pure projection of `RunCoverage`) is preserved:
+    // the ledger and the verdict read the same coverage, as AUTOMATION-129 requires.
+    let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
+
+    let evidence = Map.ofList [ "ProjB", Set.ofList [ "BrowserIntegrationTests" ] ]
+
+    let coverage =
+        RunCoverage.ofRun
+            (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ])
+            (Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ])
+            evidence
+
+    test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeFiltered(1, 2) @>
+
+    let filtered: FsHotWatch.Cli.CheckVerdict.CheckInputs =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          WaitingOnBuild = false
+          Coverage = FsHotWatch.Cli.IpcParsing.Complete
+          Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
+
+    let confirmed =
+        FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation filtered
+
+    test <@ FsHotWatch.Cli.CheckVerdict.exitCode confirmed = 3 @>
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (AUTOMATION-113)`` () =

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix!: **a filtered re-run that PASSES retires the red it re-ran** (AUTOMATION-225).
+  `test-rerun --filter-class X` re-ran X, X passed, and X's red survived — forever,
+  because the run's launch selection records every project as `ProjectInFull` and an
+  opaque filter string's reach cannot be read out of it. Coverage for such a run is now
+  derived from the run's **own CTRF report** — the classes it shows ran and PASSED —
+  rather than from the launch request.
+
+  **BREAKING**: `RunCoverage.ofRun` takes a third argument, the per-project passed-class
+  evidence (`Map<string, Set<string>>`). Pass `Map.empty` for the previous behaviour;
+  `passedClassesOfRun repoRoot runId` reads it from the run's report directory.
+
+  Fails closed everywhere: only classes with a pass and no failure are claimed; a
+  project absent from the selection is claimed by nothing; project-level reds still need
+  a full-project run; and a report that is missing, unparseable or shorter than its own
+  summary total (raw-throw tests are omitted from the per-test array) claims nothing.
+
 ## 0.13.0-alpha.6 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
