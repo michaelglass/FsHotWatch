@@ -164,7 +164,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
   },
   "format": true,
   "lint": true,
-  "cache": "file",
+  "cache": "memory",
   "tests": {
     "beforeRun": "dotnet build",
     "dependsOn": ["src/MyApp/Database/Migrations/**"],

@@ -432,15 +432,22 @@ let ``parseConfig cache memory returns InMemoryOnly 500`` () =
     test <@ config.Cache = InMemoryOnly 500 @>
 
 // AUTOMATION-98: `"cache": "file"` / `"jj"` selected an on-disk FCS check cache
-// that could never produce a hit. The value is now REJECTED — mapped to the
-// NoCache it always effectively was, with a loud config warning naming the
-// removal — rather than silently accepted as a setting that does nothing.
+// that could never produce a hit. Warning about it was not enough — a warning
+// scrolls past in a 10-minute gate, so the dead key sat in a real repo's
+// .fshw.json for weeks while every run reported it. Dead config now FAILS the
+// load: a setting that cannot do what it says must stop the run, not narrate.
 [<Theory(Timeout = 15000)>]
 [<InlineData("file")>]
 [<InlineData("jj")>]
-let ``parseConfig REJECTS the removed file cache backend and falls back to NoCache`` (value: string) =
-    let config = parseConfig $$"""{"cache": "{{value}}"}""" defaults
-    test <@ config.Cache = NoCache @>
+let ``parseConfig raises ConfigError on the removed file cache backend`` (value: string) =
+    let ex =
+        Assert.Throws<ConfigError>(fun () -> parseConfig $$"""{"cache": "{{value}}"}""" defaults |> ignore)
+
+    // The message must name the removal and the offending value, and hand back
+    // both fixes — otherwise a hard failure is just a worse warning.
+    Assert.Contains("has been REMOVED", ex.Message)
+    Assert.Contains(value, ex.Message)
+    Assert.Contains("\"cache\": \"memory\"", ex.Message)
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig cache unknown string returns defaults cache`` () =
@@ -790,7 +797,7 @@ let ``parseConfig with full configuration`` () =
         "build": {"command": "make", "args": "all"},
         "format": false,
         "lint": false,
-        "cache": "file",
+        "cache": "memory",
         "analyzers": {"paths": ["/analyzers"]},
         "tests": {
             "beforeRun": "make build",
@@ -813,7 +820,7 @@ let ``parseConfig with full configuration`` () =
 
     test <@ config.Format = Off @>
     test <@ config.Lint = false @>
-    test <@ config.Cache = NoCache @>
+    test <@ config.Cache = InMemoryOnly 500 @>
 
     test
         <@

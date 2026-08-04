@@ -17,8 +17,10 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 /// There is no file backend: FCS check results are not serializable (a deserialized
 /// entry always reconstructs as `ParseOnly`, which
 /// `CheckPipeline.tryGetCachedFullCheck` treats as a MISS), so it could never hit. A
-/// config value that selects the removed `"cache": "file"` / `"jj"` backend is
-/// rejected out loud rather than silently accepted.
+/// config value that selects the removed `"cache": "file"` / `"jj"` backend is a
+/// hard `ConfigError` — dead config fails the load rather than warning and
+/// carrying on, because a warning inside a long gate is indistinguishable from
+/// noise and lets the dead key survive indefinitely.
 type CacheBackendConfig =
     /// No check-result cache. This is the DEFAULT.
     | NoCache
@@ -344,16 +346,24 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             | "none"
             | "false" -> NoCache
             | ("file" | "jj") as removed ->
-                // Rejected LOUDLY, not silently mapped. `"cache": "file"` promised an
-                // on-disk FCS check cache that could never hit (see CacheBackendConfig)
-                // — a repo carrying this setting has been paying for dead JSON writes
-                // and believing it had a warm cold-start. Say so, and be explicit that
-                // the resulting behaviour is unchanged, because it always WAS NoCache.
-                Logging.warn
-                    "config"
-                    $"cache: '%s{removed}' has been REMOVED — the on-disk FCS check cache could never produce a                       hit (FCS results aren't serializable, so every lookup returned ParseOnly, which the check                       pipeline treats as a miss) and only wrote dead JSON. Running with no check cache, which is                       what this setting already did. Remove the key, or set \"cache\": \"memory\" for a real                       (in-process) cache."
-
-                NoCache
+                // FAIL, don't warn. `"cache": "file"` promised an on-disk FCS check
+                // cache that could never hit (see CacheBackendConfig) — FCS results
+                // aren't serializable, so every lookup returned ParseOnly, which the
+                // check pipeline treats as a miss, and the only thing it ever produced
+                // was dead JSON. A warning did not carry: it scrolls past inside a
+                // 10-minute gate, so the key survived in a real repo's .fshw.json for
+                // weeks with every run announcing it. Dead config is a defect in the
+                // config, and a defect must stop the run — that is the whole point of
+                // a gate. The fix is one line and both forms are named below.
+                raise (
+                    ConfigError(
+                        $"cache: '%s{removed}' has been REMOVED — the on-disk FCS check cache could never "
+                        + "produce a hit (FCS results aren't serializable, so every lookup returned ParseOnly, "
+                        + "which the check pipeline treats as a miss) and only wrote dead JSON. It was already "
+                        + "behaving as no cache at all. Fix .fshw.json: delete the \"cache\" key, or set "
+                        + "\"cache\": \"memory\" for a real (in-process) cache."
+                    )
+                )
             | other ->
                 Logging.warn "config" $"Unknown cache value '%s{other}', using default"
                 defaults.Cache

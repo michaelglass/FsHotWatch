@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix!: **dead config now FAILS the load instead of warning.** `"cache": "file"` / `"jj"`
+  in `.fshw.json` selected an on-disk FCS check cache that could never produce a hit. It was
+  already rejected, but only with a `Logging.warn` that mapped the value to `NoCache` and
+  carried on. That was not enough — a warning scrolls past inside a 10-minute gate, so the
+  dead key survived in a real consumer's `.fshw.json` for weeks with every run dutifully
+  announcing it and nobody acting. It is now a hard `ConfigError` naming the offending value
+  and both fixes (delete the key, or `"cache": "memory"` for a real in-process cache).
+  - **Breaking:** a repo still carrying `"cache": "file"` or `"cache": "jj"` fails to start
+    until the key is removed or changed. The fix is one line and the error states it.
+  - Scope is deliberately narrow: only *known-dead* settings are fatal. Unrecognised values
+    (`"cache": "redis"`) still warn and fall back, and unknown top-level keys are still
+    ignored — real `.fshw.json` files use `_comment_*` keys as inline documentation, so
+    blanket unknown-key strictness would reject working configs.
+
 ## 0.14.0-alpha.9 - 2026-08-03
 
 - chore(deps): bump bundled TestPrune.Falco 3.0.1 -> 3.0.2 (AUTOMATION-86)
