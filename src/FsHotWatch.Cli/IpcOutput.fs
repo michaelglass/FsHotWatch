@@ -82,9 +82,24 @@ let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse
         | Error -> true
         | Warning -> not noWarnFail
         | Info
-        | Hint -> false
+        | Hint
+        // `Deferred` ("waiting on build") is never a failure — it routes the
+        // verdict to `Incomplete`/exit 2 via `WaitingOnBuild`, not to a red.
+        | Deferred -> false
 
     resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
+
+/// Any "waiting on build" deferral in the ledger? A `Deferred`-severity entry
+/// means a test project's build artifact wasn't ready, so its tests DID NOT run:
+/// non-green (nothing verified) but not a failure. The verdict routes this to
+/// `Incomplete`/exit 2. Reading it off the parsed ledger keeps it fail-closed —
+/// a severity that doesn't round-trip defaults to `Error` (counted as failing),
+/// so the worst case of a wire bug is the OLD exit 1, never a false green.
+let private waitingOnBuild (resp: DiagnosticsResponse) : bool =
+    resp.Files
+    |> Map.toSeq
+    |> Seq.collect snd
+    |> Seq.exists (fun (e: DiagnosticEntry) -> e.Severity = Deferred)
 
 /// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
 ///
@@ -95,6 +110,7 @@ let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse
 let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: DiagnosticsResponse) : CheckVerdict.CheckInputs =
     { PluginStatuses = resp.Statuses
       FailingDiagnostics = failingDiagnosticCount noWarnFail resp
+      WaitingOnBuild = waitingOnBuild resp
       Coverage = resp.Coverage
       Scope = scope }
 
@@ -547,6 +563,14 @@ let pollAndRender
                     "coverage could not be confirmed"
 
             UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
+        | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+            // Non-green, but "could not complete", never a red. Distinct exit 2 so
+            // an autonomous loop / deploy preflight retries rather than treating it
+            // as a test failure.
+            UI.fail
+                "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
+                 tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
+                 the build settles."
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
             // Nothing failed — and that is precisely the point. `confirm` was asked for
             // a claim about the whole suite and the tests that ran do not support one,

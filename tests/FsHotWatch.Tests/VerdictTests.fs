@@ -385,9 +385,41 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
 
     test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete 3) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete -1) @>
+    // "Waiting on build" is INCOMPLETE (exit 2) in the file — never Red, never
+    // Green. This is the 224 reclassification: a deferred project is a retry
+    // signal, not a test failure.
+    test <@ incomplete CheckVerdict.CheckOutcome.WaitingOnBuild @>
+    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild <> Verdict.Red @>
+    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild <> Verdict.Green @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
+
+[<Fact>]
+let ``waiting on build persists as a DISTINCT incomplete verdict (exit 2), never red`` () =
+    // The deploy preflight reads `.fshw/verdict.json`'s STRUCTURED outcome, never
+    // the prose. A `TestsDeferred` (build-ordering) run must serialize as
+    // `outcome.kind = "incomplete"` with a "waiting on build" reason — distinct
+    // from the `red` a real test failure earns — and carry exit 2.
+    let outcome = Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild
+
+    match outcome with
+    | Verdict.Incomplete reason -> test <@ reason.ToLowerInvariant().Contains "waiting on build" @>
+    | other -> failwith $"waiting on build must be incomplete, never red/green, got %A{other}"
+
+    test <@ CheckVerdict.exitCode CheckVerdict.CheckOutcome.WaitingOnBuild = 2 @>
+
+    let json =
+        serializeSpec
+            { greenVerdict "sha256:abc" 3 with
+                Outcome = outcome }
+
+    use doc = JsonDocument.Parse(json)
+    let outcomeEl = doc.RootElement.GetProperty("outcome")
+    let kind = outcomeEl.GetProperty("kind").GetString()
+    let reason = outcomeEl.GetProperty("reason").GetString().ToLowerInvariant()
+    test <@ kind = "incomplete" @>
+    test <@ reason.Contains "waiting on build" @>
 
 [<Fact>]
 let ``the report envelope always says whether the verdict applies`` () =
