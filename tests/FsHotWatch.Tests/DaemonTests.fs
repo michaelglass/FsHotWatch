@@ -631,6 +631,70 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         with :? AggregateException ->
             ())
 
+[<Fact(Timeout = 60000)>]
+let ``check forces a from-disk scan: forceScanAndWait advances the scan generation, wait-only does not`` () =
+    // Regression for the 221/224 disease: `check`/`confirm`'s first daemon step
+    // must FORCE a from-disk scan, not merely WAIT for one. `WaitForScan -1L`
+    // alone returns the last completed scan's generation IMMEDIATELY on a warm
+    // daemon (`WaitForScanGeneration(-1L)` is already-satisfied once any scan has
+    // run), so a watcher-missed idle edit is never re-read and a stale verdict is
+    // replayed. `performScan` — the ONLY path that re-reads every file from disk —
+    // is also the ONLY path that advances the scan generation, so a generation
+    // bump is the direct observable that a fresh from-disk scan actually ran.
+    // Fails against the pre-fix wait-only thunk (generation never advances); passes
+    // with `forceScanAndWait` (Scan → performScan → generation++).
+    withTempDir "force-scan" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        // Keep the pipe name short: on macOS the Unix-domain-socket path
+        // (tempdir + "CoreFxPipe_" + name) must stay under the 104-char sun_path
+        // limit, and the temp dir alone is already ~50 chars.
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+
+        try
+            // Drain the startup scan + one forced scan down to a stable baseline
+            // generation, so nothing is in flight when we measure below.
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            |> ignore
+
+            waitUntil (fun () -> daemon.GetScanGeneration() >= 1L) 20000
+            test <@ daemon.GetScanGeneration() >= 1L @>
+            Thread.Sleep(500)
+            let genBaseline = daemon.GetScanGeneration()
+
+            // Simulate a watcher-missed idle edit: change disk with no scan. The
+            // real watcher's change path never advances the SCAN generation, so
+            // this cannot perturb the measurement either way.
+            File.WriteAllText(Path.Combine(tmpDir, "src", "Idle.fs"), "module Idle\nlet x = 1\n")
+
+            // OLD behavior — wait only. Triggers NO scan: the generation is
+            // unchanged, so the idle edit would never be re-read (the stale-verdict
+            // bug this fix closes).
+            FsHotWatch.Cli.Program.defaultIpcOps.WaitForScan pipeName -1L
+            |> Async.RunSynchronously
+            |> ignore
+
+            Thread.Sleep(300)
+            test <@ daemon.GetScanGeneration() = genBaseline @>
+
+            // FIXED behavior — forceScanAndWait forces a fresh from-disk
+            // `performScan`, which advances the generation (and re-reads the edit).
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            |> ignore
+
+            waitUntil (fun () -> daemon.GetScanGeneration() > genBaseline) 20000
+            test <@ daemon.GetScanGeneration() > genBaseline @>
+        finally
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ())
+
 [<Fact(Timeout = 15000)>]
 let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
