@@ -56,6 +56,45 @@ type private RouteMatch =
 /// Scans integration test source files for URL patterns that map to changed handler files.
 type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string, routeStore: RouteStore) =
 
+    // Every source file under the repo, read once. Shared by the two additive resolvers below
+    // (Falco.UnionRoutes case→URL links and plain string-route URL constants), so the repo is
+    // walked and read a single time per extension instance rather than once per resolver.
+    let mutable repoFilesCache: (string * string) list option = None
+
+    let getRepoFiles (repoRoot: string) : (string * string) list =
+        match repoFilesCache with
+        | Some files -> files
+        | None ->
+            let files =
+                if Directory.Exists repoRoot then
+                    SafeWalk.enumerateFiles "*.fs" repoRoot
+                    |> Seq.choose (fun path ->
+                        try
+                            Some(path, File.ReadAllText path)
+                        with _ ->
+                            None)
+                    |> List.ofSeq
+                else
+                    []
+
+            repoFilesCache <- Some files
+            files
+
+    // Case → URL links for Falco.UnionRoutes symbolic navigation, derived once per repo from
+    // the route DU's `[<Route(Path=...)>]` attributes (empty for plain string-route repos).
+    let mutable linkMapCache: Map<string, Set<string>> option = None
+
+    let getLinkMap (repoRoot: string) : Map<string, Set<string>> =
+        match linkMapCache with
+        | Some m -> m
+        | None ->
+            let routeDuFiles =
+                getRepoFiles repoRoot |> List.filter (fun (_, text) -> text.Contains "[<Route(")
+
+            let m = UnionRouteLinks.buildLinkMap routeDuFiles
+            linkMapCache <- Some m
+            m
+
     let urlPatternToRegex (urlPattern: string) : Regex =
         // Replace {param} placeholders with a sentinel before escaping,
         // so we don't depend on Regex.Escape's treatment of braces
@@ -64,7 +103,11 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         let withPlaceholders = Regex.Replace(urlPattern, @"\{[^}]+\}", placeholder)
         let escaped = Regex.Escape(withPlaceholders)
         let pattern = escaped.Replace(placeholder, "[^/]+")
-        Regex($"(?:^|[\"'/])%s{pattern}(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
+        // `/?` before the closing boundary tolerates a trailing slash — `/users/` matches route
+        // `/users` — WITHOUT enabling parent-prefix matching: `/users/123` still does not match
+        // `/users`, because after the optional slash the boundary must be end/quote/?/#/space, and
+        // `1` is none of those.
+        Regex($"(?:^|[\"'/])%s{pattern}/?(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
 
     let classPattern = Regex(@"^type\s+(\w+)\s*\(", RegexOptions.Multiline)
 
@@ -267,10 +310,29 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         if affectedUrlPatterns.IsEmpty then
             []
         else
-            let regexes = affectedUrlPatterns |> List.map urlPatternToRegex
+            let urlRegexes = affectedUrlPatterns |> List.map urlPatternToRegex
+            let affectedUrls = Set.ofList affectedUrlPatterns
+
+            // A test may navigate the affected route SYMBOLICALLY (`Route.link (Route.Admin(_,
+            // AdminPages.Settings))`) with no URL literal in its span. These regexes match a
+            // qualified reference to any route case whose composed URL is affected, and join the
+            // URL regexes so the symbolic-nav test's class is attributed exactly like a literal
+            // match. Empty for string-route repos — no behaviour change there.
+            let leafRegexes =
+                UnionRouteLinks.leafReferenceRegexes (getLinkMap repoRoot) affectedUrls
+
+            // A test may also navigate via a NAMED URL CONSTANT (`navigateTo Routes.settingsUrl`)
+            // whose literal lives in another file. These regexes match a reference to any constant
+            // whose literal value is an affected route URL, attributed exactly like a literal match.
+            let constantRegexes =
+                let constantMap =
+                    StringRouteConstants.buildConstantMap (getRepoFiles repoRoot) affectedUrls
+
+                StringRouteConstants.constantReferenceRegexes constantMap urlRegexes
+
             let testFiles = findTestFiles repoRoot
 
-            (matchDeclarationsInFiles testFiles regexes).TestClasses
+            (matchDeclarationsInFiles testFiles (urlRegexes @ leafRegexes @ constantRegexes)).TestClasses
             |> List.map (fun cls ->
                 { TestProject = integrationTestProject
                   TestClass = cls })
@@ -315,7 +377,23 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 // tests, never a selected test itself. See `RouteMatch`.
                 let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
                     let regex = urlPatternToRegex entry.UrlPattern
-                    let participants = (matchDeclarationsInFiles testFiles [ regex ]).EdgeParticipants
+                    let affectedUrls = Set.singleton entry.UrlPattern
+
+                    // Symbolic navigation to THIS route (see the run-selection path): a fixture or
+                    // test that reaches the route via `Route.link (…)` or a named URL constant
+                    // carries the route's edge too.
+                    let leafRegexes =
+                        UnionRouteLinks.leafReferenceRegexes (getLinkMap repoRoot) affectedUrls
+
+                    let constantRegexes =
+                        let constantMap =
+                            StringRouteConstants.buildConstantMap (getRepoFiles repoRoot) affectedUrls
+
+                        StringRouteConstants.constantReferenceRegexes constantMap [ regex ]
+
+                    let participants =
+                        (matchDeclarationsInFiles testFiles (regex :: (leafRegexes @ constantRegexes))).EdgeParticipants
+
                     let routeTestMethods = participants |> List.collect symbolsForDeclaration
 
                     let target =

@@ -32,8 +32,13 @@ let private withRouteStore (f: string -> Database -> RouteStore -> unit) =
     finally
         cleanupDir tempDir
 
-let private withTestSetup
+/// As `withTestSetup`, but also writes non-test app source files under `<repo>/src` so the
+/// extension can read them: a Falco.UnionRoutes route DU (case→URL derivation) or a module of
+/// named URL constants (`let settingsUrl = "/settings"`). `appSourceFiles` is empty for the
+/// literal-URL tests, which must behave identically.
+let private withTestSetupCore
     (routeEntries: RouteHandlerEntry list)
+    (appSourceFiles: (string * string) list)
     (testFiles: (string * string) list)
     (integrationTestProject: string)
     (integrationTestSubDir: string)
@@ -47,6 +52,13 @@ let private withTestSetup
         let db = Database.create dbPath
         let routeStore = RouteStore(toPluginStore db)
         routeStore.Rebuild(routeEntries)
+
+        if appSourceFiles |> List.isEmpty |> not then
+            let srcDir = Path.Combine(tempDir, "src")
+            Directory.CreateDirectory(srcDir) |> ignore
+
+            for (fileName, content) in appSourceFiles do
+                File.WriteAllText(Path.Combine(srcDir, fileName), content)
 
         let testDir = Path.Combine(tempDir, integrationTestSubDir)
 
@@ -64,6 +76,16 @@ let private withTestSetup
         f result
     finally
         cleanupDir tempDir
+
+let private withTestSetup
+    (routeEntries: RouteHandlerEntry list)
+    (testFiles: (string * string) list)
+    (integrationTestProject: string)
+    (integrationTestSubDir: string)
+    (changedFiles: string list)
+    (f: AffectedTest list -> unit)
+    =
+    withTestSetupCore routeEntries [] testFiles integrationTestProject integrationTestSubDir changedFiles f
 
 // -----------------------------------------------------------------------------
 // RouteStore: the route table TestPrune.Falco owns inside core's cache database
@@ -994,6 +1016,146 @@ module ``URL pattern with path parameters matches correctly`` =
                                      TestClass = "UserPostsTests" } ]
                     @>)
 
+module ``symbolic route navigation`` =
+
+    // A minimal Falco.UnionRoutes route DU with the `Admin → Settings` nesting the repro
+    // navigates. `Route.Admin` carries the segment "admin", `AdminPages.Settings` the segment
+    // "settings", so the composed URL is "/admin/settings". Marker/param types need not be
+    // defined — the derivation reads only the DU's own `[<Route(Path=...)>]` attributes and
+    // field TYPE NAMES (PreCondition is classified as a marker by name).
+    let private adminRouteDu =
+        """namespace Test.Routes
+
+open Falco.UnionRoutes
+
+type AdminPages =
+    | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+    | [<Route(RouteMethod.Get, Path = "qa")>] Qa
+
+type Route =
+    | [<Route(Path = "admin")>] Admin of PreCondition<AdminUserId> * AdminPages
+"""
+
+    /// THE FIX. A test that navigates to the route by its SYMBOLIC identifier
+    /// instead of a URL literal —
+    ///
+    ///     Route.link (Route.Admin(NoPreCondition, AdminPages.Settings))
+    ///
+    /// the pattern the app ENCOURAGES over hard-coding "/admin/settings" — carries no
+    /// "/admin/settings" substring in its span. Before this change the purely-textual URL
+    /// matcher selected nothing and the covering test was silently dropped (under-selection).
+    ///
+    /// Now the extension derives `AdminPages.Settings → /admin/settings` from the route DU's
+    /// `[<Route(Path=...)>]` attributes and matches the qualified case reference, so a change to
+    /// the /admin/settings handler selects the symbolic-nav test — resolved down to the SAME URL
+    /// the literal matcher uses. Models the intelligence consumer, where this `Route.link`
+    /// spelling is real (`SystemHealth.fs`).
+    [<Fact>]
+    let ``test navigating a route only symbolically is selected`` () =
+        let testContent =
+            "type AdminSettingsTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.LoadsSettings() =\n        let url = Route.link (Route.Admin(NoPreCondition, AdminPages.Settings))\n        client.GetAsync(url) |> ignore\n"
+
+        withTestSetupCore
+            [ { UrlPattern = "/admin/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Admin.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("Routes.fs", adminRouteDu) ]
+            [ ("AdminSettingsTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Admin.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "AdminSettingsTests" } ]
+                    @>)
+
+    /// A DIFFERENT route's symbolic navigation must NOT be selected: the `Qa` sibling case
+    /// composes to "/admin/qa", which is not the changed handler's route. Guards against the
+    /// derivation over-matching every case in the DU.
+    [<Fact>]
+    let ``symbolic navigation to a sibling route is not selected`` () =
+        let testContent =
+            "type AdminQaTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.LoadsQa() =\n        let url = Route.link (Route.Admin(NoPreCondition, AdminPages.Qa))\n        client.GetAsync(url) |> ignore\n"
+
+        withTestSetupCore
+            [ { UrlPattern = "/admin/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Admin.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("Routes.fs", adminRouteDu) ]
+            [ ("AdminQaTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Admin.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+    /// A literal-URL test in the SAME repo still matches: the additive symbolic support does not
+    /// disturb the existing string-route path.
+    [<Fact>]
+    let ``literal url still matches when a route DU is present`` () =
+        let testContent =
+            "type AdminSettingsLiteralTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.LoadsSettings() =\n        let! resp = client.GetAsync(\"/admin/settings\")\n        ()\n"
+
+        withTestSetupCore
+            [ { UrlPattern = "/admin/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Admin.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("Routes.fs", adminRouteDu) ]
+            [ ("AdminSettingsLiteralTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Admin.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "AdminSettingsLiteralTests" } ]
+                    @>)
+
+    /// CONSTRAINT-INSENSITIVE matching. The host seeds the route table from `Route.info`, so a
+    /// param route's pattern carries a constraint (`/admin/users/{id:guid}`) the source-derived
+    /// composition cannot infer from a wrapped id type (it composes `/admin/users/{id}`). Matching
+    /// the leaf constraint-insensitively selects the symbolic-nav test anyway — closing the gap
+    /// with NO Falco.UnionRoutes dependency. This is the win the AST-normalized option delivers.
+    [<Fact>]
+    let ``symbolic nav to a constrained param route is selected constraint-insensitively`` () =
+        let routeDu =
+            """namespace Test.Routes
+
+open Falco.UnionRoutes
+
+type AdminUsers =
+    | [<Route(RouteMethod.Get, Path = "users/{id}")>] Show of id: System.Guid
+
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminUsers
+"""
+
+        let testContent =
+            "type AdminUserShowTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let url = Route.link (Route.Admin(AdminUsers.Show userId))\n        client.GetAsync(url) |> ignore\n"
+
+        withTestSetupCore
+            // The route table pattern carries the :guid constraint the AST cannot infer.
+            [ { UrlPattern = "/admin/users/{id:guid}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/AdminUsers.fs"
+                HandlerFunction = Some "show" } ]
+            [ ("Routes.fs", routeDu) ]
+            [ ("AdminUserShowTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/AdminUsers.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "AdminUserShowTests" } ]
+                    @>)
+
 // -----------------------------------------------------------------------------
 // AnalyzeEdges: function-scoped route edges
 // -----------------------------------------------------------------------------
@@ -1374,3 +1536,632 @@ module ``AnalyzeEdges fallback`` =
             [ ("UsersTests.fs", usersTestFile) ]
             [ "src/Handlers/Unrelated.fs" ]
             (fun edges -> test <@ edges |> List.isEmpty @>)
+
+// -----------------------------------------------------------------------------
+// UnionRouteLinks: case → URL derivation from the route DU
+// -----------------------------------------------------------------------------
+
+module ``UnionRouteLinks case-to-url composition`` =
+
+    let private linksOf (du: string) =
+        UnionRouteLinks.buildLinkMap [ ("Routes.fs", du) ]
+
+    [<Fact>]
+    let ``explicit paths concatenate up the nesting`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type AdminPages =
+    | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+type Route =
+    | [<Route(Path = "admin")>] Admin of PreCondition<AdminUserId> * AdminPages
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "AdminPages.Settings" map = Some(set [ "/admin/settings" ]) @>
+
+    [<Fact>]
+    let ``an empty parent path is skipped in the concatenation`` () =
+        // `User` is a pass-through parent (Path = ""), so the child's segment stands alone.
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type UserPages =
+    | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+type Route =
+    | [<Route(Path = "")>] User of PreCondition<UserId> * UserPages
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "UserPages.Settings" map = Some(set [ "/settings" ]) @>
+
+    [<Fact>]
+    let ``a case with no path attribute falls back to its kebab-cased name`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type AdminPages =
+    | HealthScores
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminPages
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "AdminPages.HealthScores" map = Some(set [ "/admin/health-scores" ]) @>
+
+    [<Fact>]
+    let ``an empty-segment convention name contributes no segment`` () =
+        // `Root` is an EmptySegmentName, so `Journal.Root` is just the parent's "journal".
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type JournalRoute =
+    | Root
+type Route =
+    | [<Route(Path = "journal")>] Journal of JournalRoute
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "JournalRoute.Root" map = Some(set [ "/journal" ]) @>
+
+    [<Fact>]
+    let ``a repo with no route DU yields an empty map`` () =
+        test <@ UnionRouteLinks.buildLinkMap [] = Map.empty @>
+
+    [<Fact>]
+    let ``leaf regexes fire only for in-scope urls and require a qualified reference`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type AdminPages =
+    | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+    | [<Route(RouteMethod.Get, Path = "qa")>] Qa
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminPages
+"""
+
+        let map = linksOf du
+        let regexes = UnionRouteLinks.leafReferenceRegexes map (set [ "/admin/settings" ])
+
+        // Exactly one leaf (Settings) is in scope; Qa is not.
+        test <@ regexes.Length = 1 @>
+
+        let matches (text: string) =
+            regexes |> List.exists (fun r -> r.IsMatch text)
+
+        test <@ matches "Route.link (Route.Admin(NoPreCondition, AdminPages.Settings))" @>
+        test <@ not (matches "Route.link (Route.Admin(NoPreCondition, AdminPages.Qa))") @>
+        // A longer identifier that merely ENDS in the leaf name must not match.
+        test <@ not (matches "MyAdminPages.SettingsExtra") @>
+
+module ``UnionRouteLinks additional composition rules`` =
+
+    let private linksOf (du: string) =
+        UnionRouteLinks.buildLinkMap [ ("Routes.fs", du) ]
+
+    [<Fact>]
+    let ``a non-empty-segment param case is kebab plus the field name`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type UserPages =
+    | Profile of id: System.Guid
+type Route =
+    | [<Route(Path = "")>] User of UserPages
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "UserPages.Profile" map = Some(set [ "/profile/{id}" ]) @>
+
+    [<Fact>]
+    let ``an empty-segment param case is just the field name`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type AdminBriefs =
+    | [<Route(Path = "briefs")>] Show of id: System.Guid
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminBriefs
+"""
+
+        // `Show` carries an explicit Path here, so it stays "briefs"; the param field is
+        // still surfaced as `{id}` on the explicit path is NOT auto-appended — explicit wins.
+        let map = linksOf du
+        test <@ Map.tryFind "AdminBriefs.Show" map = Some(set [ "/admin/briefs" ]) @>
+
+    [<Fact>]
+    let ``a convention empty-segment case with a param surfaces only the param`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type AdminBriefs =
+    | Show of id: System.Guid
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminBriefs
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "AdminBriefs.Show" map = Some(set [ "/admin/{id}" ]) @>
+
+    [<Fact>]
+    let ``route DUs declared inside a nested module are still found`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+module Domain =
+    type AdminPages =
+        | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+    type Route =
+        | [<Route(Path = "admin")>] Admin of AdminPages
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "AdminPages.Settings" map = Some(set [ "/admin/settings" ]) @>
+
+    [<Fact>]
+    let ``a self-referential route union terminates without a leaf`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type Route =
+    | [<Route(Path = "a")>] A of Route
+"""
+
+        // The cycle guard stops the walk; `A` never reaches a terminal leaf, so no link.
+        test <@ linksOf du = Map.empty @>
+
+    [<Fact>]
+    let ``buildLinkMapFromRepo on a missing directory is empty`` () =
+        test <@ UnionRouteLinks.buildLinkMapFromRepo "/no/such/dir/testprune-223" = Map.empty @>
+
+module ``UnionRouteLinks nesting edge cases`` =
+
+    let private linksOf (du: string) =
+        UnionRouteLinks.buildLinkMap [ ("Routes.fs", du) ]
+
+    [<Fact>]
+    let ``a leaf shared by two parents maps to both composed urls`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type Shared =
+    | [<Route(RouteMethod.Get, Path = "x")>] X
+type Route =
+    | [<Route(Path = "a")>] A of Shared
+    | [<Route(Path = "b")>] B of Shared
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "Shared.X" map = Some(set [ "/a/x"; "/b/x" ]) @>
+
+    [<Fact>]
+    let ``a top-level leaf route with no nesting composes its own segment`` () =
+        let du =
+            """namespace R
+open Falco.UnionRoutes
+type Route =
+    | [<Route(RouteMethod.Get, Path = "health")>] Health
+"""
+
+        let map = linksOf du
+        test <@ Map.tryFind "Route.Health" map = Some(set [ "/health" ]) @>
+
+// -----------------------------------------------------------------------------
+// String-route navigation via a named URL constant (string-route brief)
+// -----------------------------------------------------------------------------
+
+module ``string route via named url constant`` =
+
+    // An app module that defines route URLs as named constants in ONE place — the pattern that
+    // makes `navigateTo Routes.settingsUrl` (no "/settings" literal in the test) possible.
+    let private routesModule =
+        """namespace App
+
+module Routes =
+    let settingsUrl = "/settings"
+    let dashboardUrl = "/dashboard"
+"""
+
+    /// THE FIX. A test navigates via a CROSS-FILE named URL constant, so its own span holds no
+    /// "/settings" literal. Before this change the purely-textual matcher dropped it; now the
+    /// constant is resolved to its literal value and the reference is matched.
+    [<Fact>]
+    let ``a test referencing a cross-file url constant for an affected route is selected`` () =
+        let testContent =
+            """type SettingsNavTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.Loads() =
+        navigateTo Routes.settingsUrl |> ignore
+"""
+
+        withTestSetupCore
+            [ { UrlPattern = "/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/User.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("Routes.fs", routesModule) ]
+            [ ("SettingsNavTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/User.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "SettingsNavTests" } ]
+                    @>)
+
+    /// A same-file URL constant reference is selected too.
+    [<Fact>]
+    let ``a test referencing a same-file url constant is selected`` () =
+        let testContent =
+            """module Urls =
+    let settingsUrl = "/settings"
+
+type SettingsSameFileTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.Loads() = navigateTo Urls.settingsUrl |> ignore
+"""
+
+        withTestSetupCore
+            [ { UrlPattern = "/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/User.fs"
+                HandlerFunction = Some "settings" } ]
+            []
+            [ ("SettingsSameFileTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/User.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "SettingsSameFileTests" } ]
+                    @>)
+
+    /// PRECISION GUARD: a test referencing a constant whose value is NOT the affected route is
+    /// NOT selected. `Routes.dashboardUrl = "/dashboard"` must not fire when only `/settings`
+    /// changed — proving constants contribute only when their literal value matches an affected
+    /// route, so there is no blanket over-selection.
+    [<Fact>]
+    let ``a constant whose value is not the affected route does not select`` () =
+        let testContent =
+            """type DashboardNavTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.Loads() = navigateTo Routes.dashboardUrl |> ignore
+"""
+
+        withTestSetupCore
+            [ { UrlPattern = "/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/User.fs"
+                HandlerFunction = Some "settings" }
+              { UrlPattern = "/dashboard"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Dashboard.fs"
+                HandlerFunction = Some "dashboard" } ]
+            [ ("Routes.fs", routesModule) ]
+            [ ("DashboardNavTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/User.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+    /// PRECISION GUARD: an unrelated URL constant referenced by a test does not select when its
+    /// route is not affected — `let apiBase = "/api"` fires only if `/api` itself changed.
+    [<Fact>]
+    let ``an unrelated url constant does not cause selection`` () =
+        let constantsFile =
+            """namespace App
+
+module Endpoints =
+    let apiBase = "/api"
+"""
+
+        let testContent =
+            """type ApiBaseTests(output: ITestOutputHelper) =
+    [<Fact>]
+    member _.Loads() = navigateTo Endpoints.apiBase |> ignore
+"""
+
+        withTestSetupCore
+            [ { UrlPattern = "/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/User.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("Endpoints.fs", constantsFile) ]
+            [ ("ApiBaseTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/User.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+    /// Trailing-slash tolerance (#3): a literal `"/users/"` matches route `/users`. Proves the
+    /// `/?` boundary addition, which must NOT enable parent-prefix matching (see the guard below).
+    [<Fact>]
+    let ``a trailing-slash literal matches the slashless route`` () =
+        let testContent =
+            "type UsersTrailingTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let r = client.GetAsync(\"/users/\")\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/users"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "list" } ]
+            [ ("UsersTrailingTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTrailingTests" } ]
+                    @>)
+
+    /// SOUNDNESS GUARD for #3: trailing-slash tolerance must NOT become parent-prefix matching.
+    /// A test hitting `/users/123` must NOT be selected for a change to route `/users` (a
+    /// different route, `/users/{id}`, owns that request).
+    [<Fact>]
+    let ``a child path does not match the slashless parent route`` () =
+        let testContent =
+            "type UsersChildTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let r = client.GetAsync(\"/users/123\")\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/users"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "list" } ]
+            [ ("UsersChildTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.isEmpty @>)
+
+// -----------------------------------------------------------------------------
+// Dynamic URL forms already matched by the raw-text matcher (#1 lock-in)
+// -----------------------------------------------------------------------------
+
+module ``dynamic url forms are matched incidentally`` =
+
+    // urlPatternToRegex compiles a route param to `[^/]+` and matches raw source text, so several
+    // dynamic URL spellings already resolve WITHOUT dedicated machinery. These lock that in as
+    // intentional, documented behaviour. The residual gap — a LEADING dynamic prefix
+    // (`$"{computedBase}/settings"`), where the route start is not at a clean boundary — stays
+    // unmatched unless the base is a NAMED constant resolvable to a full route URL.
+
+    /// An interpolated URL `$"/users/{userId}"` matches route `/users/{id}`: the `{userId}` fill is
+    /// slash-free, so `[^/]+` matches it and the surrounding quotes are clean boundaries.
+    [<Fact>]
+    let ``an interpolated url with a brace fill matches a param route`` () =
+        let testContent =
+            "type InterpolatedNavTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let url = $\"/users/{userId}\"\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "get" } ]
+            [ ("InterpolatedNavTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "InterpolatedNavTests" } ]
+                    @>)
+
+    /// A printf-style format `sprintf "/users/%d" id` matches route `/users/{id}`: `%d` is
+    /// slash-free.
+    [<Fact>]
+    let ``a printf-format url matches a param route`` () =
+        let testContent =
+            "type PrintfNavTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let url = sprintf \"/users/%d\" id\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = Some "get" } ]
+            [ ("PrintfNavTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "PrintfNavTests" } ]
+                    @>)
+
+    /// A literal-suffix concatenation `baseUrl + "/settings"` matches route `/settings`: the
+    /// `"/settings"` literal is quote-bounded in the text, so it matches like any literal. (Only a
+    /// DYNAMIC leading prefix would hide the route start — see the module doc.)
+    [<Fact>]
+    let ``a literal-suffix concatenation matches its route`` () =
+        let testContent =
+            "type ConcatNavTests(output: ITestOutputHelper) =\n    [<Fact>]\n    member _.Loads() =\n        let url = baseUrl + \"/settings\"\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/settings"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/User.fs"
+                HandlerFunction = Some "settings" } ]
+            [ ("ConcatNavTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/User.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "ConcatNavTests" } ]
+                    @>)
+
+// -----------------------------------------------------------------------------
+// StringRouteConstants: constant → URL derivation (unit)
+// -----------------------------------------------------------------------------
+
+module ``StringRouteConstants derivation`` =
+
+    open System.Text.RegularExpressions
+
+    let private mapOf (source: string) (affected: string list) =
+        StringRouteConstants.buildConstantMap [ ("Routes.fs", source) ] (Set.ofList affected)
+
+    [<Fact>]
+    let ``a module-qualified url constant is captured with its value`` () =
+        let source =
+            """namespace App
+module Routes =
+    let settingsUrl = "/settings"
+"""
+
+        let map = mapOf source [ "/settings" ]
+        test <@ Map.tryFind "Routes.settingsUrl" map = Some(set [ "/settings" ]) @>
+
+    [<Fact>]
+    let ``a constant in a nested module is qualified by the innermost module`` () =
+        let source =
+            """namespace App
+module Web =
+    module Routes =
+        let settingsUrl = "/settings"
+"""
+
+        let map = mapOf source [ "/settings" ]
+        test <@ Map.tryFind "Routes.settingsUrl" map = Some(set [ "/settings" ]) @>
+
+    [<Fact>]
+    let ``a typed url constant binding is still captured`` () =
+        let source =
+            """namespace App
+module Routes =
+    let settingsUrl: string = "/settings"
+"""
+
+        let map = mapOf source [ "/settings" ]
+        test <@ Map.tryFind "Routes.settingsUrl" map = Some(set [ "/settings" ]) @>
+
+    [<Fact>]
+    let ``a non-url string constant is ignored`` () =
+        // Value does not start with '/', so it is not a route URL. The file still mentions the
+        // affected url in a comment, so it is parsed — but the binding is not captured.
+        let source =
+            """namespace App
+// affected: /settings
+module Config =
+    let greeting = "hello"
+"""
+
+        let map = mapOf source [ "/settings" ]
+        test <@ map = Map.empty @>
+
+    [<Fact>]
+    let ``a file not mentioning an affected url is not parsed`` () =
+        let source =
+            """namespace App
+module Routes =
+    let ordersUrl = "/orders"
+"""
+
+        // Only /settings is affected; the file mentions neither /settings nor any affected url.
+        let map = mapOf source [ "/settings" ]
+        test <@ map = Map.empty @>
+
+    [<Fact>]
+    let ``reference regexes fire only for constants matching an affected url`` () =
+        let source =
+            """namespace App
+module Routes =
+    let settingsUrl = "/settings"
+    let dashboardUrl = "/dashboard"
+"""
+
+        let map = mapOf source [ "/settings"; "/dashboard" ]
+        // Only /settings is affected at match time.
+        let affected = [ Regex(@"^/settings$") ]
+        let regexes = StringRouteConstants.constantReferenceRegexes map affected
+
+        let matches (t: string) =
+            regexes |> List.exists (fun r -> r.IsMatch t)
+
+        test <@ matches "Routes.settingsUrl" @>
+        test <@ matches "settingsUrl" @> // bare, unique
+        test <@ not (matches "Routes.dashboardUrl") @>
+        test <@ not (matches "dashboardUrl") @>
+        // A longer identifier merely ending in the name must not match.
+        test <@ not (matches "MyRoutes.settingsUrlX") @>
+
+    [<Fact>]
+    let ``a bare name shared by two constants is not emitted as a bare regex`` () =
+        // Two modules both define `settingsUrl`; the bare form is ambiguous, so only the qualified
+        // references are emitted.
+        let source =
+            """namespace App
+module UserRoutes =
+    let settingsUrl = "/settings"
+module AdminRoutes =
+    let settingsUrl = "/settings"
+"""
+
+        let map =
+            StringRouteConstants.buildConstantMap [ ("Routes.fs", source) ] (set [ "/settings" ])
+
+        let affected = [ Regex(@"^/settings$") ]
+        let regexes = StringRouteConstants.constantReferenceRegexes map affected
+
+        let matches (t: string) =
+            regexes |> List.exists (fun r -> r.IsMatch t)
+
+        test <@ matches "UserRoutes.settingsUrl" @>
+        test <@ matches "AdminRoutes.settingsUrl" @>
+        // Bare `settingsUrl` is ambiguous across the two modules → not emitted.
+        test <@ not (matches " settingsUrl ") @>
+
+module ``UnionRouteLinks repo scan`` =
+
+    [<Fact>]
+    let ``buildLinkMapFromRepo reads route DU files under a directory`` () =
+        let dir = Path.Combine(Path.GetTempPath(), $"url-links-repo-%A{Guid.NewGuid()}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            let src = Path.Combine(dir, "src")
+            Directory.CreateDirectory src |> ignore
+
+            File.WriteAllText(
+                Path.Combine(src, "Routes.fs"),
+                """namespace R
+open Falco.UnionRoutes
+type AdminPages =
+    | [<Route(RouteMethod.Get, Path = "settings")>] Settings
+type Route =
+    | [<Route(Path = "admin")>] Admin of AdminPages
+"""
+            )
+
+            let map = UnionRouteLinks.buildLinkMapFromRepo dir
+            test <@ Map.tryFind "AdminPages.Settings" map = Some(set [ "/admin/settings" ]) @>
+        finally
+            if Directory.Exists dir then
+                Directory.Delete(dir, true)
+
+module ``StringRouteConstants extra`` =
+
+    [<Fact>]
+    let ``a parenthesised url literal is captured`` () =
+        let source =
+            """namespace App
+module Routes =
+    let settingsUrl = ("/settings")
+"""
+
+        let map =
+            StringRouteConstants.buildConstantMap [ ("Routes.fs", source) ] (set [ "/settings" ])
+
+        test <@ Map.tryFind "Routes.settingsUrl" map = Some(set [ "/settings" ]) @>

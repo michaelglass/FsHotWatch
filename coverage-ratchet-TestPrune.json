@@ -84,6 +84,16 @@
       "line": 98.3,
       "branch": 65,
       "reason": "loosened: table reference parsing edge cases"
+    },
+    "StringRouteConstants.fs": {
+      "line": 87,
+      "branch": 70,
+      "reason": "string-route brief: named-URL-constant (`let settingsUrl = \"/settings\"`) resolution. Like the repo's other FCS untyped-AST walks, it has defensive arms (SynPat.Attrib/Typed pattern shapes, non-ImplFile/script inputs, parse failures, the namespace-level `let` fallback) that F# test source cannot reproducibly synthesise. The realistic constructs (module-qualified + nested-module + typed + parenthesised constants, non-URL rejection, affected-url pre-filter, qualified/bare/ambiguous reference regexes) are covered. Pinned at the honest achieved floor rather than excluded."
+    },
+    "UnionRouteLinks.fs": {
+      "line": 82,
+      "branch": 60,
+      "reason": "Falco.UnionRoutes case->URL derivation. Like the other FCS untyped-AST walks in this repo, it has one arm per syntax shape plus defensive try/with around range extraction and parsing (multi-line attribute ranges, non-ImplFile/script inputs, un-nameable long-idents, FullType union cases, parenthesised field types, parse/read failures) that F# test source cannot reproducibly synthesise. The realistic route-DU constructs (explicit paths, empty-segment/kebab conventions, param inference, nesting, cycles, multi-parent leaves, nested modules) are covered. Pinned at the honest achieved floor rather than excluded."
     }
   }
 }

@@ -39,6 +39,17 @@
     <Compile Include="SqlCouplingTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
     <Compile Include="AnonymousRecordAnalyzerTests.fs" />
+    <!-- ADR 0001 drift alarm: assert the AST case->URL composition matches Falco.UnionRoutes'
+         canonical Route.enumerate over the synthetic corpus. TEST-ONLY use of Falco.UnionRoutes;
+         the shipped TestPrune.Falco takes no dependency on it. -->
+    <Compile Include="SyntheticRoutes.fs" />
+    <Compile Include="SyntheticRouteContractTests.fs" />
+  </ItemGroup>
+
+  <!-- The synthetic DU's exact source, next to the test dll, so the AST resolver parses the same
+       text the reflection resolver compiles — zero drift between the two comparison inputs. -->
+  <ItemGroup>
+    <None Include="SyntheticRoutes.fs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- xUnit runner configuration -->
@@ -53,6 +64,11 @@
     <ProjectReference Include="../../src/TestPrune.Sql/TestPrune.Sql.fsproj" />
     <ProjectReference Include="../../src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj" />
+    <!-- ADR 0001 drift alarm (TEST-ONLY): the contract test reflects the synthetic route type via
+         Falco.UnionRoutes' Route.enumerate to check the AST composition has not drifted. Cross-repo
+         reference to the local build (which carries Route.enumerate). Confined to the test project;
+         the shipped TestPrune.Falco package does NOT reference Falco.UnionRoutes. -->
+    <ProjectReference Include="../../../Falco.UnionRoutes/src/Falco.UnionRoutes/Falco.UnionRoutes.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

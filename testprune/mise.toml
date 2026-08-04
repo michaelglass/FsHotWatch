@@ -19,6 +19,7 @@ description = "Run tests with coverage"
 run = """
 dotnet test --project tests/TestPrune.Tests/TestPrune.Tests.fsproj \
   --coverage \
+  --coverage-settings "$PWD/coverage.settings.xml" \
   --coverage-output-format cobertura \
   --coverage-output "$PWD/coverage/TestPrune/coverage.cobertura.xml"
 """
