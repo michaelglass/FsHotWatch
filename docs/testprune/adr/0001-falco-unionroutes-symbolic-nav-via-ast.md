@@ -84,6 +84,20 @@ TestPrune.Tests (the drift alarm); it does **not** appear in the shipped TestPru
   matching), so only *structural* rule changes trip the alarm.
 - `Route.enumerate` was added to Falco.UnionRoutes as the contract-test oracle (and is independently
   useful); it is the only reason the test project references the library.
+- **The drift alarm is optional, and a standalone clone still builds green.** `Route.enumerate` is
+  unreleased (no published Falco.UnionRoutes package carries it — 0.3.3 is the latest and does not),
+  so the oracle can only be reached through a sibling checkout of that repo. That must not be a
+  build requirement for anyone who clones TestPrune alone. `TestPrune.Tests.fsproj` therefore gates
+  the `ProjectReference` *and* the two source files that name the library
+  (`SyntheticRoutes.fs`, `SyntheticRouteContractTests.fs`) on `FalcoUnionRoutesAvailable`, which
+  defaults to `Exists(../../../Falco.UnionRoutes/...)`. Without the sibling the suite compiles and
+  passes with the alarm excluded; the build prints a high-importance notice and a `Skip`-marked
+  stand-in (`SyntheticRouteContractSkipped.fs`) reports the omission in the test results, so a green
+  run never overstates what it checked. Force the absent path on a machine that has the sibling with
+  `FalcoUnionRoutesAvailable=false mise run ci`. The trade-off is deliberate: the alarm guards
+  maintainers (and CI machines that check both repos out) against silent drift, while contributors
+  are never blocked by a dependency they cannot obtain from NuGet. Once a Falco.UnionRoutes release
+  ships `Route.enumerate`, this gate can be replaced by a plain `PackageReference`.
 
 ## Rejected / deferred
 
