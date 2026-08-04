@@ -193,6 +193,12 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
             Incomplete $"%d{n} file(s) could not be checked"
         else
             Incomplete "coverage could not be confirmed"
+    | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+        // A DISTINCT `incomplete` reason in `.fshw/verdict.json` — the deploy
+        // preflight reads the structured outcome (`incomplete`, exit 2), never the
+        // prose, so "waiting on build" is a retry signal, not "tests failed".
+        Incomplete
+            "waiting on build — a test project's build artifact was not produced, so its tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once the build settles."
     | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
         // The emptiest evidence gets the loudest words. "0 projects selected" is an
         // INCOMPLETE check, never a pass, and it must not be renderable as a green on

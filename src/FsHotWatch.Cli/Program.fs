@@ -560,6 +560,22 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
     with ex ->
         FsHotWatch.Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
 
+/// Force a fresh from-disk scan, then ride the daemon's next scan completion.
+/// This is what makes `check`/`confirm` trust DISK rather than the watcher: on a
+/// warm daemon `WaitForScan` ALONE returns the last completed scan's generation
+/// immediately (`WaitForScanGeneration(-1L)` is already-satisfied once any scan
+/// has ever run), so an idle edit the file-watcher missed would never be re-read
+/// and the verdict replays a stale content-addressed result (the 221/224 disease).
+/// `Scan` calls `RequestScan` → `performScan`, which re-reads every registered
+/// file from disk; the `-1L` wait then hands off to the caller's authoritative
+/// `settle`. Shared by BOTH the initial pre-verdict scan AND the convergence
+/// re-scan so there is ONE definition of "make the tree fresh" — `dotnet fshw
+/// scan` is no longer a required manual pre-step for a correct verdict; the
+/// watcher is an optimization, never the source of truth.
+let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
+    ipc.Scan pipeName |> Async.RunSynchronously |> ignore
+    ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
+
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
@@ -612,7 +628,14 @@ let private ensureAndQueryErrors
                     excludePatterns
                     (renderLines mode (not noWarnFail))
                     noWarnFail
-                    (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
+                    // Force a fresh from-disk scan up front — do NOT merely WAIT
+                    // for one. On a warm daemon a wait-only returns the last
+                    // scan's generation immediately, replaying a stale verdict for
+                    // any idle edit the watcher missed (221/224). `forceScanAndWait`
+                    // re-reads disk first; the convergence re-scan below reuses the
+                    // same helper, so incompleteness is still handled downstream and
+                    // the common path pays for exactly one forced scan.
+                    (fun () -> forceScanAndWait ipc pipeName)
                     // Authoritative settle: block until the daemon reports its sound
                     // verdict (`waitForVerdict`, which gates on plugin busy/inflight
                     // state + generation advancement + quiescence). This is what
@@ -636,13 +659,10 @@ let private ensureAndQueryErrors
                     // Invoked only in Confirmation, only when the scope is not already
                     // full — see `CheckVerdict.confirmNeedsFullRun`.
                     (fun () -> forceFullSuiteRun ipc pipeName)
-                    // Convergence re-scan: start a scan and block until it (and the
-                    // plugins it triggers) settle, so the next GetDiagnostics read
-                    // reflects the fresh scan. `Scan` returns "scan started:<gen>";
-                    // `WaitForScan -1L` waits for the next completion.
-                    (fun () ->
-                        ipc.Scan pipeName |> Async.RunSynchronously |> ignore
-                        ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
+                    // Convergence re-scan: start a fresh from-disk scan so the next
+                    // GetDiagnostics read reflects it. Same helper as the initial
+                    // scan above — ONE definition of "make the tree fresh".
+                    (fun () -> forceScanAndWait ipc pipeName))
 
 /// Compute a hash of the `.fshw.json` config content for restart-on-config-change
 /// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:

@@ -128,6 +128,23 @@ let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName:
     |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
     |> List.length
 
+/// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry
+/// (tests did not run because the build artifact wasn't ready)? The in-process
+/// twin of `IpcOutput.waitingOnBuild`: both read the SAME condition (a deferred
+/// diagnostic), so the two transports cannot disagree on what a defer means.
+let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) : bool =
+    let allErrors =
+        match pluginName with
+        | Some name ->
+            daemon.Host.GetErrorsByPlugin(name)
+            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
+        | None -> daemon.Host.GetErrors()
+
+    allErrors
+    |> Map.toList
+    |> List.collect snd
+    |> List.exists (fun (_, e) -> ErrorEntry.isWaitingOnBuild e)
+
 /// Did the in-process run actually check every file it is responsible for?
 ///
 /// The SAME question, from the SAME computation, as the daemon's `GetUncheckedCount`.
@@ -190,6 +207,7 @@ let runOnceAndVerdict
 
             { PluginStatuses = finalStatuses.Value
               FailingDiagnostics = failingCount daemon noWarnFail pluginName
+              WaitingOnBuild = waitingOnBuild daemon pluginName
               Coverage = liveCoverage daemon
               Scope = finalRun.Value.Scope }
 
@@ -275,6 +293,12 @@ let runOnceAndVerdict
                     "coverage could not be confirmed"
 
             UI.fail $"Check incomplete: %s{detail}"
+        | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+            // Non-green, but "could not complete", never a red — distinct exit 2.
+            UI.fail
+                "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
+                 tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
+                 the build settles."
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
             // Nothing failed — and that is the point. `confirm` was asked for a claim
             // about the whole suite; the tests that ran do not support one; so it has no
