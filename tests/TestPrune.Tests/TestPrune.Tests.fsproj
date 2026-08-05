@@ -39,6 +39,8 @@
     <Compile Include="SqlCouplingTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
     <Compile Include="AnonymousRecordAnalyzerTests.fs" />
+    <!-- impact-selection soundness harness. -->
+    <Compile Include="SoundnessHarnessTests.fs" />
   </ItemGroup>
 
   <!-- xUnit runner configuration -->
