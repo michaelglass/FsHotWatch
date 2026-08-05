@@ -547,6 +547,26 @@ let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
 /// Sends no `waitSec`, so the plugin's own default budget applies. An expired budget
 /// does NOT cancel the run (it was already launched; only the wait gave up), and the
 /// caller's `settle` is the authoritative bound.
+/// Tell the build plugin the next build must be REAL, not a cache replay
+/// (AUTOMATION-224). Best-effort and non-fatal by design, exactly like
+/// `forceFullSuiteRun`: a daemon without the command (no build plugin configured)
+/// must not turn a verdict into an error. The verdict still refuses anything less
+/// than a full, complete run on its own evidence, so a missed force degrades to
+/// today's behaviour rather than to a false green.
+let internal forceRealBuild (ipc: IpcOps) (pipeName: string) : unit =
+    try
+        let reply =
+            ipc.RunCommand pipeName ForceRebuildCommand "{}" |> Async.RunSynchronously
+
+        if FsHotWatch.Ipc.isUnknownCommandReply reply then
+            FsHotWatch.Logging.warn
+                "cli-confirm"
+                $"the daemon has no `%s{ForceRebuildCommand}` command — a cached build cannot be forced"
+        else
+            FsHotWatch.Logging.debug "cli-confirm" $"force-rebuild reply: %s{reply}"
+    with ex ->
+        FsHotWatch.Logging.warn "cli-confirm" $"the forced rebuild request failed: %s{ex.Message}"
+
 let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
     try
         let reply = ipc.RunCommand pipeName RunTestsCommand "{}" |> Async.RunSynchronously
@@ -619,6 +639,12 @@ let private ensureAndQueryErrors
             // already be unfiltered — asking afterwards would only learn that it wasn't.
             if checkMode = CheckVerdict.Confirmation then
                 requestFullSuiteScope ipc pipeName
+                // AUTOMATION-224. Ordered BEFORE the forced scan below: the scan is
+                // what triggers the build, so the flag has to be set by the time the
+                // build plugin computes its cache key. A forced scan alone does not
+                // help — it re-reads the same bytes, so the source merkle is
+                // unchanged and the cache hits again.
+                forceRealBuild ipc pipeName
 
             withCheckIpc forceRestart (fun () ->
                 IpcOutput.pollAndRender

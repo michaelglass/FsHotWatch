@@ -1222,3 +1222,114 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         // The stale-diagnostic body must surface the "MSBuild lied" prefix.
         let output = doc.RootElement.GetProperty("output").GetString()
         test <@ output.Contains("stale") || output.Contains("MSBuild") @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-224 — `force-rebuild`: a cache hit must not assert freshness it
+// never verified.
+//
+// The build cache key is a content merkle over SOURCE files only. A hit therefore
+// claims "the outputs are up to date" on evidence that never looked at the
+// outputs. That claim is false whenever `bin/` is changed out from under a tree
+// whose sources are unchanged — a working-copy flip being the usual way. The
+// build then replays "built N projects (cached)" without running, TestPrune's
+// freshness gate correctly finds the output stale and defers every affected
+// project as "waiting on build", and NOTHING EVER REBUILDS. That deadlock blocked
+// a production deploy three times; `dotnet fshw scan` was the only escape, and it
+// worked only because it forced a real build.
+//
+// `confirm` issues `force-rebuild` for the same reason it already forces a
+// from-disk scan: the merge verb does not get to trust a cache when its entire
+// job is to be the thing everything else trusts.
+// ---------------------------------------------------------------------------
+
+/// A handler warmed through one real build, plus its cache-key function.
+let private warmedWithKeyFn () =
+    let handler = warmedHandler "echo" "ok" []
+    handler, handler.CacheKey.Value
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
+    // THE REGRESSION. Before the fix the key was unconditional, so a warm cache
+    // replayed a BuildPassed whose artifacts were long gone and the deadlock
+    // above became unexitable.
+    let handler, cacheKeyFn = warmedWithKeyFn ()
+    let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+
+    // Baseline: cacheable, so the ordinary warm path still gets its cache.
+    // Bound outside the quotation — Unquote cannot splice an inner generic call.
+    let before = cacheKeyFn fileEvt
+    test <@ before.IsSome @>
+
+    handler.Commands
+    |> List.find (fun (name, _) -> name = "force-rebuild")
+    |> snd
+    |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
+    |> ignore
+
+    // `None` is the framework's documented "skip the cache, run Update" bypass —
+    // i.e. a REAL build, which is the whole point.
+    let after = cacheKeyFn fileEvt
+    test <@ after.IsNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild still lets the fresh build's result be cached`` () =
+    // Asymmetry is deliberate: suppressing the STORE too would make every forced
+    // build permanently uncacheable, turning a correctness fix into a standing
+    // performance regression.
+    let handler, cacheKeyFn = warmedWithKeyFn ()
+
+    handler.Commands
+    |> List.find (fun (name, _) -> name = "force-rebuild")
+    |> snd
+    |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
+    |> ignore
+
+    let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
+
+    let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+    let storeKey = cacheKeyFn buildDoneEvt
+    test <@ lookupKey.IsNone @>
+    test <@ storeKey.IsSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild is spent by a completed build, not by the lookup alone`` () =
+    // Clearing on the LOOKUP would let a dispatch that never reached a build
+    // consume the request and leave the artifacts stale anyway — the same
+    // deadlock, one run later and harder to see.
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitForTerminalStatus host "build" 5000
+
+    let cacheKeyFn = handler.CacheKey.Value
+    let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+
+    host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
+    let whileForced = cacheKeyFn fileEvt
+    test <@ whileForced.IsNone @>
+
+    // Drive a real build to completion; the request is now satisfied.
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    // Poll rather than `waitForTerminalStatus`: the status is ALREADY terminal
+    // from the warm-up build above, so a wait-for-terminal is satisfied instantly
+    // and would read the flag before the second build's BuildDone lands. (That
+    // already-satisfied-wait shape is the same class of bug as AUTOMATION-224
+    // itself — worth not reproducing in its own regression test.)
+    waitUntil (fun () -> (cacheKeyFn fileEvt).IsSome) 5000
+
+    let afterBuild = cacheKeyFn fileEvt
+    test <@ afterBuild.IsSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``the build plugin's force-rebuild command matches the name the CLI sends`` () =
+    // Plugins sit below the CLI, so the name is a bare literal on this side and a
+    // [<Literal>] on the other. Two spellings of one contract is exactly the
+    // failure this pins: a rename on either side would otherwise degrade silently
+    // to "unknown command" and quietly restore the deadlock.
+    let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
+
+    let names = handler.Commands |> List.map fst
+    let expected = FsHotWatch.Cli.IpcParsing.ForceRebuildCommand
+    test <@ names |> List.contains expected @>

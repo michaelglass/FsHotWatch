@@ -117,6 +117,25 @@ let RunTestsCommand = "run-tests"
 [<Literal>]
 let FullSuiteScopeArgs = """{"scope":"full"}"""
 
+/// The `force-rebuild` command: make the NEXT build a real one, never a cache
+/// replay (AUTOMATION-224).
+///
+/// The build cache key is a content merkle over SOURCE files only, so a cache hit
+/// asserts "the outputs are up to date" on evidence that never covered the
+/// outputs. After a working-copy flip (`jj new main`) the sources can match a
+/// previously-built tree while `bin/` still holds the PREVIOUS tree's artifacts —
+/// the build replays "built N projects (cached)" without running, TestPrune's
+/// freshness gate correctly sees stale output and defers every affected project as
+/// "waiting on build", and neither side ever moves. That deadlock blocked a
+/// production deploy three times.
+///
+/// `confirm` is the unfiltered merge verb, so it forces the build the same way it
+/// already forces a from-disk scan and a full-suite run: it does not get to trust a
+/// cache when its whole job is to be the thing you trust. Plain `check` keeps the
+/// cache (and reports the residual honestly as incomplete/exit 2).
+[<Literal>]
+let ForceRebuildCommand = "force-rebuild"
+
 let private tryParseUtcOpt (s: string) : DateTime option =
     match DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) with
     | true, dt -> Some dt

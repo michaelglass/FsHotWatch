@@ -170,6 +170,21 @@ let create
     let buildCommand = command
     let buildArgs = args
 
+    /// AUTOMATION-224 — force the NEXT build to be real instead of a cache replay.
+    ///
+    /// The cache key below is a content merkle over SOURCE files only, so a hit
+    /// asserts the OUTPUTS are current on evidence that never looked at them. That
+    /// holds right up until `bin/` is changed out from under a tree whose sources
+    /// are unchanged — a working-copy flip is the common way. Then the build
+    /// replays "built N projects (cached)" without running, TestPrune's freshness
+    /// gate correctly finds the output stale and defers ("waiting on build"), and
+    /// nothing ever rebuilds: a deadlock that blocked a production deploy 3x.
+    ///
+    /// Set by the `force-rebuild` command, which `confirm` issues. Consumed by
+    /// `cacheKey` on the LOOKUP (a `FileChanged`) and cleared once a build has
+    /// actually completed, so the fresh result still gets stored normally.
+    let forceRebuild = ref false
+
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -621,6 +636,13 @@ let create
                     return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
                 | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
                 | Custom(BuildDone(outcome, entries, elapsed)) ->
+                    // AUTOMATION-224: a build has now actually run, which is exactly
+                    // what `force-rebuild` asked for. Clear it here rather than when
+                    // `cacheKey` consumed it, so a lookup that never reached a build
+                    // (a suppressed or superseded dispatch) does not silently spend
+                    // the request and leave the artifacts stale anyway.
+                    forceRebuild.Value <- false
+
                     // Build single-flight is owned by the framework (RunExclusive "build").
                     // The completion message arrives carrying the pre-build idle lifecycle;
                     // we advance the lifecycle through Running ▸ Completed for activity-log
@@ -684,7 +706,22 @@ let create
                 | _ -> return state
             }
       Commands =
-        [ "build-status",
+        [ // AUTOMATION-224. Idempotent and cheap: it sets a flag, it does not
+          // build. The next cache LOOKUP misses, so the build runs for real and
+          // re-emits the artifacts TestPrune gates on. `confirm` calls this for the
+          // same reason it forces a from-disk scan — the merge verb does not get to
+          // trust a cache when its job is to be the thing you trust.
+          // The literal, not a shared constant: plugins live BELOW the CLI, so
+          // `IpcParsing.ForceRebuildCommand` is not visible here. Same split as
+          // "set-scope"/"run-tests" in TestPrunePlugin. The CLI-side constant
+          // carries the contract doc; a test pins the two spellings together.
+          "force-rebuild",
+          fun _ctx _state _args ->
+              async {
+                  forceRebuild.Value <- true
+                  return JsonSerializer.Serialize({| status = "ok"; forced = true |})
+              }
+          "build-status",
           fun _ctx state _args ->
               async {
                   let lastResult = Lifecycle.value state.LastBuild
@@ -730,8 +767,18 @@ let create
         // → a real build runs and re-emits the test DLL before it's executed.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
-        let cacheKey (_event: PluginEvent<BuildMsg>) : ContentHash option =
-            Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
+        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
+            // AUTOMATION-224: while `forceRebuild` is set, the LOOKUP must miss so a
+            // real build runs. `None` is the framework's documented "outputs
+            // missing" bypass — skip the cache, run Update.
+            //
+            // Deliberately asymmetric. Only the lookup (a `FileChanged`) is
+            // suppressed; `Custom BuildDone` still computes a real key, so the fresh
+            // build's result IS stored and the very next run is cacheable again.
+            // Suppressing both would make every forced build permanently uncached.
+            match event with
+            | FileChanged _ when forceRebuild.Value -> None
+            | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
       // Framework gate: suppresses cache replay until this plugin completes once
