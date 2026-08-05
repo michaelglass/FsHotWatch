@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 3.1.0 - 2026-08-05
+
+- resolve Falco route non-literal navigation, dependency-free
+
+
 ## 3.0.2 - 2026-07-26
 
 - fix: **A class must show evidence that it holds tests to be selected.**
