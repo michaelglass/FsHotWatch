@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.6 - 2026-08-05
+
+- check/confirm: classify "waiting on build" as Incomplete (exit 2), not a failure (exit 1)
+
+
 ## 0.10.0-alpha.5 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
