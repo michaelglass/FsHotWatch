@@ -70,7 +70,7 @@
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
         <PackageReference Include="CommandTree" Version="0.8.0" />
-        <PackageReference Include="TestPrune.Falco" Version="3.0.2" />
+        <PackageReference Include="TestPrune.Falco" Version="3.1.0" />
         <!-- Direct refs for `fshw dead-code`: TestPrune.Core's DeadCode analysis +
              SymbolStore (transitive via FsHotWatch.TestPrune, made explicit for
              compile-time access), and Microsoft.Data.Sqlite to probe the DB's
