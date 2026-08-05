@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.10 - 2026-08-05
+
 - fix!: **dead config now FAILS the load instead of warning.** `"cache": "file"` / `"jj"`
   in `.fshw.json` selected an on-disk FCS check cache that could never produce a hit. It was
   already rejected, but only with a `Logging.warn` that mapped the value to `NoCache` and

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.7 - 2026-08-05
+
 - fix!: **a filtered re-run that PASSES retires the red it re-ran** (AUTOMATION-225).
   `test-rerun --filter-class X` re-ran X, X passed, and X's red survived — forever,
   because the run's launch selection records every project as `ProjectInFull` and an
