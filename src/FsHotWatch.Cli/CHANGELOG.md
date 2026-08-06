@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.11 - 2026-08-06
+
+- confirm: force a REAL build — a cache hit must not assert freshness it never verified (AUTOMATION-224)
+
+
 ## 0.14.0-alpha.10 - 2026-08-05
 
 - fix!: **dead config now FAILS the load instead of warning.** `"cache": "file"` / `"jj"`

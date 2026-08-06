@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.19 - 2026-08-06
+
+- confirm: force a REAL build — a cache hit must not assert freshness it never verified (AUTOMATION-224)
+
+
 ## 0.7.0-alpha.18 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
