@@ -331,6 +331,37 @@ let ``the live timer beats to disk while running and stops when idle`` () =
         test <@ logs.Count = 0 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a tick that finds a beat in flight skips it`` () =
+    // THE serialisation property, asserted DETERMINISTICALLY: no threads, no
+    // sleeps, no timer. `guardedBeat` re-entered from inside its own beat is
+    // exactly the situation a Timer creates when a beat outlasts the tick, and
+    // the latch must refuse the second one.
+    //
+    // This exists because the original guard's only test drove two real timers
+    // under load and asserted on observed concurrency. That test failed on a busy
+    // box having never exercised the guard at all — the failure mode a regression
+    // test must not have, because it gets re-run, seen to pass, and learned to be
+    // ignored. Timing can still be smoke-tested (below); the PROPERTY is pinned here.
+    let beating = ref 0
+    let ran = ResizeArray<string>()
+    let reentrantResult = ref (Some true)
+
+    let outerRan =
+        guardedBeat beating (fun () ->
+            ran.Add "outer"
+            // Re-enter while the outer beat is still in flight.
+            reentrantResult.Value <- Some(guardedBeat beating (fun () -> ran.Add "inner")))
+
+    test <@ outerRan @>
+    // The re-entrant call must report that it did NOT beat...
+    test <@ reentrantResult.Value = Some false @>
+    // ...and must not have run the body at all.
+    test <@ List.ofSeq ran = [ "outer" ] @>
+    // The latch is released once the outer beat finishes, so the next tick beats.
+    test <@ guardedBeat beating (fun () -> ran.Add "next") @>
+    test <@ List.ofSeq ran = [ "outer"; "next" ] @>
+
+[<Fact(Timeout = 15000)>]
 let ``overlapping ticks never beat concurrently`` () =
     // REGRESSION. A `Timer` fires on its period regardless of whether the previous
     // callback finished, so a beat slower than the tick overlaps — and two beats at
@@ -356,7 +387,32 @@ let ``overlapping ticks never beat concurrently`` () =
           Cadence = TimeSpan.Zero }
 
     use _beat = createBeatWith (TimeSpan.FromMilliseconds 15.0) deps
-    System.Threading.Thread.Sleep 600
+
+    // Wait for EVIDENCE that beats are happening rather than assuming a fixed
+    // wall-clock window produced some. `maxSeen = 1` conflates two claims: "beats
+    // never overlap" (the invariant this test guards, maxSeen <= 1) and "at least
+    // one beat occurred" (maxSeen >= 1), which is pure timing. On a loaded box the
+    // timer's thread-pool callbacks can be starved for the whole sleep, leaving
+    // maxSeen at 0 — and the test then reds having never exercised the invariant.
+    // Observed live: this failed with maxSeen = 0 during a `confirm` run minutes
+    // after passing in the same gate's test pass, on an identical tree.
+    //
+    // A guard that cannot tell "the invariant broke" from "I saw nothing" is the
+    // exact confusion the heartbeat contract refuses elsewhere — absence means
+    // UNKNOWN, never a verdict. So the two claims are asserted separately.
+    let deadline = DateTime.UtcNow.AddSeconds 8.0
+
+    while lock maxSeen (fun () -> maxSeen.Value) = 0 && DateTime.UtcNow < deadline do
+        System.Threading.Thread.Sleep 25
+
+    // Nothing observed at all: the run proved nothing, and fails saying so rather
+    // than masquerading as a detected overlap.
+    test <@ lock maxSeen (fun () -> maxSeen.Value) >= 1 @>
+
+    // Beats are flowing; now give overlap a real chance. Cadence is zero and the
+    // write is 8x the tick, so this window is ~26 ticks of maximum overlap
+    // pressure against a write that is still in flight.
+    System.Threading.Thread.Sleep 400
 
     test <@ lock maxSeen (fun () -> maxSeen.Value) = 1 @>
     test <@ lock logs (fun () -> logs.Count) = 0 @>
