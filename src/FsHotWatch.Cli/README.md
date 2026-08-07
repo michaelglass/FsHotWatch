@@ -46,7 +46,7 @@ current state without triggering anything.
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon. |
 | `scan` | Re-scan all files. |
-| `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. |
+| `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. Exits 0 (tests ran and passed), 1 (failures), or **3** (the run executed **no tests** — see below). |
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
 | `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
 | `init` | Write a starter `.fshw.json` to the repo root. |
@@ -87,6 +87,20 @@ a ticket.
 > ```bash
 > rm -rf .fshw/cache     # then re-run `fshw confirm`
 > ```
+
+### A run that executed nothing is not a pass
+
+`test-rerun` exits **3**, never 0, when the run verified nothing. There are two causes
+and they get different advice, because different evidence is available:
+
+| Cause | What you see | Why the advice differs |
+|---|---|---|
+| The filter matched no test | `No tests matched the filter` + how many projects were searched | Those projects **did** discover their tests, so `fshw status test-prune` can show you the real names — almost always a typo or a renamed class. |
+| No project was selected at all | `No test project ran` | Nothing ran, so **nothing was discovered**. There are no names to suggest, and offering some would be a guess. |
+
+This is deliberately the same contract as `confirm`'s exit 3: **refuse to green without
+evidence.** Exit 0 would sail through any `&&` chain and any CI gate, and a run that
+verified nothing is exactly the run you least want reported as a pass.
 >
 > A CI checkout starts cold, so CI does not hit this. Change any source file and the
 > cache misses, the suite runs, and `confirm` decides normally.
@@ -116,6 +130,9 @@ fshw test-rerun --filter-trait "Category=Browser"
 
 # Combine filters (passed through to the xUnit v3 standalone runner)
 fshw test-rerun --filter-class "*Repository*" --filter-trait "Speed=Fast"
+
+# A typo in a filter is not a pass. This matches nothing and exits 3:
+fshw test-rerun --filter-class "*RepositryTests"   # exit 3, not 0
 
 # Show just the lint plugin's status
 fshw status lint
@@ -250,6 +267,44 @@ harness because of it. Absence must never be something the reader has to decode.
 
 The newest 10 run directories are retained; history is evidence, so old runs are
 **rotated, never wiped on start**.
+
+### `.fshw/heartbeat` — is the daemon still *working*?
+
+`.fshw/daemon.pid` answers "is a daemon resident?". That is the wrong question: a
+daemon can be alive and wedged, holding something while doing nothing. The
+heartbeat answers the right one.
+
+| | |
+|---|---|
+| **Path** | `<repoRoot>/.fshw/heartbeat` |
+| **Format** | Unix epoch **seconds**, decimal ASCII, **no trailing newline** (same shape as `daemon.pid`) |
+| **Cadence** | rewritten every **15 s** while a run is in progress |
+| **Only while running** | an **idle daemon never beats** |
+| **Never deleted** | between runs it holds the *previous* run's timestamp |
+| **Absence / unparseable** | **UNKNOWN — never "stale"** |
+
+```bash
+# seconds since the daemon last announced it was working
+echo $(( $(date +%s) - $(cat .fshw/heartbeat) ))
+```
+
+The beat is driven by whether work is **in flight** — not by log output — so a test
+phase that runs for ten minutes in silence keeps beating throughout. Writes are
+atomic, so a concurrent reader sees either the previous beat or this one, never a
+torn or empty file. A beat that cannot be written is logged and swallowed: a daemon
+must never die because it failed to announce itself.
+
+Two rules for consumers:
+
+- **15 s is the _floor_ of a staleness threshold, never the threshold itself.** A
+  beat can be late on a saturated box or a slow disk.
+- **Missing or unreadable means UNKNOWN — fall back to your own timeout**, never to
+  "dead". Erring toward "still alive" costs a slow reclaim; erring toward "dead" lets
+  two heavy runs proceed at once, which is worse. The file is never deleted precisely
+  because a stale timestamp is a stronger, more actionable signal than absence.
+
+Like `daemon.pid`, this is a fact fshw publishes about itself, with no opinion about
+who reads it or why.
 
 ## Config validation
 

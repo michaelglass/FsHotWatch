@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- feat: **a run states what it VERIFIED**, instead of leaving the consumer to infer it.
+  `allZeroMatch` returned `false` for an empty result set — defensible in isolation
+  ("no project ran" is not the claim "every project matched nothing") and wrong in
+  effect: both no-op shapes became indistinguishable from a real run downstream, so a
+  run that executed nothing reached the CLI looking like one that had, and was reported
+  as `Tests passed`, exit 0. Replaced with `RunVerification` —
+  `NoProjectsSelected | AllZeroMatch of projectCount | Ran`. Three cases rather than one
+  case with a flag, because they carry different **evidence**: `AllZeroMatch` knows a
+  filter ran against discovered tests and can say so, while `NoProjectsSelected` has no
+  discovered names at all, so a "did you mean…" there would be guessing dressed as
+  diagnosis. The `run-tests` payload keeps `noTestsMatched` for older CLIs and adds
+  `coverage` (`"no-projects-selected" | "all-zero-match" | "ran"`) plus
+  `verifiedNothing`. A consumer that does not know the new fields falls back to the
+  counts — an **absent** field must never be read as `"ran"`.
+
 - fix: **impact-selection breadth is measurable again.** "Affected classes for …",
   "Changed symbols: …" and `QueryAffectedTests(…)` rendered their collections with
   `%A`, which truncates at 100 elements — so a 1,500-class selection was
