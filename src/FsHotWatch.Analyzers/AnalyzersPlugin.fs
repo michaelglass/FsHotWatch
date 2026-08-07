@@ -168,13 +168,21 @@ let internal buildAnalyzerProjectOptions
             warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
             null
 
+/// A finding at or above the failure threshold becomes an Error, and the message
+/// records what it was BEFORE promotion so the provenance is not lost.
+///
+/// The prefix says "promoted from" rather than the bare severity name. The bare
+/// form read as a contradiction — a record carrying `severity: error` whose text
+/// began `[warning]` — and cost real time: a build-blocking finding was triaged as
+/// non-urgent because the message said "warning", while the exit code said
+/// otherwise. Both facts were true and the rendering made them look inconsistent.
 let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry) : ErrorEntry =
     if entry.Severity = DiagnosticSeverity.Error then
         entry
     elif DiagnosticSeverity.order entry.Severity >= DiagnosticSeverity.order threshold then
         { entry with
             Severity = DiagnosticSeverity.Error
-            Message = $"[{DiagnosticSeverity.toString entry.Severity}] {entry.Message}" }
+            Message = $"[promoted from {DiagnosticSeverity.toString entry.Severity}] {entry.Message}" }
     else
         entry
 
