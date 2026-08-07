@@ -825,8 +825,10 @@ let ``an OLDER daemon sending no coverage field still cannot report a no-op as a
     // the fallback must reconstruct "no project ran" from the counts rather than
     // defaulting to "ran".
     let noCoverageEmpty = """{"elapsed":"0.0s","projects":[]}"""
+
     let noCoverageZeroMatch =
         """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+
     let noCoverageReal =
         """{"elapsed":"1.0s","projects":[{"project":"P","status":"passed","output":"Passed! total: 9"}]}"""
 

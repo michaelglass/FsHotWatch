@@ -604,8 +604,7 @@ module AgentHints =
         let unexplainedRed =
             let isRed = v.ExitCode <> 0
 
-            let anySuiteFailed =
-                v.Suites |> List.exists (fun s -> s.Failed > 0)
+            let anySuiteFailed = v.Suites |> List.exists (fun s -> s.Failed > 0)
 
             if isRed && List.isEmpty failingPluginLines && not anySuiteFailed then
                 [ $"    UNEXPLAINED  exit %d{v.ExitCode} with no failing plugin and no failing suite — \

@@ -146,29 +146,43 @@ let runTick (deps: HeartbeatDeps) (lastBeat: DateTime option ref) : bool =
         deps.Log $"[heartbeat] beat failed: %s{ex.GetType().Name}: %s{ex.Message}"
         false
 
+/// Run `beat` only if no beat is already in flight, using `beating` as a
+/// non-blocking latch. Returns `true` iff this call ran the beat.
+///
+/// A `Timer` fires on its period whether or not the previous callback has
+/// finished, so at a one-second tick on a loaded box the callbacks DO overlap.
+/// Two beats at once race on the single temp file inside the atomic write, and
+/// the loser's rename finds its source already consumed — observed live as a
+/// swallowed `FileNotFoundException` on `heartbeat.tmp` during heavy runs.
+///
+/// Non-blocking on purpose: a tick that finds a beat already in flight simply
+/// skips, which costs nothing, because the beat in flight is publishing the very
+/// same fact this one would. Skipping is the correct outcome, not a lost update.
+///
+/// Extracted from the timer callback so the serialisation property can be tested
+/// DETERMINISTICALLY — re-entering this function proves the latch excludes a
+/// second beat with no threads, sleeps, or timer scheduling involved. A
+/// concurrency guard whose only test is "run two real timers under load and hope"
+/// is a guard that reds on a busy box and gets taught to be ignored.
+let internal guardedBeat (beating: int ref) (beat: unit -> unit) : bool =
+    if Interlocked.CompareExchange(&beating.contents, 1, 0) = 0 then
+        try
+            beat ()
+            true
+        finally
+            Volatile.Write(&beating.contents, 0)
+    else
+        false
+
 /// Create the heartbeat timer with an explicit tick period. The period is a
 /// seam for tests (they run a real timer at tens of milliseconds); production
 /// uses `createBeat`.
 let createBeatWith (tick: TimeSpan) (deps: HeartbeatDeps) : IDisposable =
     let lastBeat: DateTime option ref = ref None
-
-    // A `Timer` fires on its period whether or not the previous callback has
-    // finished, so at a one-second tick on a loaded box the callbacks DO overlap.
-    // Two beats at once race on the single temp file inside the atomic write, and
-    // the loser's rename finds its source already consumed — observed live as a
-    // swallowed `FileNotFoundException` on `heartbeat.tmp` during heavy runs.
-    //
-    // This gate keeps beats strictly serial. It is non-blocking on purpose: a tick
-    // that finds a beat already in flight simply skips, which costs nothing,
-    // because the beat in flight is publishing the very same fact this one would.
     let beating = ref 0
 
     let onTick (_: obj) =
-        if Interlocked.CompareExchange(&beating.contents, 1, 0) = 0 then
-            try
-                runTick deps lastBeat |> ignore
-            finally
-                Volatile.Write(&beating.contents, 0)
+        guardedBeat beating (fun () -> runTick deps lastBeat |> ignore) |> ignore
 
     new Timer(TimerCallback(onTick), null, tick, tick) :> IDisposable
 
