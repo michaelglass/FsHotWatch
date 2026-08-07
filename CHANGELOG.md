@@ -6,7 +6,7 @@ All notable changes to FsHotWatch packages are documented here.
 
 > ### ⚠️ Breaking changes, at a glance
 >
-> **If you run `fshw` in CI or from a script, read these two:**
+> **If you run `fshw` in CI or from a script, read these three:**
 >
 > 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
 >    (`gate` was introduced unreleased and never appeared in a published package, so
@@ -16,12 +16,43 @@ All notable changes to FsHotWatch packages are documented here.
 >    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
 >    so it could not report an incomplete scan. It can now, and it does. A CI job that
 >    treats "not 0" as failure will start seeing red on trees it used to pass.
+> 3. **`fshw test-rerun` can now exit `3` where it previously exited `0`.** A run that
+>    executed no tests — the filter matched nothing, or no project was selected at all —
+>    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
+>    are exactly the ones that never verified anything.
 >
 > The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
 > `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+### A run that executed nothing stops reporting a pass
+
+Three changes with one shape: **the absence of a complaint was being read as evidence.**
+
+`test-rerun` printed `✓ Tests passed` and exited `0` for runs that ran no tests at all.
+The cause was a boolean that could not tell "no project was selected" from "every project
+matched nothing" — it answered `false` to both, so an empty run became indistinguishable
+from a real one and fell through to the success branch. It is now a three-state
+(`NoProjectsSelected | AllZeroMatch | Ran`) carried on the wire, and both no-op outcomes
+exit `3`, matching `confirm`'s existing contract: refuse to green without evidence.
+
+The remediation differs by cause, because the available evidence differs. A run that
+selected no project has discovered no test names, so it says that rather than offering a
+"did you mean…" it cannot support. A filter that matched nothing ran against real
+discovered tests, so it reports how many projects were searched and points at
+`fshw status test-prune`.
+
+Separately, a **red** verdict now names the failing plugin. The agent hint block listed
+suites and never plugins, so a run red on `analyzers` or `format` displayed a wall of
+passing test counts — seen twice in one day, misattributed both times. A non-zero exit
+with no failing plugin *and* no failing suite now says `UNEXPLAINED` instead of rendering
+as a tidy block.
+
+And a finding promoted past the failure threshold now reads `[promoted from warning]`
+rather than `[warning]`, which on a record stamped `severity: error` looked like a
+contradiction and got a build-blocking finding triaged as non-urgent.
 
 ### A green re-run retires the red it just disproved (AUTOMATION-225)
 
