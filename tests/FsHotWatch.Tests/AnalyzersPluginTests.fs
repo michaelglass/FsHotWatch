@@ -809,7 +809,7 @@ let ``promoteIfFailing promotes hint to error with prefix when threshold is hint
 
     let result = promoteIfFailing DiagnosticSeverity.Hint entry
     test <@ result.Severity = DiagnosticSeverity.Error @>
-    test <@ result.Message = "[hint] some hint" @>
+    test <@ result.Message = "[promoted from hint] some hint" @>
 
 [<Fact>]
 let ``promoteIfFailing promotes info to error with prefix when threshold is info`` () =
@@ -822,7 +822,7 @@ let ``promoteIfFailing promotes info to error with prefix when threshold is info
 
     let result = promoteIfFailing DiagnosticSeverity.Info entry
     test <@ result.Severity = DiagnosticSeverity.Error @>
-    test <@ result.Message = "[info] some info" @>
+    test <@ result.Message = "[promoted from info] some info" @>
 
 [<Fact>]
 let ``promoteIfFailing leaves hint untouched when threshold is info`` () =

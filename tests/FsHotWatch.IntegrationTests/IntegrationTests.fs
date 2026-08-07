@@ -382,7 +382,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         // failOnSeverity = Error so the analyzer's RAW severity survives to the
         // ledger. With the default Hint threshold, `promoteIfFailing` rewrites
         // every sub-error finding (incl. this wildcard Warning) to Error with a
-        // `[warning]` message prefix — correct production behaviour (it fails the
+        // `[promoted from warning]` prefix — correct production behaviour (it fails the
         // build), but it masks the raw severity these tests assert on. Error is
         // the highest threshold, so promotion never fires and a Warning stays a
         // Warning. The promotion path itself is covered by the dedicated
