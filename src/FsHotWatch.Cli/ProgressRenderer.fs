@@ -579,6 +579,40 @@ module AgentHints =
                     let label = if i = 0 then "suites  " else "        "
                     $"    %s{label} %s{s.Ctrf}")
 
+        // A run can be RED with every test project at `failed: 0` — the failure
+        // living in `analyzers`, `format` or `build` instead. Printing only suites
+        // in that case shows a wall of passing counts on a failing run, which reads
+        // as "the red is not mine" and sends the reader looking somewhere else.
+        // Observed: a `confirm` returned exit 1 with six projects all green and
+        // three analyzer findings; two people misattributed it before anyone opened
+        // `plugins`. Same reasoning as the rule above about never printing a path to
+        // a file that was not written — a hint that answers a question the reader
+        // did not ask, while silently omitting the one they did, teaches distrust.
+        let failingPluginLines =
+            match v.Plugins |> List.filter (fun p -> Verdict.PluginOutcome.isFailing p.Outcome) with
+            | [] -> []
+            | failing ->
+                failing
+                |> List.mapi (fun i p ->
+                    let label = if i = 0 then "FAILING " else "        "
+                    let summary = p.Summary |> Option.defaultValue "(no summary)"
+                    $"    %s{label} %s{p.Name} — %s{Verdict.PluginOutcome.token p.Outcome}: %s{summary}")
+
+        // A red verdict that names nothing is worse than a red verdict: it looks like
+        // a clean report that happens to be non-zero. If neither a plugin nor a suite
+        // accounts for the failure, say so rather than printing a tidy block.
+        let unexplainedRed =
+            let isRed = v.ExitCode <> 0
+
+            let anySuiteFailed =
+                v.Suites |> List.exists (fun s -> s.Failed > 0)
+
+            if isRed && List.isEmpty failingPluginLines && not anySuiteFailed then
+                [ $"    UNEXPLAINED  exit %d{v.ExitCode} with no failing plugin and no failing suite — \
+                     do NOT read this as a pass; open %s{Verdict.RelativePath}" ]
+            else
+                []
+
         let scopeAdvice =
             match v.Command, v.Scope with
             | Verdict.Check, ImpactFiltered(ran, total) ->
@@ -593,6 +627,8 @@ module AgentHints =
         [ "  AGENTS: don't parse this output. Machine-readable results:"
           $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against the \
              tree on disk; exit 4 = stale, do not reuse)" ]
+        @ failingPluginLines
+        @ unexplainedRed
         @ suiteLines
         @ scopeAdvice
 

@@ -1855,3 +1855,75 @@ let ``AUTOMATION-161: no verdict on disk means earn one — a fresh checkout is 
     withTempDir "confirm-no-verdict" (fun root ->
         makeRepo root
         test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+// ---------------------------------------------------------------------------
+// A RED run whose test table is all zeros. The failure lives in a plugin, and
+// the agent hint block used to omit plugins entirely — so the reader saw six
+// passing projects on a failing run and concluded the red belonged to someone
+// else. That happened twice in one day before anyone opened `plugins`.
+// ---------------------------------------------------------------------------
+
+let private allSuitesGreen: Verdict.SuiteVerdict list =
+    [ { Project = "Intelligence.Tests.Unit"
+        Ctrf = ".fshw/test-runs/x/Intelligence.Tests.Unit.ctrf.json"
+        Total = 5559
+        Passed = 5559
+        Failed = 0
+        Skipped = 0 }
+      { Project = "Intelligence.Tests.Integration"
+        Ctrf = ".fshw/test-runs/x/Intelligence.Tests.Integration.ctrf.json"
+        Total = 575
+        Passed = 575
+        Failed = 0
+        Skipped = 0 } ]
+
+[<Fact>]
+let ``a red run with every suite green NAMES the failing plugin — the test table alone reads as a pass`` () =
+    let hints =
+        hintsFor
+            { greenVerdict "deadbeef" 10 with
+                Outcome = Verdict.Red
+                ExitCode = 1
+                Plugins =
+                    [ { Name = "analyzers"
+                        Outcome = Verdict.PluginOutcome.Fail
+                        ElapsedMs = Some 13L
+                        Summary = Some "analyzed 1164 files, 3 findings (3 errors, 0 warnings)" } ]
+                Suites = allSuitesGreen }
+
+    let joined = String.Join("\n", hints)
+
+    test <@ joined.Contains "analyzers" @>
+    test <@ joined.Contains "FAILING" @>
+    // The summary carries the actionable detail — a bare plugin name still makes
+    // the reader go digging, which is the behaviour this fixes.
+    test <@ joined.Contains "3 findings" @>
+
+[<Fact>]
+let ``the failing-plugin hint is NOT a blanket — a green run names no plugin as failing`` () =
+    // Positive control. Without this, a change that printed "FAILING" unconditionally
+    // would satisfy the test above while telling every reader their green run failed.
+    let hints =
+        hintsFor
+            { greenVerdict "deadbeef" 10 with
+                Suites = allSuitesGreen }
+
+    let joined = String.Join("\n", hints)
+
+    test <@ not (joined.Contains "FAILING") @>
+    test <@ not (joined.Contains "UNEXPLAINED") @>
+
+[<Fact>]
+let ``a red run that names NOTHING says so — a tidy block with a non-zero exit is the worst case`` () =
+    let hints =
+        hintsFor
+            { greenVerdict "deadbeef" 10 with
+                Outcome = Verdict.Red
+                ExitCode = 1
+                Plugins = []
+                Suites = allSuitesGreen }
+
+    let joined = String.Join("\n", hints)
+
+    test <@ joined.Contains "UNEXPLAINED" @>
+    test <@ joined.Contains "do NOT read this as a pass" @>
