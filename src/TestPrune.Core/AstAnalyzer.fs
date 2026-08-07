@@ -254,7 +254,27 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
     try
         let fullName = mfv.FullName
 
-        if mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
+        // Locals and parameters must never become symbols. FCS reports `FullName` for a
+        // parameter or a local `let` as the BARE identifier (`name`, `question`, `kind`),
+        // and `symbols.full_name` is UNIQUE — so one such row is a single repo-wide node
+        // that every unresolved reference to that identifier, in any file, unifies onto.
+        // Observed in a ~620-test-class consumer repo: seven such junk nodes (`name`,
+        // `kind`, `source`, `status`, `question`, `tryStr`, `call`) selected ~3,000 tests
+        // per run, swamping the genuinely changed symbols. It is also self-sustaining —
+        // a junk seed that never verifies stays in `pending-verification.json` and
+        // re-seeds every subsequent run.
+        //
+        // `IsModuleValueOrMember` is the exact discriminator. Verified empirically against
+        // the FCS version this repo references (43.12.204), not just its one-line doc
+        // comment: it is TRUE for every module-level binding — including `private`,
+        // nested-module, `inline`, `mutable` and active-pattern ones — and for every type
+        // member (instance, static, constructor, extension member); it is FALSE for every
+        // parameter and local `let`, for which `DeclaringEntity` is also None and
+        // `FullName` is unqualified. Note `IsMember` is NOT usable here: it is false for
+        // plain module-level functions.
+        if not mfv.IsModuleValueOrMember then
+            None
+        elif mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
             Some(Property, fullName)
         elif mfv.IsUnionCaseTester then
             // These are the auto-generated Is* properties on DU cases — skip them
@@ -798,7 +818,21 @@ let private extractResults
                 | DuCase
                 | Property -> true
                 | Function
-                | Value -> allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
+                | Value ->
+                    // Defence in depth behind `tryClassifyMemberOrFunction`'s
+                    // `IsModuleValueOrMember` gate. The short-name test ALONE was the
+                    // original defect: a parameter or local whose name collided with any
+                    // module-level binding in the same file (`let private kebab (name:
+                    // string)` in a file that also binds `name`) passed it, and was
+                    // persisted under the bare name `name` — a repo-wide hub, because
+                    // `symbols.full_name` is UNIQUE.
+                    //
+                    // A module-level binding or type member is ALWAYS dot-qualified
+                    // (`M.f`, `M.T.Member`), so an unqualified Function/Value is by
+                    // definition a local that slipped through classification. This is a
+                    // cheap standing invariant, not the fix — see Site B above.
+                    symbolInfo.FullName.Contains('.')
+                    && allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
                 | ExternRef -> false
 
             let symbols =
@@ -1293,7 +1327,28 @@ let private extractResults
 
             let allSymbols = symbols @ externSymbols
 
-            let filteredSymbolCount = definitions.Length - symbols.Length
+            // Locals and parameters no longer reach `definitions` at all: they are rejected
+            // in `tryClassifyMemberOrFunction` by the `IsModuleValueOrMember` gate, which is
+            // earlier than the `isTrackedSymbol` filter this diagnostic used to derive its
+            // count from. Counting them here keeps "Filtered N/M local symbol(s)" reporting
+            // the same fact it always reported — how much of the file was discarded as local
+            // — rather than silently reading zero because the discard moved upstream.
+            let localDefinitionCount =
+                allUses
+                |> List.sumBy (fun u ->
+                    if not u.IsFromDefinition then
+                        0
+                    else
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as mfv ->
+                            try
+                                if mfv.IsModuleValueOrMember then 0 else 1
+                            with _ ->
+                                0
+                        | _ -> 0)
+
+            let filteredSymbolCount =
+                localDefinitionCount + (definitions.Length - symbols.Length)
 
             Ok
                 { Symbols = allSymbols
@@ -1304,7 +1359,7 @@ let private extractResults
                   Diagnostics =
                     { DroppedEdges = droppedEdgeCount
                       FilteredSymbols = filteredSymbolCount
-                      TotalDefinitions = definitions.Length } }
+                      TotalDefinitions = definitions.Length + localDefinitionCount } }
 
 /// Parse and analyze a single F# source string using project options.
 let analyzeSource

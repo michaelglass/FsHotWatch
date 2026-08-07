@@ -1122,6 +1122,110 @@ let moduleLevel = 42
             test <@ localBindings.Length = 0 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+    [<Fact>]
+    let ``shadowing parameters and locals are not extracted as queryable symbols`` () =
+        // Regression test for the symbol-qualification defect. `isTrackedSymbol` admitted a
+        // Value/Function by SHORT name, so a parameter or local binding whose name happened
+        // to collide with any module-level binding in the same file passed the gate and was
+        // persisted as a global, unqualified symbol. Because `symbols.full_name` is UNIQUE,
+        // every unresolved reference to that bare name across the whole repo then unified
+        // onto one node — turning ordinary parameter names (`name`, `kind`, `question`) into
+        // hubs that select thousands of unrelated tests.
+        //
+        // The fixture below deliberately shadows: `kebab` takes a parameter `name` while the
+        // module also binds `name`; `question` takes a parameter `question` shadowing its own
+        // enclosing binding; `render` has locals `name` and `kind`.
+        let source =
+            """module TestModule
+
+let name = "module-level name"
+
+let private kebab (name: string) = name.Replace(" ", "-")
+
+let question (lang: string) (question: string) = lang + question
+
+let render x =
+    let name = string x
+    let kind = 1
+    name + string kind
+"""
+
+        let options =
+            getScriptOptions checker "shadowing.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "shadowing.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            let allSymbols = analysis.Symbols
+
+            // The genuine module-level bindings must still be tracked, fully qualified.
+            let hasQualified (n: string) =
+                allSymbols
+                |> List.exists (fun s -> s.FullName = "TestModule." + n && (s.Kind = Value || s.Kind = Function))
+
+            test <@ hasQualified "name" @>
+            test <@ hasQualified "kebab" @>
+            test <@ hasQualified "question" @>
+            test <@ hasQualified "render" @>
+
+            // The shadowing parameters and locals must NOT appear as symbols at all.
+            let localBindings =
+                allSymbols
+                |> List.filter (fun s ->
+                    match s.Kind with
+                    | Value
+                    | Function -> not (s.FullName.Contains('.'))
+                    | _ -> false)
+
+            test <@ localBindings.Length = 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``every module-level and type-member binding form stays tracked`` () =
+        // Guard against OVER-correction. The fix above rejects a symbol when FCS reports
+        // `IsModuleValueOrMember = false`; this pins the declaration forms that must keep
+        // passing that gate. Under-selection is the dangerous direction for a test-impact
+        // tool — a symbol silently dropped here means edits to it select no tests — so
+        // each of these is asserted by exact fully-qualified name rather than by count.
+        let result =
+            analyze
+                """
+module Outer
+
+let private privateBinding = 1
+
+let inline inlineFn a b = a + b
+
+let mutable mutableValue = 0
+
+module Nested =
+    let nestedBinding x = x + 1
+
+type Widget(w: int) =
+    member _.Width = w
+    member _.Scale(k: int) = w * k
+    static member Zero = Widget(0)
+
+module WidgetExt =
+    type Widget with
+        member this.Doubled = this.Width * 2
+"""
+
+        let tracked (name: string) =
+            result.Symbols |> List.exists (fun s -> s.FullName = name)
+
+        test <@ tracked "Outer.privateBinding" @>
+        test <@ tracked "Outer.inlineFn" @>
+        test <@ tracked "Outer.mutableValue" @>
+        test <@ tracked "Outer.Nested.nestedBinding" @>
+        test <@ tracked "Outer.Widget.Width" @>
+        test <@ tracked "Outer.Widget.Scale" @>
+        test <@ tracked "Outer.Widget.Zero" @>
+        test <@ tracked "Outer.WidgetExt.Doubled" @>
+
 [<Collection("FCS-AstAnalyzer")>]
 module ``Exception handling in symbol classification`` =
 
