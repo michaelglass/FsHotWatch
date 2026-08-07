@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat!: **Your `.test-prune.db` is rebuilt on first run (SchemaVersion 8→9).** The index now rejects unqualified symbol names at the database
+  level, which SQLite can only add by rebuilding the table. The old cache file is
+  deleted and recreated automatically — nothing you need to do, but the first
+  `test-prune index` after upgrading is a full re-index rather than an incremental one.
+- fix: **`test-prune run` selects far fewer, more accurate tests.**
+  Parameters and local `let` bindings were being indexed as if they were global symbols
+  under their bare name, so every unresolved reference to that identifier anywhere in
+  the repo collapsed onto one node. In a ~620-test-class repo that pulled ~3,000 tests
+  into every run regardless of what changed. Those nodes are gone.
+- fix: **Editing an active pattern, operator or interface member now selects its tests.**
+  These forms were previously dropped from the dependency graph
+  with no diagnostic — active patterns entirely, operators and interface members as
+  hash-less placeholders no edit could ever invalidate. A change to one of them selected
+  nothing, so a green run that skipped the relevant test was indistinguishable from one
+  that ran it. This was **under-selection**: expect these tests to start appearing.
+
 ## 6.1.1 - 2026-07-20
 
 - fix: **Bounded post-exit output drain.** After a spawned process exits,

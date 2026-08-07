@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- feat!: **SchemaVersion 8→9 — an unqualified `full_name` is now a hard DB error.**
+  The `symbols` table gains
+  `CHECK (kind = 'Module' OR full_name LIKE '%.%')`. An unqualified name is never a
+  real symbol, but `full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so silently
+  merging every same-named thing in the repo onto one row was the *designed*
+  behaviour — the mechanism behind the over-selection fixed below. SQLite has no
+  `ALTER TABLE ADD CONSTRAINT`, so the constraint can only arrive by rebuilding the
+  table: **an existing `.test-prune.db` is deleted and recreated on first open.**
+  Nothing durable is lost — the index is regenerated on the next scan — but that run
+  is a full re-index, and any consumer pinned to an older `TestPrune.Core` (or an
+  `fshotwatch.cli` that stamps this number) must be upgraded in lockstep. A row that
+  violates the constraint now fails with the offending symbol's name, kind and source
+  file instead of SQLite's bare constraint name. `kind = 'Module'` is scoped, not a
+  loophole: a top-level single-segment module (`module Alpha`) has no qualifier to
+  have.
+- fix: **Parameters and local `let` bindings are no longer indexed as global symbols.**
+  FCS reports a parameter's or local's `FullName` as the bare
+  identifier (`name`, `kind`, `source`), and `symbols.full_name` is UNIQUE — so each
+  one became a single repo-wide node that every unresolved reference to that
+  identifier, in any file, unified onto. In a ~620-test-class consumer repo seven such
+  rows selected ~3,000 tests per run; one row named `name` alone had 413 dependents and
+  pulled in 2,837 tests, swamping the genuinely changed symbols. It was also
+  self-sustaining: a junk seed that never verifies stays in `pending-verification.json`
+  and re-seeds every subsequent run. Classification now gates on
+  `IsModuleValueOrMember` — true for every module-level binding and type member, false
+  for every parameter and local — with a `FullName` dot-qualification check behind it as
+  a standing invariant. Expect materially smaller and more accurate selections.
+- fix: **Active patterns, operators and interface members are now tracked.**
+  An audit of 30 F# binding forms found 11 that never produced
+  a usable graph node, in two shapes. Active patterns vanished outright: a *use* is
+  reported as an `FSharpActivePatternCase`, which nothing classified, so a module that
+  pattern-matched on `(|Even|Odd|)` had no dependency on it at all and editing the
+  pattern selected none of the tests exercising it. Operators (`let (+.) a b`),
+  backticked names containing dots, and interface members (`interface I with member
+  _.Do x = ...`, and `abstract member Do: int -> int` on an interface declared alone)
+  survived only as `_extern` placeholders with an empty content hash — indexed enough
+  to look right, but no edit could ever change the hash, so no test was ever selected.
+  Both shapes were **silent under-selection**: a green run that skipped the relevant
+  test looked exactly like one that ran it. Editing any of these forms now selects its
+  dependent tests, and an active-pattern use is recorded as `PatternMatches` rather
+  than falling through to the `References` catch-all.
+
 ## 6.1.1 - 2026-07-20
 
 - fix: **`runProcessWith` bounds the post-exit output drain.** 6.1.0
