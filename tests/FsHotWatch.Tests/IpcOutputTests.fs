@@ -257,11 +257,42 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
-let ``renderIpcResult with noTestsMatched run returns 0 (distinct, not a failure)`` () =
-    // FIX 2: a filtered run that matched NOTHING is reported distinctly, exit 0,
-    // and must NOT render as "Tests failed" / "Tests passed".
+let ``renderIpcResult with noTestsMatched run returns 3 — refuses to green without evidence`` () =
+    // A filtered run that matched NOTHING is reported distinctly and exits 3,
+    // never 0. Exit 3 is this tool's established "refuse to green without
+    // evidence" code (the same one `confirm` returns on a warm cache).
+    //
+    // This assertion previously demanded 0. That was wrong and it cost real time:
+    // `dotnet fshw test-rerun --filter-class '*LlmCallBudget*'` printed
+    // "✓ Tests passed" and exited 0 having run ZERO tests, and a reviewer read
+    // that as verification. An exit code that sails through `&&` is not a
+    // distinct outcome no matter what the text beside it says.
     let json =
         """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult with an EMPTY projects array returns 3, never "Tests passed"`` () =
+    // The case `noTestsMatched` cannot express. `allZeroMatch` is deliberately
+    // false for an empty result set — "no project ran" is a different claim from
+    // "every project matched nothing" — so this JSON sets neither `hasFailed` nor
+    // `noTestsMatched` and used to fall through to `UI.success "Tests passed"`,
+    // exit 0. A run that executed nothing at all reported the best possible
+    // outcome.
+    let json = """{"elapsed":"0.0s","projects":[]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult still returns 0 for a genuine pass — the guard is not a blanket`` () =
+    // Positive control for the two assertions above: tightening "nothing ran"
+    // must not turn a real green into a refusal. Without this, both tests above
+    // would still pass if `renderIpcResult` simply never returned 0.
+    let json =
+        """{"elapsed":"1.2s","projects":[{"project":"RealProject","status":"passed","output":"Passed! total: 7"}]}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 0 @>
