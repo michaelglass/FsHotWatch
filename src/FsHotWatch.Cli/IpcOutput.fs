@@ -209,12 +209,34 @@ let renderIpcResult
                             | true, n -> n.ValueKind = JsonValueKind.True
                             | false, _ -> false
 
+                        // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
+                        // `allZeroMatch` is deliberately false for an empty result set
+                        // (no project is not the same claim as every project matched
+                        // nothing), so without this branch an empty `projects` array
+                        // fell through to "Tests passed" — a green for a run that
+                        // executed nothing. That is the worst case wearing the best
+                        // outcome's clothes, and it is why this branch exists.
+                        let projectCount = projects.EnumerateArray() |> Seq.length
+
+                        // Both no-op outcomes exit 3, matching `confirm`'s established
+                        // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
+                        // report a pass nothing earned. Exit 0 here would sail through
+                        // any `&&` chain and any CI gate.
                         if hasFailed then
                             UI.fail "Tests failed"
                             1
+                        elif projectCount = 0 then
+                            UI.fail "No test project ran — nothing was verified (not a pass)"
+                            UI.info "  Cause: the run selected no project at all."
+                            UI.info "  Wanted the whole suite? Use `fshw confirm` (unfiltered)."
+                            UI.info "  Expected a filter to select something? Check the class/trait name — see `fshw status test-prune`."
+                            3
                         elif noTestsMatched then
-                            UI.skip "No tests matched the filter"
-                            0
+                            UI.fail "No tests matched the filter — nothing was verified (not a pass)"
+                            UI.info $"  Cause: all %d{projectCount} selected project(s) matched zero tests."
+                            UI.info "  A filter that matches nothing is almost always a typo or a stale class name."
+                            UI.info "  Wanted the whole suite? Use `fshw confirm` (unfiltered)."
+                            3
                         else
                             UI.success "Tests passed"
                             0
