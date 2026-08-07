@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- fix!: **`test-rerun` exits `3` instead of `0` when a run executed nothing.** It printed
+  `✓ Tests passed` and exited `0` both when the filter matched no test and when no
+  project was selected at all — so a run that verified nothing was indistinguishable
+  from one that verified everything, and sailed through any `&&` chain and any CI gate.
+  Observed live: a filtered re-run reported a pass having run no tests, and was very
+  nearly recorded as verification of two real defects. Both no-op outcomes now exit `3`,
+  matching `confirm`'s existing contract — refuse to green without evidence. **A CI job
+  that treats non-zero as failure will start seeing red on runs it used to pass; that is
+  the point, those runs proved nothing.**
+
+- feat: **a no-op run says why it verified nothing, and what to do about it.** The two
+  causes now get different remediation instead of the same generic advice: a run that
+  selected no project says so and does not offer test-name suggestions (nothing ran to
+  discover any, so a suggestion would be a guess), while a filter that matched nothing
+  reports how many projects discovered their tests and points at
+  `fshw status test-prune` for the real names. Driven by the new `coverage` token from
+  FsHotWatch.TestPrune, with a fallback to the old counts when talking to an older
+  daemon — an absent field is never read as "ran".
+
+- fix: **a red verdict names the failing plugin.** The agent hint block printed the
+  verdict path, the suite CTRF files and scope advice, and never mentioned plugins — so
+  a run that was red because of `analyzers` or `format` showed a wall of passing test
+  counts and nothing else, which reads as "the red is not mine". Seen twice in one day
+  on the same tree: a `confirm` returned exit 1 with six test projects at `failed=0` and
+  three analyzer findings, and was misattributed to an unrelated known test failure
+  before anyone opened `plugins[]`. Now emits a `FAILING` line per failing plugin
+  carrying its summary, plus an `UNEXPLAINED` line for a non-zero exit with **no**
+  failing plugin and no failing suite — which previously rendered as a tidy block that
+  looked like a pass.
+
 - feat: **`runHookCommands`** — a top-level `.fshw.json` key selecting WHICH verbs the
   run-level `beforeRun`/`afterRun` hooks bracket. An array of `"check"` / `"confirm"`;
   absent means **both**, exactly the previous behaviour, so the key is a pure addition

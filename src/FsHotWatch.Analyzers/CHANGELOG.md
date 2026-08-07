@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: **a promoted finding says `[promoted from warning]`, not `[warning]`.**
+  `promoteIfFailing` turns a sub-error finding into an `Error` when it meets the failure
+  threshold and prefixes the message with its ORIGINAL severity, so the provenance
+  survives — that part is right and is unchanged. The wording was not: a record carrying
+  `severity: error` whose message began `[warning]` reads as a contradiction rather than
+  as a history. It cost real time — a build-blocking analyzer finding was triaged as
+  non-urgent because the text said "warning" while the exit code said otherwise. Both
+  facts were true; only the rendering made them look inconsistent.
+
 ## 0.7.0-alpha.23 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies
