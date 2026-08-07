@@ -113,7 +113,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       FsEventsLatencyMs = 250
       BeforeRun = None
       AfterRun = None
-      RunHookTimeoutSec = None }
+      RunHookTimeoutSec = None
+      RunHookCommands = DefaultRunHookCommands }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =
