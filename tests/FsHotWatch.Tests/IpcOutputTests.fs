@@ -783,3 +783,54 @@ let ``the inner loop NEVER forces a full suite`` () =
 
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
+
+// ---------------------------------------------------------------------------
+// The `coverage` token is what a CURRENT daemon sends. These cover the other
+// side of the contract: a CLI talking to an OLDER daemon that does not send it.
+// The rule the fallback exists to hold is that an ABSENT field must never be
+// read as "ran" — otherwise upgrading the CLI ahead of the daemon silently
+// reintroduces the exact green-for-nothing this release removes.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult reads the coverage token when the daemon sends one`` () =
+    let json =
+        """{"elapsed":"0.0s","coverage":"no-projects-selected","verifiedNothing":true,"projects":[]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult reads coverage=all-zero-match as a refusal, not a pass`` () =
+    let json =
+        """{"elapsed":"0.1s","coverage":"all-zero-match","verifiedNothing":true,"noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult trusts coverage=ran over an empty-looking payload`` () =
+    // Positive control on the token path: the token is authoritative, so a
+    // daemon that says it ran is believed. Without this, a fallback that ignored
+    // the token entirely would still satisfy the two tests above.
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran","verifiedNothing":false,"projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``an OLDER daemon sending no coverage field still cannot report a no-op as a pass`` () =
+    // The upgrade-skew case. No `coverage`, no `noTestsMatched`, empty projects —
+    // the fallback must reconstruct "no project ran" from the counts rather than
+    // defaulting to "ran".
+    let noCoverageEmpty = """{"elapsed":"0.0s","projects":[]}"""
+    let noCoverageZeroMatch =
+        """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+    let noCoverageReal =
+        """{"elapsed":"1.0s","projects":[{"project":"P","status":"passed","output":"Passed! total: 9"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageEmpty = 3 @>
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageZeroMatch = 3 @>
+    // …and the fallback is still not a blanket refusal.
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
