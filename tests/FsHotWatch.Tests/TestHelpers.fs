@@ -346,7 +346,8 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       FsEventsLatencyMs = 250
       BeforeRun = None
       AfterRun = None
-      RunHookTimeoutSec = None }
+      RunHookTimeoutSec = None
+      RunHookCommands = FsHotWatch.Cli.DaemonConfig.DefaultRunHookCommands }
 
 /// Create an ErrorEntry for tests.
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =

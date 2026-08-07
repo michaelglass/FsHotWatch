@@ -2,22 +2,22 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 80,
-        "branch": 70,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a + lifecycle + §1 fcs-signature add untested branches; line drifts 74-76% across runs",
+        "line": 81,
+        "branch": 77,
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
         "line": 80,
         "branch": 70,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux",
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
     ],
     "ArtifactFreshness.fs": {
       "line": 100,
       "branch": 97,
-      "reason": "honest floor at the achieved value for the AUTOMATION-122 closure-scoped freshness gate: 100% line, 97.1% branch (33/34). Every real arm is covered by ArtifactFreshness tests in TestPrunePluginTests - both closure directions (out-of-closure edit => fresh; in-closure edit => stale), the content/fixture copy check, the fail-closed InputsUndeterminable arms (unparseable fsproj at the root and deep in the closure, ProjectReference with no Include, ProjectReference to a missing project), reference cycles, unbuilt/uncopied dependencies, multi-TFM, and the SafeWalk symlink regressions. The single uncovered branch is coverlet's lambda-closure artifact on the per-TFM Array.map, not a reachable arm - left honest rather than hidden with ExcludeFromCodeCoverage."
+      "reason": "honest floor at the achieved value for the AUTOMATION-122 closure-scoped freshness gate: 100% line, 97.1% branch (33/34). Every real arm is covered by ArtifactFreshness tests in TestPrunePluginTests - both closure directions (out-of-closure edit =\u003E fresh; in-closure edit =\u003E stale), the content/fixture copy check, the fail-closed InputsUndeterminable arms (unparseable fsproj at the root and deep in the closure, ProjectReference with no Include, ProjectReference to a missing project), reference cycles, unbuilt/uncopied dependencies, multi-TFM, and the SafeWalk symlink regressions. The single uncovered branch is coverlet\u0027s lambda-closure artifact on the per-TFM Array.map, not a reachable arm - left honest rather than hidden with ExcludeFromCodeCoverage."
     },
     "BuildDiagnostics.fs": [
       {
@@ -35,7 +35,7 @@
     "BuildPlugin.fs": [
       {
         "line": 93,
-        "branch": 86,
+        "branch": 91,
         "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 94.9/86.1 stable across 8 CI runs after stabilization push; tightened from 89/81 lucky-ceiling floor",
         "platform": "macos"
       },
@@ -55,7 +55,7 @@
       {
         "line": 80,
         "branch": 50,
-        "reason": "§1 fcsCheckSignature: see macos reason",
+        "reason": "\u00A71 fcsCheckSignature: see macos reason",
         "platform": "linux"
       },
       {
@@ -66,9 +66,9 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 77,
+        "line": 82,
         "branch": 64,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor).",
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can\u0027t lower an existing floor).",
         "platform": "macos"
       },
       {
@@ -79,12 +79,6 @@
       }
     ],
     "CheckVerdict.fs": [
-      {
-        "line": 96,
-        "branch": 96,
-        "reason": "new 2026-06-08: pure converge-then-verdict logic (verdict/exitCode/converge), fully unit-tested in CheckVerdictTests; floor set just below actual (~96%) to tolerate run-to-run noise",
-        "platform": "macos"
-      },
       {
         "line": 95,
         "branch": 92,
@@ -114,7 +108,7 @@
       {
         "line": 100,
         "branch": 66,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
         "platform": "macos"
       },
       {
@@ -139,8 +133,8 @@
     ],
     "CoveragePlugin.fs": [
       {
-        "line": 83,
-        "branch": 50,
+        "line": 93,
+        "branch": 58,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -152,9 +146,9 @@
     ],
     "Ctrf.fs": [
       {
-        "line": 88,
-        "branch": 59,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "line": 89,
+        "branch": 77,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
         "platform": "macos"
       },
       {
@@ -166,7 +160,7 @@
     ],
     "Daemon.fs": [
       {
-        "line": 76,
+        "line": 78,
         "branch": 75,
         "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage)",
         "platform": "macos"
@@ -180,9 +174,9 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 78,
-        "branch": 79,
-        "reason": "2026-06-12: nondeterminism FIXED by extracting the config-watcher's debounce/reason branches into debounceShouldFire/configChangeReason/onConfigFsEvent (unit-tested with injected clocks; FSW lambda is branchless, its line pinned by RealWatchTests) -- coverage is now identical across runs (77.7 line / 78.8 branch, 104/132). Floors settled at 77/78 via official loosen. Historical: branch flipped 78.5-80.0 between identical runs because the suppressed-debounce arm only executed when the OS double-fired within the 200ms window.",
+        "line": 82,
+        "branch": 81,
+        "reason": "2026-06-12: nondeterminism FIXED by extracting the config-watcher\u0027s debounce/reason branches into debounceShouldFire/configChangeReason/onConfigFsEvent (unit-tested with injected clocks; FSW lambda is branchless, its line pinned by RealWatchTests) -- coverage is now identical across runs (77.7 line / 78.8 branch, 104/132). Floors settled at 77/78 via official loosen. Historical: branch flipped 78.5-80.0 between identical runs because the suppressed-debounce arm only executed when the OS double-fired within the 200ms window.",
         "platform": "macos"
       },
       {
@@ -195,14 +189,14 @@
     "DaemonIdentity.fs": [
       {
         "line": 100,
-        "branch": 71,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure.",
+        "branch": 73,
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render\u002Bparse round-trip and its strict-parse rejections, identitySourceFile\u0027s dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable-\u003ENone), buildIdentity\u0027s version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf\u0027s GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute \u2014 every assembly the test host can load has one) and hashFile\u0027s debug-log arm on a mid-read IO failure.",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 71,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render\u002Bparse round-trip and its strict-parse rejections, identitySourceFile\u0027s dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable-\u003ENone), buildIdentity\u0027s version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf\u0027s GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute \u2014 every assembly the test host can load has one) and hashFile\u0027s debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
@@ -220,15 +214,15 @@
       }
     ],
     "DependencyFanout.fs": {
-      "line": 93,
+      "line": 97,
       "branch": 100,
-      "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline + CPM + missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL — not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
+      "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline \u002B CPM \u002B missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL \u2014 not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
     },
     "DepsFreshness.fs": [
       {
-        "line": 91,
-        "branch": 83,
-        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness — incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` — exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs + a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20<->32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
+        "line": 92,
+        "branch": 86,
+        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness \u2014 incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells \u0060dotnet restore\u0060/\u0060paket restore\u0060/\u0060tool restore\u0060 \u2014 exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs \u002B a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20\u003C-\u003E32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
         "platform": "macos"
       },
       {
@@ -240,7 +234,7 @@
     ],
     "ErrorLedger.fs": [
       {
-        "line": 98,
+        "line": 99,
         "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -260,7 +254,7 @@
         "platform": "linux"
       },
       {
-        "line": 96,
+        "line": 97,
         "branch": 100,
         "reason": "loosened automatically"
       }
@@ -273,8 +267,8 @@
         "platform": "linux"
       },
       {
-        "line": 96,
-        "branch": 95,
+        "line": 98,
+        "branch": 100,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
       }
     ],
@@ -293,7 +287,7 @@
     "FileFreshness.fs": [
       {
         "line": 90,
-        "branch": 88,
+        "branch": 90,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -305,8 +299,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 94,
-        "branch": 82,
+        "line": 95,
+        "branch": 85,
         "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 93.1/77.9 stable across 8 CI runs; tightened from very loose 78/67 floor (15pp / 11pp drift from observed)",
         "platform": "macos"
       },
@@ -319,8 +313,8 @@
     ],
     "Flakiness.fs": [
       {
-        "line": 82,
-        "branch": 61,
+        "line": 84,
+        "branch": 69,
         "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land.",
         "platform": "macos"
       },
@@ -346,15 +340,15 @@
     ],
     "IdleExit.fs": [
       {
-        "line": 90,
-        "branch": 91,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
+        "line": 91,
+        "branch": 92,
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 89,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
     ],
@@ -385,8 +379,8 @@
     ],
     "Ipc.fs": [
       {
-        "line": 84,
-        "branch": 76,
+        "line": 88,
+        "branch": 80,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -399,9 +393,9 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 80,
-        "branch": 53,
-        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC + interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict + convergence logic it delegates to is in CheckVerdict.fs at 96%+ coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage.",
+        "line": 83,
+        "branch": 55,
+        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC \u002B interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict \u002B convergence logic it delegates to is in CheckVerdict.fs at 96%\u002B coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage.",
         "platform": "macos"
       },
       {
@@ -413,8 +407,8 @@
     ],
     "IpcParsing.fs": [
       {
-        "line": 87,
-        "branch": 66,
+        "line": 89,
+        "branch": 71,
         "reason": "loosened: legacy-parser removal shifted coverage percentages",
         "platform": "macos"
       },
@@ -434,21 +428,21 @@
       {
         "line": 58,
         "branch": 40,
-        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed — daemon scan is not hit during unit tests",
+        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed \u2014 daemon scan is not hit during unit tests",
         "platform": "linux"
       }
     ],
     "LintPlugin.fs": [
       {
-        "line": 90,
+        "line": 91,
         "branch": 72,
-        "reason": "loosened 2026-04-26 §2a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
+        "reason": "loosened 2026-04-26 \u00A72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post §2a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
       }
     ],
@@ -475,7 +469,7 @@
       {
         "line": 84,
         "branch": 84,
-        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns + Begin/End + WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback's overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive.",
+        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns \u002B Begin/End \u002B WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback\u0027s overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) \u2014 pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run.",
         "platform": "macos"
       },
       {
@@ -488,8 +482,8 @@
     "PathFilter.fs": [
       {
         "line": 96,
-        "branch": 69,
-        "reason": "exception-handling branches + IgnoreFilterCache reload paths that fire inconsistently across runs",
+        "branch": 71,
+        "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
       {
@@ -501,9 +495,9 @@
     ],
     "PendingVerification.fs": [
       {
-        "line": 87,
-        "branch": 75,
-        "reason": "honest floor for the durable pending-verification sidecar. AUTOMATION-150 made `load` return `LoadedQueue = Loaded | Unreadable`, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered — measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by `mise run coverage-ratchet` against BOTH platforms' CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent.",
+        "line": 97,
+        "branch": 100,
+        "reason": "honest floor for the durable pending-verification sidecar. AUTOMATION-150 made \u0060load\u0060 return \u0060LoadedQueue = Loaded | Unreadable\u0060, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered \u2014 measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by \u0060mise run coverage-ratchet\u0060 against BOTH platforms\u0027 CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent.",
         "platform": "macos"
       },
       {
@@ -517,20 +511,20 @@
       {
         "line": 87,
         "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
         "platform": "macos"
       },
       {
         "line": 87,
         "branch": 71,
-        "reason": "deterministic remainder is platform-independent — converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch",
+        "reason": "deterministic remainder is platform-independent \u2014 converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch",
         "platform": "linux"
       }
     ],
     "PluginFramework.fs": [
       {
         "line": 97,
-        "branch": 92,
+        "branch": 94,
         "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 96.5/87.8 stable across 8 CI runs post coverage-fix series; tightened from 93/82 (gives 1pp safety margin for jitter)",
         "platform": "macos"
       },
@@ -543,8 +537,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 88,
-        "branch": 78,
+        "line": 92,
+        "branch": 93,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -559,34 +553,34 @@
       {
         "line": 92,
         "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
+        "reason": "plugin-wedge detection \u002B self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is \u0027cannot-tell\u0027, past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor\u0027s default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
         "platform": "macos"
       },
       {
         "line": 92,
         "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "reason": "plugin-wedge detection \u002B self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is \u0027cannot-tell\u0027, past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor\u0027s default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
     "ProcessHelper.fs": [
       {
-        "line": 95,
+        "line": 99,
         "branch": 100,
-        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. AUTOMATION-126 pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative",
+        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. AUTOMATION-126 pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative",
         "platform": "macos"
       },
       {
         "line": 93,
         "branch": 100,
-        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value — ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
+        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value \u2014 ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
         "platform": "linux"
       }
     ],
     "ProcessRegistry.fs": [
       {
-        "line": 84,
-        "branch": 70,
+        "line": 87,
+        "branch": 73,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -598,9 +592,9 @@
     ],
     "Program.fs": [
       {
-        "line": 72,
-        "branch": 57,
-        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a `try/with ConfigError` around the `check --run-once` arm whose catch (eprintfn + exit 2) only runs when plugin registration raises — a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78->80 to a flaky lucky-ceiling, which the guard's own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs — pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% — daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline's 79 pin).",
+        "line": 74,
+        "branch": 66,
+        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a \u0060try/with ConfigError\u0060 around the \u0060check --run-once\u0060 arm whose catch (eprintfn \u002B exit 2) only runs when plugin registration raises \u2014 a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78-\u003E80 to a flaky lucky-ceiling, which the guard\u0027s own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor \u002B pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline\u0027s 79 pin).",
         "platform": "macos"
       },
       {
@@ -613,7 +607,7 @@
     "ProgressRenderer.fs": [
       {
         "line": 89,
-        "branch": 75,
+        "branch": 78,
         "reason": "loosened: CLI rendering paths not exercised on all platforms",
         "platform": "macos"
       },
@@ -643,10 +637,24 @@
       "branch": 0,
       "reason": "loosened automatically"
     },
+    "RunOnceCheck.fs": [
+      {
+        "line": 70,
+        "branch": 55,
+        "reason": "honest floor at the ACHIEVED value (macOS: 72.1% line, 56.2% branch, 9/16) for the run-once check/confirm orchestration shell (AUTOMATION-117). Same shape as IpcOutput.fs\u0027s pollAndRender, and left honest for the same reason: what remains uncovered is the shell that drives a REAL Daemon end to end \u2014 RunOnce (dotnet build \u002B the whole test suite), the console/UI.fail reporting arms (Clean/FailuresFound/Incomplete/UnearnedScope), the staleness-warning arm, and the settle-failure arm. Those need a real build and a real test run, and FsHotWatch.IntegrationTests (where such a test would live) is EXCLUDED from coverage, so it could not lift this number anyway. Everything that DECIDES anything is pure and lives elsewhere at 95%\u002B: CheckVerdict.fs (verdict/converge/confirmNeedsFullRun) and IpcParsing.fs (parseTestRunReport/isFullSuite). The in-process transport this file does own \u2014 readTestRun, requestFullSuiteScope, requestFullRun, including their unknown-command and throwing arms \u2014 IS unit-tested against a real PluginHost in RunOnceOutputTests. Left uncovered rather than hidden with ExcludeFromCodeCoverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 62,
+        "branch": 37,
+        "reason": "PROVISIONAL \u2014 not yet measured on Linux. Same orchestration shell as the macOS entry; the number is extrapolated from the observed macOS\u2192Linux gap on the sibling shell IpcOutput.fs (80/53 macOS vs 69/35 Linux), because this file could only be measured on macOS when it was written. RE-TIGHTEN FROM THE FIRST CI ARTIFACTS via \u0060mise run loosen-from-ci\u0060 \u2014 which is how IpcOutput.fs\u0027s own Linux floor was set. If Linux comes in HIGHER than this, RAISE it: a floor below the achieved value is a floor that hides a future regression.",
+        "platform": "linux"
+      }
+    ],
     "RunOnceOutput.fs": [
       {
-        "line": 59,
-        "branch": 53,
+        "line": 71,
+        "branch": 57,
         "reason": "loosened: new severity counting branches",
         "platform": "macos"
       },
@@ -661,20 +669,20 @@
       {
         "line": 100,
         "branch": 87,
-        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 87,
-        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
         "platform": "linux"
       }
     ],
     "StringHelpers.fs": [
       {
-        "line": 85,
-        "branch": 50,
+        "line": 93,
+        "branch": 66,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -707,21 +715,15 @@
       {
         "line": 100,
         "branch": 100,
-        "reason": "AUTOMATION-129: TIGHTENED from 100/75. The unreachable IO exception filters moved into ContentHash (one hasher, one fail-closed policy), leaving TreeHash pure and fully covered.",
-        "platform": "macos"
-      },
-      {
-        "line": 100,
-        "branch": 100,
         "reason": "pure logic, platform-independent; the same unit tests cover it on Linux.",
         "platform": "linux"
       }
     ],
     "Verdict.fs": [
       {
-        "line": 94,
-        "branch": 85,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "line": 96,
+        "branch": 91,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
         "platform": "macos"
       },
       {
@@ -742,20 +744,6 @@
         "line": 83,
         "branch": 60,
         "reason": "higher line coverage on Linux CI (no FSEvents)",
-        "platform": "linux"
-      }
-    ],
-    "RunOnceCheck.fs": [
-      {
-        "line": 70,
-        "branch": 54,
-        "reason": "honest floor at the ACHIEVED value (macOS: 72.1% line, 56.2% branch, 9/16) for the run-once check/confirm orchestration shell (AUTOMATION-117). Same shape as IpcOutput.fs's pollAndRender, and left honest for the same reason: what remains uncovered is the shell that drives a REAL Daemon end to end — RunOnce (dotnet build + the whole test suite), the console/UI.fail reporting arms (Clean/FailuresFound/Incomplete/UnearnedScope), the staleness-warning arm, and the settle-failure arm. Those need a real build and a real test run, and FsHotWatch.IntegrationTests (where such a test would live) is EXCLUDED from coverage, so it could not lift this number anyway. Everything that DECIDES anything is pure and lives elsewhere at 95%+: CheckVerdict.fs (verdict/converge/confirmNeedsFullRun) and IpcParsing.fs (parseTestRunReport/isFullSuite). The in-process transport this file does own — readTestRun, requestFullSuiteScope, requestFullRun, including their unknown-command and throwing arms — IS unit-tested against a real PluginHost in RunOnceOutputTests. Left uncovered rather than hidden with ExcludeFromCodeCoverage.",
-        "platform": "macos"
-      },
-      {
-        "line": 62,
-        "branch": 37,
-        "reason": "PROVISIONAL — not yet measured on Linux. Same orchestration shell as the macOS entry; the number is extrapolated from the observed macOS→Linux gap on the sibling shell IpcOutput.fs (80/53 macOS vs 69/35 Linux), because this file could only be measured on macOS when it was written. RE-TIGHTEN FROM THE FIRST CI ARTIFACTS via `mise run loosen-from-ci` — which is how IpcOutput.fs's own Linux floor was set. If Linux comes in HIGHER than this, RAISE it: a floor below the achieved value is a floor that hides a future regression.",
         "platform": "linux"
       }
     ]

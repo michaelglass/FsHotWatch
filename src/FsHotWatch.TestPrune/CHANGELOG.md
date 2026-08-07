@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: **impact-selection breadth is measurable again.** "Affected classes for …",
+  "Changed symbols: …" and `QueryAffectedTests(…)` rendered their collections with
+  `%A`, which truncates at 100 elements — so a 1,500-class selection was
+  indistinguishable from a 101-class one, and "Changed symbols" carried no count at
+  all. All three now lead with the exact count via `StringHelpers.describeMany`.
+  Empty stays distinguishable (`0 []`), which matters: a project present with no
+  affected classes means "run it in full".
+
 ## 0.13.0-alpha.7 - 2026-08-05
 
 - fix!: **a filtered re-run that PASSES retires the red it re-ran** (AUTOMATION-225).

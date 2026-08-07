@@ -1557,6 +1557,35 @@ type Daemon
                         { new IDisposable with
                             member _.Dispose() = () }
 
+                // Activity heartbeat. Publishes `<repoRoot>/.fshw/heartbeat`
+                // — Unix epoch seconds, rewritten every 15s — for exactly as
+                // long as a run is in progress, and NEVER while idle. Same
+                // spirit as `.fshw/daemon.pid`: a fact about this daemon that
+                // anyone may read, with no opinion here about who reads it.
+                // The "only while running" property is the whole value: a
+                // daemon that is alive but wedged does not beat, so process
+                // liveness (which would say "fine") and activity (which says
+                // "nothing is happening") can finally be told apart. Beat
+                // failures are logged and swallowed inside `runTick` — the
+                // daemon must never die for failing to announce itself.
+                use _heartbeat: IDisposable =
+                    Heartbeat.createBeat
+                        { Now = fun () -> System.DateTime.UtcNow
+                          // Same two live signals idle-exit reads, via the
+                          // heartbeat's own predicate. `AnyPluginBusy` is the
+                          // leg that spans long quiet phases: a plugin's
+                          // inflight count is held for the whole lifetime of
+                          // an exclusive run, so a ten-minute silent browser
+                          // suite keeps beating without emitting anything.
+                          RunActive =
+                            fun () ->
+                                Heartbeat.runActive
+                                    (host.AnyPluginBusy())
+                                    (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                          Write = Heartbeat.writeTo repoRoot
+                          Log = Logging.warn "heartbeat"
+                          Cadence = Heartbeat.DefaultCadence }
+
                 // Plugin-wedge monitor. A plugin that reported Running and posts
                 // no completion past the bound is BY DEFINITION wedged. The monitor
                 // logs escalating "still running … (no
