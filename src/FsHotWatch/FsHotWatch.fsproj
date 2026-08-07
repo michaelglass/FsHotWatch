@@ -83,6 +83,7 @@
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
     <Compile Include="IdleExit.fs" />
+    <Compile Include="Heartbeat.fs" />
     <Compile Include="PluginWedge.fs" />
     <Compile Include="Daemon.fs" />
   </ItemGroup>
