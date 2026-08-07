@@ -229,7 +229,10 @@ let renderIpcResult
                             UI.fail "No test project ran — nothing was verified (not a pass)"
                             UI.info "  Cause: the run selected no project at all."
                             UI.info "  Wanted the whole suite? Use `fshw confirm` (unfiltered)."
-                            UI.info "  Expected a filter to select something? Check the class/trait name — see `fshw status test-prune`."
+
+                            UI.info
+                                "  Expected a filter to select something? Check the class/trait name — see `fshw status test-prune`."
+
                             3
                         elif noTestsMatched then
                             UI.fail "No tests matched the filter — nothing was verified (not a pass)"

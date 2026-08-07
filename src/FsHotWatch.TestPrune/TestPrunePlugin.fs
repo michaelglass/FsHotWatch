@@ -2825,7 +2825,15 @@ let create
                         else
                             ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
 
-                Logging.info "test-prune" $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
+                // Count the INPUT explicitly, not just the output. `symbols` is the
+                // union of the durable pending-verification queue and the in-memory
+                // hot view, so it grows monotonically across aborted runs until a
+                // green run clears it — "the queue is wedged and growing" and "a
+                // small, precise selection" look identical without this number, and
+                // `%A` truncated it away at 100.
+                Logging.info
+                    "test-prune"
+                    $"QueryAffectedTests(%s{describeMany symbols}): %d{affected.Length} affected tests"
 
                 affected
 
@@ -3179,7 +3187,13 @@ let create
                         Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
-                            Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
+                            // Leads with the exact class count: impact-selection
+                            // BREADTH is the measurement this line exists to provide,
+                            // and `%A` capped it at 100 — a 1,500-class blowout read
+                            // identically to a 100-class one. `describeMany` still
+                            // renders `0 []` distinctly, which matters here: a project
+                            // present with an empty list means "run it in full".
+                            Logging.info "test-prune" $"Affected classes for %s{proj}: %s{describeMany classes}"
 
                     let! results, started, completed =
                         executeTests
@@ -3782,7 +3796,14 @@ let create
 
                             let newChangedSymbols =
                                 if not changedNames.IsEmpty then
-                                    Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+                                    // These are the symbols fed straight into
+                                    // `enqueuePending`, so this line is the primary
+                                    // evidence when diagnosing over- or
+                                    // under-selection (see the phantom
+                                    // all-symbols-changed regression noted above).
+                                    // It previously carried NO count at all and
+                                    // capped the list at 100.
+                                    Logging.info "test-prune" $"Changed symbols: %s{describeMany changedNames}"
 
                                     // Write-through to the durable needs-testing queue at the
                                     // SAME point the in-memory hot view accumulates. Persisted
