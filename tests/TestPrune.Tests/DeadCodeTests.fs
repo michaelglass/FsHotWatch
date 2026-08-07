@@ -234,51 +234,53 @@ module ``Module symbols excluded`` =
 
 module ``Only shallowest unreachable reported`` =
 
+    // Fed to `findDeadCode` directly rather than through the database, because
+    // `symbols_full_name_is_qualified` means an unqualified row can no
+    // longer BE stored — an unqualified `full_name` is a repo-wide hub under a UNIQUE
+    // key, so the DB now rejects it outright. `findDeadCode` is a pure function that
+    // still has to hold the line for callers reading a graph it did not build (e.g.
+    // `fshw dead-code` against an older index), so the filter keeps its own test.
+    let private deadCodeOf (allSymbols: SymbolInfo list) (entryPatterns: string list) =
+        let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+        let reachable = findEntryPoints allNames entryPatterns |> Set.ofList
+        findDeadCode allSymbols reachable Set.empty false
+
     [<Fact>]
     let ``nested symbols within an unreachable function are not reported`` () =
-        withDb (fun db ->
-            let graph =
-                { Symbols =
-                    [ { FullName = "App.Program.main"
-                        Kind = Function
-                        SourceFile = "src/App/Program.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "App.Lib.unusedFunc"
-                        Kind = Function
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 1
-                        LineEnd = 10
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "localHelper"
-                        Kind = Value
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 3
-                        LineEnd = 3
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "depCmd"
-                        Kind = Value
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 5
-                        LineEnd = 5
-                        ContentHash = ""
-                        IsExtern = false } ]
-                  Dependencies = []
-                  TestMethods = []
-                  Attributes = []
-                  ParentLinks = []
-                  Diagnostics = AnalysisDiagnostics.Zero }
+        let result, _events =
+            deadCodeOf
+                [ { FullName = "App.Program.main"
+                    Kind = Function
+                    SourceFile = "src/App/Program.fs"
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "App.Lib.unusedFunc"
+                    Kind = Function
+                    SourceFile = "src/App/Lib.fs"
+                    LineStart = 1
+                    LineEnd = 10
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "localHelper"
+                    Kind = Value
+                    SourceFile = "src/App/Lib.fs"
+                    LineStart = 3
+                    LineEnd = 3
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "depCmd"
+                    Kind = Value
+                    SourceFile = "src/App/Lib.fs"
+                    LineStart = 5
+                    LineEnd = 5
+                    ContentHash = ""
+                    IsExtern = false } ]
+                [ "*.Program.main" ]
 
-            db.RebuildProjects([ graph ])
-
-            let result, _events = runDeadCode db [ "*.Program.main" ] false
-
-            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
-            test <@ names = [ "App.Lib.unusedFunc" ] @>)
+        let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+        test <@ names = [ "App.Lib.unusedFunc" ] @>
 
     [<Fact>]
     let ``symbol starting at same line but shorter than parent is filtered`` () =
@@ -402,42 +404,33 @@ module ``Only shallowest unreachable reported`` =
 
     [<Fact>]
     let ``local bindings without dots are not reported`` () =
-        withDb (fun db ->
-            let graph =
-                { Symbols =
-                    [ { FullName = "App.Program.main"
-                        Kind = Function
-                        SourceFile = "src/App/Program.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "localVar"
-                        Kind = Value
-                        SourceFile = "src/App/Program.fs"
-                        LineStart = 3
-                        LineEnd = 3
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "_param"
-                        Kind = Value
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 1
-                        LineEnd = 1
-                        ContentHash = ""
-                        IsExtern = false } ]
-                  Dependencies = []
-                  TestMethods = []
-                  Attributes = []
-                  ParentLinks = []
-                  Diagnostics = AnalysisDiagnostics.Zero }
+        let result, _events =
+            deadCodeOf
+                [ { FullName = "App.Program.main"
+                    Kind = Function
+                    SourceFile = "src/App/Program.fs"
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "localVar"
+                    Kind = Value
+                    SourceFile = "src/App/Program.fs"
+                    LineStart = 3
+                    LineEnd = 3
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "_param"
+                    Kind = Value
+                    SourceFile = "src/App/Lib.fs"
+                    LineStart = 1
+                    LineEnd = 1
+                    ContentHash = ""
+                    IsExtern = false } ]
+                [ "*.Program.main" ]
 
-            db.RebuildProjects([ graph ])
-
-            let result, _events = runDeadCode db [ "*.Program.main" ] false
-
-            // Local bindings/params (no dot in name) should not be reported
-            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+        // Local bindings/params (no dot in name) should not be reported
+        test <@ result.UnreachableSymbols |> List.isEmpty @>
 
     [<Fact>]
     let ``sibling unreachable functions in same file are both reported`` () =

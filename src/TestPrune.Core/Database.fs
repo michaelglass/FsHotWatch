@@ -18,7 +18,9 @@ let private schema =
         content_hash TEXT NOT NULL DEFAULT '',
         is_extern INTEGER NOT NULL DEFAULT 0,
         parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-        indexed_at TEXT NOT NULL
+        indexed_at TEXT NOT NULL,
+        CONSTRAINT symbols_full_name_is_qualified
+            CHECK (kind = 'Module' OR full_name LIKE '%.%')
     );
 
     CREATE TABLE IF NOT EXISTS dependencies (
@@ -192,6 +194,26 @@ let private openConnection (dbPath: string) =
 ///          honest description of what core manages, and the recreate is free: a
 ///          plugin table is re-created on demand by its owner (and Falco's routes
 ///          are re-seeded every run).
+/// v9     — added `CHECK (kind = 'Module' OR full_name LIKE '%.%')` on `symbols`
+///          An unqualified `full_name` is never a real symbol, and
+///          because `full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, every
+///          same-named thing in the repo UPSERTs onto that ONE row: a single row named
+///          `name` acquired 413 dependents and selected 2,837 tests per run. The table
+///          had no CHECK constraints at all, so nothing said so. SQLite has no
+///          `ALTER TABLE ADD CONSTRAINT`, so the constraint can only arrive by
+///          rebuilding the table — which is what a `SchemaVersion` bump does here
+///          (delete + recreate). Nothing durable is lost: the index is regenerated on
+///          scan.
+///
+///          `kind = 'Module'` is a scoping the constraint needs, not a loophole. A
+///          top-level single-segment module (`module Alpha`) has NO qualifier to
+///          have — FCS reports its `FullName` as `Alpha` — so an unconditional
+///          constraint would hard-fail indexing on any project containing one. That
+///          is the ONLY unqualified category: every other classifier either requires
+///          a declaring entity or qualifies explicitly, which is why the extern
+///          placeholder pass labels an unqualified target `Module` too (see
+///          `AstAnalyzer.extractResults`). `ExternRef` — where all 750 unqualified
+///          rows in TestPrune's own index were found — is fully covered.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -206,7 +228,7 @@ let private openConnection (dbPath: string) =
 /// protection silently invert when this constant bumps: an old-version DB would
 /// pass the stale probe and then be recreated by the newer open path.
 [<Literal>]
-let SchemaVersion = 8
+let SchemaVersion = 9
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -457,7 +479,23 @@ type Database(dbPath: string) =
                 for sym in result.Symbols do
                     let cmd = if sym.IsExtern then externCmd else insCmd
                     setSymbolParams cmd sym
-                    cmd.ExecuteNonQuery() |> ignore
+
+                    // `symbols_full_name_is_qualified` names the CONSTRAINT but not the row
+                    // that broke it, and SQLite reports nothing else — so an indexing run
+                    // that trips it would abort with a message that identifies neither the
+                    // symbol nor the file it came from. Since the whole point of the
+                    // constraint is to surface a bad name, the failure has to carry that
+                    // name.
+                    try
+                        cmd.ExecuteNonQuery() |> ignore
+                    with :? SqliteException as ex ->
+                        raise (
+                            SqliteException(
+                                $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}",
+                                ex.SqliteErrorCode,
+                                ex.SqliteExtendedErrorCode
+                            )
+                        )
 
             // Orphan cleanup: every symbol touched by this pass had its indexed_at bumped
             // to `now` (via UPSERT for real symbols, conditional UPSERT for externs). Any

@@ -296,11 +296,42 @@ let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) o
     with _ ->
         None
 
+/// A USE of an active pattern is reported as an
+/// `FSharpActivePatternCase`, a symbol type nothing here handled — so
+/// `classifySymbol` returned None and the consumer's edge was never emitted. A
+/// module that pattern-matches on `(|Even|Odd|)` had NO dependency on it at all:
+/// editing the pattern selected none of the tests that exercise it.
+///
+/// The case's `FullName` is `<group>.<case>` — `M.(|Even|Odd|).Even` — but the thing
+/// that is declared, hashed and diffed is the GROUP function `M.(|Even|Odd|)`, so the
+/// edge has to point there. Stripping the `.<Name>` suffix is what recovers it.
+///
+/// The suffix test doubles as the safety gate. FCS reports each case's DEFINITION
+/// with a BARE `FullName` (just `Even`), which does not carry the suffix and so
+/// yields None — exactly right, because persisting `Even` would create an
+/// unqualified row, and `symbols.full_name` being UNIQUE makes any unqualified row a
+/// repo-wide hub that every same-named thing merges onto. The explicit
+/// qualification check below states that invariant rather than leaving it implied.
+let private tryClassifyActivePatternCase (apc: FSharpActivePatternCase) : (SymbolKind * string) option =
+    try
+        let fullName = apc.FullName
+        let suffix = "." + apc.Name
+
+        if fullName.EndsWith(suffix, StringComparison.Ordinal) then
+            let group = fullName.Substring(0, fullName.Length - suffix.Length)
+
+            if group.Contains '.' then Some(Function, group) else None
+        else
+            None
+    with _ ->
+        None
+
 let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option =
     match symbol with
     | :? FSharpEntity as entity -> tryClassifyEntity entity
     | :? FSharpMemberOrFunctionOrValue as mfv -> tryClassifyMemberOrFunction mfv
     | :? FSharpUnionCase as uc -> tryClassifyUnionCase uc
+    | :? FSharpActivePatternCase as apc -> tryClassifyActivePatternCase apc
     | _ -> None
 
 // Test helpers - expose internal classification for unit testing exception paths
@@ -310,6 +341,7 @@ module internal TestHelpers =
     let testTryClassifyEntity = tryClassifyEntity
     let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
     let testTryClassifyUnionCase = tryClassifyUnionCase
+    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
     let testTryName = tryName
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
@@ -372,6 +404,10 @@ let private classifyDependency (symbol: FSharpSymbol) : DependencyKind =
     match symbol with
     | :? FSharpEntity -> UsesType
     | :? FSharpUnionCase -> PatternMatches
+    // An active-pattern case only ever appears in pattern position, so it is the same
+    // relationship a DU case use describes. Without this branch it fell to the
+    // `References` catch-all and the edge lied about why it existed.
+    | :? FSharpActivePatternCase -> PatternMatches
     | :? FSharpMemberOrFunctionOrValue -> Calls
     | _ -> References
 
@@ -513,9 +549,32 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
         match decl with
         | SynModuleDecl.Types(typeDefns = typeDefns) ->
             for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
-                let walkMember (memberDefn: SynMemberDefn) =
+                let rec walkMember (memberDefn: SynMemberDefn) =
                     match memberDefn with
                     | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
+
+                    // `interface I with member _.Do x = ...` is a NESTED
+                    // member list, not a `Member`, so not recursing here left `Do` with no
+                    // AST-side name at all. FCS still reported `M.Thing.Do`, the short-name
+                    // lookup missed, and the implementation was dropped from the graph
+                    // without a diagnostic — the silent kind of miss, which under-selects.
+                    | SynMemberDefn.Interface(members = Some members) ->
+                        for m in members do
+                            walkMember m
+
+                    // Same class of miss for `abstract member Do: int -> int`. When a type
+                    // in the same file implements the slot, the implementation happens to
+                    // supply the name and the slot is tracked by luck; an interface declared
+                    // on its own (the normal case) had no name-bearing syntax whatsoever, so
+                    // every consumer's edge pointed at a synthesized hash-less `ExternRef`
+                    // that no edit could ever change.
+                    | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
+                        results.Add(id.idText, slotRange)
+
+                    // INT-WILDCARD-001:ok — SynMemberDefn has many cases. Local `let`
+                    // bindings and implicit constructors deliberately do NOT contribute
+                    // names: a local is not a symbol, and a constructor's content is
+                    // already covered by its declaring type's hash range.
                     | _ -> ()
 
                 for m in extraMembers do
@@ -544,6 +603,85 @@ let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
         | _ -> ())
 
     results |> Seq.toList
+
+/// Split off the last dot-delimited segment of a fully-qualified name — but WITHOUT
+/// splitting inside a parenthesised operator/active-pattern name or a backticked
+/// identifier, either of which may contain dots of its own.
+///
+/// A plain `LastIndexOf('.')` returns `)` for `M.(+.)` and ``ctor`` `` for
+/// ``M.T.``.ctor`` ``. Neither is any real binding's name, so the lookups keyed on it
+/// simply never hit — which is how the whole class of bug here stays silent.
+let private lastNameSegment (n: string) : string =
+    if n.EndsWith(")", StringComparison.Ordinal) then
+        // Operator and active-pattern names contain no parentheses of their own
+        // (`(` and `)` are not F# operator characters), so the last `(` opens the
+        // final segment.
+        match n.LastIndexOf('(') with
+        | -1 -> n
+        | i -> n.[i..]
+    elif n.Length > 4 && n.EndsWith("``", StringComparison.Ordinal) then
+        match n.LastIndexOf("``", n.Length - 3, StringComparison.Ordinal) with
+        | -1 -> n
+        | i -> n.[i..]
+    else
+        match n.LastIndexOf('.') with
+        | -1 -> n
+        | i -> n.[i + 1 ..]
+
+/// Reduce the name FCS reports (`FullName`) to the name the AST collector records
+/// (`Ident.idText`), so the two can be matched.
+///
+/// They are two different renderings of the same binding. FCS reports the DISPLAY
+/// form; `idText` carries the COMPILED form:
+///
+/// | source                | FCS `FullName`         | `idText`             |
+/// |-----------------------|------------------------|----------------------|
+/// | `let (+.) a b`        | `M.(+.)`               | `op_PlusDot`         |
+/// | `let (\|Even\|Odd\|) n` | `M.(\|Even\|Odd\|)`  | `\|Even\|Odd\|`      |
+/// | ``let ``a b`` x``     | ``M.``a b`` ``         | `a b`                |
+///
+/// A symbol is only tracked when the two agree, so every row where they did not was
+/// a binding dropped from the graph with no diagnostic: a change
+/// to it selected no tests, and a green run that skipped the relevant test looked
+/// exactly like one that ran it.
+///
+/// Normalisation happens HERE, on the FCS side, and only here — the AST collector
+/// stays a plain `idText` reader with nothing to keep in sync. This extends the
+/// backtick-stripping that already lived at this point rather than adding a second,
+/// competing notion of a symbol's name.
+///
+/// The operator/active-pattern split is F#'s own, not a heuristic: `(|||)` is a
+/// bitwise-or OPERATOR whose display name has the same outer shape as an active
+/// pattern, and only `PrettyNaming` tells them apart correctly.
+let private canonicalShortName (n: string) : string =
+    let segment = lastNameSegment n
+
+    let unbackticked =
+        if
+            segment.Length > 4
+            && segment.StartsWith("``", StringComparison.Ordinal)
+            && segment.EndsWith("``", StringComparison.Ordinal)
+        then
+            segment.[2 .. segment.Length - 3]
+        else
+            segment
+
+    if
+        unbackticked.Length > 2
+        && unbackticked.StartsWith("(", StringComparison.Ordinal)
+        && unbackticked.EndsWith(")", StringComparison.Ordinal)
+    then
+        // `( * )` and friends carry padding to avoid opening a comment.
+        let inner = unbackticked.[1 .. unbackticked.Length - 2].Trim()
+
+        if PrettyNaming.IsActivePatternName inner then
+            inner
+        elif PrettyNaming.IsOperatorDisplayName inner then
+            PrettyNaming.CompileOpName inner
+        else
+            inner
+    else
+        unbackticked
 
 /// Compiled regex for collapsing whitespace runs — cached to avoid per-call recompilation.
 let private whitespaceRun =
@@ -751,17 +889,9 @@ let private extractResults
                 | [] -> List.tryHead candidates
                 | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
 
-            // Extract the last dot-delimited component of a fully-qualified name,
-            // stripping surrounding backticks so it matches AST-derived identifiers
-            // (idText never includes backticks).
-            let inline shortName (n: string) =
-                let i = n.LastIndexOf('.')
-                let s = if i >= 0 then n.[i + 1 ..] else n
-
-                if s.Length > 4 && s.StartsWith("``") && s.EndsWith("``") then
-                    s.[2 .. s.Length - 3]
-                else
-                    s
+            // Reduce a fully-qualified FCS name to the identifier the AST collector
+            // recorded for the same binding. See `canonicalShortName`.
+            let inline shortName (n: string) = canonicalShortName n
 
             let definitions =
                 allUses
@@ -1314,9 +1444,27 @@ let private extractResults
                     let name = d.ToSymbol
 
                     if seen.Add(name) && not (Set.contains name localSymbolNames) then
+                        // An edge target with NO dot can only be a top-level
+                        // single-segment module (`module Alpha`, whose FCS `FullName` is
+                        // just `Alpha` because it has no qualifier to have). Every other
+                        // classifier that feeds an edge either requires a declaring entity
+                        // — `tryClassifyMemberOrFunction`'s `IsModuleValueOrMember` gate —
+                        // or qualifies explicitly: `tryClassifyUnionCase` yields
+                        // `Type.Case`, `tryClassifyActivePatternCase` checks for a dot.
+                        //
+                        // Label it what it is. `symbols` carries
+                        // `CHECK (kind = 'Module' OR full_name LIKE '%.%')` because an
+                        // unqualified row is a repo-wide hub under a UNIQUE `full_name`
+                        // (one row named `name` collected 413 dependents and pulled in
+                        // 2,837 tests). Calling this placeholder `ExternRef` would trip
+                        // that constraint on the first consuming file indexed ahead of the
+                        // module's own — and the only way to keep it would be to exempt
+                        // `ExternRef` wholesale, which is exactly the kind the hubs were.
+                        let kind = if name.Contains '.' then ExternRef else Module
+
                         Some
                             { FullName = name
-                              Kind = ExternRef
+                              Kind = kind
                               SourceFile = ExternSourceFile
                               LineStart = 0
                               LineEnd = 0

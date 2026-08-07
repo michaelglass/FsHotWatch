@@ -2439,3 +2439,88 @@ module ``Schema forward compatibility`` =
         finally
             if Directory.Exists tmpDir then
                 Directory.Delete(tmpDir, true)
+
+/// `symbols.full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so two
+/// different things sharing a name silently become ONE row. An unqualified name is
+/// never one real thing: it is whatever every file in the repo happened to call `name`,
+/// merged. One such row was measured with 413 dependents, selecting 2,837 tests per run.
+/// The table had zero CHECK constraints, so nothing said any of this out loud.
+module ``Unqualified symbol names are rejected`` =
+
+    let private symbol name kind =
+        { FullName = name
+          Kind = kind
+          SourceFile = "src/Thing.fs"
+          LineStart = 1
+          LineEnd = 2
+          ContentHash = "h"
+          IsExtern = false }
+
+    let private resultWith syms =
+        { Symbols = syms
+          Dependencies = []
+          TestMethods = []
+          Attributes = []
+          ParentLinks = []
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    /// The hub-forming kinds. `ExternRef` is listed deliberately: every one of the 750
+    /// unqualified rows measured in TestPrune's own index was an `ExternRef` synthesized
+    /// by the extern-symbol pass, so a constraint scoped to `Function`/`Value` would
+    /// have missed the actual hubs entirely.
+    [<Theory>]
+    [<InlineData "Function">]
+    [<InlineData "Value">]
+    [<InlineData "Type">]
+    [<InlineData "DuCase">]
+    [<InlineData "Property">]
+    [<InlineData "ExternRef">]
+    let ``inserting an unqualified name raises, naming the symbol`` (kindName: string) =
+        let kind =
+            match kindName with
+            | "Function" -> Function
+            | "Value" -> Value
+            | "Type" -> Type
+            | "DuCase" -> DuCase
+            | "Property" -> Property
+            | "ExternRef" -> ExternRef
+            | other -> failwith $"unhandled kind %s{other}"
+
+        withDb (fun db ->
+            let ex =
+                Assert.ThrowsAny<exn>(fun () -> db.RebuildProjects([ resultWith [ symbol "name" kind ] ]))
+
+            // The constraint names itself but not the row that broke it, and an indexing
+            // run that aborts without saying WHICH symbol is unactionable.
+            Assert.Contains("name", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("symbols_full_name_is_qualified", ex.Message, StringComparison.Ordinal))
+
+    /// The one legitimate unqualified category, and the reason the constraint is scoped
+    /// rather than absolute: a top-level single-segment module has no qualifier to have.
+    /// FCS reports `module Alpha` as `FullName = "Alpha"`, so an unconditional constraint
+    /// would hard-fail indexing on any project containing one.
+    [<Fact>]
+    let ``a top-level single-segment module is allowed to be unqualified`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ resultWith [ symbol "Alpha" Module ] ])
+
+            let stored = db.GetSymbolsInFile "src/Thing.fs"
+            test <@ stored |> List.map (fun s -> s.FullName) = [ "Alpha" ] @>)
+
+    [<Fact>]
+    let ``qualified names of every kind are unaffected`` () =
+        withDb (fun db ->
+            let syms =
+                [ symbol "M.f" Function
+                  symbol "M.v" Value
+                  symbol "M.T" Type
+                  symbol "M.T.C" DuCase
+                  symbol "M.T.P" Property
+                  symbol "M.Inner" Module
+                  { symbol "Other.g" ExternRef with
+                      SourceFile = ExternSourceFile
+                      IsExtern = true } ]
+
+            db.RebuildProjects([ resultWith syms ])
+
+            test <@ (db.GetAllSymbolNames()).Count = 7 @>)
