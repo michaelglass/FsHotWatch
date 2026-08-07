@@ -320,6 +320,116 @@ let ``resolveRunHookTimeoutSec prefers runHookTimeoutSec, then global, then the 
         @>
 
 // ---------------------------------------------------------------------------
+// runHookCommands — WHICH verbs the run-level hooks bracket
+//
+// The policy exists so a box-wide gate can guard the merge verdict (`confirm`)
+// without taxing the inner loop (`check`), which runs constantly. A verb the
+// config does not select must be indistinguishable from having no hooks at all.
+// ---------------------------------------------------------------------------
+
+/// Hooks plus an explicit verb selection.
+let private hooksFor (verbs: RunHookCommand list) (before: string option) (after: string option) =
+    { hooks before after with
+        RunHookCommands = Set.ofList verbs }
+
+[<Fact(Timeout = 20000)>]
+let ``by default both verbs are bracketed`` () =
+    // The upgrade-safety property at the behavioural level: an untouched config
+    // brackets check exactly as it did before `runHookCommands` existed.
+    let sentinel = freshSentinel ()
+
+    try
+        let code =
+            withRunHooksFor RunHookCommand.Check tmpRoot (hooks None (Some(touch sentinel))) (fun () -> 0)
+
+        test <@ code = 0 @>
+        test <@ File.Exists sentinel @>
+    finally
+        tryDelete sentinel
+
+[<Fact(Timeout = 20000)>]
+let ``runHookCommands confirm-only leaves a check run COMPLETELY unwrapped`` () =
+    // The strongest evidence available in one assertion: a beforeRun that FAILS
+    // would abort a bracketed run with exit 2 and never invoke the action. Seeing
+    // the action's own exit code proves beforeRun never ran; the absent sentinel
+    // proves afterRun never ran either. Together that is the straight `action ()`
+    // path — no latch, no signal handlers, no shell-out.
+    let sentinel = freshSentinel ()
+    let calls = ref 0
+
+    try
+        let config =
+            hooksFor [ RunHookCommand.Confirm ] (Some "exit 7") (Some(touch sentinel))
+
+        let code =
+            withRunHooksFor RunHookCommand.Check tmpRoot config (fun () ->
+                calls.Value <- calls.Value + 1
+                3)
+
+        test <@ code = 3 @>
+        test <@ calls.Value = 1 @>
+        test <@ not (File.Exists sentinel) @>
+    finally
+        tryDelete sentinel
+
+[<Fact(Timeout = 20000)>]
+let ``runHookCommands confirm-only still brackets a confirm run`` () =
+    let sentinel = freshSentinel ()
+
+    try
+        let config = hooksFor [ RunHookCommand.Confirm ] None (Some(touch sentinel))
+        let code = withRunHooksFor RunHookCommand.Confirm tmpRoot config (fun () -> 0)
+        test <@ code = 0 @>
+        test <@ File.Exists sentinel @>
+    finally
+        tryDelete sentinel
+
+[<Fact(Timeout = 20000)>]
+let ``an empty runHookCommands brackets neither verb`` () =
+    let config = hooksFor [] (Some "exit 7") None
+
+    // A failing beforeRun would abort with 2 if either verb were bracketed.
+    test <@ withRunHooksFor RunHookCommand.Check tmpRoot config (fun () -> 5) = 5 @>
+    test <@ withRunHooksFor RunHookCommand.Confirm tmpRoot config (fun () -> 5) = 5 @>
+
+[<Fact(Timeout = 20000)>]
+let ``the verb filter behaves identically on both transports`` () =
+    // `--run-once` and the daemon path differ ONLY in the action passed here, so
+    // the bracketing decision cannot diverge between them by construction. Pinned
+    // anyway, because the previous shape's hazard was a per-transport rule: the
+    // decision is now purely "which verb was invoked", so there is no cheapness
+    // heuristic through which CI could silently lose the gate.
+    let config = hooksFor [ RunHookCommand.Confirm ] (Some "exit 7") None
+
+    // check — unwrapped on BOTH transports: the failing beforeRun never runs, so
+    // each action's own exit code comes straight back.
+    test <@ withRunHooksFor RunHookCommand.Check tmpRoot config (fun () -> 11) = 11 @>
+    test <@ withRunHooksFor RunHookCommand.Check tmpRoot config (fun () -> 12) = 12 @>
+
+    // confirm — bracketed on BOTH: the failing beforeRun fails closed with exit 2,
+    // whichever action would have followed.
+    test <@ withRunHooksFor RunHookCommand.Confirm tmpRoot config (fun () -> 11) = 2 @>
+    test <@ withRunHooksFor RunHookCommand.Confirm tmpRoot config (fun () -> 12) = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runHooksApplyTo reads the configured verb set`` () =
+    let cfg = defaultTestConfig ()
+
+    test <@ runHooksApplyTo cfg RunHookCommand.Check @>
+    test <@ runHooksApplyTo cfg RunHookCommand.Confirm @>
+
+    let confirmOnly =
+        { cfg with
+            RunHookCommands = Set.singleton RunHookCommand.Confirm }
+
+    test <@ not (runHooksApplyTo confirmOnly RunHookCommand.Check) @>
+    test <@ runHooksApplyTo confirmOnly RunHookCommand.Confirm @>
+
+    let none = { cfg with RunHookCommands = Set.empty }
+    test <@ not (runHooksApplyTo none RunHookCommand.Check) @>
+    test <@ not (runHooksApplyTo none RunHookCommand.Confirm) @>
+
+// ---------------------------------------------------------------------------
 // `confirm` StillApplies fast-path is DELIBERATELY unwrapped (no hooks fire)
 // ---------------------------------------------------------------------------
 
@@ -359,40 +469,46 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
         | FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn ->
             failwith "expected the StillApplies fast path to be taken"
 
-        let beforeSentinel = freshSentinel ()
-        let afterSentinel = freshSentinel ()
+        // Unwrapped REGARDLESS of `runHookCommands` — including under `["confirm"]`,
+        // where the verb IS selected and this arm must STILL not fire, because it
+        // does no heavy work at all. Both settings are exercised so a narrowed verb
+        // set can never be mistaken for the reason the hooks stayed quiet.
+        for verbs in [ DefaultRunHookCommands; Set.singleton RunHookCommand.Confirm ] do
+            let beforeSentinel = freshSentinel ()
+            let afterSentinel = freshSentinel ()
 
-        let config =
-            { defaultTestConfig () with
-                Build = None
-                Format = Off
-                Lint = false
-                BeforeRun = Some(touch beforeSentinel)
-                AfterRun = Some(touch afterSentinel) }
+            let config =
+                { defaultTestConfig () with
+                    Build = None
+                    Format = Off
+                    Lint = false
+                    BeforeRun = Some(touch beforeSentinel)
+                    AfterRun = Some(touch afterSentinel)
+                    RunHookCommands = verbs }
 
-        // IsRunning=true so the zero-projects precheck is skipped; the StillApplies
-        // arm then returns before any daemon contact or hook.
-        let ipc = dummyIpc (fun _ -> true)
+            // IsRunning=true so the zero-projects precheck is skipped; the StillApplies
+            // arm then returns before any daemon contact or hook.
+            let ipc = dummyIpc (fun _ -> true)
 
-        try
-            let code =
-                executeCommand
-                    (fun _ -> Unchecked.defaultof<_>)
-                    ipc
-                    root
-                    "pipe"
-                    (Confirm [])
-                    defaultGlobalOptions
-                    config
-                    30.0
+            try
+                let code =
+                    executeCommand
+                        (fun _ -> Unchecked.defaultof<_>)
+                        ipc
+                        root
+                        "pipe"
+                        (Confirm [])
+                        defaultGlobalOptions
+                        config
+                        30.0
 
-            test <@ code = 0 @>
-            // Neither hook fired — the fast path is unwrapped.
-            test <@ not (File.Exists beforeSentinel) @>
-            test <@ not (File.Exists afterSentinel) @>
-        finally
-            tryDelete beforeSentinel
-            tryDelete afterSentinel)
+                test <@ code = 0 @>
+                // Neither hook fired — the fast path is unwrapped.
+                test <@ not (File.Exists beforeSentinel) @>
+                test <@ not (File.Exists afterSentinel) @>
+            finally
+                tryDelete beforeSentinel
+                tryDelete afterSentinel)
 
 // ---------------------------------------------------------------------------
 // Signal-handler installation.

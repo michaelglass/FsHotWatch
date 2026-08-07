@@ -8601,3 +8601,53 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
     test <@ final.LastResults.IsSome @>
     test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
+
+// ---------------------------------------------------------------------------
+// `verificationOf` replaces the boolean that could not tell "no project was
+// selected" from "every project matched nothing". The bool answered `false` to
+// both "did every project match nothing?" and "did anything run?" for an empty
+// result set — so an empty run reached the CLI looking like a real one and was
+// reported as `Tests passed`, exit 0.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``verificationOf tells an EMPTY run apart from one that matched nothing — the bool could not`` () =
+    let zero = TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.Zero)
+    let realPass = TestsPassed("Passed! total: 4", true, TimeSpan.Zero)
+
+    let emptyRun =
+        { Results = Map.empty
+          Elapsed = TimeSpan.Zero }
+
+    let allZero =
+        { Results = Map.ofList [ "A", zero; "B", zero ]
+          Elapsed = TimeSpan.Zero }
+
+    let ran =
+        { Results = Map.ofList [ "A", zero; "B", realPass ]
+          Elapsed = TimeSpan.Zero }
+
+    test <@ verificationOf emptyRun = NoProjectsSelected @>
+    test <@ verificationOf allZero = AllZeroMatch 2 @>
+    test <@ verificationOf ran = Ran @>
+
+    // The whole point: the old bool collapsed the first two into `false`/`true`
+    // in a way that lost the empty case entirely.
+    test <@ allZeroMatch emptyRun = false @>
+    test <@ allZeroMatch allZero = true @>
+
+[<Fact>]
+let ``verifiedNothing is true for BOTH no-op shapes, and false for a real run`` () =
+    // The property every gate actually cares about, which the bool could not answer.
+    test <@ verifiedNothing NoProjectsSelected @>
+    test <@ verifiedNothing (AllZeroMatch 3) @>
+    test <@ not (verifiedNothing Ran) @>
+
+[<Fact>]
+let ``verification tokens are stable — the wire contract a CLI matches on`` () =
+    // Positive control on the tokens themselves: a rename here silently turns
+    // every consumer's match into its fallback branch, which for an older CLI
+    // means reading a no-op run as "ran".
+    test <@ verificationToken NoProjectsSelected = "no-projects-selected" @>
+    test <@ verificationToken (AllZeroMatch 1) = "all-zero-match" @>
+    test <@ verificationToken Ran = "ran" @>

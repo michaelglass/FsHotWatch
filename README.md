@@ -135,6 +135,38 @@ schema, exit codes, and the tree-hash recipe: [CLI
 README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci) and
 [ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md).
 
+### `.fshw/heartbeat` — is this daemon still *working*?
+
+`.fshw/daemon.pid` answers "is a daemon resident?", which is the wrong question: a
+daemon can be alive and wedged. `.fshw/heartbeat` answers the right one.
+
+| | |
+|---|---|
+| **Path** | `<repoRoot>/.fshw/heartbeat` |
+| **Format** | Unix epoch **seconds**, decimal ASCII, **no trailing newline** (same shape as `daemon.pid`) |
+| **Cadence** | rewritten every **15 s** while a run is in progress |
+| **Only while running** | an **idle daemon never beats** |
+| **Never deleted** | between runs the file holds the *previous* run's timestamp |
+| **Absence / unparseable** | **UNKNOWN — never "stale"** |
+
+The beat is driven by whether work is *in flight*, not by log output, so a test
+phase that runs for ten minutes in silence keeps beating throughout. Writes are
+atomic, so a concurrent reader sees either the previous beat or this one — never a
+torn or empty file.
+
+Two rules for consumers:
+
+- **Treat 15 s as the _floor_ of a staleness threshold, never the threshold
+  itself.** A beat can be late on a saturated box or a slow disk.
+- **A missing or unreadable heartbeat means UNKNOWN — fall back to your own
+  timeout.** Do not read it as "dead". Erring toward "still alive" costs a slow
+  reclaim; erring toward "dead" lets two heavy runs run concurrently, which is
+  worse. The file is never deleted precisely because a stale timestamp is a
+  stronger, more actionable signal than absence.
+
+Like `daemon.pid`, this is a fact fshw publishes about itself with no opinion about
+who reads it or why.
+
 ## Packages
 
 FsHotWatch is split into small packages so you install only what you need:
@@ -209,6 +241,10 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 | `exclude` | `string[]` | `[]` | Gitignore-style globs (repo-root-relative) for paths to skip entirely — watching, building, checking. (`obj/` + `bin/` are always skipped, independent of this.) |
+| `beforeRun` | `string \| false` | — | Shell command run **once** at the very start of a `check`/`confirm` run, before the daemon is contacted. Fail-closed preflight. See [Run-level hooks](#run-level-hooks). |
+| `afterRun` | `string \| false` | — | Shell command run **once** at the end of the run, as a `finally`. Best-effort — never changes the verdict. See [Run-level hooks](#run-level-hooks). |
+| `runHookTimeoutSec` | `number \| false` | — | Timeout bounding **each** run-level hook. See [Run-level hooks](#run-level-hooks). |
+| `runHookCommands` | `string[]` | `["check","confirm"]` | Which verbs the run-level hooks bracket. See [Run-level hooks](#run-level-hooks). |
 | `includeOutsideRepo` | `bool` | `false` | Report on compile items that resolve **outside** the repo root — e.g. NuGet-injected `_content` source (xunit's `DefaultRunnerReporters.fs`), or files above/beside the repo. Default `false`: the report-producing plugins (analyzers, lint) skip such third-party source — it's compiled into your project, but not yours to lint, and a latent analyzer-crash surface (AUTOMATION-49). Set `true` to lint them anyway. |
 
 For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
@@ -264,6 +300,52 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 |-------|------|---------|-------------|
 | `configPath` | `string` | `"coverage-ratchet.json"` | Path to the coverage-ratchet thresholds file (relative to repo root or absolute). |
 | `searchDir` | `string` | `"."` | Directory tree to search for `coverage.cobertura.xml` files after each test run. |
+
+### Run-level hooks
+
+`beforeRun` / `afterRun` bracket a **whole `check` or `confirm` run** — once, at the
+top level, outside the daemon. They are distinct from `tests.beforeRun`, which the
+daemon runs per test run inside the tests slot.
+
+```json
+{
+  "beforeRun": "my-gate acquire",
+  "afterRun": "my-gate release",
+  "runHookTimeoutSec": 900,
+  "runHookCommands": ["confirm"]
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `beforeRun` | `string \| false` | — | Run once at the very start, **before the daemon is contacted**. **Fail-closed:** a non-zero exit aborts the run with exit 2 and no plugin work happens. |
+| `afterRun` | `string \| false` | — | Run once at the end, as a `finally` — on success, on a red verdict, **and** on abort (including SIGINT/SIGTERM). **Best-effort:** a non-zero exit is logged loudly but never changes the verdict, so a release hiccup can't flip green↔red. |
+| `runHookTimeoutSec` | `number \| false` | — | Timeout (seconds) bounding **each** hook. Resolution: this → global `timeoutSec` → built-in default. A run-level hook is **always** bounded, even when the global timeout is disabled — a hook that hangs forever is worse than whatever it guards. |
+| `runHookCommands` | `string[]` | `["check","confirm"]` | Which verbs the hooks bracket. Entries: `"check"`, `"confirm"`. |
+
+**`runHookCommands`** exists so you can bracket the expensive verb only. A gate that
+serialises heavy runs across workspaces usually wants to guard the *merge* verdict —
+`confirm`, unfiltered, expensive — while leaving the inner loop (`check`,
+impact-scoped, run on every save) free. Bracketing both makes every save-triggered
+check queue behind someone else's full suite:
+
+```json
+{ "runHookCommands": ["confirm"] }
+```
+
+A verb **not** in the set runs completely unwrapped — no latch, no signal handlers,
+no shell-out — the same straight path taken when no hook is configured. The daemon
+and `--run-once` behave identically, so CI cannot silently lose the gate.
+`confirm`'s "verdict still applies" fast path is never bracketed.
+
+Failure modes lean **safe**, because silently un-gating is the dangerous direction:
+
+- **Absent → both verbs**, exactly the behaviour from before the key existed. Adding
+  the key to fshw changed no existing config's meaning.
+- **Unrecognised or wrongly-typed → both verbs**, with a warning. A typo
+  (`["comfirm"]`) can never un-gate a run.
+- **Explicitly `[]` → bracket nothing.** Legal — the config said so plainly — but
+  warned about at load.
 
 ### Cache directory
 

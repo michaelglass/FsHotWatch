@@ -1274,6 +1274,42 @@ let withRunHooks (repoRoot: string) (config: DaemonConfiguration) (action: unit 
             finally
                 afterRun ()
 
+/// Does the config select `verb` for run-level hook bracketing?
+///
+/// Pure, so the verb policy is unit-testable without spawning a shell, touching a
+/// daemon, or running a hook. An absent `runHookCommands` resolves to BOTH verbs
+/// upstream in `DaemonConfig`, so a `false` here always reflects a deliberate
+/// config entry rather than a defaulting accident.
+let internal runHooksApplyTo (config: DaemonConfiguration) (verb: RunHookCommand) : bool =
+    Set.contains verb config.RunHookCommands
+
+/// Bracket `action` with the run-level hooks IFF `runHookCommands` selects `verb`.
+///
+/// A verb the config does not select is a straight `action ()` — no latch, no
+/// signal handlers, no shell-out — indistinguishable from the no-hooks-configured
+/// path. That is the point: a consumer gating only `confirm` must pay nothing at
+/// all on the `check` inner loop it runs constantly.
+///
+/// Sits OUTSIDE `withRunHooks` rather than inside it, so the bracket mechanics and
+/// the verb policy stay separately testable and the existing `withRunHooks`
+/// contract is untouched.
+///
+/// Transport-agnostic by construction, exactly as `withRunHooks` is: this wraps
+/// the ACTION, so `--run-once` and the daemon path get the identical decision with
+/// no per-transport code. A run-once `confirm` still brackets; a run-once `check`
+/// does not. The rule is purely "which verb was invoked" — there is no cheapness
+/// heuristic through which CI could silently lose the gate.
+let withRunHooksFor
+    (verb: RunHookCommand)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: unit -> int)
+    : int =
+    if runHooksApplyTo config verb then
+        withRunHooks repoRoot config action
+    else
+        action ()
+
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
     (createDaemon: string -> Daemon)
@@ -1690,11 +1726,14 @@ let executeCommand
             with :? IOException ->
                 eprintfn "%s already exists" configPath
                 1
-        // Both `check` arms bracket the run with the run-level hooks (AUTOMATION-188).
-        // Wrapping at the ACTION means both transports — `--run-once` and the daemon
-        // path — get the identical beforeRun/afterRun bracket with no per-transport code.
-        | Check flags when isRunOnce flags -> withRunHooks repoRoot config (fun () -> runOnceIn CheckVerdict.InnerLoop)
-        | Check flags -> withRunHooks repoRoot config (fun () -> queryPluginWith (mode) "")
+        // Both `check` arms bracket the run with the run-level hooks (AUTOMATION-188),
+        // but only if `runHookCommands` selects `check` — a consumer gating only the
+        // merge verdict leaves the inner loop completely unwrapped. Wrapping at the
+        // ACTION means both transports — `--run-once` and the daemon path — get the
+        // identical decision with no per-transport code.
+        | Check flags when isRunOnce flags ->
+            withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> runOnceIn CheckVerdict.InnerLoop)
+        | Check flags -> withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> queryPluginWith (mode) "")
         | Confirm flags ->
             // AUTOMATION-161 — the evidence may ALREADY have been earned.
             //
@@ -1742,7 +1781,7 @@ let executeCommand
                 // Bracketed with the run-level hooks (AUTOMATION-188): this arm does the
                 // heavy work, so it is the one a gate-lock must guard. The `StillApplies`
                 // fast path above is deliberately left unwrapped.
-                withRunHooks repoRoot config (fun () ->
+                withRunHooksFor RunHookCommand.Confirm repoRoot config (fun () ->
                     if isRunOnce flags then
                         runOnceIn CheckVerdict.Confirmation
                     else

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- feat: **activity heartbeat.** The daemon rewrites `<repoRoot>/.fshw/heartbeat` —
+  Unix epoch seconds, decimal ASCII — every 15s for exactly as long as a run is in
+  progress, and **never while idle**. Same contract shape as `daemon.pid`: fshw
+  publishes a fact about itself and holds no opinion about who reads it or why.
+  Process liveness answers the wrong question (a daemon can be alive and wedged,
+  holding something while doing nothing); "is it beating?" answers the right one.
+  Absence or unparseable contents means **UNKNOWN, never "stale"** — the file is
+  never deleted (a stale timestamp is a stronger signal than absence), writes are
+  atomic so no torn read can look like a fresh beat, and a failed beat is logged and
+  swallowed rather than killing the daemon. The beat is driven by the inflight-work
+  signal (`AnyPluginBusy`, held for the whole lifetime of an exclusive run) plus
+  active verdict waits — never by log output — so a test phase that runs for minutes
+  in silence keeps beating. The timer wakes every 1s but writes every 15s, so a run's
+  first beat lands within a second rather than up to a cadence late.
+- fix: heartbeat beats are serialised. A `Timer` fires on its period whether or not the
+  previous callback finished, so at a one-second tick under load the callbacks overlapped
+  and two beats raced on the single temp file inside the atomic write — the loser's rename
+  found its source already consumed. It failed safe (logged and swallowed, next beat
+  correct) but cost a beat; a non-blocking gate now keeps beats strictly serial.
+- fix: **`%A` no longer truncates diagnostic logs.** `%A` caps sequences at 100
+  elements (four for a bare `seq`) and hard-wraps at 80 columns, so a log line built
+  with it could not distinguish 101 items from 1,500 and smeared one record across
+  many lines. New `StringHelpers.describeMany` always leads with the exact count,
+  then a bounded single-line sample.
+
 ## 0.10.0-alpha.6 - 2026-08-05
 
 - check/confirm: classify "waiting on build" as Incomplete (exit 2), not a failure (exit 1)

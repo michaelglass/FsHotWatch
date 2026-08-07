@@ -151,6 +151,27 @@ type FormatMode =
     /// Register read-only format check (reports errors without modifying)
     | Check
 
+/// A verb the run-level `beforeRun`/`afterRun` hooks can bracket, selected by
+/// the top-level `runHookCommands` key.
+///
+/// Exists so a consumer can say "bracket `confirm` only". A box-wide gate that
+/// serialises heavy runs across workspaces usually wants to guard the MERGE
+/// verdict — `confirm`, unfiltered, expensive — while leaving the inner loop
+/// (`check`, impact-scoped, run constantly) free. Bracketing both makes every
+/// save-triggered check queue behind someone else's full suite.
+[<RequireQualifiedAccess>]
+type RunHookCommand =
+    | Check
+    | Confirm
+
+/// Default for `runHookCommands`: BOTH verbs — exactly the behaviour from before
+/// the key existed. Absent, wrongly-typed, or wholly-unrecognised values all
+/// resolve here, so upgrading fshw can never silently stop bracketing a run that
+/// used to be bracketed. Un-gating must always be something a config asked for
+/// out loud; a typo must never cause it.
+let DefaultRunHookCommands: Set<RunHookCommand> =
+    Set.ofList [ RunHookCommand.Check; RunHookCommand.Confirm ]
+
 /// Parsed daemon configuration from .fshw.json.
 type DaemonConfiguration =
     {
@@ -239,6 +260,20 @@ type DaemonConfiguration =
         /// `number` → Some; `false` / absent → None (fall through the chain),
         /// mirroring the global `timeoutSec` tristate.
         RunHookTimeoutSec: int option
+        /// Which verbs the run-level hooks bracket, from the top-level
+        /// `runHookCommands` key (e.g. `["confirm"]`). Absent → BOTH verbs, i.e.
+        /// exactly the pre-existing behaviour, so the key is a PURE ADDITION: no
+        /// existing config changes meaning on upgrade.
+        ///
+        /// A verb not in this set runs completely unwrapped — no latch, no signal
+        /// handlers, no shell-out — the same straight `action ()` taken when no
+        /// hook is configured at all.
+        ///
+        /// An explicitly EMPTY array is legal and means "bracket nothing",
+        /// consistent with the opt-out idiom the other run-hook keys already use;
+        /// it is warned about at load, because silently un-gating is the dangerous
+        /// direction.
+        RunHookCommands: Set<RunHookCommand>
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -265,7 +300,8 @@ let private defaultConfigFor (repoRoot: string) =
       FsEventsLatencyMs = 250
       BeforeRun = None
       AfterRun = None
-      RunHookTimeoutSec = None }
+      RunHookTimeoutSec = None
+      RunHookCommands = DefaultRunHookCommands }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -781,6 +817,71 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             if n > 0 then Some n else None
         | _ -> None
 
+    // `runHookCommands`: which verbs the run-level hooks bracket. A PURE ADDITION —
+    // absent resolves to BOTH verbs, so no existing config changes behaviour on
+    // upgrade. Every failure mode leans the same way the hooks themselves do:
+    // when the value cannot be understood we keep bracketing rather than quietly
+    // stop, because an UN-gated heavy run is far worse than a redundantly-gated
+    // one. Only an explicitly empty array can disable bracketing, and even that
+    // is announced.
+    let runHookCommands =
+        let parseVerb (s: string) =
+            match s.Trim().ToLowerInvariant() with
+            | "check" -> Some RunHookCommand.Check
+            | "confirm" -> Some RunHookCommand.Confirm
+            | other ->
+                Logging.warn
+                    "config"
+                    $"Unknown runHookCommands entry '%s{other}' (expected \"check\" or \"confirm\") — ignoring it"
+
+                None
+
+        match root.TryGetProperty("runHookCommands") with
+        | true, v when v.ValueKind = JsonValueKind.Array ->
+            let entries = v.EnumerateArray() |> Seq.toList
+
+            let parsed =
+                entries
+                |> List.choose (fun e ->
+                    if e.ValueKind = JsonValueKind.String then
+                        parseVerb (e.GetString())
+                    else
+                        Logging.warn "config" "Ignoring a non-string runHookCommands entry"
+                        None)
+                |> Set.ofList
+
+            if List.isEmpty entries then
+                // Explicit `[]`. Honoured — the config said it plainly — but never
+                // silently, because this disables the bracket for EVERY verb.
+                Logging.warn
+                    "config"
+                    "runHookCommands is empty — the run-level beforeRun/afterRun hooks will not bracket ANY command"
+
+                Set.empty
+            elif Set.isEmpty parsed then
+                // Non-empty, but nothing survived parsing (a typo, most likely).
+                // Falling back to both verbs keeps the safe direction.
+                Logging.warn
+                    "config"
+                    "No usable entries in runHookCommands — falling back to bracketing both check and confirm"
+
+                DefaultRunHookCommands
+            else
+                parsed
+        | true, v when
+            v.ValueKind = JsonValueKind.String
+            || v.ValueKind = JsonValueKind.Number
+            || v.ValueKind = JsonValueKind.Object
+            ->
+            Logging.warn
+                "config"
+                "runHookCommands must be an array of \"check\" / \"confirm\" — ignoring it and bracketing both"
+
+            DefaultRunHookCommands
+        // Absent, `null`, `false`, `true` → the default. `false` reads as "I am not
+        // using this key", the same opt-out spirit as `runHookTimeoutSec`.
+        | _ -> DefaultRunHookCommands
+
     { Build = build
       Format = format
       Lint = lint
@@ -798,15 +899,18 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       FsEventsLatencyMs = fsEventsLatencyMs
       BeforeRun = beforeRun
       AfterRun = afterRun
-      RunHookTimeoutSec = runHookTimeoutSec }
+      RunHookTimeoutSec = runHookTimeoutSec
+      RunHookCommands = runHookCommands }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
 ///
-/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec` hooks are DELIBERATELY
-/// preserved (they pass through `{ config with ... }` untouched):
-/// `--run-once` is exactly the transport CI uses, so the box-wide gate-lock those
-/// hooks bracket must fire on the run-once path too, not only over the daemon.
+/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec`/`RunHookCommands`
+/// settings are DELIBERATELY preserved (they pass through `{ config with ... }`
+/// untouched): `--run-once` is exactly the transport CI uses, so the box-wide
+/// gate-lock those hooks bracket must fire on the run-once path too, not only over
+/// the daemon — and it must bracket the SAME verbs there, or the verb policy would
+/// silently mean something different in CI than it does locally.
 let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
     { config with
         Build = Some []

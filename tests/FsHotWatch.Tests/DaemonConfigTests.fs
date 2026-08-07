@@ -170,6 +170,61 @@ let ``parseConfig runHookTimeoutSec false or zero yields None (falls through the
     let viaZero = parseConfig """{"runHookTimeoutSec": 0}""" defaults
     test <@ viaZero.RunHookTimeoutSec = None @>
 
+// --- parseConfig: runHookCommands (which verbs the run-level hooks bracket) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands absent brackets BOTH verbs`` () =
+    // THE compatibility property. This key is a pure addition: every config that
+    // existed before it must behave exactly as it did, so an fshw upgrade can
+    // never silently stop bracketing a run that used to be bracketed.
+    let config = parseConfig "{}" defaults
+    test <@ config.RunHookCommands = DefaultRunHookCommands @>
+    test <@ config.RunHookCommands = Set.ofList [ RunHookCommand.Check; RunHookCommand.Confirm ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands confirm-only selects confirm and NOT check`` () =
+    let config = parseConfig """{"runHookCommands": ["confirm"]}""" defaults
+    test <@ config.RunHookCommands = Set.singleton RunHookCommand.Confirm @>
+    test <@ not (Set.contains RunHookCommand.Check config.RunHookCommands) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands accepts both verbs explicitly, in any case or spacing`` () =
+    let config = parseConfig """{"runHookCommands": ["CONFIRM", " Check "]}""" defaults
+    test <@ config.RunHookCommands = DefaultRunHookCommands @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands empty array is legal and brackets nothing`` () =
+    // Chosen semantics: an explicit `[]` is HONOURED, matching the opt-out idiom
+    // the sibling run-hook keys already use. It is the one input that can disable
+    // bracketing, and it must be written out deliberately to do so.
+    let config = parseConfig """{"runHookCommands": []}""" defaults
+    test <@ Set.isEmpty config.RunHookCommands @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands falls back to BOTH when nothing parses`` () =
+    // A typo must never un-gate. Unrecognised entries leave the set empty, which
+    // would silently disable the bracket — so a non-empty array that yields
+    // nothing usable resolves to the safe default, not to "bracket nothing".
+    let config = parseConfig """{"runHookCommands": ["chekc", "confrim"]}""" defaults
+    test <@ config.RunHookCommands = DefaultRunHookCommands @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands keeps the verbs it understood, dropping a typo`` () =
+    let config = parseConfig """{"runHookCommands": ["confirm", "chekc"]}""" defaults
+    test <@ config.RunHookCommands = Set.singleton RunHookCommand.Confirm @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig runHookCommands of the wrong type falls back to BOTH`` () =
+    // Same safe direction for a wrongly-typed value as for a typo.
+    for json in
+        [ """{"runHookCommands": "confirm"}"""
+          """{"runHookCommands": 3}"""
+          """{"runHookCommands": {"confirm": true}}"""
+          """{"runHookCommands": false}"""
+          """{"runHookCommands": null}""" ] do
+        let config = parseConfig json defaults
+        test <@ config.RunHookCommands = DefaultRunHookCommands @>
+
 [<Fact(Timeout = 15000)>]
 let ``parseConfig keeps the run-level beforeRun separate from tests.beforeRun`` () =
     // The top-level `beforeRun` (run-level, AUTOMATION-188) and `tests.beforeRun`

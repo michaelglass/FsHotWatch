@@ -15,6 +15,7 @@
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
     <Compile Include="TestHelpersTests.fs" />
+    <Compile Include="StringHelpersTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="OperationWatchdogTests.fs" />
     <Compile Include="LifecycleTests.fs" />
@@ -33,6 +34,7 @@
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="IdleExitTests.fs" />
+    <Compile Include="HeartbeatTests.fs" />
     <Compile Include="DaemonIdentityTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
     <Compile Include="ProcessReapingTests.fs" />
