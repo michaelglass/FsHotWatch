@@ -66,6 +66,24 @@ let ``the rendering is a single line`` () =
     test <@ not (rendered.Contains "\r") @>
 
 [<Fact>]
+let ``describeAll never truncates`` () =
+    // For diagnostics where the FULL membership is the point — an impact query's
+    // seed set, where the one bad entry is what is being hunted and a sample that
+    // omits it costs hours.
+    let huge = List.init 5000 (fun i -> $"s%d{i}")
+    let rendered = describeAll huge
+
+    test <@ rendered.StartsWith "5000 " @>
+    test <@ not (rendered.Contains "more") @>
+    test <@ rendered.Contains "s4999" @>
+    test <@ rendered.Contains "s0" @>
+
+[<Fact>]
+let ``describeAll agrees with describeMany below the sample size`` () =
+    test <@ describeAll [ "a"; "b" ] = describeMany [ "a"; "b" ] @>
+    test <@ describeAll ([]: string list) = "0 []" @>
+
+[<Fact>]
 let ``the default sample size does not print less than %A did`` () =
     // Swapping `%A` for `describeMany` must never LOSE detail that was visible
     // before — the count is meant to be pure gain.

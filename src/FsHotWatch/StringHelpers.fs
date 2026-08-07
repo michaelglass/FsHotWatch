@@ -59,3 +59,12 @@ let describeManyWith (maxSample: int) (items: string seq) : string =
 
 /// `describeManyWith` at the default sample size.
 let describeMany (items: string seq) : string = describeManyWith DefaultLogSample items
+
+/// Like `describeMany`, but NEVER truncates.
+///
+/// For the diagnostics whose whole point is the FULL membership rather than a
+/// flavour of it — an impact query's seed set, say, where a single bad entry is
+/// precisely the thing being hunted and a sample that happens to exclude it is
+/// worse than useless.
+let describeAll (items: string seq) : string =
+    describeManyWith System.Int32.MaxValue items

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- feat: **`runHookCommands`** — a top-level `.fshw.json` key selecting WHICH verbs the
+  run-level `beforeRun`/`afterRun` hooks bracket. An array of `"check"` / `"confirm"`;
+  absent means **both**, exactly the previous behaviour, so the key is a pure addition
+  and no existing config changes meaning on upgrade. `["confirm"]` leaves `check`
+  completely unwrapped — no latch, no signal handlers, no shell-out, the same straight
+  `action ()` taken when no hook is configured — so a box-wide gate can guard the merge
+  verdict without taxing the inner loop. Applies identically on the daemon path and
+  `--run-once`, because the decision wraps the ACTION and is purely "which verb was
+  invoked"; there is no cheapness heuristic through which CI could silently lose the
+  gate. `confirm`'s `StillApplies` fast path stays unwrapped regardless. Failure modes
+  lean safe: an unrecognised or wrongly-typed value falls back to bracketing BOTH
+  rather than silently un-gating; only an explicitly empty array disables bracketing,
+  and that is warned about at load.
+
 ## 0.14.0-alpha.11 - 2026-08-06
 
 - confirm: force a REAL build — a cache hit must not assert freshness it never verified (AUTOMATION-224)
