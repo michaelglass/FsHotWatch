@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- feat: **a run states what it VERIFIED**, instead of leaving the consumer to infer it.
+  `allZeroMatch` returned `false` for an empty result set — defensible in isolation
+  ("no project ran" is not the claim "every project matched nothing") and wrong in
+  effect: both no-op shapes became indistinguishable from a real run downstream, so a
+  run that executed nothing reached the CLI looking like one that had, and was reported
+  as `Tests passed`, exit 0. Replaced with `RunVerification` —
+  `NoProjectsSelected | AllZeroMatch of projectCount | Ran`. Three cases rather than one
+  case with a flag, because they carry different **evidence**: `AllZeroMatch` knows a
+  filter ran against discovered tests and can say so, while `NoProjectsSelected` has no
+  discovered names at all, so a "did you mean…" there would be guessing dressed as
+  diagnosis. The `run-tests` payload keeps `noTestsMatched` for older CLIs and adds
+  `coverage` (`"no-projects-selected" | "all-zero-match" | "ran"`) plus
+  `verifiedNothing`. A consumer that does not know the new fields falls back to the
+  counts — an **absent** field must never be read as `"ran"`.
+
 - fix: **impact-selection breadth is measurable again.** "Affected classes for …",
   "Changed symbols: …" and `QueryAffectedTests(…)` rendered their collections with
   `%A`, which truncates at 100 elements — so a 1,500-class selection was
@@ -9,6 +24,32 @@
   all. All three now lead with the exact count via `StringHelpers.describeMany`.
   Empty stays distinguishable (`0 []`), which matters: a project present with no
   affected classes means "run it in full".
+
+- fix: **an unfiltered project no longer logs its class list as `[]`.** A project
+  selected with no class filter — one that is about to run its tests **in full** —
+  rendered as `[]`, which reads as the exact opposite of what it means ("nothing was
+  selected"). It now says `ALL (unfiltered — force-run)`.
+
+- feat: **the impact query explains its own breadth.** `QueryAffectedTests` now logs
+  the seed count and the **full, sorted seed list** — never sampled, because when a
+  handful of junk seeds drags in thousands of tests the offending seed *is* the
+  diagnosis and a sample that happens to omit it is worse than useless. When a
+  selection exceeds 500 tests it adds a **per-seed breakdown** naming how many tests
+  each seed pulls in on its own. Attribution re-queries each seed alone, so past a
+  200-seed budget the breakdown is skipped — and **says** it was skipped, so its
+  absence is never misread as "no single seed dominated".
+
+- feat: **dependency fanout says why it did nothing.** A run with no fanout now
+  reports fingerprints computed, projects in the graph, and priors available to
+  compare against. Zero fingerprints or zero graph projects means the fanout is
+  *inert*; previously that was indistinguishable from a healthy run where nothing had
+  genuinely changed — an under-selection risk that looked exactly like a clean one.
+
+- feat: **a run-level selectivity summary** is logged in one line before tests
+  execute, answering "did impact analysis actually narrow anything this run?" without
+  reassembling the per-project lines above it — which can be scrolled past,
+  interleaved, or truncated by whatever is reading the log. It separates the two ways
+  a run can be wide: many classes named, versus projects running unfiltered.
 
 ## 0.13.0-alpha.7 - 2026-08-05
 

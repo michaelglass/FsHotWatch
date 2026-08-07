@@ -241,8 +241,7 @@ let renderIpcResult
                             UI.fail "No test project ran — nothing was verified (not a pass)"
                             UI.info "  Why: no project was selected, so no test binary was invoked."
 
-                            UI.info
-                                "  Nothing was discovered, so there are no test names to suggest here."
+                            UI.info "  Nothing was discovered, so there are no test names to suggest here."
 
                             UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
                             UI.info "  Expected your diff to select something?   fshw status test-prune"
