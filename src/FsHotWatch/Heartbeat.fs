@@ -151,7 +151,25 @@ let runTick (deps: HeartbeatDeps) (lastBeat: DateTime option ref) : bool =
 /// uses `createBeat`.
 let createBeatWith (tick: TimeSpan) (deps: HeartbeatDeps) : IDisposable =
     let lastBeat: DateTime option ref = ref None
-    let onTick (_: obj) = runTick deps lastBeat |> ignore
+
+    // A `Timer` fires on its period whether or not the previous callback has
+    // finished, so at a one-second tick on a loaded box the callbacks DO overlap.
+    // Two beats at once race on the single temp file inside the atomic write, and
+    // the loser's rename finds its source already consumed — observed live as a
+    // swallowed `FileNotFoundException` on `heartbeat.tmp` during heavy runs.
+    //
+    // This gate keeps beats strictly serial. It is non-blocking on purpose: a tick
+    // that finds a beat already in flight simply skips, which costs nothing,
+    // because the beat in flight is publishing the very same fact this one would.
+    let beating = ref 0
+
+    let onTick (_: obj) =
+        if Interlocked.CompareExchange(&beating.contents, 1, 0) = 0 then
+            try
+                runTick deps lastBeat |> ignore
+            finally
+                Volatile.Write(&beating.contents, 0)
+
     new Timer(TimerCallback(onTick), null, tick, tick) :> IDisposable
 
 /// Create the live heartbeat timer: considers beating every `DefaultTick`,

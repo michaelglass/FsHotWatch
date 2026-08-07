@@ -331,6 +331,37 @@ let ``the live timer beats to disk while running and stops when idle`` () =
         test <@ logs.Count = 0 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``overlapping ticks never beat concurrently`` () =
+    // REGRESSION. A `Timer` fires on its period regardless of whether the previous
+    // callback finished, so a beat slower than the tick overlaps — and two beats at
+    // once race on the single temp file inside the atomic write, the loser's rename
+    // finding its source already consumed. That was observed live as a swallowed
+    // `FileNotFoundException` on `heartbeat.tmp` during heavy runs. Here the write
+    // is deliberately far slower than the tick, and the cadence is zero so every
+    // tick is due — maximum overlap pressure. Beats must still be strictly serial.
+    let concurrent = ref 0
+    let maxSeen = ref 0
+    let logs = ResizeArray<string>()
+
+    let deps: HeartbeatDeps =
+        { Now = fun () -> DateTime.UtcNow
+          RunActive = fun () -> true
+          Write =
+            fun _ ->
+                let n = System.Threading.Interlocked.Increment(&concurrent.contents)
+                lock maxSeen (fun () -> maxSeen.Value <- max maxSeen.Value n)
+                System.Threading.Thread.Sleep 120
+                System.Threading.Interlocked.Decrement(&concurrent.contents) |> ignore
+          Log = fun m -> lock logs (fun () -> logs.Add m)
+          Cadence = TimeSpan.Zero }
+
+    use _beat = createBeatWith (TimeSpan.FromMilliseconds 15.0) deps
+    System.Threading.Thread.Sleep 600
+
+    test <@ lock maxSeen (fun () -> maxSeen.Value) = 1 @>
+    test <@ lock logs (fun () -> logs.Count) = 0 @>
+
+[<Fact(Timeout = 15000)>]
 let ``the live timer never writes for a daemon that is idle from the start`` () =
     withTempDir "heartbeat-idle" (fun root ->
         let deps: HeartbeatDeps =

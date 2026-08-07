@@ -16,6 +16,11 @@
   active verdict waits — never by log output — so a test phase that runs for minutes
   in silence keeps beating. The timer wakes every 1s but writes every 15s, so a run's
   first beat lands within a second rather than up to a cadence late.
+- fix: heartbeat beats are serialised. A `Timer` fires on its period whether or not the
+  previous callback finished, so at a one-second tick under load the callbacks overlapped
+  and two beats raced on the single temp file inside the atomic write — the loser's rename
+  found its source already consumed. It failed safe (logged and swallowed, next beat
+  correct) but cost a beat; a non-blocking gate now keeps beats strictly serial.
 - fix: **`%A` no longer truncates diagnostic logs.** `%A` caps sequences at 100
   elements (four for a bare `seq`) and hard-wraps at 80 columns, so a log line built
   with it could not distinguish 101 items from 1,500 and smeared one record across
