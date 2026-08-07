@@ -218,6 +218,18 @@ let renderIpcResult
                         // outcome's clothes, and it is why this branch exists.
                         let projectCount = projects.EnumerateArray() |> Seq.length
 
+                        // The producer now STATES what the run verified instead of
+                        // leaving the consumer to infer it from array lengths. Older
+                        // daemons do not send `coverage`, so fall back to the counts —
+                        // an absent field must never be read as "ran".
+                        let coverage =
+                            match root.TryGetProperty("coverage") with
+                            | true, c when c.ValueKind = JsonValueKind.String -> c.GetString()
+                            | _ ->
+                                if projectCount = 0 then "no-projects-selected"
+                                elif noTestsMatched then "all-zero-match"
+                                else "ran"
+
                         // Both no-op outcomes exit 3, matching `confirm`'s established
                         // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
                         // report a pass nothing earned. Exit 0 here would sail through
@@ -225,17 +237,25 @@ let renderIpcResult
                         if hasFailed then
                             UI.fail "Tests failed"
                             1
-                        elif projectCount = 0 then
+                        elif coverage = "no-projects-selected" then
                             UI.fail "No test project ran — nothing was verified (not a pass)"
-                            UI.info "  Cause: the run selected no project at all."
-                            UI.info "  Wanted the whole suite? Use `fshw confirm` (unfiltered)."
-                            UI.info "  Expected a filter to select something? Check the class/trait name — see `fshw status test-prune`."
+                            UI.info "  Why: no project was selected, so no test binary was invoked."
+
+                            UI.info
+                                "  Nothing was discovered, so there are no test names to suggest here."
+
+                            UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
+                            UI.info "  Expected your diff to select something?   fshw status test-prune"
                             3
-                        elif noTestsMatched then
+                        elif coverage = "all-zero-match" then
                             UI.fail "No tests matched the filter — nothing was verified (not a pass)"
-                            UI.info $"  Cause: all %d{projectCount} selected project(s) matched zero tests."
-                            UI.info "  A filter that matches nothing is almost always a typo or a stale class name."
-                            UI.info "  Wanted the whole suite? Use `fshw confirm` (unfiltered)."
+
+                            UI.info
+                                $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
+
+                            UI.info "  A filter that matches nothing is almost always a typo or a renamed class."
+                            UI.info "  See the discovered names:  fshw status test-prune"
+                            UI.info "  Wanted the whole suite?    fshw confirm   (unfiltered)"
                             3
                         else
                             UI.success "Tests passed"

@@ -21,6 +21,19 @@ open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
+/// Above this many selected tests, an impact query stops looking like impact
+/// analysis and starts looking like a full run wearing its clothes — so the
+/// per-seed attribution below is worth paying for. Under it, the breakdown is
+/// noise and is never computed.
+[<Literal>]
+let WideSelectionTests = 500
+
+/// Attribution re-queries each seed ALONE, so its cost is linear in seed count.
+/// Past this many seeds the breakdown is skipped — and said to be skipped, so an
+/// absent breakdown is never misread as "no single seed dominated".
+[<Literal>]
+let MaxSeedsToAttribute = 200
+
 /// Per-project raw cobertura written by a FULL (unfiltered) test run.
 [<Literal>]
 let BaselineName = "coverage.baseline.cobertura.xml"
@@ -674,13 +687,62 @@ let internal isZeroMatchResult (result: TestResult) : bool =
     | TestsPassed(o, _, _) -> o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal)
     | _ -> false
 
-/// True when a run matched NO tests anywhere: every project was a
-/// zero-match-under-filter pass (and there was at least one project). Lets the
-/// `run-tests` command report `no-tests-matched` distinctly instead of a green
-/// that actually executed nothing — the "test-rerun didn't force" symptom.
+/// What a run actually VERIFIED.
+///
+/// This replaces a boolean that could not express the difference between "no
+/// project was selected" and "every selected project matched nothing". The bool
+/// was `false` for an empty result set — defensible in isolation ("no project"
+/// is not the claim "every project matched nothing") and wrong in effect: an
+/// empty run became indistinguishable from one that executed tests, so it fell
+/// through to `Tests passed` and exit 0. A run that verified nothing wore the
+/// same clothes as a run that verified everything.
+///
+/// Three cases rather than one case with a flag, because they carry different
+/// EVIDENCE. `AllZeroMatch` knows a filter ran against discovered tests and how
+/// many projects it was applied to, so remediation can be specific.
+/// `NoProjectsSelected` has no discovered names at all — nothing ran to discover
+/// them — so the only honest report is that the scope was empty. Offering a
+/// "did you mean…" there would be guessing dressed as diagnosis.
+type internal RunVerification =
+    /// No project was selected — nothing was invoked.
+    | NoProjectsSelected
+    /// Projects ran; every one matched zero tests under the active filter.
+    | AllZeroMatch of projectCount: int
+    /// At least one project executed at least one test.
+    | Ran
+
+/// Stable wire token. Consumers match on this; adding a case is a deliberate
+/// contract change.
+let internal verificationToken (c: RunVerification) : string =
+    match c with
+    | NoProjectsSelected -> "no-projects-selected"
+    | AllZeroMatch _ -> "all-zero-match"
+    | Ran -> "ran"
+
+/// True when the run verified NOTHING — the property every gate cares about,
+/// and the one the old boolean could not answer.
+let internal verifiedNothing (c: RunVerification) : bool =
+    match c with
+    | NoProjectsSelected
+    | AllZeroMatch _ -> true
+    | Ran -> false
+
+let internal verificationOf (results: TestResults) : RunVerification =
+    if results.Results.IsEmpty then
+        NoProjectsSelected
+    elif results.Results |> Map.forall (fun _ r -> isZeroMatchResult r) then
+        AllZeroMatch results.Results.Count
+    else
+        Ran
+
+/// Retained for the existing wire field, which older CLIs still read. Prefer
+/// `verificationOf`: this cannot distinguish an empty run from a real one, which
+/// is precisely the defect it caused.
 let internal allZeroMatch (results: TestResults) : bool =
-    not results.Results.IsEmpty
-    && results.Results |> Map.forall (fun _ r -> isZeroMatchResult r)
+    match verificationOf results with
+    | AllZeroMatch _ -> true
+    | NoProjectsSelected
+    | Ran -> false
 
 let private formatTestResultsJson (results: TestResults) =
     let projects =
@@ -708,8 +770,16 @@ let private formatTestResultsJson (results: TestResults) =
     JsonSerializer.Serialize(
         {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
            // `noTestsMatched` is true iff EVERY project matched zero tests under
-           // the active filter — the run-level distinct signal the CLI renders.
+           // the active filter. RETAINED for CLIs older than `coverage`; it
+           // cannot express "no project was selected", which is why the field
+           // below exists.
            noTestsMatched = allZeroMatch results
+           // The run-level answer to "did this verify anything?", stated by the
+           // producer rather than reconstructed by the consumer from array
+           // lengths. A consumer that does not know this field falls back to the
+           // counts — an ABSENT field must never be read as "ran".
+           coverage = verificationToken (verificationOf results)
+           verifiedNothing = verifiedNothing (verificationOf results)
            projects = projects |}
     )
 
@@ -2817,15 +2887,60 @@ let create
                 // unconfigured project would put classes in the run map that never
                 // execute — and make `allChangesUncovered` (and so the zero-affected
                 // skip) disagree with the commit rule. See `runnableCoveringTests`.
-                let affected =
-                    db.QueryAffectedTests(symbols)
+                let queryRunnable (seeds: string list) =
+                    db.QueryAffectedTests(seeds)
                     |> fun ts ->
                         if Set.isEmpty runnableProjects then
                             ts
                         else
                             ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
 
-                Logging.info "test-prune" $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
+                let affected = queryRunnable symbols
+                let sortedSeeds = List.sort symbols
+
+                // Count the INPUT explicitly, not just the output. `symbols` is the
+                // union of the durable pending-verification queue and the in-memory
+                // hot view, so it grows monotonically across aborted runs until a
+                // green run clears it — "the queue is wedged and growing" and "a
+                // small, precise selection" look identical without this number, and
+                // `%A` truncated it away at 100.
+                //
+                // The seed list is logged in FULL and sorted (`describeAll`, not
+                // `%A`): when a handful of junk seeds drags in thousands of tests,
+                // the offending seed is the whole diagnosis, and a sample that
+                // happens to omit it costs hours.
+                Logging.info
+                    "test-prune"
+                    $"QueryAffectedTests: %d{symbols.Length} seed(s) → %d{affected.Length} affected tests"
+
+                Logging.info "test-prune" $"  seeds: %s{describeAll sortedSeeds}"
+
+                // Per-seed attribution, but ONLY when the selection is already wide.
+                // A single seed accounting for most of a run is either a genuine
+                // graph hub or a mis-qualified symbol, and is the only thing worth
+                // looking at; below the threshold this costs nothing because the
+                // re-query loop never runs.
+                if affected.Length > WideSelectionTests then
+                    if sortedSeeds.Length > MaxSeedsToAttribute then
+                        // Never cap silently: say the attribution was skipped and why,
+                        // so an absent breakdown is not read as "no seed dominated".
+                        Logging.warn
+                            "test-prune"
+                            $"%d{affected.Length} tests selected, but %d{sortedSeeds.Length} seeds exceeds the \
+                              %d{MaxSeedsToAttribute}-seed attribution budget — per-seed breakdown SKIPPED"
+                    else
+                        let dominantShare = affected.Length / 4
+
+                        for seed in sortedSeeds do
+                            let alone = (queryRunnable [ seed ]).Length
+
+                            if alone > dominantShare then
+                                let pct = alone * 100 / affected.Length
+
+                                Logging.warn
+                                    "test-prune"
+                                    $"seed '%s{seed}' alone selects %d{alone} of %d{affected.Length} tests \
+                                      (%d{pct}%%) — a dependency-graph hub, or a mis-qualified symbol"
 
                 affected
 
@@ -3179,7 +3294,37 @@ let create
                         Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
-                            Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
+                            // Two defects, one line. (1) BREADTH is the measurement
+                            // this line exists to provide, and `%A` capped it at 100 —
+                            // a 1,500-class blowout read identically to a 100-class
+                            // one. `describeMany` leads with the exact count.
+                            // (2) An EMPTY list here does not mean "nothing selected";
+                            // it means the project runs UNFILTERED — every class,
+                            // force-run. Printing that as `[]` said the precise
+                            // opposite of what it means, so the widest possible run
+                            // rendered as the narrowest. Say it in words instead.
+                            let rendered =
+                                if List.isEmpty classes then
+                                    "ALL (unfiltered — force-run)"
+                                else
+                                    describeMany classes
+
+                            Logging.info "test-prune" $"Affected classes for %s{proj}: %s{rendered}"
+
+                    // Run-level selectivity, in ONE line. The per-project lines above
+                    // can be scrolled past, interleaved, or truncated by whatever is
+                    // reading the log; this is the single line that answers "did
+                    // impact analysis actually narrow anything this run?" — and it
+                    // separates the two ways a run can be wide: many classes named,
+                    // versus projects running unfiltered.
+                    let unfilteredProjects =
+                        affectedByProject |> Map.filter (fun _ cs -> List.isEmpty cs) |> Map.count
+
+                    Logging.info
+                        "test-prune"
+                        $"Selectivity: %d{affectedByProject.Count} project(s) selected, \
+                          %d{unfilteredProjects} of them UNFILTERED (whole-project), \
+                          %d{totalClasses} class(es) named in total"
 
                     let! results, started, completed =
                         executeTests
@@ -3782,7 +3927,14 @@ let create
 
                             let newChangedSymbols =
                                 if not changedNames.IsEmpty then
-                                    Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+                                    // These are the symbols fed straight into
+                                    // `enqueuePending`, so this line is the primary
+                                    // evidence when diagnosing over- or
+                                    // under-selection (see the phantom
+                                    // all-symbols-changed regression noted above).
+                                    // It previously carried NO count at all and
+                                    // capped the list at 100.
+                                    Logging.info "test-prune" $"Changed symbols: %s{describeMany changedNames}"
 
                                     // Write-through to the durable needs-testing queue at the
                                     // SAME point the in-memory hot view accumulates. Persisted
@@ -4064,7 +4216,26 @@ let create
                         if not (Set.isEmpty fanoutNow) then
                             Logging.info
                                 "test-prune"
-                                $"Dependency fanout: %d{Set.count fanoutNow} test project(s) had a dependency-fingerprint change — force-running: %A{Set.toList fanoutNow}"
+                                $"Dependency fanout: %d{Set.count fanoutNow} test project(s) had a \
+                                  dependency-fingerprint change — force-running: \
+                                  %s{describeAll (Set.toList fanoutNow)}"
+                        else
+                            // Say that NOTHING fanned out, and say what was examined to
+                            // reach that conclusion. Silence here is ambiguous in the
+                            // worst possible way: "no dependency changed" and
+                            // "fingerprinting never ran at all" produce byte-identical
+                            // logs, so an inert `computeProjectFingerprint` — which
+                            // would mean the safety net against binary-only dependency
+                            // changes is quietly OFF, an under-selection risk — is
+                            // indistinguishable from a healthy quiet run. The two
+                            // counts below settle it: zero fingerprints computed, or
+                            // zero graph projects, means inert rather than clean.
+                            Logging.info
+                                "test-prune"
+                                $"Dependency fanout: none — \
+                                  %d{currentFingerprints.Count} project fingerprint(s) computed, \
+                                  %d{fsprojByName.Count} project(s) in the graph, \
+                                  %d{state.PriorProjectFingerprints.Count} prior fingerprint(s) to compare against"
 
                         // Advance the baseline on every build; carry any not-yet-run
                         // fanout in the pending set (consumed by the queued rerun).
