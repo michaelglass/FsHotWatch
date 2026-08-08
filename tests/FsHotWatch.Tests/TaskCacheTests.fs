@@ -910,6 +910,97 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
         test <@ TestResult.isPassed p1 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
+    // AUTOMATION-272. The new case must survive serialization AS ITSELF. If it came
+    // back as a plain `TestsPassed`, a replayed entry would claim a project's tests
+    // passed when the filter had matched none of them.
+    withTempDir "ftc-nomatch" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.FromSeconds(1.0)
+                        Outcome = Normal
+                        Results =
+                          Map.ofList
+                              [ "p1", TestsNoMatch("Zero tests ran", TimeSpan.FromSeconds 2.0)
+                                "p2", TestsPassed("ok", true, TimeSpan.Zero) ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        test <@ TestResult.isNoMatch evt.Value.Results.["p1"] @>
+        test <@ not (TestResult.isNoMatch evt.Value.Results.["p2"]) @>
+        // The wall-clock the runner really spent discovering is preserved.
+        test <@ TestResult.elapsed evt.Value.Results.["p1"] = TimeSpan.FromSeconds 2.0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache reads a PRE-272 zero-match entry back as TestsNoMatch, not a pass`` () =
+    // AUTOMATION-272 back-compat, and why it matters: entries already on disk encode a
+    // zero match as `"passed"` with a magic marker embedded in the output. Reading one
+    // back as a plain pass would replay a run that executed no test as a genuine green
+    // — the bug resurrected from a warm cache rather than from the code.
+    //
+    // Writing `TestsPassed(marker + output)` through the CURRENT serializer reproduces
+    // the legacy on-disk shape exactly, because that value is what the old code
+    // constructed and this serializer still writes it as `"passed"`.
+    withTempDir "ftc-legacy-nomatch" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let legacyZeroMatch =
+            TestsPassed(TestResult.LegacyZeroMatchMarker + "Zero tests ran", true, TimeSpan.Zero)
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.FromSeconds(1.0)
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", legacyZeroMatch ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        let p1 = evt.Value.Results.["p1"]
+
+        // Reconstructed as the case it always meant...
+        test <@ TestResult.isNoMatch p1 @>
+        // ...and the marker stripped, so surfaced output matches a fresh run's.
+        test <@ TestResult.output p1 = "Zero tests ran" @>)
+
+[<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` () =
     // Issue 1: the new TestsDeferred case must survive serialization, and on
     // the way back it must stay NON-passing (so a cached deferred result can
