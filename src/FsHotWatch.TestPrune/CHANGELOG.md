@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- fix: **a schema recreate could discharge real test debt as a green that ran nothing
+  (AUTOMATION-275).** `ChangedSymbolsAllUncovered` buys a "nothing to verify" green that
+  executes zero tests, and it was inferred from `QueryAffectedTests` returning empty.
+  That result only proves "no test covers this symbol" for a symbol the index KNOWS; for
+  a name it has never heard of, the identical empty result means "I cannot answer". A
+  `SchemaVersion` bump makes the difference matter: TestPrune deletes and recreates
+  `test-impact.db` on schema drift, while the `pending-verification.json` sidecar beside
+  it carries no version and **survives**. Every name in the surviving queue then resolved
+  to nothing, was dropped as "no runnable covering test", and the cycle completed green
+  having run no tests at all — the outstanding debt retired by a schema bump rather than
+  by a test. Reproduced end-to-end: a symbol indexed *with* a covering test, queued
+  unverified, then orphaned by a recreate, logged
+  `Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran)`.
+  The shortcut now additionally requires that the index was not rebuilt this session
+  (`Database.WasRecreated`, the same signal that already invalidates the FCS check cache);
+  the symbols are still dropped from the queue, so a permanently-absent symbol cannot
+  wedge it, but the run now actually happens and it is the run that discharges the debt.
+  Scoped tightly — on a genuine cold start the queue is empty, so the flag was already
+  false and nothing changes.
+- feat: **poisoned pending-verification seeds are now named in the log
+  (AUTOMATION-275).** A symbol leaves the needs-testing queue only when every runnable
+  project covering it passes, so a single persistently-red project pins it indefinitely,
+  and while pinned it re-seeds its whole selection on every run. Combined with a
+  mis-qualified symbol (AUTOMATION-270's `name`/`kind`, which alone selected ~2,837
+  tests) that produced a permanent, invisible, near-full suite in which each individual
+  run looked like an ordinary expensive edit — width alone could not distinguish them,
+  only width that persists. Any seed queued across three consecutive runs while alone
+  accounting for ≥25% of the selection is now reported by name, with its age and share.
+  A warning rather than a quarantine on purpose: dropping a queued symbol on a heuristic
+  would be under-testing, and the failure was that nobody could see the pattern — not
+  that nothing could be done once seen. Costs nothing on a healthy queue, where no
+  symbol reaches the age threshold.
 - feat: **a run states what it VERIFIED**, instead of leaving the consumer to infer it.
   `allZeroMatch` returned `false` for an empty result set — defensible in isolation
   ("no project ran" is not the claim "every project matched nothing") and wrong in
