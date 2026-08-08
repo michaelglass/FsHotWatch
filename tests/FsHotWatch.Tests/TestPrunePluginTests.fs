@@ -3301,6 +3301,53 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
     test <@ (cacheKeyFn timedOut).IsNone @>
     test <@ (cacheKeyFn passing).IsSome @>
 
+// AUTOMATION-272 — a run that matched NO tests must not be cacheable as a green.
+//
+// `executeTests` records a filter that matched nothing as `TestsPassed` carrying the
+// `ZeroMatchMarker` prefix, so `TestResult.isPassed` is TRUE for it and the cache
+// key's `allPassed` fold cannot see the difference. The entry it mints is then
+// replayable: a later `BuildCompleted` on the same tree hits a cached green that was
+// produced by executing zero tests. That is the same defect as the failing-run case
+// this file already pins, with a longer half-life — the poisoned entry outlives the
+// run that created it.
+//
+// The neighbouring `notAborted` gate exists for exactly this hazard (empty results
+// trivially satisfying an all-passed fold); zero-match is the case it does not cover.
+[<Fact(Timeout = 15000)>]
+let ``a run where every project matched zero tests is not cacheable as a green`` () =
+    let handler = create ":memory:" "/tmp" None None None None None []
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
+
+    let completedWith (results: (string * TestResult) list) : TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results
+          RanFullSuite = true }
+
+    let zeroMatch = TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.Zero)
+
+    let allZeroMatch =
+        Custom(TestsFinished(started, completedWith [ "ProjA", zeroMatch; "ProjB", zeroMatch ], emptyLaunch))
+
+    // A run where SOME project really ran is still cacheable — the guard must key on
+    // "nothing was verified", not on "a filter was used anywhere".
+    let mixed =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith [ "ProjA", zeroMatch; "ProjB", TestsPassed("ok", true, TimeSpan.Zero) ],
+                emptyLaunch
+            )
+        )
+
+    test <@ (cacheKeyFn allZeroMatch).IsNone @>
+    test <@ (cacheKeyFn mixed).IsSome @>
+
 // =============================================================================
 // tests.dependsOn — external-input cache-key salt.
 // A developer who edits a DB migration changes the TEST database schema but no
@@ -7744,6 +7791,58 @@ let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed p
     match lastStatus statuses with
     | PluginStatus.Failed(msg, _, _) -> test <@ msg.Contains("ProjA") @>
     | other -> Assert.Fail($"a filtered green that never ran ProjA must not produce a green terminal, got %A{other}")
+
+// AUTOMATION-272 — a run in which EVERY project matched zero tests must not produce a
+// green terminal status.
+//
+// `recordRunOutcome` is the sole producer of this plugin's terminal status, and it
+// decides purely on `TestResult.isPassed` counts. A zero-match project is recorded as
+// `TestsPassed` carrying the `ZeroMatchMarker`, so `isPassed` is true, so
+// `failed = 0 && deferred = 0` holds and the green branch fires — reporting
+// "N passed, 0 failed in N projects" about N projects that executed no test at all.
+//
+// Note what this is NOT changing: a zero match in ONE project is still a pass for that
+// project (an impact selection naming no class in the Integration project must not fail
+// it). Only the run-level verdict changes, and only when NOTHING matched anywhere —
+// which is operator error or a mis-aimed filter, never a verified pass.
+[<Fact(Timeout = 20000)>]
+let ``a run where every project matched zero tests is not a green terminal status`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let zeroMatch =
+        TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.FromSeconds 1.0)
+
+    let run =
+        testsFinishedEvent [ "ProjA", zeroMatch; "ProjB", zeroMatch ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, _ledger, _final = driveRuns handler [ run ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) ->
+        Assert.Fail(
+            $"every project matched zero tests, so the run verified nothing and must not be green — got %A{verdict}"
+        )
+    | _ -> ()
+
+// The other direction, so the guard above cannot be satisfied by refusing greens
+// generally: a run where at least one project really executed tests is still green.
+[<Fact(Timeout = 20000)>]
+let ``a run where one project matched zero tests and another really ran is still green`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let zeroMatch =
+        TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.FromSeconds 1.0)
+
+    let run =
+        testsFinishedEvent [ "ProjA", zeroMatch; "ProjB", passed true ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, _ledger, _final = driveRuns handler [ run ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed _ -> ()
+    | other -> Assert.Fail($"ProjB executed tests and passed, so this run IS green — got %A{other}")
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no stuck-red)`` () =

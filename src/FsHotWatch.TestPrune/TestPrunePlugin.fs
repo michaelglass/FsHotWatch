@@ -2556,6 +2556,22 @@ let internal cacheKeyFor
             | Aborted _ -> false
             | Normal -> true
 
+        // AUTOMATION-272 — a run that matched NO tests must not mint a cacheable green.
+        //
+        // Same blind spot as `allPassed` above, with a longer half-life: a zero-match
+        // project is `TestsPassed` + `ZeroMatchMarker`, so the all-passed fold cannot see
+        // it, and the entry it writes is REPLAYABLE — a later `BuildCompleted` on the
+        // same tree hits a cached green produced by executing zero tests. The `notAborted`
+        // gate beside this exists for exactly this family (empty results trivially
+        // satisfying an all-passed fold); zero-match is the case it does not cover.
+        //
+        // Deliberately NOT extended to an empty result set: that is the "nothing to
+        // verify" skip, whose cacheability is a separate decision on a separate path.
+        // This changes one thing only — a run where projects ran and matched nothing.
+        let allZeroMatchRun =
+            not completed.Results.IsEmpty
+            && completed.Results |> Map.forall (fun _ r -> isZeroMatchResult r)
+
         // AUTOMATION-125 adds the third condition: a run that passed everything IT ran
         // while an earlier, uncovered failure is still outstanding is NOT green (its
         // terminal status is a Failed carrying the carried-over red), so it is not a
@@ -2571,6 +2587,7 @@ let internal cacheKeyFor
         if
             allPassed
             && notAborted
+            && not allZeroMatchRun
             && (pendingQueueHash ()).IsNone
             && not (hasOutstandingFailures ())
         then
@@ -4541,6 +4558,34 @@ let create
                                 PluginStatus.failedNow
                                     $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
+                                    results.Elapsed
+                            )
+                        // AUTOMATION-272 — §3c. Projects RAN, and every one of them
+                        // matched zero tests. Nothing executed, so nothing was verified,
+                        // and this may not be a green.
+                        //
+                        // The ladder below counts `TestResult.isPassed`, and a zero-match
+                        // project is recorded as `TestsPassed` carrying `ZeroMatchMarker`
+                        // (see `executeTests`) — so `isPassed` is TRUE for it, `failed = 0
+                        // && deferred = 0` holds, and the green branch fired. It reported
+                        // "N passed, 0 failed in N projects" about N projects that ran no
+                        // test at all. `isPassed` cannot exclude this the way it excludes
+                        // `Deferred`/`Errored`, because zero-match is not a case — it is a
+                        // string prefix on a pass — so the check has to be made here.
+                        //
+                        // Scoped to ALL projects deliberately. A zero match in ONE project
+                        // is a correct pass for that project: an impact selection naming
+                        // no class in the Integration project must not fail it. Only the
+                        // run-level verdict changes, and only when nothing matched
+                        // anywhere — which is a mis-aimed filter or operator error, never
+                        // a verified pass. `total > 0` keeps the empty-results run (the
+                        // deliberate "nothing to verify" skip) on its existing path, since
+                        // `Map.forall` is vacuously true for an empty map.
+                        | None when total > 0 && results.Results |> Map.forall (fun _ r -> isZeroMatchResult r) ->
+                            ctx.ReportStatus(
+                                PluginStatus.failedNow
+                                    $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
+                                    $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{carriedNote}"
                                     results.Elapsed
                             )
                         | None ->
