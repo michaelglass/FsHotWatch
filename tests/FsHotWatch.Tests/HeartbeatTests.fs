@@ -331,6 +331,39 @@ let ``the live timer beats to disk while running and stops when idle`` () =
         test <@ logs.Count = 0 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``a tick that finds a beat in flight skips it`` () =
+    // THE serialisation property, asserted DETERMINISTICALLY: no threads, no
+    // sleeps, no timer. Re-entering `guardedBeat` from inside its own beat is
+    // exactly the situation a Timer creates when a beat outlasts the tick, and
+    // the latch must refuse the second one.
+    //
+    // This exists because the sibling test below drives two real timers under load
+    // and asserts on observed concurrency. That test failed twice on a busy box
+    // having never exercised the guard at all — `maxSeen` stayed 0, so it reported
+    // a regression it had not detected. That is the failure mode a regression test
+    // must not have: it gets re-run, seen to pass, and taught to be ignored, and
+    // then the next real overlap walks straight through it. Timing stays
+    // smoke-tested below; the PROPERTY lives here, where load cannot reach it.
+    let beating = ref 0
+    let ran = ResizeArray<string>()
+    let reentrant = ref None
+
+    let outerRan =
+        guardedBeat beating (fun () ->
+            ran.Add "outer"
+            // Re-enter while the outer beat is still in flight.
+            reentrant.Value <- Some(guardedBeat beating (fun () -> ran.Add "inner")))
+
+    test <@ outerRan @>
+    // The re-entrant call must report that it did NOT beat...
+    test <@ reentrant.Value = Some false @>
+    // ...and must not have run the body at all.
+    test <@ List.ofSeq ran = [ "outer" ] @>
+    // The latch releases once the outer beat finishes, so the next tick beats.
+    test <@ guardedBeat beating (fun () -> ran.Add "next") @>
+    test <@ List.ofSeq ran = [ "outer"; "next" ] @>
+
+[<Fact(Timeout = 15000)>]
 let ``overlapping ticks never beat concurrently`` () =
     // REGRESSION. A `Timer` fires on its period regardless of whether the previous
     // callback finished, so a beat slower than the tick overlaps — and two beats at
