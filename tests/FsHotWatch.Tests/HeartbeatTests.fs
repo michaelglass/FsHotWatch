@@ -356,9 +356,32 @@ let ``overlapping ticks never beat concurrently`` () =
           Cadence = TimeSpan.Zero }
 
     use _beat = createBeatWith (TimeSpan.FromMilliseconds 15.0) deps
-    System.Threading.Thread.Sleep 600
 
-    test <@ lock maxSeen (fun () -> maxSeen.Value) = 1 @>
+    // Wait for EVIDENCE, not for a duration. A fixed sleep is a bet on scheduler
+    // latency, and a loaded CI box takes that bet away: this failed once with
+    // `0 = 1` — no beat had fired at all in 600ms, because the process was
+    // starved by concurrent test-prune subprocesses.
+    let deadline = DateTime.UtcNow.AddSeconds 10.0
+
+    while lock maxSeen (fun () -> maxSeen.Value) = 0 && DateTime.UtcNow < deadline do
+        System.Threading.Thread.Sleep 20
+
+    // Beating has started; now give overlap a chance to occur. The write is 120ms
+    // against a 15ms tick, so several ticks fall due inside a single write.
+    System.Threading.Thread.Sleep 400
+
+    let observed = lock maxSeen (fun () -> maxSeen.Value)
+
+    // TWO questions, asked separately. `= 1` collapsed them: 0 (nothing ran, so
+    // nothing is proven either way) and >= 2 (the actual regression) both failed
+    // the same equality, so a starved run was indistinguishable from an overlap
+    // and sent a reader hunting a concurrency bug that was not there.
+    if observed = 0 then
+        failwith
+            "no beat was observed within 10s — this run measured NOTHING and proves \
+             nothing about serialisation. A starved test host, not an overlap."
+
+    test <@ observed <= 1 @>
     test <@ lock logs (fun () -> logs.Count) = 0 @>
 
 [<Fact(Timeout = 15000)>]
