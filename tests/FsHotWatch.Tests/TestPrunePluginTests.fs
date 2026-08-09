@@ -807,23 +807,80 @@ let ``run-tests not registered when no testConfigs`` () =
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
     test <@ result.IsNone @>
 
-[<Fact(Timeout = 15000)>]
+/// A minimal, fully-covered Cobertura document. Seeded ONLY so the coverage
+/// plugin's `pollForFiles` finds a file on its FIRST attempt — see the test
+/// below for why that matters. Fully covered (`hits="1"`) so the default 100%
+/// thresholds pass and the run is a deterministic `Completed`.
+let private trivialCoberturaXml =
+    """<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" branch-rate="1" version="1.9">
+  <packages>
+    <package name="pkg" line-rate="1" branch-rate="1">
+      <classes>
+        <class filename="Covered.fs" name="Covered.fs" line-rate="1" branch-rate="1">
+          <lines>
+            <line number="1" hits="1" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>"""
+
+[<Fact(Timeout = 30000)>]
 let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
     withTempDir "tp-run-trc" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, "{}")
 
+        // The subject here is the EMISSION — that a `run-tests` force-run fires
+        // TestRunCompleted where a third-party subscriber can see it. Coverage
+        // is the observer, not the thing under test.
+        //
+        // Without this file the observation cost a fixed 5s: `CoveragePlugin`
+        // polls `findCoverageFiles` 50 times at 100ms whenever no cobertura XML
+        // exists (`pollForFiles searchDir 50 100`), and the temp dir here has
+        // none — the harness's test command is `sh -c "touch <sentinel>"`.
+        // Measured on an IDLE box: coverage reached terminal after 5122ms, i.e.
+        // the old 10000ms bound left a 1.95x margin over a floor the plugin is
+        // DESIGNED to hit. Under `mise run ci` — which fans `test-direct` out
+        // alongside `compile` and `lint-project` — 50 × `Async.Sleep 100` and 50
+        // directory walks dilate past 10s on a saturated thread pool, which is
+        // exactly the observed 10.1–10.8s failures.
+        //
+        // Seeding one cobertura file makes `pollForFiles` return on attempt 0,
+        // so the observer's work is a directory walk plus a ~600-byte XML parse.
+        // The assertion is unweakened: the plugin still runs a real check and
+        // still has to reach a terminal status for this test to pass.
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), trivialCoberturaXml)
+
         let host, _ = withSingleProjectHarness dir "TestProject"
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
+        // Subscribe BEFORE the trigger, and on the NEXT transition rather than
+        // the current status: `waitForTerminalStatus` polls `GetStatus`, which
+        // cannot tell "reached terminal because of THIS run" from "was already
+        // terminal", and which lags the transition it is sampling. `run-tests`
+        // returns as soon as the force-run resolves its reply — strictly BEFORE
+        // the mailbox handles `TestsFinished` and emits TestRunCompleted — so
+        // the signal we want always arrives after this subscription.
+        let completion = beginAwaitNextTerminal host "coverage"
+
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
 
-        waitForTerminalStatus host "coverage" 10000
+        // 15s is a LIVENESS backstop, not a timing assertion: the awaited work
+        // is one mailbox dispatch plus the walk+parse above (milliseconds), so
+        // this is ~3 orders of magnitude of headroom rather than the ~2x the
+        // old bound had. It exists only so a wedged plugin fails with the
+        // message below instead of hanging to the xUnit timeout.
+        let observed = completion.Wait(TimeSpan.FromSeconds 15.0)
 
-        match host.GetStatus("coverage") with
-        | Some(Completed _)
-        | Some(Failed _) -> ()
-        | other -> Assert.Fail($"Expected coverage to process TestRunCompleted after run-tests, got: %A{other}"))
+        if not observed then
+            let last = host.GetStatus("coverage")
+
+            Assert.Fail(
+                $"Expected coverage to process TestRunCompleted after run-tests; it never reported a terminal status. Last status: %A{last}"
+            ))
 
 [<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
