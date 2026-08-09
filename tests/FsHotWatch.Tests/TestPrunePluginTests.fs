@@ -2696,14 +2696,14 @@ let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
 // =============================================================================
 
 [<Fact(Timeout = 10000)>]
-let ``isZeroMatchResult / allZeroMatch detect the zero-match case`` () =
+let ``isNoMatch / allZeroMatch detect the zero-match case`` () =
     let zero = TestsNoMatch("Zero tests ran", TimeSpan.Zero)
     let realPass = TestsPassed("Passed! total: 4", true, TimeSpan.Zero)
     let failed = TestsFailed("boom", true, TimeSpan.Zero)
 
-    test <@ isZeroMatchResult zero @>
-    test <@ not (isZeroMatchResult realPass) @>
-    test <@ not (isZeroMatchResult failed) @>
+    test <@ TestResult.isNoMatch zero @>
+    test <@ not (TestResult.isNoMatch realPass) @>
+    test <@ not (TestResult.isNoMatch failed) @>
 
     // allZeroMatch is true only when EVERY project is a zero-match.
     let allZero =
@@ -9163,9 +9163,9 @@ let ``verificationOf tells an EMPTY run apart from one that matched nothing — 
         { Results = Map.ofList [ "A", zero; "B", realPass ]
           Elapsed = TimeSpan.Zero }
 
-    test <@ verificationOf emptyRun = NoProjectsSelected @>
-    test <@ verificationOf allZero = AllZeroMatch 2 @>
-    test <@ verificationOf ran = Ran @>
+    test <@ verificationOf emptyRun.Results = NoProjectsSelected @>
+    test <@ verificationOf allZero.Results = AllZeroMatch 2 @>
+    test <@ verificationOf ran.Results = Ran @>
 
     // The whole point: the old bool collapsed the first two into `false`/`true`
     // in a way that lost the empty case entirely.

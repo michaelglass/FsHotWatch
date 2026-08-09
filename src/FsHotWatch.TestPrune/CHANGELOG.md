@@ -50,8 +50,20 @@
   accounting for ≥25% of the selection is now reported by name, with its age and share.
   A warning rather than a quarantine on purpose: dropping a queued symbol on a heuristic
   would be under-testing, and the failure was that nobody could see the pattern — not
-  that nothing could be done once seen. Costs nothing on a healthy queue, where no
-  symbol reaches the age threshold.
+  that nothing could be done once seen.
+
+  Counted per test RUN, at the point a run is launched against the queue. Counting per
+  *flush* — the first shape — ticked 2-3 times per edit-save cycle, because the flush
+  runs on `BatchChecked`, again on `BuildSucceeded` and again on the rerun path; editing
+  one function twice on a green repo was enough to trip the threshold. A guard designed
+  to fire late specifically so it would not cry wolf during an ordinary red-to-green
+  cycle would have done exactly that, and paid a graph query per seed for the privilege.
+  The per-seed check is also budgeted (`MaxSeedsToAttribute`, the same cap the
+  neighbouring attribution breakdown uses) and skipped entirely on an empty selection:
+  each check is a recursive reverse-walk, and the aged-seed list grows precisely when the
+  queue is wedged — the very state the guard exists to report — so an unbudgeted loop
+  would cost most when the daemon could least afford it. As next door, the cap is never
+  silent: a skipped check says so, and why.
 
 - fix: **`run-tests` says which project you asked for and which exist when nothing
   matches (AUTOMATION-272).** The reply was a bare `no matching test projects`, which is

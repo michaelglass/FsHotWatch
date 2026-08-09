@@ -833,13 +833,10 @@ let isFullSuiteGreen (v: Verdict) : bool =
     match v.Outcome with
     | Red
     | Incomplete _ -> false
-    | Green ->
-        match v.Scope with
-        | FullSuite _ -> true
-        | ImpactFiltered _
-        | NoTestsRun
-        | ScopeUnknown
-        | ScopeUnreadable _ -> false
+    // `TestScope.isFullSuite` documents itself as "The ONE predicate"; this held a
+    // verbatim second copy, which made that claim false and every new scope case a
+    // two-file edit — `ScopeUnreadable` had to be added to both.
+    | Green -> TestScope.isFullSuite v.Scope
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
 /// daemon, sets a scope, or runs a test.

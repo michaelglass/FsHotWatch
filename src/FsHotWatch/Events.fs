@@ -337,6 +337,31 @@ module TestResult =
         | TestsDeferred _
         | TestsErrored _ -> false
 
+    /// Did this project actually EXECUTE at least one test?
+    ///
+    /// The per-project half of "was anything verified", and the predicate several
+    /// folds want when they reach for `isPassed` and get the wrong answer. Distinct
+    /// from `isPassed` in both directions: a zero-match project PASSES but executed
+    /// nothing, and a failing project executed plenty.
+    ///
+    /// Deliberately exhaustive, with NO wildcard. `RunCoverage.ofRun` derived this
+    /// concept through `| _ ->` and was correct only by luck — `TestsNoMatch` landed in
+    /// the wildcard and got the right answer because a *different* function had been
+    /// updated, not because anyone reviewed the site. The next case added to
+    /// `TestResult` would have fallen in the same hole and been silently counted as
+    /// having run. Written out, every future case is a compile error here, which is the
+    /// whole point (AUTOMATION-272).
+    let executedTests =
+        function
+        | TestsPassed _
+        | TestsFailed _
+        | TestsTimedOut _ -> true
+        // Nothing ran: no match under the filter, apphost never built, host aborted
+        // before producing a verdict.
+        | TestsNoMatch _
+        | TestsDeferred _
+        | TestsErrored _ -> false
+
     let isTimedOut =
         function
         | TestsTimedOut _ -> true

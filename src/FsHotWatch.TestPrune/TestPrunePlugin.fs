@@ -99,24 +99,6 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
-/// LEGACY. The output prefix a zero-match result used to be tagged with, back when
-/// the fact was encoded as `TestsPassed` + a magic string rather than as its own case.
-///
-/// **Nothing constructs a result carrying this any more** — `executeTests` produces
-/// `TestsNoMatch` and `isZeroMatchResult` is a pattern match (AUTOMATION-272). It
-/// survives only so cache entries written before that change still deserialize as the
-/// case they meant; `FileTaskCache` does that reconstruction, keyed on
-/// `TestResult.LegacyZeroMatchMarker`, which this now aliases so there is exactly one
-/// definition of the string.
-///
-/// Do not reach for this. Tagging a fact onto an output string is what made two
-/// separate aggregators report "N passed" for runs that executed nothing: the marker
-/// was called "structural" precisely because it was better than re-grepping runner
-/// output, and it still left every fold to remember a string comparison the compiler
-/// could not check.
-[<Literal>]
-let ZeroMatchMarker = TestResult.LegacyZeroMatchMarker
-
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
 /// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
@@ -264,8 +246,8 @@ type ReportVerificationFormat =
 // no wholesale clear left to reach for. A red therefore survives every run that did
 // not execute it, and dies the moment one that did executes it green.
 //
-// (Types here; the functions over them live below `isZeroMatchResult`, which
-// `RunCoverage.ofRun` reads.)
+// (Types here; the functions over them live below `verificationOf`, which
+// `RunCoverage.ofRun` and both run-level aggregators read.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// What a run was LAUNCHED against, per test project — captured at dispatch
@@ -743,8 +725,6 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 /// is a CASE, so this is a pattern match rather than a `StartsWith` against a magic
 /// output prefix. Kept as a named function because three call sites read better for it
 /// and because it is the run-level question's building block.
-let internal isZeroMatchResult (result: TestResult) : bool = TestResult.isNoMatch result
-
 /// What a run actually VERIFIED.
 ///
 /// This replaces a boolean that could not express the difference between "no
@@ -785,22 +765,33 @@ let internal verifiedNothing (c: RunVerification) : bool =
     | AllZeroMatch _ -> true
     | Ran -> false
 
-let internal verificationOf (results: TestResults) : RunVerification =
-    if results.Results.IsEmpty then
+/// Takes the RESULT MAP, not `TestResults`, and that is the whole reason this is now
+/// the only implementation. Typed as `TestResults -> _` it could not be called from the
+/// cache key, which holds a `TestRunCompleted` — whose `Results` field is the identical
+/// `Map<string, TestResult>` — so that site open-coded the fold instead, and so did
+/// `recordRunOutcome`. Three copies of the run-level question in one file, one of them
+/// documented as THE run-level question, purely because of a parameter type.
+let internal verificationOf (results: Map<string, TestResult>) : RunVerification =
+    if results.IsEmpty then
         NoProjectsSelected
-    elif results.Results |> Map.forall (fun _ r -> isZeroMatchResult r) then
-        AllZeroMatch results.Results.Count
+    elif results |> Map.forall (fun _ r -> TestResult.isNoMatch r) then
+        AllZeroMatch results.Count
     else
         Ran
 
-/// Retained for the existing wire field, which older CLIs still read. Prefer
-/// `verificationOf`: this cannot distinguish an empty run from a real one, which
-/// is precisely the defect it caused.
-let internal allZeroMatch (results: TestResults) : bool =
+/// "Projects ran, and every one of them matched nothing." The predicate the aggregators
+/// want; `NoProjectsSelected` is deliberately NOT this, because no project is not the
+/// same claim as every project matching nothing.
+let internal allZeroMatchOf (results: Map<string, TestResult>) : bool =
     match verificationOf results with
     | AllZeroMatch _ -> true
     | NoProjectsSelected
     | Ran -> false
+
+/// Retained for the existing wire field, which older CLIs still read. Prefer
+/// `verificationOf`: this cannot distinguish an empty run from a real one, which
+/// is precisely the defect it caused.
+let internal allZeroMatch (results: TestResults) : bool = allZeroMatchOf results.Results
 
 let private formatTestResultsJson (results: TestResults) =
     let projects =
@@ -838,8 +829,8 @@ let private formatTestResultsJson (results: TestResults) =
            // producer rather than reconstructed by the consumer from array
            // lengths. A consumer that does not know this field falls back to the
            // counts — an ABSENT field must never be read as "ran".
-           coverage = verificationToken (verificationOf results)
-           verifiedNothing = verifiedNothing (verificationOf results)
+           coverage = verificationToken (verificationOf results.Results)
+           verifiedNothing = verifiedNothing (verificationOf results.Results)
            projects = projects |}
     )
 
@@ -985,11 +976,11 @@ module RunCoverage =
         results
         |> Map.toList
         |> List.choose (fun (project, result) ->
-            let ran =
-                match result with
-                | TestsDeferred _
-                | TestsErrored _ -> false
-                | _ -> not (isZeroMatchResult result)
+            // Exhaustive by construction — see `TestResult.executedTests`. This was a
+            // wildcard, and was right about `TestsNoMatch` only because
+            // `TestResult.isNoMatch` happened to be updated; the next case would have
+            // fallen through and been counted as having run.
+            let ran = TestResult.executedTests result
 
             let fromEvidence () =
                 if TestResult.isTimedOut result then
@@ -2693,8 +2684,8 @@ let internal cacheKeyFor
         // AUTOMATION-272 — a run that matched NO tests must not mint a cacheable green.
         //
         // Same blind spot as `allPassed` above, with a longer half-life: a zero-match
-        // project is `TestsPassed` + `ZeroMatchMarker`, so the all-passed fold cannot see
-        // it, and the entry it writes is REPLAYABLE — a later `BuildCompleted` on the
+        // project is `TestsNoMatch`, for which `isPassed` is deliberately TRUE, so the
+        // all-passed fold cannot see it, and the entry it writes is REPLAYABLE — a later `BuildCompleted` on the
         // same tree hits a cached green produced by executing zero tests. The `notAborted`
         // gate beside this exists for exactly this family (empty results trivially
         // satisfying an all-passed fold); zero-match is the case it does not cover.
@@ -2702,9 +2693,7 @@ let internal cacheKeyFor
         // Deliberately NOT extended to an empty result set: that is the "nothing to
         // verify" skip, whose cacheability is a separate decision on a separate path.
         // This changes one thing only — a run where projects ran and matched nothing.
-        let allZeroMatchRun =
-            not completed.Results.IsEmpty
-            && completed.Results |> Map.forall (fun _ r -> isZeroMatchResult r)
+        let allZeroMatchRun = allZeroMatchOf completed.Results
 
         // AUTOMATION-125 adds the third condition: a run that passed everything IT ran
         // while an earlier, uncovered failure is still outstanding is NOT green (its
@@ -3081,6 +3070,24 @@ let create
 
                 Logging.info "test-prune" $"  seeds: %s{describeAll sortedSeeds}"
 
+                // How many tests ONE seed selects on its own — a full recursive
+                // reverse-walk each time, so it is memoised. Two diagnostics below ask
+                // this same question (the poisoned-seed guard and the per-seed
+                // attribution), and the seeds they ask about OVERLAP: `agedSeeds` is a
+                // subset of `sortedSeeds`, so in the case that matters most — a wide
+                // selection AND pinned seeds, which is exactly the shape both exist to
+                // catch — every aged seed was paying for the same query twice in one
+                // flush. Only `.Length` is ever used, so nothing needs the rows.
+                let aloneCounts = System.Collections.Generic.Dictionary<string, int>()
+
+                let aloneCount (seed: string) : int =
+                    match aloneCounts.TryGetValue seed with
+                    | true, n -> n
+                    | false, _ ->
+                        let n = (queryRunnable [ seed ]).Length
+                        aloneCounts[seed] <- n
+                        n
+
                 // AUTOMATION-275 — the poisoned-seed guard.
                 //
                 // The per-seed attribution below answers "is one seed dominating THIS
@@ -3090,24 +3097,55 @@ let create
                 // like a legitimately expensive edit. Width alone could not tell them
                 // apart; only width that PERSISTS can.
                 //
-                // Ages advance before the check so a symbol on its Nth consecutive
-                // appearance is judged as N. Only aged seeds are re-queried, so the
-                // usual cost is zero: on a healthy queue no symbol reaches the
-                // threshold and the loop body never runs. Note this is independent of
-                // `WideSelectionTests` — a seed pinning 200 tests of a 400-test suite
-                // is the same disease as one pinning 3,000, and gating on absolute
-                // width would miss every smaller repo.
-                Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) symbols)
+                // This only READS the ages; they advance once per test RUN, at the
+                // launch point (see `pendingAgeRef`). The first version bumped them
+                // here, which was wrong in a way worth recording: this function is
+                // called 2-3 times per edit-save cycle (BatchChecked, BuildSucceeded,
+                // and the rerun path), so the counter measured FLUSHES while both the
+                // constant and the warning text said "runs". Editing one function twice
+                // on a fully green repo reached the threshold — so a guard whose whole
+                // design note was "fire late, because a warning that cries wolf during
+                // an ordinary red-to-green cycle gets tuned out" would have cried wolf
+                // during ordinary green development, and paid a graph query per seed to
+                // do it. Note this is independent of `WideSelectionTests` — a seed
+                // pinning 200 tests of a 400-test suite is the same disease as one
+                // pinning 3,000, and gating on absolute width would miss every smaller
+                // repo.
                 let ages = Volatile.Read(&pendingAgeRef)
 
                 let ageOf s =
                     ages |> Map.tryFind s |> Option.defaultValue 0
 
+                // Each check below is a full recursive reverse-walk, so both the number
+                // of them and the reason to run at all are gated:
+                //
+                //  * an EMPTY selection can never yield a suspect (`isPoisonSuspect`
+                //    requires `affectedCount > 0`), so the whole loop is skipped — free,
+                //    and it is the common case on a no-op cycle;
+                //  * the same `MaxSeedsToAttribute` budget the attribution loop below
+                //    uses. `agedSeeds` grows precisely when the queue is wedged, which is
+                //    the situation this guard exists to REPORT — so an unbudgeted loop
+                //    would pay N graph walks per build exactly when the daemon is already
+                //    struggling. A suspect must account for >=25% of the selection, so at
+                //    most four seeds can ever qualify; a large aged list is waste by
+                //    construction. As next door, the cap is never silent.
                 let agedSeeds = sortedSeeds |> List.filter (fun s -> ageOf s >= PoisonSeedRuns)
 
-                for seed in agedSeeds do
+                if not affected.IsEmpty && agedSeeds.Length > MaxSeedsToAttribute then
+                    Logging.warn
+                        "test-prune"
+                        $"%d{agedSeeds.Length} seed(s) have been queued across %d{PoisonSeedRuns}+ consecutive \
+                          runs, which exceeds the %d{MaxSeedsToAttribute}-seed budget — the poisoned-seed check \
+                          is SKIPPED this cycle. A pending queue that size is itself the finding; the full seed \
+                          list is logged above."
+
+                for seed in
+                    (if affected.IsEmpty || agedSeeds.Length > MaxSeedsToAttribute then
+                         []
+                     else
+                         agedSeeds) do
                     let runs = ageOf seed
-                    let alone = (queryRunnable [ seed ]).Length
+                    let alone = aloneCount seed
 
                     if isPoisonSuspect runs affected.Length alone then
                         let pct = alone * 100 / (max 1 affected.Length)
@@ -3141,10 +3179,15 @@ let create
                             $"%d{affected.Length} tests selected, but %d{sortedSeeds.Length} seeds exceeds the \
                               %d{MaxSeedsToAttribute}-seed attribution budget — per-seed breakdown SKIPPED"
                     else
-                        let dominantShare = affected.Length / 4
+                        // Derived from the same constant `isPoisonSuspect` uses, not a
+                        // second spelling of it. As `/ 4` beside a `25` kept in step by
+                        // comment they had already drifted: at 1000 affected and 250
+                        // alone the poison check fired (`>=`) and this one did not
+                        // (`>`), which the constant's own doc says cannot happen.
+                        let dominantShare = affected.Length * PoisonSeedSharePercent / 100
 
                         for seed in sortedSeeds do
-                            let alone = (queryRunnable [ seed ]).Length
+                            let alone = aloneCount seed
 
                             if alone > dominantShare then
                                 let pct = alone * 100 / affected.Length
@@ -3220,9 +3263,18 @@ let create
         //
         // Scoped tightly: on a genuine cold start the queue is empty, `symbols` is
         // empty, and this is already false. The conjunct changes behaviour ONLY when
-        // a rebuilt index meets a non-empty surviving queue — exactly the unsound case.
-        let indexCannotVouch =
-            db.WasRecreated && not symbols.IsEmpty && List.isEmpty affectedTests
+        // a rebuilt index meets a non-empty surviving queue. Note it closes AN
+        // unsound case, not the whole class: a symbol unknown to a NON-recreated
+        // index — a stale queue entry naming a deleted or renamed symbol — still
+        // takes the same route. Asking the index directly (is this name known?)
+        // would cover both; `WasRecreated` is a cheap proxy for the common one.
+        // One predicate, split on whether the index can be believed. Spelling the two
+        // conjuncts out twice meant a future change to what "no covering test" means
+        // could land in one and not the other — and the failure mode is a log that
+        // lies: the warning below says "Refusing the zero-test green" while the flag
+        // beneath it does not refuse.
+        let noCoveringTest = not symbols.IsEmpty && List.isEmpty affectedTests
+        let indexCannotVouch = noCoveringTest && db.WasRecreated
 
         if indexCannotVouch then
             Logging.warn
@@ -3232,8 +3284,7 @@ let create
                   are untested. Refusing the zero-test green; this run verifies them for real. Seeds: \
                   %s{describeAll (List.sort symbols)}"
 
-        let allChangesUncovered =
-            not symbols.IsEmpty && List.isEmpty affectedTests && not db.WasRecreated
+        let allChangesUncovered = noCoveringTest && not db.WasRecreated
 
         { flushedState with
             ChangedSymbols = remainingSymbols
@@ -3380,6 +3431,15 @@ let create
             // mutate both; the synchronous TestsFinished handler commits ONLY
             // these symbols and leaves mid-run arrivals queued for the rerun.
             let launchedSymbols = Set.union pendingQueueRef (Set.ofList inputs.ChangedSymbols)
+
+            // AUTOMATION-275 — advance the poisoned-seed counters HERE, not in
+            // `flushAndQueryAffected`. This is the point at which a test RUN is
+            // launched, and `launchedSymbols` is exactly the set that run is meant to
+            // verify — so a count taken here means what `PoisonSeedRuns` and the
+            // warning text both claim: consecutive RUNS a symbol has survived without
+            // being verified. Counting per flush instead measured 2-3 ticks per
+            // edit-save cycle and reached the threshold during ordinary green work.
+            Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols))
 
             try
                 // For each launched symbol, the set of test PROJECTS whose tests
@@ -4821,8 +4881,8 @@ let create
                         // and this may not be a green.
                         //
                         // The ladder below counts `TestResult.isPassed`, and a zero-match
-                        // project is recorded as `TestsPassed` carrying `ZeroMatchMarker`
-                        // (see `executeTests`) — so `isPassed` is TRUE for it, `failed = 0
+                        // project is recorded as `TestsNoMatch` (see `executeTests`), for
+                        // which `isPassed` is deliberately TRUE, so `failed = 0
                         // && deferred = 0` holds, and the green branch fired. It reported
                         // "N passed, 0 failed in N projects" about N projects that ran no
                         // test at all. `isPassed` cannot exclude this the way it excludes
@@ -4837,7 +4897,7 @@ let create
                         // a verified pass. `total > 0` keeps the empty-results run (the
                         // deliberate "nothing to verify" skip) on its existing path, since
                         // `Map.forall` is vacuously true for an empty map.
-                        | None when total > 0 && results.Results |> Map.forall (fun _ r -> isZeroMatchResult r) ->
+                        | None when allZeroMatchOf results.Results ->
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
                                     $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
