@@ -881,10 +881,14 @@ let ``every scope round-trips through the file`` () =
         test <@ roundTrip (FullSuite 6) = FullSuite 6 @>
         test <@ roundTrip (ImpactFiltered(2, 6)) = ImpactFiltered(2, 6) @>
         test <@ roundTrip NoTestsRun = NoTestsRun @>
-        test <@ roundTrip ScopeUnknown = ScopeUnknown @>)
+        test <@ roundTrip ScopeUnknown = ScopeUnknown @>
+        // The reason travels with it: a consumer that has to ask "unreadable why?" and
+        // gets no answer will treat the check as flaky rather than as broken.
+        test
+            <@ roundTrip (ScopeUnreadable "the daemon's reply faulted") = ScopeUnreadable "the daemon's reply faulted" @>)
 
 [<Fact>]
-let ``a scope this build cannot read is ScopeUnknown, never full-suite`` () =
+let ``a scope this build cannot read is ScopeUnreadable — distinct from "no scope reported", never full-suite`` () =
     withTempDir "verdict-badscope" (fun root ->
         Directory.CreateDirectory(FsHwPaths.root root) |> ignore
 
@@ -898,12 +902,28 @@ let ``a scope this build cannot read is ScopeUnknown, never full-suite`` () =
             | Verdict.Reading.Found v -> v.Scope
             | other -> failwith $"expected a readable verdict, got %A{other}"
 
-        // A kind from a future fshw; a `full` whose counts disagree (which is not a
-        // full suite, whatever it calls itself); an absent scope.
-        test <@ write """{"kind":"cosmic"}""" = ScopeUnknown @>
-        test <@ write """{"kind":"full","ranProjects":2,"totalProjects":6}""" = ScopeUnknown @>
-        test <@ write """{"kind":"full","ranProjects":0,"totalProjects":0}""" = ScopeUnknown @>
-        test <@ write """"full" """ = ScopeUnknown @>)
+        let unreadable (scope: TestScope) =
+            match scope with
+            | ScopeUnreadable _ -> true
+            | _ -> false
+
+        // POSITIVE CONTROL: the reader CAN produce a plain `ScopeUnknown` — from the one
+        // input that means it. Without this, "everything is unreadable" would pass on a
+        // reader that had simply stopped recognizing anything.
+        test <@ write """{"kind":"unknown"}""" = ScopeUnknown @>
+
+        // A kind from a future fshw; a `full` whose counts disagree (which is not a full
+        // suite, whatever it calls itself); a scope that is not even an object. Every one
+        // is a reading this build could not make — which is a different fact from the
+        // daemon reporting that there was no scope, and is no longer spelled the same way.
+        test <@ unreadable (write """{"kind":"cosmic"}""") @>
+        test <@ unreadable (write """{"kind":"full","ranProjects":2,"totalProjects":6}""") @>
+        test <@ unreadable (write """{"kind":"full","ranProjects":0,"totalProjects":0}""") @>
+        test <@ unreadable (write """"full" """) @>
+
+        // ...and none of them is full-suite, which is the property that actually guards
+        // the merge door.
+        test <@ not (TestScope.isFullSuite (write """{"kind":"cosmic"}""")) @>)
 
 [<Fact>]
 let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not ok`` () =

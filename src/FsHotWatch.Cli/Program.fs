@@ -498,15 +498,19 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
 
 /// Ask the test-prune plugin what the last completed run actually covered.
 ///
-/// Any failure to get a straight answer — no test-prune plugin, an old daemon that
-/// doesn't know the command, a transport fault, an unparseable reply — becomes
-/// `ScopeUnknown`, which `confirm` treats as "not full-suite" and therefore refuses
-/// to go green on. The failure direction is the safe one BY CONSTRUCTION: `confirm` can
-/// only ever go green on a scope it positively established.
+/// No failure to get a straight answer can round UP to `FullSuite`, so `confirm` can
+/// only ever go green on a scope it positively established. But the failures are not
+/// one fact and are not reported as one (the daemon twin of `RunOnceCheck.readTestRun`):
 ///
-/// An UNKNOWN-COMMAND reply is WARNED about rather than folded silently into
-/// `ScopeUnknown`. Safe-by-default is right; safe-and-mute is how a broken check
-/// stays broken.
+///   * an UNKNOWN-COMMAND reply — the daemon has no test projects configured, so no run
+///     of its will ever produce a scope. `ScopeUnknown`: a provable absence, which the
+///     inner loop tolerates and `confirm` refuses.
+///   * a TRANSPORT FAULT — we asked and could not find out. `ScopeUnreadable`, refused
+///     in BOTH modes: it may be concealing a `NoTestsRun`, which is the state that must
+///     never read as green, and collapsing the two is how a broken read became a pass.
+///
+/// Both are WARNED about rather than folded silently in. Safe-by-default is right;
+/// safe-and-mute is how a broken check stays broken.
 let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     try
         let reply = ipc.RunCommand pipeName TestScopeCommand "" |> Async.RunSynchronously
@@ -521,8 +525,13 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
         else
             IpcParsing.parseTestRunReport reply
     with ex ->
-        FsHotWatch.Logging.warn "cli-confirm" $"could not read the test scope: %s{ex.Message}"
-        { Scope = ScopeUnknown; RunId = None }
+        FsHotWatch.Logging.warn
+            "cli-confirm"
+            $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
+               report NO VERDICT rather than pass on a reading it does not have."
+
+        { Scope = ScopeUnreadable $"the `%s{TestScopeCommand}` request to the daemon faulted: %s{ex.Message}"
+          RunId = None }
 
 /// Put the daemon's test-prune plugin into full-suite scope for the rest of this
 /// session. Called BEFORE `confirm` triggers its scan, so the test run the scan provokes
