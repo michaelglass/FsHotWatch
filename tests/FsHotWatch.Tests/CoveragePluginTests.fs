@@ -242,7 +242,16 @@ let ``plugin clears errors when all files pass`` () =
         let errors = host.GetErrorsByPlugin("coverage")
         test <@ errors.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+// The no-XML path costs a FIXED ~5s: `pollForFiles searchDir 50 100` walks the
+// tree 50 times at 100ms apart before giving up. That floor is intrinsic to what
+// this test covers — it cannot be seeded away here the way an incidental
+// observer's can (cf. `run-tests emits TestRunCompleted so other plugins see the
+// run`, which seeds a cobertura precisely so it never pays this) — so the bound
+// has to be a MULTIPLE of 5s rather than the 2x it used to carry. Measured: 5122ms
+// on an idle box; under `mise run ci`, which fans `test-direct` out alongside
+// `compile` and `lint-project`, the same 5s of `Async.Sleep` dilated past 10s on a
+// saturated thread pool. 30s is 6x the nominal floor.
+[<Fact(Timeout = 45000)>]
 let ``plugin skips check when no coverage XML found`` () =
     withTempDir "coverage" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -251,15 +260,28 @@ let ``plugin skips check when no coverage XML found`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
+        // Subscribe before emitting: polling `GetStatus` samples a value that lags
+        // the transition, and — more importantly — a wait that merely EXPIRES used
+        // to be indistinguishable from one that succeeded, because the only
+        // assertion below (`errors.IsEmpty`) is vacuously true on the no-XML path
+        // whether or not the plugin ever ran. The wait is now asserted.
+        let completion = beginAwaitTerminal host "coverage"
+
         emitRunCompleted host
 
+        let observed = completion.Wait(TimeSpan.FromSeconds 30.0)
+
         // Plugin should complete (no XML = no failures to report)
-        waitUntil
-            (fun () ->
-                match host.GetStatus("coverage") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            10000
+        if not observed then
+            let last = host.GetStatus("coverage")
+            failwithf "coverage never reached a terminal status on the no-XML path. Last status: %A" last
+
+        test
+            <@
+                match completion.Result with
+                | Completed _ -> true
+                | _ -> false
+            @>
 
         let errors = host.GetErrorsByPlugin("coverage")
         test <@ errors.IsEmpty @>)
