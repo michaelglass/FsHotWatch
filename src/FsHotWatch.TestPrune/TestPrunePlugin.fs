@@ -4922,7 +4922,24 @@ let create
 
                             let failed = failedList.Length
                             let deferred = deferredList.Length
-                            let passed = total - failed - deferred
+
+                            // Zero-match projects are counted OUT of `passed`, not into
+                            // it. `passed` is derived by exclusion, and `isPassed` is
+                            // deliberately true for `TestsNoMatch` — so a project that
+                            // executed no test was being reported as one that passed.
+                            // On a mixed run the status line read "2 passed, 0 failed in
+                            // 2 projects" while the CLI, which counts them separately,
+                            // said "2 project(s): 1 passed, 1 matched nothing": two
+                            // surfaces describing one run differently, and the daemon's
+                            // was the one claiming a pass nothing earned. Exactly the
+                            // language AUTOMATION-272 removed from the verdict, still
+                            // present in the sentence next to it.
+                            let noMatch =
+                                results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
+
+                            let passed = total - failed - deferred - noMatch
+
+                            let noMatchSuffix = if noMatch = 0 then "" else $", %d{noMatch} matched nothing"
 
                             let anyFiltered =
                                 results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
@@ -4973,7 +4990,7 @@ let create
                                 )
                             else
                                 let runSummary =
-                                    $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+                                    $"%d{passed} passed, %d{failed} failed%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
                                 // EVERY terminal below CARRIES the run's evidence —
                                 // `runSummary` + measured duration — on the status
