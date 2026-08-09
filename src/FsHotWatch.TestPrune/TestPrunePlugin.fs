@@ -1156,7 +1156,19 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 /// OOM-kill, or an output shape the matcher doesn't yet recognise), the tail of
 /// the captured output is echoed so the failure is ALWAYS visible from the CI
 /// console alone — never silently swallowed into "0 test(s) failed".
-let internal formatFailureReport (projectName: string) (output: string) : string list =
+///
+/// The tail is a SUMMARY and stays one. It is also, structurally, the wrong end of
+/// the output for a whole class of failure: a suite killed at its timeout printed
+/// its cause in the first seconds and its noise for the fifteen minutes since, so
+/// forty lines of tail are forty lines of noise. `runLog` is the answer to that —
+/// the full, head-included, streamed capture — and this message NAMES it.
+///
+/// It names it from a `RunLog.Ref`, never from a formatted guess, because the
+/// defect being fixed here was this very line telling its reader the failure was
+/// visible "without the saved log" while no code in the plugin ever saved one. A
+/// path is printed only when something opened it; otherwise the REASON there is
+/// no file is printed in its place.
+let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (output: string) : string list =
     let lines = output.Split('\n')
 
     let isFailedLine (l: string) = l.TrimStart().StartsWith("failed ")
@@ -1179,7 +1191,14 @@ let internal formatFailureReport (projectName: string) (output: string) : string
       yield! failedTests |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       yield! summaryLines |> List.map (fun l -> $"  %s{l.TrimEnd()}")
       if List.isEmpty failedTests then
-          $"%s{projectName}: run failed but no per-test 'failed' line was parsed — dumping last output lines so the failure is visible without the saved log:"
+          match runLog with
+          | RunLog.Ref.Written path ->
+              $"%s{projectName}: run failed but no per-test 'failed' line was parsed. The FULL output — including \
+                the HEAD, which is where a killed or wedged run states its cause — was streamed to %s{path}. READ \
+                THAT FIRST; the last output lines follow only as a summary:"
+          | RunLog.Ref.Unavailable reason ->
+              $"%s{projectName}: run failed but no per-test 'failed' line was parsed, and NO output log was saved \
+                (%s{reason}) — so the last output lines below are ALL there is, and the head of the run is gone:"
 
           let tail =
               lines
@@ -1974,6 +1993,34 @@ let private executeTests
 
                             let projectSw = Stopwatch.StartNew()
 
+                            // THE RUN LOG (AUTOMATION-279). Opened for EVERY project, on
+                            // every run, before the spawn — not on failure, and not for one
+                            // suite anyone currently suspects. A passing-but-slow suite is
+                            // worth reading too, and which project will need explaining is
+                            // not knowable in advance; the artifact costs a file handle.
+                            //
+                            // It sits in this run's directory beside `<Project>.ctrf.json`,
+                            // so the run's evidence is in ONE place, and it is STREAMED
+                            // (see `RunLog`): the failure that needs it most is the suite
+                            // SIGKILLed at its timeout, which reaches no writer at all and
+                            // whose in-memory capture the kill truncates. Buffering here and
+                            // flushing at the end would rebuild exactly the bug this fixes.
+                            let runLog = RunLog.openFor runDir config.Project
+
+                            match runLog.Ref with
+                            | RunLog.Ref.Written path ->
+                                Logging.info "test-prune" $"%s{config.Project}: streaming run output to %s{path}"
+                            | RunLog.Ref.Unavailable reason ->
+                                Logging.warn
+                                    "test-prune"
+                                    $"%s{config.Project}: NOT saving a run log — %s{reason}. The run proceeds; only \
+                                      the console tail will be available if it fails."
+
+                            let outputSink =
+                                match runLog.Ref with
+                                | RunLog.Ref.Written _ -> Some runLog.Write
+                                | RunLog.Ref.Unavailable _ -> None
+
                             // A test runner STREAMS (discovery banner, progress, per-test
                             // lines), so its first byte is a sound liveness proof and the
                             // launch deadline can bound the spawn even when the config sets
@@ -1981,7 +2028,8 @@ let private executeTests
                             let runOnce =
                                 async {
                                     return
-                                        runProcess
+                                        runProcessTo
+                                            outputSink
                                             config.Command
                                             finalArgs
                                             repoRoot
@@ -2029,6 +2077,13 @@ let private executeTests
                                             "test-prune"
                                             $"%s{config.Project}: apphost missing at launch (build not settled yet); retrying once after a short wait"
 
+                                        // Both attempts stream into the SAME log, so mark the
+                                        // seam — otherwise two runs read as one confusing run.
+                                        RunLog.note
+                                            runLog
+                                            "apphost missing at launch; relaunching once. Everything above is the \
+                                             FIRST attempt, everything below the second."
+
                                         do! Async.Sleep 750
                                         let! second = runOnce
                                         return second
@@ -2036,36 +2091,46 @@ let private executeTests
                                         return first
                                 }
 
+                            // `finally`, not a close after the bind: a launch stall RE-RAISES
+                            // out of this block, and a run log whose handle leaked on the one
+                            // path where the child never came back is a log of nothing.
                             let! processResult =
                                 async {
                                     try
-                                        return!
-                                            match ctx with
-                                            | Some c ->
-                                                PluginCtxHelpers.withSubtask
-                                                    c
-                                                    config.Project
-                                                    $"testing {config.Project}"
-                                                    runTestWithRetry
-                                            | None -> runTestWithRetry
-                                    with LaunchStalledException reason ->
-                                        // AUTOMATION-65 QA finding — the launch gap. The
-                                        // watchdog killed a child that never showed a sign of
-                                        // life within the launch deadline (an overloaded spawn
-                                        // that went nowhere). Re-raise NAMING the config and
-                                        // elapsed so the run's Aborted lifecycle (built by the
-                                        // caller's `with ex ->`) carries a legible diagnostic;
-                                        // a launch stall means this project NEVER RAN, so the
-                                        // whole run must abort → PluginStatus.Failed → `check`
-                                        // exits non-green rather than wedging at Running. (A
-                                        // child that EXITS — even a sleep-killed one — is NOT a
-                                        // stall: the poll observes its exit and it's classified
-                                        // normally, non-green, without wedging.)
-                                        return
-                                            raise (
-                                                LaunchStalledException
-                                                    $"%s{config.Project}: %s{reason} (after %.0f{projectSw.Elapsed.TotalSeconds}s)"
-                                            )
+                                        try
+                                            return!
+                                                match ctx with
+                                                | Some c ->
+                                                    PluginCtxHelpers.withSubtask
+                                                        c
+                                                        config.Project
+                                                        $"testing {config.Project}"
+                                                        runTestWithRetry
+                                                | None -> runTestWithRetry
+                                        with LaunchStalledException reason ->
+                                            // AUTOMATION-65 QA finding — the launch gap. The
+                                            // watchdog killed a child that never showed a sign
+                                            // of life within the launch deadline (an overloaded
+                                            // spawn that went nowhere). Re-raise NAMING the
+                                            // config and elapsed so the run's Aborted lifecycle
+                                            // (built by the caller's `with ex ->`) carries a
+                                            // legible diagnostic; a launch stall means this
+                                            // project NEVER RAN, so the whole run must abort →
+                                            // PluginStatus.Failed → `check` exits non-green
+                                            // rather than wedging at Running. (A child that
+                                            // EXITS — even a sleep-killed one — is NOT a stall:
+                                            // the poll observes its exit and it's classified
+                                            // normally, non-green, without wedging.)
+                                            return
+                                                raise (
+                                                    LaunchStalledException
+                                                        $"%s{config.Project}: %s{reason} (after %.0f{projectSw.Elapsed.TotalSeconds}s)"
+                                                )
+                                    finally
+                                        // The pumps are done by the time `runProcessTo`
+                                        // returns (it drains them), so nothing is still
+                                        // writing when this closes.
+                                        runLog.Close()
                                 }
 
                             projectSw.Stop()
@@ -2165,7 +2230,7 @@ let private executeTests
                             | TestsFailed _
                             | TestsTimedOut _
                             | TestsErrored _ ->
-                                for line in formatFailureReport config.Project output do
+                                for line in formatFailureReport config.Project runLog.Ref output do
                                     Logging.error "test-prune" line
                             | _ -> ()
 

@@ -2442,12 +2442,20 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 // discards. The matcher must surface the failing test name(s) robustly, and
 // when nothing parses it must dump the output tail rather than swallow it.
 
+/// The run log these tests pretend was written. Most of them are about the
+/// per-test MATCHER and don't care which arm this is; the ones that ARE about the
+/// log (below) pass their own.
+let private savedLog =
+    FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/deadbeef/FsHotWatch.Tests.output.log"
+
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport surfaces a plain failed-test line`` () =
     let output =
         "Discovering: probe\nfailed FsHotWatch.Tests.Foo.bar (32ms)\nTest run summary: Failed!\n  total: 1\n  failed: 1\n  succeeded: 0"
 
-    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+
     test <@ report.Contains("FsHotWatch.Tests.Foo.bar") @>
     test <@ report.Contains("1 test(s) failed") @>
 
@@ -2458,7 +2466,9 @@ let ``formatFailureReport surfaces a timed-out (canceled) test — the daemon-lo
     let output =
         "failed (canceled) FsHotWatch.Tests.Slow.thing (118ms)\n  Test execution timed out after 100 milliseconds\n  total: 1\n  failed: 1"
 
-    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+
     test <@ report.Contains("FsHotWatch.Tests.Slow.thing") @>
     test <@ report.Contains("(canceled)") @>
     test <@ report.Contains("1 test(s) failed") @>
@@ -2471,7 +2481,9 @@ let ``formatFailureReport matches a failed line with leading whitespace`` () =
     let output =
         "    failed FsHotWatch.Tests.Indented.case (5ms)\n  total: 1\n  failed: 1"
 
-    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+
     test <@ report.Contains("1 test(s) failed") @>
     test <@ report.Contains("FsHotWatch.Tests.Indented.case") @>
 
@@ -2483,11 +2495,74 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
     let output =
         "Building...\nUnhandled exception: System.AccessViolationException\n  at Some.Native.Frame()\nProcess terminated."
 
-    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    let report =
+        formatFailureReport "FsHotWatch.Tests" savedLog output |> String.concat "\n"
+
     test <@ report.Contains("0 test(s) failed") @>
     test <@ report.Contains("no per-test 'failed' line was parsed") @>
     // The actual cause IS surfaced (not swallowed).
     test <@ report.Contains("AccessViolationException") @>
+
+// --- AUTOMATION-279: the backstop message must name a log that EXISTS ---
+//
+// The defect: this message told its reader the failure was visible "without the
+// saved log" — and there was no saved log. The plugin's only `File.WriteAllText`
+// wrote Cobertura coverage. So the one line a stuck engineer reads at 2am pointed
+// at a file no code had ever written, and the 40-line tail was all there was.
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport names the run log it was actually given`` () =
+    let output = "Building...\nProcess terminated."
+
+    let path = "/repo/.fshw/test-runs/abc123/Intelligence.Tests.Integration.output.log"
+
+    let report =
+        formatFailureReport "Intelligence.Tests.Integration" (FsHotWatch.RunLog.Ref.Written path) output
+        |> String.concat "\n"
+
+    // The path — the whole point. A reader can copy it and go.
+    test <@ report.Contains(path) @>
+    // And the phrasing that sent them nowhere is gone for good.
+    test <@ not (report.Contains("without the saved log")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport states WHY there is no log rather than naming one`` () =
+    // The invariant that keeps this bug from coming back in a new costume: a path
+    // is printed only when something opened it. When the open failed, the message
+    // says so — it does not fall back to a plausible-looking path, and it does not
+    // fall silent either.
+    let output = "Building...\nProcess terminated."
+
+    let report =
+        formatFailureReport "FsHotWatch.Tests" (FsHotWatch.RunLog.Ref.Unavailable "disk full") output
+        |> String.concat "\n"
+
+    test <@ report.Contains("NO output log was saved") @>
+    test <@ report.Contains("disk full") @>
+    test <@ not (report.Contains(".output.log")) @>
+    // The tail is still dumped — this arm loses the head, not the summary.
+    test <@ report.Contains("Process terminated") @>
+
+[<Fact(Timeout = 15000)>]
+let ``the console tail cannot reach the head — which is why the log exists`` () =
+    // The incident, reduced to an assertion. 60 lines: the cause is line 1 and the
+    // remaining 59 are the indistinguishable repeated startup logging that filled
+    // all forty lines of the real tail. This test does NOT ask the tail to improve
+    // — a fixed tail structurally cannot reach a head. It pins the reason the file
+    // is worth writing, and it is the positive control for the message tests
+    // above: if it ever passes trivially, they were proving nothing.
+    let output =
+        [ "Test shard pool 'intelligence_test_9f80_integration' is already in use by PID 18024"
+          yield! List.replicate 59 "Applying migration 20250714_AddThing" ]
+        |> String.concat "\n"
+
+    let report =
+        formatFailureReport "Intelligence.Tests.Integration" savedLog output
+        |> String.concat "\n"
+
+    test <@ not (report.Contains("already in use by PID 18024")) @>
+    // ...so the message had better point at something that does contain it.
+    test <@ report.Contains(".output.log") @>
 
 // --- isZeroTestsUnderFilter unit tests ---
 //
@@ -3030,6 +3105,125 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
         match last.Results |> Map.tryFind "ProjA" with
         | Some r -> test <@ TestResult.wasFiltered r = false @>
         | None -> Assert.Fail("ProjA not in Results"))
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-279 — every project's output is STREAMED to
+// `.fshw/test-runs/<runId>/<Project>.output.log`, and a suite KILLED at its
+// timeout still leaves the part it managed to print.
+//
+// This is the case the ticket exists for. An integration suite hit its 900s cap
+// on four consecutive `check`/`confirm` runs; the only evidence was a 40-line
+// tail, and all forty lines were the same repeated startup logging. Run by hand,
+// the cause appeared in seconds — at the HEAD. A killed child reaches no
+// end-of-run writer, so anything that buffers and flushes at the end leaves
+// nothing at all here.
+// ---------------------------------------------------------------------------
+
+/// The run logs on disk under a repo root, as (file name, contents).
+let private runLogsUnder (repoRoot: string) =
+    let root = Path.Combine(repoRoot, ".fshw", "test-runs")
+
+    if not (Directory.Exists root) then
+        []
+    else
+        Directory.GetFiles(root, "*" + FsHotWatch.RunLog.Suffix, SearchOption.AllDirectories)
+        |> Array.toList
+        |> List.map (fun f -> Path.GetFileName f, File.ReadAllText f)
+        |> List.sortBy fst
+
+[<Fact(Timeout = 60000)>]
+let ``a test project KILLED at its timeout still leaves its partial run log`` () =
+    withTempDir "tp-runlog-kill" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        // Announces its cause, then hangs. `timeoutSec` 2 kills the tree, so this
+        // project never exits and never reaches a writer of any kind.
+        let configs =
+            [ { Project = "ProjKilled"
+                Command = "sh"
+                Args = "-c \"echo SHARD-POOL-IN-USE-BY-PID-18024; sleep 60\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = Some 2
+                // A `sh` fixture is not an MTP runner: asking it for CTRF would put
+                // an unsupported flag on its command line.
+                ReportVerificationFormat = Disabled } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil (fun () -> getCompleted () |> List.isEmpty |> not) 45000
+
+        let completed = getCompleted ()
+        test <@ completed.Length >= 1 @>
+
+        // The run really did end in a kill — otherwise this proves nothing about
+        // the kill path.
+        match (completed |> List.last).Results |> Map.tryFind "ProjKilled" with
+        | Some(TestsTimedOut _) -> ()
+        | other -> Assert.Fail $"fixture broken: expected ProjKilled to be TestsTimedOut, got %A{other}"
+
+        match runLogsUnder tmpDir with
+        | [ (name, contents) ] ->
+            test <@ name = "ProjKilled" + FsHotWatch.RunLog.Suffix @>
+            // What it said before it died — kept.
+            test <@ contents.Contains("SHARD-POOL-IN-USE-BY-PID-18024") @>
+        | other -> Assert.Fail $"expected exactly one run log for the killed project, got %A{other}")
+
+[<Fact(Timeout = 60000)>]
+let ``a PASSING project gets a run log too — no special-casing the suspect suite`` () =
+    // Which project will need explaining is not knowable in advance, and a
+    // passing-but-slow suite is worth reading. So the log is not a failure
+    // artifact: it is written for every project on every run.
+    withTempDir "tp-runlog-pass" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        let configs =
+            [ { Project = "ProjGreenA"
+                Command = "echo"
+                Args = "hello-from-a"
+                Group = "a"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = Disabled }
+              { Project = "ProjGreenB"
+                Command = "echo"
+                Args = "hello-from-b"
+                Group = "b"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = Disabled } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil (fun () -> getCompleted () |> List.isEmpty |> not) 30000
+
+        match runLogsUnder tmpDir with
+        | [ (nameA, contentsA); (nameB, contentsB) ] ->
+            test <@ nameA = "ProjGreenA" + FsHotWatch.RunLog.Suffix @>
+            test <@ nameB = "ProjGreenB" + FsHotWatch.RunLog.Suffix @>
+            // Each holds its OWN project's output, verbatim — not a merged pile.
+            test <@ contentsA.Contains("hello-from-a") @>
+            test <@ not (contentsA.Contains("hello-from-b")) @>
+            test <@ contentsB.Contains("hello-from-b") @>
+        | other -> Assert.Fail $"expected one run log per project, got %A{other}")
 
 // ---------------------------------------------------------------------------
 // Coverage path selection + post-test merge step. Pure helpers — tested

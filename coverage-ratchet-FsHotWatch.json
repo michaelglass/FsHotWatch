@@ -637,6 +637,20 @@
       "branch": 0,
       "reason": "loosened automatically"
     },
+    "RunLog.fs": [
+      {
+        "line": 94,
+        "branch": 75,
+        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file\u0027s tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm \u2014 the \u0060with ex when isExpectedFileFailure ex\u0060 guard around \u0060writer.Dispose()\u0060 in \u0060Close\u0060, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested.",
+        "platform": "macos"
+      },
+      {
+        "line": 94,
+        "branch": 75,
+        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file\u0027s tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm \u2014 the \u0060with ex when isExpectedFileFailure ex\u0060 guard around \u0060writer.Dispose()\u0060 in \u0060Close\u0060, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "platform": "linux"
+      }
+    ],
     "RunOnceCheck.fs": [
       {
         "line": 70,

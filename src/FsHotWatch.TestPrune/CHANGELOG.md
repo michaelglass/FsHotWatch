@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- feat: **every test project's output is saved, streamed, for every run**
+  (AUTOMATION-279). `.fshw/test-runs/<runId>/<Project>.output.log`, written as the
+  runner speaks, on success as well as failure and with no project special-cased —
+  which suite will need explaining is not knowable in advance, and a passing-but-slow
+  one is worth reading too. The failure that most needs it is the suite SIGKILLed at
+  its `timeoutSec`: it reaches no end-of-run writer at all, so anything that buffered
+  and flushed at the end would leave nothing exactly where everything is wanted.
+- fix: **the failure report no longer points at a log nobody wrote.** It said the
+  failure was visible "*without the saved log*" — and there was no saved log; the
+  plugin's only `File.WriteAllText` emitted Cobertura coverage. It now names the run
+  log's real path, or, when the log could not be opened, says so and why. The 40-line
+  console tail stays: this ADDS an artifact, it does not remove the summary. It is
+  also structurally the wrong end of the output for a killed run — an integration
+  suite hit its 900s cap on four consecutive `check`/`confirm` runs and all forty
+  lines of tail were the same repeated startup logging from seven app instances,
+  while the cause ("test shard pool … is already in use by PID 18024") had been
+  printed in the first seconds, at the head. Five wrong hypotheses were chased before
+  someone ran the suite by hand.
+
 - fix: **a schema recreate could discharge real test debt as a green that ran nothing
   (AUTOMATION-275).** `ChangedSymbolsAllUncovered` buys a "nothing to verify" green that
   executes zero tests, and it was inferred from `QueryAffectedTests` returning empty.
