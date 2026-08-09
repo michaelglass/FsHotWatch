@@ -1051,3 +1051,189 @@ type KillFailureIsLoudTests() =
         finally
             Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel original
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-279 — THE OUTPUT SINK, AND WHY IT MUST BE FED AS BYTES ARRIVE.
+//
+// TestPrune used to keep a test project's output only in memory and echo a
+// 40-line TAIL of it on failure. An integration suite then hit its 900s cap on
+// four consecutive runs, and all forty lines of that tail were identical repeated
+// startup logging from seven app instances. The cause — "test shard pool ... is
+// already in use by PID 18024" — had been printed in the first seconds, at the
+// HEAD. Five wrong hypotheses were chased before someone ran the suite by hand.
+//
+// The fix is a sink written through AS OUTPUT ARRIVES. "As it arrives" is not a
+// performance note, it is the entire contract: the case that most needs the
+// evidence is the child SIGKILLed at its timeout, which never reaches any
+// end-of-run writer and whose in-memory capture the kill itself truncates. A sink
+// fed from the final capture would be no sink at all — it would rebuild the bug.
+// ---------------------------------------------------------------------------
+
+/// A sink over a REAL FILE — the production shape (`RunLog.openFor`), not a
+/// StringBuilder. A StringBuilder sink would pass this file's kill test while an
+/// unflushed `StreamWriter` buffer silently lost the same bytes in production, so
+/// the test writes, flushes and reads back through the filesystem exactly as the
+/// daemon does.
+let private withFileSink (dir: string) (body: (string -> unit) -> string -> unit) =
+    let path = IO.Path.Combine(dir, "child.output.log")
+
+    use stream =
+        new IO.FileStream(path, IO.FileMode.Create, IO.FileAccess.Write, IO.FileShare.Read)
+
+    use writer = new IO.StreamWriter(stream)
+    writer.AutoFlush <- true
+    body (fun chunk -> writer.Write(chunk: string)) path
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
+    // THE test for this change. The child announces its cause and then hangs
+    // forever; the timeout kills its tree. It never exits normally, so nothing
+    // downstream of the process ever runs — if the sink were fed at the end, this
+    // file would be empty, which is precisely the production bug.
+    withTempDir "sink-kill" (fun dir ->
+        withFileSink dir (fun sink path ->
+            let outcome =
+                runProcessTo
+                    (Some sink)
+                    "sh"
+                    "-c \"echo SHARD-POOL-IN-USE-BY-PID-18024; sleep 30\""
+                    "."
+                    []
+                    (ProcessBounds.streaming (TimeSpan.FromMilliseconds 600.0) (TimeSpan.FromSeconds 10.0))
+
+            match outcome with
+            | TimedOut _ -> ()
+            | other -> Assert.Fail $"expected TimedOut (the kill path is the whole point), got %A{other}"
+
+            // The partial log EXISTS and carries what the child managed to say.
+            Assert.True(IO.File.Exists path, $"no log at %s{path} — a killed run left no evidence at all")
+            Assert.Contains("SHARD-POOL-IN-USE-BY-PID-18024", IO.File.ReadAllText path)))
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () =
+    // The incident, reduced. 60 lines of output: the cause is line 1, and the next
+    // 59 are the indistinguishable noise that a tail would show instead. The sink
+    // has the head; a tail of the same output does not. Without this the change
+    // could "pass" while surfacing only what the console already surfaced.
+    withTempDir "sink-head" (fun dir ->
+        withFileSink dir (fun sink path ->
+            let script =
+                "-c \"echo REAL-CAUSE-AT-HEAD; i=0; while [ $i -lt 59 ]; do echo migration-noise; i=$((i+1)); done\""
+
+            match runProcessTo (Some sink) "sh" script "." [] quick with
+            | Succeeded _ -> ()
+            | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+            let logged = IO.File.ReadAllText path
+
+            Assert.Contains("REAL-CAUSE-AT-HEAD", logged)
+
+            // Positive control for the assertion above: the last 40 non-blank lines
+            // — what the console shows — do NOT contain it. If this ever passes
+            // trivially (say the child's output shrank), the test above proved
+            // nothing, and this fails first and says so.
+            let tail =
+                logged.Split('\n')
+                |> Array.filter (String.IsNullOrWhiteSpace >> not)
+                |> fun ls -> ls.[max 0 (ls.Length - 40) ..]
+                |> String.concat "\n"
+
+            Assert.DoesNotContain("REAL-CAUSE-AT-HEAD", tail)))
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
+    // THE discriminating test for "as it arrives". Everything else in this file
+    // passes just as happily against a `runProcessTo` that hands the sink the
+    // whole capture at the end — I checked, by writing that mutation and watching
+    // all of them stay green. The two things that DON'T survive it are here:
+    //
+    //   * WHEN the first chunk reaches the sink (immediately, vs. at exit), and
+    //   * whether the bytes are READABLE BY ANOTHER READER while the child still
+    //     runs — which is the difference between `tail -f`-ing a wedged 900 s
+    //     suite and waiting fifteen minutes to learn nothing.
+    //
+    // The second also pins `AutoFlush`: without it the same bytes sit in a
+    // StreamWriter buffer and the on-disk read below comes back empty.
+    withTempDir "sink-during" (fun dir ->
+        withFileSink dir (fun sink path ->
+            let sw = Diagnostics.Stopwatch.StartNew()
+            let mutable firstChunkAt = TimeSpan.Zero
+            let mutable onDiskAtFirstChunk = ""
+            let mutable chunks = 0
+
+            let observing (chunk: string) =
+                sink chunk
+
+                if chunks = 0 then
+                    firstChunkAt <- sw.Elapsed
+                    // Read back through the filesystem, on a SEPARATE handle, while
+                    // the child is still sleeping. FileShare.Read is what permits it.
+                    onDiskAtFirstChunk <-
+                        use fs =
+                            new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
+
+                        use reader = new IO.StreamReader(fs)
+                        reader.ReadToEnd()
+
+                chunks <- chunks + 1
+
+            // Prints at once, then lives another 3 s doing nothing.
+            let outcome =
+                runProcessTo (Some observing) "sh" "-c \"echo early; sleep 3\"" "." [] quick
+
+            let elapsedAtEnd = sw.Elapsed
+
+            match outcome with
+            | Succeeded _ -> ()
+            | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+            Assert.True(chunks > 0, "the sink was never called")
+
+            // Fixture control FIRST: if the child didn't actually live ~3 s, then
+            // "the chunk arrived early" would be a claim about nothing, and every
+            // assertion below it would be vacuous.
+            Assert.True(
+                elapsedAtEnd > TimeSpan.FromSeconds 2.5,
+                $"fixture broken: the child was meant to live ~3s, ran %.1f{elapsedAtEnd.TotalSeconds}s"
+            )
+
+            // Arrived at the START of the run, not at its end.
+            Assert.True(
+                firstChunkAt < TimeSpan.FromSeconds 1.5,
+                $"the first chunk reached the sink after %.1f{firstChunkAt.TotalSeconds}s of a \
+                  %.1f{elapsedAtEnd.TotalSeconds}s run — that is buffer-then-write, not streaming"
+            )
+
+            // And it was on disk, readable, while the child was still alive.
+            Assert.Contains("early", onDiskAtFirstChunk)))
+
+[<Fact(Timeout = 15000)>]
+let ``a throwing sink is disabled, never fatal, and never corrupts the capture`` () =
+    // A full disk may not fail a test run, and — subtler — a sink failure may not
+    // be laundered into the pump's own `failure` latch, which means "the STREAM
+    // died" and would downgrade a complete capture to `DrainTimedOut`.
+    let mutable calls = 0
+
+    let alwaysThrows _ =
+        calls <- calls + 1
+        raise (IO.IOException "disk full")
+
+    match runProcessTo (Some alwaysThrows) "sh" "-c \"echo still-captured\"" "." [] quick with
+    | Succeeded(ProcessOutput.Drained text) -> Assert.Equal("still-captured", text)
+    | other -> Assert.Fail $"expected Succeeded with a COMPLETE (Drained) capture, got %A{other}"
+
+    // Disabled after the first throw rather than retried per chunk — one warning,
+    // not one per 4 KB.
+    Assert.Equal(1, calls)
+
+[<Fact(Timeout = 15000)>]
+let ``runProcess is runProcessTo with no sink`` () =
+    // The 5-arg form every other caller uses must stay exactly what it was.
+    let withoutSink = runProcessBounded "echo" "same" quick
+    let withNoneSink = runProcessTo None "echo" "same" "." [] quick
+
+    match withoutSink, withNoneSink with
+    | Succeeded(ProcessOutput.Drained a), Succeeded(ProcessOutput.Drained b) ->
+        Assert.Equal("same", a)
+        Assert.Equal(a, b)
+    | a, b -> Assert.Fail $"expected two identical Succeeded captures, got %A{a} and %A{b}"

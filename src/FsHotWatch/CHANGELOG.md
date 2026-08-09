@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- feat: **`ProcessHelper.runProcessTo` — an output sink fed AS THE CHILD SPEAKS.**
+  `runProcess` is unchanged (it is now `runProcessTo None`); the new form takes an
+  optional `string -> unit` that receives every chunk on the pump thread, inside the
+  same lock as the in-memory capture, so a caller's file and `ProcessOutput.text` can
+  never disagree about what was said or in what order. "As it arrives" is the whole
+  contract, not a performance note: the returned `ProcessOutcome` only exists for a
+  child we outlived, so anything derived from it is unavailable in exactly the case
+  where evidence matters most. A sink fed from the final capture would be no sink.
+  A **throwing** sink is disabled (once, with a warning) rather than fatal, and never
+  touches the pump's own `failure` latch — that latch means "the stream died", and a
+  full disk must not downgrade a complete capture to `DrainTimedOut`.
+- feat: **`RunLog` — the streamed per-project test-run log**, at
+  `.fshw/test-runs/<runId>/<Project>.output.log`, beside that run's CTRF report.
+  `AutoFlush`, so bytes are on disk before the close and `tail -f` works on a suite
+  that is still running; `FileShare.Read` so a reader can open it mid-flight. Opening
+  is best-effort and NEVER throws — failing to open a place to write evidence may not
+  fail the run that produced it. `RunLog.Ref` is a DU (`Written of path` /
+  `Unavailable of reason`) because `Written` can only be constructed by the code
+  holding the open handle: a path in a diagnostic is therefore a path that exists.
+
 - feat: **activity heartbeat.** The daemon rewrites `<repoRoot>/.fshw/heartbeat` —
   Unix epoch seconds, decimal ASCII — every 15s for exactly as long as a run is in
   progress, and **never while idle**. Same contract shape as `daemon.pid`: fshw

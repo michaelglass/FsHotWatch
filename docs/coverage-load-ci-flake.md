@@ -108,6 +108,14 @@ gh run view <run> -R michaelglass/FsHotWatch --log-failed \
   diagnostics for a build/daemon failure *inside a test* live in the `dotnet test`
   stdout, not `.fshw/`, so it uploads nothing for this mode. The TRX step above closes
   that gap.
+- `RunLog` (AUTOMATION-279) — every test project's raw stdout+stderr, STREAMED to
+  `.fshw/test-runs/<runId>/<Project>.output.log` as it arrives, on success as well as
+  failure. It is the WHOLE output, so it has the HEAD that `formatFailureReport`'s
+  40-line tail structurally cannot reach — the failure shape where a suite states its
+  cause in the first seconds and then floods the log for the next fifteen minutes.
+  Because it lands under `.fshw/test-runs/**`, the upload above already collects it and
+  no CI change was needed. A suite killed at its `timeoutSec` still leaves the partial
+  log, which is the case it exists for.
 
 ## On the `verifyArtifactsFresh` defensive code (the original question)
 
