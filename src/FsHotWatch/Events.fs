@@ -372,6 +372,52 @@ type TestResults =
     { Results: Map<string, TestResult>
       Elapsed: System.TimeSpan }
 
+/// What a run actually VERIFIED — the run-level answer to "did this prove anything?".
+///
+/// Lives here, in core, rather than inside TestPrune, because BOTH ends of the wire
+/// need it: TestPrune produces the token and the CLI consumes it. When it lived on
+/// only one side the other hand-wrote the string literals, so a rename on the producer
+/// was silent on the consumer — and the consumer's `else` branch mapped every
+/// unrecognized token to `Tests passed`, exit 0. That is the single outcome this whole
+/// area exists to prevent, so the token is now parsed rather than compared.
+type RunVerification =
+    /// No project was selected — nothing was invoked.
+    | NoProjectsSelected
+    /// Projects ran; every one matched zero tests under the active filter.
+    | AllZeroMatch of projectCount: int
+    /// At least one project executed at least one test.
+    | Ran
+
+[<RequireQualifiedAccess>]
+module RunVerification =
+
+    /// Stable wire token. The ONLY place these strings are written.
+    let token (c: RunVerification) : string =
+        match c with
+        | NoProjectsSelected -> "no-projects-selected"
+        | AllZeroMatch _ -> "all-zero-match"
+        | Ran -> "ran"
+
+    /// Read a token off the wire. `None` means "this build cannot interpret it" —
+    /// which a caller must treat as NO VERDICT, never as a pass. Deliberately not a
+    /// total function with a default: a default here is precisely how an unknown
+    /// reading becomes a green one.
+    let tryParse (s: string) : RunVerification option =
+        match s with
+        | "no-projects-selected" -> Some NoProjectsSelected
+        // The count is carried separately on the wire; the parsed case exists to say
+        // WHICH shape this is, and callers that need the number read it alongside.
+        | "all-zero-match" -> Some(AllZeroMatch 0)
+        | "ran" -> Some Ran
+        | _ -> None
+
+    /// True when the run verified NOTHING — the property every gate cares about.
+    let verifiedNothing (c: RunVerification) : bool =
+        match c with
+        | NoProjectsSelected
+        | AllZeroMatch _ -> true
+        | Ran -> false
+
 /// Outcome of a complete test run.
 type TestRunOutcome =
     /// Run executed to natural completion (inspect Results for per-project pass/fail).
