@@ -34,6 +34,58 @@ let WideSelectionTests = 500
 [<Literal>]
 let MaxSeedsToAttribute = 200
 
+/// AUTOMATION-275 — how many CONSECUTIVE flush cycles a symbol must sit in the
+/// needs-testing queue before its persistence is itself evidence of a problem.
+///
+/// One cycle is ordinary: a symbol is queued and waits for the run that verifies it.
+/// Two is still explicable — an aborted run, or a red project mid-fix. By three the
+/// symbol has outlived several complete verify attempts while still dragging in a
+/// quarter of the suite, and "it is about to clear" has stopped being the likely
+/// story. Deliberately late: this fires on a human-visible warning, and one that
+/// cries wolf during an ordinary red-to-green cycle would be tuned out precisely
+/// when it finally mattered.
+[<Literal>]
+let PoisonSeedRuns = 3
+
+/// The share of a run's selected tests one seed must account for before it reads as
+/// a graph hub or a mis-qualified symbol rather than an ordinary dependency. Matches
+/// the existing per-seed attribution threshold (`affected.Length / 4`) so the two
+/// diagnostics agree about what "dominant" means.
+[<Literal>]
+let PoisonSeedSharePercent = 25
+
+/// Is this queued symbol behaving like the poisoned seed of AUTOMATION-270 — pinned
+/// across runs AND selecting a large fraction of the suite every time?
+///
+/// The pattern is what made that incident invisible for an unknown length of time. A
+/// symbol only leaves the queue when every runnable project covering it passes, so ONE
+/// persistently-red project pins it forever, and while pinned it re-seeds its whole
+/// selection on every subsequent run. A single mis-qualified symbol (`name`, `kind`)
+/// plus one red project is therefore a permanent, silent, near-full suite that looks
+/// exactly like ordinary impact analysis from the outside.
+///
+/// Neither half is sufficient alone, which is why this is a conjunction: a legitimately
+/// pinned symbol selecting three tests is just a slow fix, and a genuine graph hub
+/// selecting half the suite for one run is just an expensive edit. Only their product
+/// — wide, and *staying* — describes the failure.
+///
+/// Integer arithmetic is deliberate: `alone * 100 >= affected * share` avoids the
+/// rounding that would let a seed sit just under the line forever.
+let isPoisonSuspect (consecutiveRuns: int) (affectedCount: int) (aloneCount: int) : bool =
+    consecutiveRuns >= PoisonSeedRuns
+    && affectedCount > 0
+    && aloneCount * 100 >= affectedCount * PoisonSeedSharePercent
+
+/// Advance the consecutive-appearance counters for the symbols seeding THIS cycle.
+///
+/// Rebuilt from `Map.empty` rather than updated in place, so a symbol absent from
+/// this cycle's seeds loses its history entirely. That is what makes the count
+/// CONSECUTIVE: a symbol that clears and is later re-queued starts again at one, and
+/// cannot accumulate its way to a false accusation across unrelated edits.
+let bumpSeedAges (previous: Map<string, int>) (seeds: string list) : Map<string, int> =
+    seeds
+    |> List.fold (fun acc s -> Map.add s ((previous |> Map.tryFind s |> Option.defaultValue 0) + 1) acc) Map.empty
+
 /// Per-project raw cobertura written by a FULL (unfiltered) test run.
 [<Literal>]
 let BaselineName = "coverage.baseline.cobertura.xml"
@@ -2686,6 +2738,21 @@ let create
     /// Cleared only by a full-suite run that passed EVERY runnable project.
     let mutable ledgerRecoveryOutstandingRef = ledgerUnreadableReason.IsSome
 
+    /// AUTOMATION-275 — how many CONSECUTIVE flush cycles each currently-queued symbol
+    /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
+    /// (see `isPoisonSuspect`).
+    ///
+    /// In-memory and per-session on purpose. Persisting it would mean either a second
+    /// sidecar or changing `pending-verification.json`'s shape — and that file's reader
+    /// treats ANY unparseable content as an unknown debt that widens every run to the
+    /// full suite until a green (AUTOMATION-150), so a format change would hand every
+    /// existing checkout one gratuitous full-suite recovery. A diagnostic is not worth
+    /// that. The cost of forgetting on restart is a warning that takes three more cycles
+    /// to re-arm; the incident this guards against ran for days.
+    ///
+    /// Same closure-local + `Volatile` shape as `pendingQueueRef`, for the same reason.
+    let mutable pendingAgeRef: Map<string, int> = Map.empty
+
     // Say it out loud. A silent recovery here is how this stayed invisible: the old
     // code swallowed the corrupt file and reported a green.
     match ledgerUnreadableReason with
@@ -2915,6 +2982,52 @@ let create
 
                 Logging.info "test-prune" $"  seeds: %s{describeAll sortedSeeds}"
 
+                // AUTOMATION-275 — the poisoned-seed guard.
+                //
+                // The per-seed attribution below answers "is one seed dominating THIS
+                // run?", which is a question about a moment. The failure that actually
+                // happened was a question about TIME: `name` and `kind` dominated every
+                // run, for an unknown number of days, and each individual run looked
+                // like a legitimately expensive edit. Width alone could not tell them
+                // apart; only width that PERSISTS can.
+                //
+                // Ages advance before the check so a symbol on its Nth consecutive
+                // appearance is judged as N. Only aged seeds are re-queried, so the
+                // usual cost is zero: on a healthy queue no symbol reaches the
+                // threshold and the loop body never runs. Note this is independent of
+                // `WideSelectionTests` — a seed pinning 200 tests of a 400-test suite
+                // is the same disease as one pinning 3,000, and gating on absolute
+                // width would miss every smaller repo.
+                Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) symbols)
+                let ages = Volatile.Read(&pendingAgeRef)
+
+                let ageOf s =
+                    ages |> Map.tryFind s |> Option.defaultValue 0
+
+                let agedSeeds = sortedSeeds |> List.filter (fun s -> ageOf s >= PoisonSeedRuns)
+
+                for seed in agedSeeds do
+                    let runs = ageOf seed
+                    let alone = (queryRunnable [ seed ]).Length
+
+                    if isPoisonSuspect runs affected.Length alone then
+                        let pct = alone * 100 / (max 1 affected.Length)
+
+                        // Named, counted, and told what to do about it. This is
+                        // deliberately a WARNING and not a quarantine: dropping the
+                        // symbol would be under-testing on a guess, and the honest
+                        // failure here is that nobody could SEE the pattern, not that
+                        // nothing could be done about it once seen.
+                        Logging.warn
+                            "test-prune"
+                            $"POSSIBLE POISONED SEED: '%s{seed}' has been queued for verification across \
+                              %d{runs} consecutive runs and alone selects %d{alone} of %d{affected.Length} \
+                              tests (%d{pct}%%). A symbol only leaves the queue once every runnable project \
+                              covering it passes, so one persistently-failing project pins it and it re-seeds \
+                              this selection every run. Check whether it is a real dependency-graph hub, a \
+                              mis-qualified symbol (AUTOMATION-270), or a test project that has been red for a \
+                              while."
+
                 // Per-seed attribution, but ONLY when the selection is already wide.
                 // A single seed accounting for most of a run is either a genuine
                 // graph hub or a mis-qualified symbol, and is the only thing worth
@@ -2979,7 +3092,49 @@ let create
         // complete green immediately instead of running the full suite (see
         // runTestsWithImpact's zero-affected skip). An EMPTY `symbols` (genuine
         // cold start, nothing pending) leaves this false so the baseline still runs.
-        let allChangesUncovered = not symbols.IsEmpty && List.isEmpty affectedTests
+        //
+        // AUTOMATION-275 — `not db.WasRecreated` is the third conjunct, and it is
+        // about what an empty query result is ALLOWED TO MEAN.
+        //
+        // This flag buys a green that executes NOTHING, so it must rest on proof.
+        // `QueryAffectedTests` returning empty proves "no test covers this symbol"
+        // only for a symbol the index KNOWS. For a name the index has never heard
+        // of, the identical empty result means "I cannot answer" — and the two are
+        // indistinguishable at the call site.
+        //
+        // A `SchemaVersion` bump makes that difference load-bearing. TestPrune
+        // deletes and recreates `test-impact.db` on schema drift (`TestPrune.Database`:
+        // "A mismatch causes the database file to be deleted and recreated"), but
+        // the pending-verification sidecar beside it carries no version and SURVIVES.
+        // Every name in that queue then resolves to nothing, is dropped just above as
+        // "no runnable covering test", and this flag went true — completing the cycle
+        // GREEN with ZERO tests run. The debt was discharged by the schema bump, not
+        // by a test. Observed end-to-end: a symbol indexed WITH a covering test, queued
+        // unverified, then orphaned by a recreate, produced
+        // "Every changed symbol has no covering test — nothing to verify (green, 0 ran)".
+        //
+        // A recreated index cannot vouch for anything the queue names, so it may not
+        // license the shortcut. The symbols are still dropped from the queue above —
+        // that is what stops a permanently-absent symbol wedging it — but the run now
+        // actually happens, and it is the run that discharges the debt. Erring toward
+        // running is the only direction `PendingVerification`'s header permits.
+        //
+        // Scoped tightly: on a genuine cold start the queue is empty, `symbols` is
+        // empty, and this is already false. The conjunct changes behaviour ONLY when
+        // a rebuilt index meets a non-empty surviving queue — exactly the unsound case.
+        let indexCannotVouch =
+            db.WasRecreated && not symbols.IsEmpty && List.isEmpty affectedTests
+
+        if indexCannotVouch then
+            Logging.warn
+                "test-prune"
+                $"%d{symbols.Length} queued symbol(s) resolved to no covering test, but the symbol index was \
+                  REBUILT this session (schema recreate) — so that is 'the index cannot answer', not proof they \
+                  are untested. Refusing the zero-test green; this run verifies them for real. Seeds: \
+                  %s{describeAll (List.sort symbols)}"
+
+        let allChangesUncovered =
+            not symbols.IsEmpty && List.isEmpty affectedTests && not db.WasRecreated
 
         { flushedState with
             ChangedSymbols = remainingSymbols

@@ -1795,11 +1795,33 @@ let ``all changed symbols with no covering test complete green without running``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // Seed the durable needs-testing queue with a symbol that has NO covering
-        // test — the fresh plugin DB indexes no test for it, so QueryAffectedTests
-        // is empty. The plugin loads this queue at construction, so the very first
-        // BuildCompleted flush drops it as uncovered, leaving an empty affected set
-        // (ChangedSymbolsAllUncovered = true).
+        // INDEX the orphan symbol, with no covering test, and let the plugin reopen
+        // this DB compatibly. Both halves matter (AUTOMATION-275): the guarantee under
+        // test is that a symbol PROVABLY has no covering test, and only an index that
+        // knows the symbol can prove it. Seeding the queue against a database that had
+        // never heard of `Orphan.uncovered` — the original fixture — asserted the same
+        // green over "the index cannot answer", which is the silent-green bug, not this
+        // feature. A pre-created DB also keeps `WasRecreated` false on the plugin's
+        // open, so the shortcut is legitimately available here.
+        let orphan: SymbolInfo =
+            { FullName = "Orphan.uncovered"
+              Kind = SymbolKind.Value
+              SourceFile = "src/Orphan.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "orphan-hash"
+              IsExtern = false }
+
+        let seedDb = Database.create dbPath
+        seedDb.RebuildProjects([ AnalysisResult.Create([ orphan ], [], []) ])
+
+        // Positive control: indexed, and genuinely covered by nothing.
+        test <@ (seedDb.QueryAffectedTests [ "Orphan.uncovered" ]).IsEmpty @>
+        test <@ (seedDb.GetSymbolsInFile "src/Orphan.fs").Length = 1 @>
+
+        // Seed the durable needs-testing queue with that symbol. The plugin loads the
+        // queue at construction, so the very first BuildCompleted flush drops it as
+        // uncovered, leaving an empty affected set (ChangedSymbolsAllUncovered = true).
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Orphan.uncovered" ])
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -1834,6 +1856,171 @@ let ``all changed symbols with no covering test complete green without running``
             waitForAllTerminal host (TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
 
         test <@ waitTask.Wait(TimeSpan.FromSeconds 8.0) @>)
+
+// AUTOMATION-275. The "nothing to verify" green above infers "this symbol has no
+// covering test" from an EMPTY `QueryAffectedTests` result. That inference is sound
+// only when the symbol is KNOWN to the index — an empty result otherwise means
+// "I have never heard of this name", which is not a fact about the symbol at all.
+//
+// The two are made to differ by TestPrune's own self-healing: a `SchemaVersion` bump
+// DELETES and recreates `test-impact.db` (`TestPrune.Database` — "A mismatch causes
+// the database file to be deleted and recreated"), and the pending-verification
+// sidecar sitting BESIDE it survives untouched. Every name it holds now resolves to
+// nothing. Real, unverified debt reads as "provably uncovered", is dropped from the
+// queue as unverifiable, and the cycle completes GREEN having run ZERO tests — the
+// debt discharged without a single test executing.
+//
+// The discriminator against the AUTOMATION-65 test above is that here the symbol IS
+// covered: `Lib.foo` was indexed with a covering test in `TestProject`, and only the
+// recreate destroyed the evidence. A run that verifies nothing may not report green.
+[<Fact(Timeout = 30000)>]
+let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-test green`` () =
+    withTempDir "tp-recreate-orphan" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        // Touched IF any test runs. The bug is that nothing does.
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        // 1. A healthy index: `Lib.foo` exists and `Tests.myTest` in `TestProject`
+        //    covers it. This is what makes the symbol legitimately verifiable.
+        let symbol: SymbolInfo =
+            { FullName = "Lib.foo"
+              Kind = SymbolKind.Value
+              SourceFile = "src/Lib.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "hash-v1"
+              IsExtern = false }
+
+        // The test method needs a `symbols` row of its own: `QueryAffectedTests`
+        // reaches tests by joining `test_methods.symbol_id`, so a test method with
+        // no symbol row is unreachable and every query returns empty.
+        let testSymbol: SymbolInfo =
+            { FullName = "Tests.myTest"
+              Kind = SymbolKind.Value
+              SourceFile = "tests/Tests.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "test-hash-v1"
+              IsExtern = false }
+
+        let testMethod: TestMethodInfo =
+            { SymbolFullName = "Tests.myTest"
+              TestProject = "TestProject"
+              TestClass = "Tests"
+              TestMethod = "myTest" }
+
+        let db = Database.create dbPath
+
+        db.RebuildProjects(
+            [ AnalysisResult.Create(
+                  [ symbol; testSymbol ],
+                  [ { FromSymbol = "Tests.myTest"
+                      ToSymbol = "Lib.foo"
+                      Kind = DependencyKind.Calls
+                      Source = "core" } ],
+                  [ testMethod ]
+              ) ]
+        )
+
+        // Positive control. While the index stands, `Lib.foo` IS covered — so an
+        // empty result later is the recreate's doing and not a broken fixture.
+        // (Without this, an unreachable test method would make the whole test pass
+        // vacuously: the first draft did exactly that.)
+        test <@ not (db.QueryAffectedTests [ "Lib.foo" ]).IsEmpty @>
+
+        // 2. `Lib.foo` changed and no covering run has passed since — genuine
+        //    outstanding debt, of exactly the kind this queue exists to hold.
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+        // 3. A SchemaVersion bump lands (v8→v9 shipped days ago). Stamp the
+        //    incompatible version an older TestPrune.Core would have left, so the
+        //    plugin's own `Database.create` performs the REAL delete-and-recreate
+        //    rather than a simulation of it. (Deleting the file by hand does NOT
+        //    work: Microsoft.Data.Sqlite pools connections, so a later open is
+        //    handed the deleted inode with its data intact and the test passes
+        //    against a database that was never actually recreated.)
+        do
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "PRAGMA user_version = 1;"
+            cmd.ExecuteNonQuery() |> ignore
+
+        // 4. The next run opens a DB that has never heard of `Lib.foo`.
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // Second positive control, the other way round: the recreate really did wipe
+        // the index. A compatible reopen now finds nothing, so the plugin's empty
+        // selection below is genuine.
+        test <@ (Database.create dbPath).QueryAffectedTests([ "Lib.foo" ]).IsEmpty @>
+
+        let completion = beginAwaitTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        test <@ completion.Wait(TimeSpan.FromSeconds 20.0) @>
+
+        // THE ASSERTION. `Lib.foo` is real, changed, covered, unverified debt. The
+        // recreate destroyed the record of what covers it; it did not verify it.
+        // Reporting green here discharges the debt having executed nothing.
+        test <@ File.Exists sentinel @>)
+
+// AUTOMATION-275 — the poisoned-seed guard's decision, tested without a daemon.
+// Each half of the conjunction gets a test that would pass if the OTHER half were
+// deleted, so neither can rot into a tautology.
+
+[<Fact>]
+let ``a seed selecting the whole suite for one run is not yet a poison suspect`` () =
+    // An expensive edit looks exactly like this for a run or two. Firing here is how
+    // a warning gets tuned out before the run that matters.
+    test <@ not (isPoisonSuspect 1 1000 1000) @>
+    test <@ not (isPoisonSuspect (PoisonSeedRuns - 1) 1000 1000) @>
+
+[<Fact>]
+let ``a seed pinned for many runs but selecting narrowly is not a poison suspect`` () =
+    // A symbol waiting on a slow fix is ordinary. Width is what makes a pin harmful.
+    test <@ not (isPoisonSuspect 50 1000 10) @>
+
+[<Fact>]
+let ``a seed that is both pinned and dominant is a poison suspect`` () =
+    // Exactly on the threshold: 250 of 1000 is the 25% share.
+    test <@ isPoisonSuspect PoisonSeedRuns 1000 250 @>
+    // The shape actually observed: one mis-qualified symbol taking the whole run,
+    // every run (AUTOMATION-270 — `name` alone selected 2,837 tests).
+    test <@ isPoisonSuspect 10 2837 2837 @>
+
+[<Fact>]
+let ``a run that selected nothing has no poison suspects`` () =
+    // Guards the division and the premise: with no tests selected there is no
+    // fraction to be a large part of, however long the symbol has been queued.
+    test <@ not (isPoisonSuspect 100 0 0) @>
+
+[<Fact>]
+let ``seed ages count consecutive appearances only`` () =
+    let afterFirst = bumpSeedAges Map.empty [ "A"; "B" ]
+    test <@ afterFirst = Map.ofList [ "A", 1; "B", 1 ] @>
+
+    // B does not seed this cycle, so it leaves the map entirely.
+    let afterSecond = bumpSeedAges afterFirst [ "A" ]
+    test <@ afterSecond = Map.ofList [ "A", 2 ] @>
+
+    // B returns — and starts from one. Without this, a symbol that cleared and was
+    // re-queued weeks later would inherit its old age and be accused immediately.
+    let afterThird = bumpSeedAges afterSecond [ "A"; "B" ]
+    test <@ afterThird = Map.ofList [ "A", 3; "B", 1 ] @>
 
 [<Fact(Timeout = 15000)>]
 let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` () =
