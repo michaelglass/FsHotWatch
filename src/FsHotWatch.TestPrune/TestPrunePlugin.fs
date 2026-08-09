@@ -761,30 +761,12 @@ let internal isZeroMatchResult (result: TestResult) : bool = TestResult.isNoMatc
 /// `NoProjectsSelected` has no discovered names at all — nothing ran to discover
 /// them — so the only honest report is that the scope was empty. Offering a
 /// "did you mean…" there would be guessing dressed as diagnosis.
-type internal RunVerification =
-    /// No project was selected — nothing was invoked.
-    | NoProjectsSelected
-    /// Projects ran; every one matched zero tests under the active filter.
-    | AllZeroMatch of projectCount: int
-    /// At least one project executed at least one test.
-    | Ran
-
-/// Stable wire token. Consumers match on this; adding a case is a deliberate
-/// contract change.
-let internal verificationToken (c: RunVerification) : string =
-    match c with
-    | NoProjectsSelected -> "no-projects-selected"
-    | AllZeroMatch _ -> "all-zero-match"
-    | Ran -> "ran"
-
-/// True when the run verified NOTHING — the property every gate cares about,
-/// and the one the old boolean could not answer.
-let internal verifiedNothing (c: RunVerification) : bool =
-    match c with
-    | NoProjectsSelected
-    | AllZeroMatch _ -> true
-    | Ran -> false
-
+///
+/// The TYPE and its wire tokens now live in core (`FsHotWatch.Events`), because
+/// both ends of the wire need them. While the tokens lived only here the CLI
+/// hand-wrote the string literals to compare against, so a rename on this side was
+/// silent on that one — and its fall-through mapped every unrecognized token to
+/// `Tests passed`, exit 0. Only `verificationOf` is TestPrune's business.
 let internal verificationOf (results: TestResults) : RunVerification =
     if results.Results.IsEmpty then
         NoProjectsSelected
@@ -827,6 +809,12 @@ let private formatTestResultsJson (results: TestResults) =
                output = truncateOutput 200 output
                elapsedMs = (TestResult.elapsed result).TotalMilliseconds |})
 
+    // Computed ONCE. It was previously evaluated twice in this literal, and a
+    // third field (`verifiedNothing`) was emitted carrying a value derivable from
+    // this one — three derivations of one fact, free to disagree. That field is
+    // gone: nothing parsed it, and it was added this release so it never shipped.
+    let verification = verificationOf results
+
     JsonSerializer.Serialize(
         {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
            // `noTestsMatched` is true iff EVERY project matched zero tests under
@@ -838,8 +826,7 @@ let private formatTestResultsJson (results: TestResults) =
            // producer rather than reconstructed by the consumer from array
            // lengths. A consumer that does not know this field falls back to the
            // counts — an ABSENT field must never be read as "ran".
-           coverage = verificationToken (verificationOf results)
-           verifiedNothing = verifiedNothing (verificationOf results)
+           coverage = RunVerification.token verification
            projects = projects |}
     )
 
