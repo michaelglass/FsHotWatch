@@ -9173,17 +9173,17 @@ let ``verificationOf tells an EMPTY run apart from one that matched nothing — 
     test <@ allZeroMatch allZero = true @>
 
 [<Fact>]
-let ``verifiedNothing is true for BOTH no-op shapes, and false for a real run`` () =
+let ``RunVerification.verifiedNothing is true for BOTH no-op shapes, and false for a real run`` () =
     // The property every gate actually cares about, which the bool could not answer.
-    test <@ verifiedNothing NoProjectsSelected @>
-    test <@ verifiedNothing (AllZeroMatch 3) @>
-    test <@ not (verifiedNothing Ran) @>
+    test <@ RunVerification.verifiedNothing NoProjectsSelected @>
+    test <@ RunVerification.verifiedNothing (AllZeroMatch 3) @>
+    test <@ not (RunVerification.verifiedNothing Ran) @>
 
 [<Fact>]
 let ``verification tokens are stable — the wire contract a CLI matches on`` () =
     // Positive control on the tokens themselves: a rename here silently turns
     // every consumer's match into its fallback branch, which for an older CLI
     // means reading a no-op run as "ran".
-    test <@ verificationToken NoProjectsSelected = "no-projects-selected" @>
-    test <@ verificationToken (AllZeroMatch 1) = "all-zero-match" @>
-    test <@ verificationToken Ran = "ran" @>
+    test <@ RunVerification.token NoProjectsSelected = "no-projects-selected" @>
+    test <@ RunVerification.token (AllZeroMatch 1) = "all-zero-match" @>
+    test <@ RunVerification.token Ran = "ran" @>
