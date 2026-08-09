@@ -3730,7 +3730,26 @@ let create
                                 match configsResult with
                                 | Error msg -> return JsonSerializer.Serialize({| error = msg |})
                                 | Ok configs when configs.IsEmpty ->
-                                    return JsonSerializer.Serialize({| error = "no matching test projects" |})
+                                    // Name what was asked for and what exists. A bare
+                                    // "no matching test projects" is unactionable for the
+                                    // one case that actually produces it — a mistyped or
+                                    // renamed `--project` — and the configured names are
+                                    // right here (AUTOMATION-272).
+                                    let msg =
+                                        match projectFilter with
+                                        | Some names ->
+                                            let asked = names |> Set.toList |> List.sort |> String.concat ", "
+
+                                            let known =
+                                                allConfigs
+                                                |> List.map (fun c -> c.Project)
+                                                |> List.sort
+                                                |> String.concat ", "
+
+                                            $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
+                                        | None -> "no matching test projects"
+
+                                    return JsonSerializer.Serialize({| error = msg |})
                                 | Ok configs ->
                                     let reply =
                                         Tasks.TaskCompletionSource<string>(
