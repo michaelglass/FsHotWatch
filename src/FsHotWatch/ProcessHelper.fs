@@ -609,7 +609,22 @@ module ProcessBounds =
 /// Reads stdout/stderr incrementally so the FIRST byte is observed as liveness.
 /// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the caller
 /// already set it (via `makeChildProcessStartInfo`).
-let runProcess
+///
+/// `sink`, when given, receives every chunk AS IT ARRIVES, on the pump thread,
+/// before the call returns. That "as it arrives" is the whole point: the returned
+/// `ProcessOutcome` only exists for a child we outlived, so anything derived from
+/// it is unavailable in exactly the case where evidence matters most — a child
+/// SIGKILLed on timeout, whose capture the kill truncates (`DrainTimedOut`), and a
+/// daemon that dies mid-run, which returns nothing at all. A sink that is written
+/// through as bytes land keeps what was said up to the moment it died. A sink fed
+/// from the final capture instead would be no sink at all.
+///
+/// A throwing sink is DISABLED, never fatal and never laundered into the capture:
+/// it may not turn a complete drain into a `DrainTimedOut` (the pump's own
+/// `failure` latch means "the STREAM died"), and a full disk may not fail a test
+/// run. The first throw is logged; the rest are silent.
+let runProcessTo
+    (sink: (string -> unit) option)
     (command: string)
     (args: string)
     (workDir: string)
@@ -640,6 +655,27 @@ let runProcess
     let output = StringBuilder()
     let outputLock = obj ()
     let mutable sawOutput = 0
+    let mutable sinkBroken = false
+
+    // Fed from inside `outputLock`, so the sink sees the chunks in the SAME order
+    // the in-memory capture does and the two pumps' writes are serialised against
+    // each other — a caller's file and `ProcessOutput.text` can never disagree
+    // about what the child said or in what order.
+    let emit (chunk: string) =
+        match sink with
+        | None -> ()
+        | Some write when not sinkBroken ->
+            try
+                write chunk
+            with ex ->
+                sinkBroken <- true
+
+                Logging.warn
+                    "process"
+                    $"output sink for `%s{command}` failed and is now DISABLED for this run: \
+                      %s{ex.GetType().Name}: %s{ex.Message}. The in-memory capture is unaffected, but whatever \
+                      the sink was writing (a streamed run log) is now INCOMPLETE."
+        | Some _ -> ()
 
     // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
     //
@@ -669,7 +705,11 @@ let runProcess
                             go <- false
                         else
                             Volatile.Write(&sawOutput, 1)
-                            lock outputLock (fun () -> output.Append(buf, 0, n) |> ignore)
+                            let chunk = String(buf, 0, n)
+
+                            lock outputLock (fun () ->
+                                output.Append(chunk) |> ignore
+                                emit chunk)
                 with ex ->
                     failure <- Some ex
 
@@ -758,6 +798,17 @@ let runProcess
             )
     finally
         ProcessRegistry.untrack proc
+
+/// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
+/// caller that only wants the child's verdict and its capture should use.
+let runProcess
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (bounds: ProcessBounds)
+    : ProcessOutcome =
+    runProcessTo None command args workDir env bounds
 
 /// Run a synchronous unit of work with a wall-clock timeout, threading a
 /// `CancellationToken` into the work so a timed-out unit is ACTUALLY cancelled
