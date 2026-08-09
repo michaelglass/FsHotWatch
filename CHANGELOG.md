@@ -6,7 +6,7 @@ All notable changes to FsHotWatch packages are documented here.
 
 > ### ⚠️ Breaking changes, at a glance
 >
-> **If you run `fshw` in CI or from a script, read these three:**
+> **If you run `fshw` in CI or from a script, read these four:**
 >
 > 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
 >    (`gate` was introduced unreleased and never appeared in a published package, so
@@ -20,12 +20,32 @@ All notable changes to FsHotWatch packages are documented here.
 >    executed no tests — the filter matched nothing, or no project was selected at all —
 >    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
 >    are exactly the ones that never verified anything.
+> 4. **`fshw check` can now exit `3` where it previously exited `0`** — but only when it
+>    could not READ what the tests covered (the `test-scope` command threw, the IPC call
+>    faulted, the reply was unparseable). A repo with no test projects configured is
+>    unaffected and still exits `0`. See below.
 >
 > The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
 > `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+### A scope `check` could not read stops reporting a pass
+
+`check` and `confirm` both refuse `NoTestsRun` — "the daemon holds no test evidence at
+all" may never be a green. But that refusal was only ever *reached* when the read that
+produces it succeeded. Every way of failing to read the scope — a `test-scope` command
+that threw, a faulted IPC call, a reply that was not JSON, a daemon contradicting its own
+project counts — collapsed into the same value as "this repo has no test projects
+configured", and the inner loop deliberately tolerates *that*. So a fault on the read
+path turned an exit `3` into an exit `0` on an unchanged daemon state.
+
+The two are now different values. "There is no scope to report" (no `test-scope` command;
+a run still in flight) stays tolerated by `check`. "I asked and could not find out" is its
+own case, carries the reason, and is refused in both modes — a read that faulted cannot
+rule out the `NoTestsRun` it may be concealing. This is `PendingVerification`'s rule
+(AUTOMATION-150) one layer up: **a ledger you could not read is not an empty ledger.**
 
 ### A run that executed nothing stops reporting a pass
 

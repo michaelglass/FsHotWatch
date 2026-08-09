@@ -34,10 +34,19 @@ let private runHostCommand (host: PluginHost.PluginHost) (name: string) (args: s
 
 /// Ask the host what the last completed run ACTUALLY covered.
 ///
-/// Every way of not getting a straight answer — no test-prune plugin, an unparseable
-/// reply, a throw — becomes `ScopeUnknown`, which `confirm` refuses. The failure
-/// direction is safe BY CONSTRUCTION: `confirm` can only go green on a scope it positively
-/// established. But it is never SILENT about it.
+/// No way of not getting a straight answer can round UP to `FullSuite` — `confirm` can
+/// only go green on a scope it positively established, BY CONSTRUCTION. But the ways
+/// are not all the same FACT, and are not all reported as one:
+///
+///   * NO SUCH COMMAND — the test-prune plugin is not registered, i.e. no test projects
+///     are configured. A provable "there is no scope to report, and there never will
+///     be": `ScopeUnknown`, which the inner loop tolerates (punishing a repo for having
+///     no tests would be nonsense) and `confirm` refuses.
+///   * A THROW — we asked and could not find out. `ScopeUnreadable`, which BOTH modes
+///     refuse: the state it is hiding may be `NoTestsRun`, and answering a ledger you
+///     could not read with its most convenient reading is the AUTOMATION-150 bug.
+///
+/// Never SILENT about either.
 let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
     try
         match runHostCommand host TestScopeCommand [||] with
@@ -50,8 +59,13 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
             { Scope = ScopeUnknown; RunId = None }
         | Some reply -> parseTestRunReport reply
     with ex ->
-        Logging.warn "cli-confirm" $"could not read the test scope: %s{ex.Message}"
-        { Scope = ScopeUnknown; RunId = None }
+        Logging.warn
+            "cli-confirm"
+            $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
+               report NO VERDICT rather than pass on a reading it does not have."
+
+        { Scope = ScopeUnreadable $"the plugin host's `%s{TestScopeCommand}` command threw: %s{ex.Message}"
+          RunId = None }
 
 /// Turn impact filtering OFF for this process, BEFORE anything runs.
 ///
@@ -299,6 +313,13 @@ let runOnceAndVerdict
                 "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
                  tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
                  the build settles."
+        | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
+            // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
+            // "the run was too narrow", it is "we could not see what the run was".
+            UI.fail
+                $"NO VERDICT — the test scope could not be read (%s{reason}).\nThat is not the same as \"no tests were \
+                   needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
+                   may never mean. Nothing is reported broken, and nothing is reported sound either."
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
             // Nothing failed — and that is the point. `confirm` was asked for a claim
             // about the whole suite; the tests that ran do not support one; so it has no
