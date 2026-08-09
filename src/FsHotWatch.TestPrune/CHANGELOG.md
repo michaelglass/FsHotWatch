@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: **`run-tests` says which project you asked for and which exist when nothing
+  matches.** The reply was a bare `no matching test projects`, which is
+  unactionable for the one case that actually produces it — a mistyped or renamed
+  `--project` — while the configured project names were right there to list.
+
 - fix: **a run in which every project matched zero tests is no longer a green.**
   Two aggregators were blind to it in the same way. `recordRunOutcome`
   — the sole producer of this plugin's terminal status — decides on `TestResult.isPassed`

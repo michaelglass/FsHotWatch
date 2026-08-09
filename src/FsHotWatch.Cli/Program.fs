@@ -25,6 +25,8 @@ type RerunFlag =
         string
     | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)")>] FilterTrait of
         string
+    | [<CmdFlag(Description = "Limit the rerun to this test project (repeatable; matches the project name in your test config). Without it the filter is fanned out across EVERY configured test project, so a class living in one of them makes all the others report zero matches.");
+        CmdArg("project")>] Project of string
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.");
         CmdArg("seconds")>] WaitSec of int
 
@@ -63,10 +65,23 @@ module RerunFilter =
         |> List.choose (function
             | FilterClass p -> Some $"--filter-class %s{quoteIfNeeded p}"
             | FilterTrait t -> Some $"--filter-trait %s{quoteTrait t}"
-            // `--wait-sec` is a client-side slot-wait knob, not an xUnit filter —
-            // it travels in the run-tests payload, never in the runner arg string.
+            // Neither `--wait-sec` nor `--project` is an xUnit filter: the first is a
+            // client-side slot-wait knob, the second selects WHICH projects the daemon
+            // invokes. Both travel in the run-tests payload, never in the runner arg
+            // string — passing `--project` to the runner would make it choke on an
+            // unknown option.
+            | Project _
             | WaitSec _ -> None)
         |> String.concat " "
+
+    /// The test projects named with `--project`, in the order given. Empty means "every
+    /// configured project", which is the historical behaviour and stays the default.
+    let projects (flags: RerunFlag list) : string list =
+        flags
+        |> List.choose (function
+            | Project p -> Some p
+            | _ -> None)
+        |> List.distinct
 
     /// The slot-wait budget (seconds) from the flags, or `DefaultTestRerunWaitSec`.
     let waitSec (flags: RerunFlag list) : int =
@@ -1658,10 +1673,23 @@ let executeCommand
             // `beforeRun` chain can't defeat an explicit rerun.
             let waitSec = RerunFilter.waitSec flags
 
+            // `projects` selects WHICH test projects the daemon invokes; the daemon has
+            // read this field all along (`run-tests`), but nothing ever sent it, so a
+            // `--filter-class` was always fanned out across every configured project.
+            // That is how a filter naming a real class could run only the wrong project
+            // and report that nothing matched.
+            let projects = RerunFilter.projects flags
+
             let runArgsJson =
-                match RerunFilter.render flags with
-                | "" -> JsonSerializer.Serialize {| waitSec = waitSec |}
-                | filter -> JsonSerializer.Serialize {| filter = filter; waitSec = waitSec |}
+                match RerunFilter.render flags, projects with
+                | "", [] -> JsonSerializer.Serialize {| waitSec = waitSec |}
+                | "", ps -> JsonSerializer.Serialize {| waitSec = waitSec; projects = ps |}
+                | filter, [] -> JsonSerializer.Serialize {| filter = filter; waitSec = waitSec |}
+                | filter, ps ->
+                    JsonSerializer.Serialize
+                        {| filter = filter
+                           waitSec = waitSec
+                           projects = ps |}
 
             withDaemon (fun () ->
                 let result =
