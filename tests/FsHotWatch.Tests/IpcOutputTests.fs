@@ -836,3 +836,45 @@ let ``an OLDER daemon sending no coverage field still cannot report a no-op as a
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageZeroMatch = 3 @>
     // …and the fallback is still not a blanket refusal.
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
+
+// ---------------------------------------------------------------------------
+// The gap three independent reviewers found in the same afternoon: the token
+// was string-COMPARED, and anything unrecognized fell through an `else` to
+// `Tests passed`, exit 0. A newer daemon, a typo, or a future case such as
+// "all-deferred" would each have reported a green — the single outcome this
+// whole area exists to prevent, reachable by the absence of a match arm.
+//
+// The sibling parser added in the same release already got this right
+// (`IpcParsing`'s `ScopeUnreadable`). These pin the CLI to the same rule:
+// a reading you cannot interpret is never a good one.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``an UNRECOGNIZED coverage token is refused, not read as a pass`` () =
+    // The version-skew direction the fallback does NOT cover: daemon newer than CLI.
+    let json =
+        """{"elapsed":"1.0s","coverage":"all-deferred","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a garbage coverage token is refused too — it is not a whitelist of known-bad values`` () =
+    let json =
+        """{"elapsed":"1.0s","coverage":"","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
+
+    let typo =
+        """{"elapsed":"1.0s","coverage":"rann","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false typo = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``refusing unknown tokens is NOT a blanket — "ran" is still a pass`` () =
+    // Positive control. Without it, a change that refused every token would
+    // satisfy both tests above while making every real green a failure.
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>

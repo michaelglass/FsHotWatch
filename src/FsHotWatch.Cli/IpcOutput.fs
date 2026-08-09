@@ -127,6 +127,16 @@ let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
 let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     if hasFailures noWarnFail resp then 1 else 0
 
+/// What this build could make of the run's `coverage` field.
+///
+/// Deliberately NOT `Result`: `Error` collides with `DiagnosticSeverity.Error`
+/// here, and naming the cases says the thing anyway — `Unrecognized` is a fact
+/// about THIS BUILD's vocabulary, not about the run, and must never be folded
+/// into a pass.
+type private CoverageRead =
+    | Understood of RunVerification
+    | Unrecognized of token: string
+
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
     (mode: ProgressRenderer.RenderMode)
@@ -218,17 +228,36 @@ let renderIpcResult
                         // outcome's clothes, and it is why this branch exists.
                         let projectCount = projects.EnumerateArray() |> Seq.length
 
-                        // The producer now STATES what the run verified instead of
-                        // leaving the consumer to infer it from array lengths. Older
-                        // daemons do not send `coverage`, so fall back to the counts —
-                        // an absent field must never be read as "ran".
-                        let coverage =
+                        // The producer STATES what the run verified instead of leaving
+                        // the consumer to infer it from array lengths.
+                        //
+                        // PARSED, not string-compared. The tokens are written in exactly
+                        // one place (`RunVerification.token`, core) and read back through
+                        // `tryParse`, so a rename cannot drift between the two ends. The
+                        // previous form compared literals here and fell through to
+                        // `Tests passed`, exit 0, for ANY token this build did not know —
+                        // a newer daemon, a typo, a future case. That is the one outcome
+                        // this whole area exists to prevent, and it was reachable by an
+                        // `else`. `IpcParsing.fs`'s `ScopeUnreadable` gets the same
+                        // decision right; this now matches it.
+                        //
+                        // `None` means BOTH "absent" and "unreadable", and both are
+                        // handled below as no-verdict. Absent is the older-daemon case:
+                        // reconstruct from the counts rather than assume anything.
+                        let parsedCoverage =
                             match root.TryGetProperty("coverage") with
-                            | true, c when c.ValueKind = JsonValueKind.String -> c.GetString()
+                            | true, c when c.ValueKind = JsonValueKind.String ->
+                                match RunVerification.tryParse (c.GetString()) with
+                                | Some v -> Understood v
+                                | None -> Unrecognized(c.GetString())
                             | _ ->
-                                if projectCount = 0 then "no-projects-selected"
-                                elif noTestsMatched then "all-zero-match"
-                                else "ran"
+                                // Older daemon: no `coverage` field at all. An ABSENT
+                                // field must never be read as "ran", so derive it.
+                                Understood(
+                                    if projectCount = 0 then NoProjectsSelected
+                                    elif noTestsMatched then AllZeroMatch projectCount
+                                    else Ran
+                                )
 
                         // AUTOMATION-272 — say what the run actually did, on every
                         // outcome including the green.
@@ -280,7 +309,7 @@ let renderIpcResult
                         if hasFailed then
                             UI.fail "Tests failed"
                             1
-                        elif coverage = "no-projects-selected" then
+                        elif parsedCoverage = Understood NoProjectsSelected then
                             UI.fail "No test project ran — nothing was verified (not a pass)"
                             UI.info "  Why: no project was selected, so no test binary was invoked."
 
@@ -289,7 +318,9 @@ let renderIpcResult
                             UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
                             UI.info "  Expected your diff to select something?   fshw status test-prune"
                             3
-                        elif coverage = "all-zero-match" then
+                        elif (match parsedCoverage with
+                              | Understood(AllZeroMatch _) -> true
+                              | _ -> false) then
                             UI.fail "No tests matched the filter — nothing was verified (not a pass)"
 
                             UI.info
@@ -320,8 +351,30 @@ let renderIpcResult
                             UI.info "  Wanted the whole suite?    fshw confirm   (unfiltered)"
                             3
                         else
-                            UI.success "Tests passed"
-                            0
+                            match parsedCoverage with
+                            | Understood Ran ->
+                                UI.success "Tests passed"
+                                0
+                            | Unrecognized unknown ->
+                                // A token this build cannot interpret is NOT a pass. Same
+                                // decision as `ScopeUnreadable` in IpcParsing: a reading
+                                // you could not interpret must never read as a good one.
+                                UI.fail "Cannot interpret what this run verified — no verdict (not a pass)"
+
+                                UI.info
+                                    $"  The daemon reported coverage '%s{unknown}', which this build does not recognize."
+
+                                UI.info "  Most likely the daemon is NEWER than this CLI. Check both versions:"
+                                UI.info "    ps ax | rg fshotwatch      # the running daemon's package path"
+                                UI.info "  Then restart the daemon so it matches:  fshw stop"
+                                3
+                            | Understood NoProjectsSelected
+                            | Understood(AllZeroMatch _) ->
+                                // Unreachable: both are handled above. Present so that
+                                // adding a case to RunVerification breaks THIS match
+                                // rather than silently landing on a green.
+                                UI.fail "internal: unhandled coverage case — no verdict"
+                                3
                     | _ ->
 
                         match parsePluginStatuses result with
