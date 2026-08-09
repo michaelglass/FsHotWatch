@@ -524,7 +524,14 @@ let pollAndRender
     // second query that could see a different daemon.
     let finalStatuses = ref Map.empty
 
-    let finalRun = ref { Scope = ScopeUnknown; RunId = None }
+    // The placeholder before anything has been ASKED. It reaches `publishVerdict` only
+    // on the abort paths below (a wedged plugin, a daemon that shut down mid-wait), and
+    // on those paths it must not say "the daemon reported no scope" — nobody asked it.
+    // A placeholder that reads as an answer is the same mistake one layer down.
+    let finalRun =
+        ref
+            { Scope = ScopeUnreadable "the check aborted before the test scope could be read"
+              RunId = None }
 
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
@@ -612,6 +619,13 @@ let pollAndRender
                 "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
                  tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
                  the build settles."
+        | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
+            // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
+            // "the run was too narrow", it is "we could not see what the run was".
+            UI.fail
+                $"NO VERDICT — the test scope could not be read (%s{reason}).\nThat is not the same as \"no tests were \
+                   needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
+                   may never mean. Nothing is reported broken, and nothing is reported sound either."
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
             // Nothing failed — and that is precisely the point. `confirm` was asked for
             // a claim about the whole suite and the tests that ran do not support one,

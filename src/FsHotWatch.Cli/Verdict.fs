@@ -204,6 +204,14 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         // INCOMPLETE check, never a pass, and it must not be renderable as a green on
         // any surface.
         Incomplete "NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence."
+    | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
+        // Not "the scope was too narrow" — the scope is UNKNOWN because reading it
+        // failed, so this run cannot say whether anything ran at all. Its own reason,
+        // because a consumer that sees the generic "not the full suite" would read a
+        // broken check as a merely-narrow one and retry forever.
+        Incomplete
+            $"THE TEST SCOPE COULD NOT BE READ (%s{reason}) — so this run cannot say whether any test ran. Not a pass; \
+               an absence of evidence."
     | CheckVerdict.CheckOutcome.UnearnedScope scope ->
         Incomplete
             $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
@@ -404,6 +412,14 @@ let private scopeJson (scope: TestScope) : obj =
         // elsewhere. `kind: "none"` already says the load-bearing part: nothing ran.
         {| kind = "none" |} :> obj
     | ScopeUnknown -> {| kind = "unknown" |} :> obj
+    // A DISTINCT kind, not folded into "unknown": the file is the machine-readable
+    // answer, and "the daemon reported no scope" and "the scope read faulted" are the
+    // two facts a consumer most needs to tell apart — one is an ordinary tests-less
+    // repo, the other is a check that could not see what it was judging.
+    | ScopeUnreadable reason ->
+        {| kind = "unreadable"
+           reason = reason |}
+        :> obj
 
 let private outcomeJson (outcome: Outcome) : obj =
     match outcome with
@@ -514,7 +530,17 @@ let private parseScope (el: JsonElement) : TestScope =
     | Some "full", Some r, Some t when r > 0 && r = t -> FullSuite t
     | Some "filtered", Some r, Some t -> ImpactFiltered(r, t)
     | Some "none", _, _ -> NoTestsRun
-    | _ -> ScopeUnknown
+    | Some "unknown", _, _ -> ScopeUnknown
+    // Everything else — a kind from another version, a self-contradicting "full",
+    // outright garbage. The file said something about its scope and this build cannot
+    // read it; that is `ScopeUnreadable`, and it round-trips the reason when there is
+    // one. Fail-closed either way (neither is full-suite), but the two are still
+    // different facts and a reader must not have them merged for it.
+    | _ ->
+        ScopeUnreadable(
+            tryString el "reason"
+            |> Option.defaultValue "the recorded scope is not a shape this build recognizes"
+        )
 
 let private parseOutcome (el: JsonElement) : Outcome option =
     match tryString el "kind" with
@@ -812,7 +838,8 @@ let isFullSuiteGreen (v: Verdict) : bool =
         | FullSuite _ -> true
         | ImpactFiltered _
         | NoTestsRun
-        | ScopeUnknown -> false
+        | ScopeUnknown
+        | ScopeUnreadable _ -> false
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
 /// daemon, sets a scope, or runs a test.
@@ -863,7 +890,8 @@ let describeStillApplies (v: Verdict) : string =
             // wildcarded, so a future scope cannot slip through as "full suite".
             | ImpactFiltered _
             | NoTestsRun
-            | ScopeUnknown -> TestScope.describe v.Scope
+            | ScopeUnknown
+            | ScopeUnreadable _ -> TestScope.describe v.Scope
 
         // A count that is absent is NOT a count of zero — say nothing rather than
         // report "0 passed" over a suite whose reports this build could not read.

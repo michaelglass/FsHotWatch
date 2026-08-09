@@ -617,7 +617,7 @@ module AgentHints =
             | Verdict.Check, ImpactFiltered(ran, total) ->
                 [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — for a MERGE verdict use \
                      `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
-            | Verdict.Check, (NoTestsRun | ScopeUnknown) ->
+            | Verdict.Check, (NoTestsRun | ScopeUnknown | ScopeUnreadable _) ->
                 [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — for a MERGE \
                      verdict use `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
             | Verdict.Check, FullSuite _
