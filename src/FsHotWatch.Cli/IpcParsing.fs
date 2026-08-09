@@ -49,10 +49,15 @@ type DiagnosticsResponse =
 /// tests sit red on `main` while every run stays green, because they were never selected.
 ///
 /// So the scope is a VALUE the verdict is a total function over, not an assumption a
-/// caller is trusted to make. `ScopeUnknown` is the cross-version / parse-gap backstop
-/// — a daemon too old to answer, an absent test-prune plugin, an unparseable reply —
-/// and it must NEVER read as full-suite, exactly as `Coverage.Unknown` must never read
-/// as `Complete`.
+/// caller is trusted to make. Nothing here may EVER read as full-suite unless it
+/// positively is one, exactly as `Coverage.Unknown` must never read as `Complete`.
+///
+/// AUTOMATION-150's principle, applied here: THERE IS NO SCOPE TO REPORT and I COULD
+/// NOT READ THE SCOPE are different facts and are different values. They used to be
+/// one (`ScopeUnknown`), and because the inner loop tolerates the first — a repo with
+/// no test projects configured must not be punished for having none — it tolerated
+/// the second too. So any fault on the read path turned a refusal into a pass. See
+/// `ScopeUnreadable`.
 type TestScope =
     /// Every configured test project ran, none of them impact-filtered.
     | FullSuite of projects: int
@@ -60,8 +65,29 @@ type TestScope =
     | ImpactFiltered of ranProjects: int * totalProjects: int
     /// No test run has completed, or the run executed no tests at all.
     | NoTestsRun
-    /// The scope could not be determined. Never treated as full-suite.
+    /// THERE IS NO SCOPE TO REPORT, and we established that positively: the daemon /
+    /// host has no `test-scope` command at all (no test projects are configured, so no
+    /// run will ever produce a scope), or it answered that a run is still IN FLIGHT
+    /// (the scope is not earned yet). Both are answers, not failures to get one.
+    ///
+    /// `check` tolerates this — a repo with no tests has no tests to run, and a fast
+    /// loop that goes red over that is a fast loop nobody runs. `confirm` refuses it:
+    /// an absent scope is not a full-suite scope.
     | ScopeUnknown
+    /// I ASKED AND COULD NOT GET AN ANSWER: the command threw, the transport threw, the
+    /// reply was not JSON, or it was JSON this build cannot turn into a scope (a daemon
+    /// that contradicts its own counts, a shape from another version).
+    ///
+    /// Distinct from `ScopeUnknown` because the safe answers differ. `ScopeUnknown` is a
+    /// provable absence of test evidence to report; this is an absence of KNOWLEDGE about
+    /// test evidence that may well exist and may well be `NoTestsRun` — the state both
+    /// modes already refuse. Collapsing the two let a fault on the read path launder that
+    /// refusal into a green, so this is refused in BOTH modes, like `NoTestsRun`.
+    ///
+    /// Carries WHY, because "safe-by-default is right; safe-and-mute is how a broken
+    /// check stays broken" — and a check that starts refusing must be able to say what
+    /// it could not read.
+    | ScopeUnreadable of reason: string
 
 module TestScope =
     let describe (scope: TestScope) : string =
@@ -70,6 +96,7 @@ module TestScope =
         | ImpactFiltered(ran, total) -> $"impact-filtered (%d{ran}/%d{total} projects)"
         | NoTestsRun -> "no tests ran"
         | ScopeUnknown -> "unknown (the daemon did not report a test scope)"
+        | ScopeUnreadable reason -> $"UNREADABLE — the test scope could not be read (%s{reason})"
 
     /// Is this scope the EVIDENCE a merge verdict is made of?
     ///
@@ -87,7 +114,8 @@ module TestScope =
         | FullSuite _ -> true
         | ImpactFiltered _
         | NoTestsRun
-        | ScopeUnknown -> false
+        | ScopeUnknown
+        | ScopeUnreadable _ -> false
 
 /// The test-prune plugin commands `confirm` speaks.
 ///
@@ -383,10 +411,21 @@ type TestRunReport =
         RunId: Guid option
     }
 
-/// Parse the JSON reply from the test-prune `test-scope` command. Anything the
-/// contract does not explicitly recognize collapses to `ScopeUnknown` — including an
-/// `{"error": ...}` reply from a daemon with no test-prune plugin, and a `running`
-/// reply from a run still in flight (no scope has been earned yet).
+/// Parse the JSON reply from the test-prune `test-scope` command.
+///
+/// Fails CLOSED in every direction — nothing here can round UP to `FullSuite` — but the
+/// two ways of not getting a scope are kept APART, because the inner loop treats them
+/// differently and must:
+///
+///   * `running` is an ANSWER: a run is in flight, so no scope has been earned yet.
+///     `ScopeUnknown`, which `check` tolerates. (An `{"error": ...}` reply from a
+///     daemon with no test-prune plugin never reaches here — both transports detect the
+///     unknown-command sentinel first and report `ScopeUnknown` themselves.)
+///   * ANY other unrecognized reply is a FAILURE to get one: not JSON, a shape from
+///     another version, or a daemon contradicting its own counts ("full", 2 of 4 — the
+///     counts are the evidence and the label is not). `ScopeUnreadable`, which BOTH
+///     modes refuse: it may be concealing a `NoTestsRun`, and a vacuous green is
+///     exactly what `NoTestsRun` exists to prevent.
 let parseTestRunReport (json: string) : TestRunReport =
     try
         use doc = JsonDocument.Parse(json)
@@ -405,7 +444,8 @@ let parseTestRunReport (json: string) : TestRunReport =
             | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
             | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
             | Some "none", _, _ -> NoTestsRun
-            | _ -> ScopeUnknown
+            | Some "running", _, _ -> ScopeUnknown
+            | _ -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"
 
         let runId =
             tryGetStringProp root "runId"
@@ -415,8 +455,9 @@ let parseTestRunReport (json: string) : TestRunReport =
                 | _ -> None)
 
         { Scope = scope; RunId = runId }
-    with _ ->
-        { Scope = ScopeUnknown; RunId = None }
+    with ex ->
+        { Scope = ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
+          RunId = None }
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

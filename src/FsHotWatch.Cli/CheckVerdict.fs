@@ -145,13 +145,15 @@ module CheckInputs =
 ///
 /// Failures short-circuit (a real problem is reported immediately, whatever the
 /// scope). Then completeness. Then — in `Confirmation` only — scope: `FullSuite` is the
-/// ONLY scope that can reach `Clean`. `ImpactFiltered`, `NoTestsRun` and `ScopeUnknown`
-/// all land on `UnearnedScope`, including the cross-version case where the daemon
-/// simply didn't answer: an unknown scope is not a full-suite scope.
+/// ONLY scope that can reach `Clean`. Everything else lands on `UnearnedScope`,
+/// including the cross-version case where the daemon simply didn't answer: an unknown
+/// scope is not a full-suite scope.
 ///
-/// `InnerLoop` ignores the scope entirely — an impact-filtered green is exactly the
+/// `InnerLoop` ignores the DEGREE of scope — an impact-filtered green is exactly the
 /// answer it wants, and making the fast loop demand the whole suite would defeat the
-/// point of having one.
+/// point of having one. It does NOT ignore the two evidence questions: `NoTestsRun`
+/// ("we tested nothing") and `ScopeUnreadable` ("we could not find out whether we
+/// tested anything") are refused in both modes.
 let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
     let coverage = inputs.Coverage
     let testScope = inputs.Scope
@@ -184,6 +186,24 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // refused in the inner loop too. The inner loop is allowed to test LESS;
             // it is not allowed to test NOTHING and call it green.
             | NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
+            // THE SCOPE COULD NOT BE READ — in EITHER mode.
+            //
+            // Not "the daemon reported no scope" (that is `ScopeUnknown`, below, and it
+            // is a legitimate everyday answer from a repo with no test projects). This
+            // is "we asked what ran and the answer faulted": the command threw, the
+            // transport dropped, the reply was a shape this build cannot read.
+            //
+            // A read that faulted tells us NOTHING about what ran — and in particular it
+            // does not rule out `NoTestsRun`, the state the line above exists to refuse.
+            // While the two shared one value, that refusal held only as long as the read
+            // SUCCEEDED, so any fault on the read path silently converted an exit 3 into
+            // an exit 0: nothing verified, everything fine. AUTOMATION-150 settled the
+            // principle for an unreadable ledger (`PendingVerification.LoadedQueue`) —
+            // "I could not read what is owed" is not "nothing is owed" — and it is the
+            // same principle: a MISSING reading may not be treated as a GOOD one.
+            //
+            // So it is refused wherever `NoTestsRun` is refused, which is everywhere.
+            | ScopeUnreadable _ -> CheckOutcome.UnearnedScope testScope
             | FullSuite _
             | ImpactFiltered _
             | ScopeUnknown ->
@@ -197,6 +217,7 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
                     | FullSuite _ -> CheckOutcome.Clean
                     | ImpactFiltered _
                     | NoTestsRun
+                    | ScopeUnreadable _
                     | ScopeUnknown -> CheckOutcome.UnearnedScope testScope
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1

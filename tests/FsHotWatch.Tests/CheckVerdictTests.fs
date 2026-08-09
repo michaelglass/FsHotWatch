@@ -427,23 +427,86 @@ let ``parseTestRunReport: a none reply parses as NoTestsRun`` () =
     let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = NoTestsRun @>
 
+/// Did the parser fail to READ the reply (as opposed to reading an absent scope)?
+let private isUnreadable (scope: TestScope) =
+    match scope with
+    | ScopeUnreadable _ -> true
+    | _ -> false
+
 [<Fact(Timeout = 15000)>]
-let ``parseTestRunReport: every unusable reply collapses to ScopeUnknown, never FullSuite`` () =
-    // The safe direction, by construction: an error reply (no test-prune plugin), a
-    // still-running run, an old daemon that echoes nothing useful, and outright
-    // garbage all fail CLOSED.
-    test <@ (parseTestRunReport """{"error":"unknown command 'test-scope'"}""").Scope = ScopeUnknown @>
-    test <@ (parseTestRunReport """{"scope":"running"}""").Scope = ScopeUnknown @>
-    test <@ (parseTestRunReport """{"scope":"full"}""").Scope = ScopeUnknown @>
-    test <@ (parseTestRunReport "not json at all").Scope = ScopeUnknown @>
-    test <@ (parseTestRunReport "").Scope = ScopeUnknown @>
+let ``parseTestRunReport: every unusable reply fails CLOSED, never to FullSuite`` () =
+    // The safe direction, by construction: an error reply, a still-running run, an old
+    // daemon that echoes nothing useful, and outright garbage all fail closed.
+    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"error":"unknown command 'test-scope'"}""").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"scope":"running"}""").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport """{"scope":"full"}""").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport "not json at all").Scope) @>
+    test <@ not (TestScope.isFullSuite (parseTestRunReport "").Scope) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: "no scope reported" and "could not read the reply" are DIFFERENT values`` () =
+    // Failing closed is not enough on its own: the inner loop TOLERATES an absent scope
+    // (a repo with no test projects has nothing to run) and must NOT tolerate a failed
+    // read, so the parser has to hand back two different facts rather than one.
+
+    // "running" is an ANSWER — a run is in flight, so no scope is earned yet. It stays
+    // the tolerated value; this is the positive control that the tolerated value is
+    // still producible at all.
+    test <@ (parseTestRunReport """{"scope":"running","runId":null}""").Scope = ScopeUnknown @>
+
+    // Everything else is a FAILURE TO READ: garbage, an empty reply, a plugin error
+    // object, a shape from another version.
+    test <@ isUnreadable (parseTestRunReport "not json at all").Scope @>
+    test <@ isUnreadable (parseTestRunReport "").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"error":"the test-scope command threw"}""").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"scope":"full"}""").Scope @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a full reply that did not actually cover every project is not FullSuite`` () =
     // A daemon claiming "full" while reporting 2 of 4 projects is not trusted: the
-    // counts are the evidence, the label is not.
-    test <@ (parseTestRunReport """{"scope":"full","ranProjects":2,"totalProjects":4}""").Scope = ScopeUnknown @>
-    test <@ (parseTestRunReport """{"scope":"full","ranProjects":0,"totalProjects":0}""").Scope = ScopeUnknown @>
+    // counts are the evidence, the label is not — and a daemon contradicting itself is
+    // a reply we cannot read, not a reply that says "nothing to report".
+    test <@ isUnreadable (parseTestRunReport """{"scope":"full","ranProjects":2,"totalProjects":4}""").Scope @>
+    test <@ isUnreadable (parseTestRunReport """{"scope":"full","ranProjects":0,"totalProjects":0}""").Scope @>
+
+// ----------------------------------------------------------------------------
+// A MISSING READING IS NOT A GOOD READING (AUTOMATION-150's principle, at the
+// verdict).
+//
+// `NoTestsRun` is refused in both modes: a run that verified nothing may not be a
+// green. But that refusal is only ever REACHED when the scope read succeeded, and
+// every way of failing to read the scope used to produce the same value as "this repo
+// has no test projects" — which the inner loop tolerates, and must keep tolerating.
+//
+// So a fault on the read path (a throwing command, a dropped transport, a reply from
+// another version) turned exit 3 into exit 0 on an unchanged daemon state. These pin
+// the split that closes it, in BOTH directions: the fault is refused, and the
+// legitimately-absent scope is still tolerated.
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``InnerLoop: a scope read that FAULTED is never Clean — it cannot rule out NoTestsRun`` () =
+    let faulted = ScopeUnreadable "the `test-scope` command threw: SQLITE_BUSY"
+
+    test <@ verdict InnerLoop (inputs false Complete faulted) = CheckOutcome.UnearnedScope faulted @>
+    test <@ verdict Confirmation (inputs false Complete faulted) = CheckOutcome.UnearnedScope faulted @>
+    test <@ exitCode (verdict InnerLoop (inputs false Complete faulted)) = 3 @>
+
+    // A REAL failure still outranks it — a red is a red, and "no verdict" would bury it.
+    test <@ verdict InnerLoop (inputs true Complete faulted) = CheckOutcome.FailuresFound @>
+
+    // ...as does incomplete coverage, which is the more specific complaint.
+    test <@ verdict InnerLoop (inputs false (Incomplete 3) faulted) = CheckOutcome.Incomplete 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``InnerLoop: an ABSENT scope is still Clean — the split may not punish a tests-less repo`` () =
+    // The over-correction guard. `ScopeUnknown` now means only what it can prove: the
+    // daemon has no `test-scope` command (no test projects configured), or a run is in
+    // flight. Making THAT non-green would turn every ordinary `fshw check` on a repo
+    // without tests into an exit 3 — a worse bug than the one above.
+    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = CheckOutcome.Clean @>
+    // ...and `confirm` still refuses it, exactly as before.
+    test <@ verdict Confirmation (inputs false Complete ScopeUnknown) = CheckOutcome.UnearnedScope ScopeUnknown @>
 
 // --- uncheckedMagnitude: defensive totality, pinned directly ---------------
 // `converge` structurally never routes `Complete` into the magnitude

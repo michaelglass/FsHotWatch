@@ -10,7 +10,6 @@
   invoked, the run is indistinguishable from a typo. That is how an investigation into a
   genuinely failing `JudgeIntegrationTests` case was told the tests passed: the filter
   ran against a project the class does not live in.
-
   The daemon has read a `projects` array on `run-tests` all along and filtered its
   configs by it — a comment in the plugin even refers to `--projects` as though the flag
   existed. Only the CLI flag and the payload field were missing; this connects a wire
@@ -26,6 +25,28 @@
   investigation above after a class that was never misspelled. When exactly one project
   ran it now leads with the possibility that the class lives in a different project, and
   in both cases it shows the `--project` invocation that aims the rerun.
+
+- fix!: **`check` no longer exits `0` when it could not read what the tests covered.**
+  `TestScope.NoTestsRun` — "the daemon holds no test evidence at all" — is refused in
+  both `check` and `confirm`, and has been since AUTOMATION-129. But that refusal was
+  only ever *reached* when the scope read succeeded. Every way of failing to read it (the
+  `test-scope` command threw, the IPC call faulted, the reply was not JSON, the daemon
+  contradicted its own project counts) produced the same `ScopeUnknown` as "this repo has
+  no test projects configured" — which the inner loop deliberately tolerates. So a fault
+  on the read path silently converted an exit `3` into an exit `0` on an *unchanged*
+  daemon state: nothing verified, everything reported fine.
+  `TestScope` now separates the two facts. `ScopeUnknown` means only what it can prove —
+  no `test-scope` command exists (no test projects configured), or a run is still in
+  flight — and `check` keeps tolerating it. The new `ScopeUnreadable of reason` means "I
+  asked and could not find out", and is refused in **both** modes (exit `3`), because a
+  read that faulted cannot rule out the `NoTestsRun` it may be hiding. Same principle as
+  `PendingVerification.LoadedQueue` (AUTOMATION-150): a ledger you could not read is not
+  an empty ledger, and a missing reading may not be treated as a good one.
+  **BREAKING (F# API):** `FsHotWatch.Cli.IpcParsing.TestScope` gains a case, so matches
+  over it must handle `ScopeUnreadable`. **Behaviour:** a `check` whose scope read faults
+  now exits `3` where it exited `0`. A repo with no test projects is unaffected — it
+  still exits `0`. `.fshw/verdict.json` gains `scope.kind: "unreadable"` carrying a
+  `reason`.
 
 - fix!: **`test-rerun` exits `3` instead of `0` when a run executed nothing.** It printed
   `✓ Tests passed` and exited `0` both when the filter matched no test and when no
