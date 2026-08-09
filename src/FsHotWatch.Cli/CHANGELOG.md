@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- feat: **`test-rerun --project <name>` aims the rerun at specific test projects
+  (AUTOMATION-272).** Repeatable; omitting it keeps the existing behaviour of running
+  every configured project. Without it a `--filter-class` is fanned out across ALL of
+  them, so a class that really exists still reports "matched nothing" in every project
+  that does not contain it — and if the project that does contain it was not among those
+  invoked, the run is indistinguishable from a typo. That is how an investigation into a
+  genuinely failing `JudgeIntegrationTests` case was told the tests passed: the filter
+  ran against a project the class does not live in.
+
+  The daemon has read a `projects` array on `run-tests` all along and filtered its
+  configs by it — a comment in the plugin even refers to `--projects` as though the flag
+  existed. Only the CLI flag and the payload field were missing; this connects a wire
+  that was already built from both ends.
+- feat: **`test-rerun` prints what the run actually did**, on every outcome including the
+  green: `N project(s): X passed, Y failed, Z matched nothing`. These counts previously
+  existed only in `daemon.log`, so telling a real pass from a vacuous one meant going and
+  reading a log — and the missing line IS the tell, since "1 project: 1 matched nothing"
+  and "1 project: 12 passed" are the same `✓` without it. Projects that were deferred,
+  timed out or errored are counted as "did not run" so the parts always sum to the total.
+- feat: **the zero-match diagnostic offers the right cause first.** It previously said a
+  filter matching nothing "is almost always a typo or a renamed class", which sent the
+  investigation above after a class that was never misspelled. When exactly one project
+  ran it now leads with the possibility that the class lives in a different project, and
+  in both cases it shows the `--project` invocation that aims the rerun.
+
 - fix!: **`test-rerun` exits `3` instead of `0` when a run executed nothing.** It printed
   `✓ Tests passed` and exited `0` both when the filter matched no test and when no
   project was selected at all — so a run that verified nothing was indistinguishable

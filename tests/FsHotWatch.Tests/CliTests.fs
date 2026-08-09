@@ -1343,6 +1343,25 @@ let ``RerunFilter.render omits WaitSec (it is not an xUnit filter)`` () =
     test <@ RerunFilter.render [ WaitSec 300 ] = "" @>
 
 [<Fact>]
+let ``RerunFilter.render omits Project (it selects projects, it is not an xUnit filter)`` () =
+    // AUTOMATION-272. `--project` picks WHICH test projects the daemon invokes; it
+    // travels in the run-tests payload. Leaking it into the runner arg string would
+    // hand the xUnit runner an option it does not know, failing the very run the flag
+    // exists to aim.
+    test <@ RerunFilter.render [ Project "Acme.Tests"; FilterClass "*Foo*" ] = "--filter-class *Foo*" @>
+    test <@ RerunFilter.render [ Project "Acme.Tests" ] = "" @>
+
+[<Fact>]
+let ``RerunFilter.projects collects the named projects, de-duplicated`` () =
+    // AUTOMATION-272. Repeatable, order preserved, and EMPTY means "every configured
+    // project" — the historical behaviour, which stays the default.
+    test <@ List.isEmpty (RerunFilter.projects []) @>
+    test <@ List.isEmpty (RerunFilter.projects [ FilterClass "*Foo*"; WaitSec 30 ]) @>
+    test <@ RerunFilter.projects [ Project "A" ] = [ "A" ] @>
+    test <@ RerunFilter.projects [ Project "B"; FilterClass "*Foo*"; Project "A" ] = [ "B"; "A" ] @>
+    test <@ RerunFilter.projects [ Project "A"; Project "A" ] = [ "A" ] @>
+
+[<Fact>]
 let ``RerunFilter.waitSec returns the flag value`` () =
     test <@ RerunFilter.waitSec [ WaitSec 42 ] = 42 @>
 

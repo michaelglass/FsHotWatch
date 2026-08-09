@@ -99,18 +99,23 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
-/// Stable first-line sentinel prefixed onto the recorded output of a project
-/// whose FILTERED run matched ZERO tests. `test-rerun --filter-*` fans a raw
-/// filter out to every test project; a project with no matching test runs zero
-/// tests and is recorded as a (filtered) pass so it can't masquerade as a
-/// failure. But a pass is indistinguishable from a REAL pass, which hides the
-/// important "your filter selected nothing" case — making `test-rerun` look
-/// like it force-ran when it ran nothing. This marker lets the `run-tests`
-/// command detect a zero-match project STRUCTURALLY (no fragile re-grep of
-/// runner output) and report `no-tests-matched` distinctly when EVERY project
-/// in a filtered run matched nothing.
+/// LEGACY. The output prefix a zero-match result used to be tagged with, back when
+/// the fact was encoded as `TestsPassed` + a magic string rather than as its own case.
+///
+/// **Nothing constructs a result carrying this any more** — `executeTests` produces
+/// `TestsNoMatch` and `isZeroMatchResult` is a pattern match (AUTOMATION-272). It
+/// survives only so cache entries written before that change still deserialize as the
+/// case they meant; `FileTaskCache` does that reconstruction, keyed on
+/// `TestResult.LegacyZeroMatchMarker`, which this now aliases so there is exactly one
+/// definition of the string.
+///
+/// Do not reach for this. Tagging a fact onto an output string is what made two
+/// separate aggregators report "N passed" for runs that executed nothing: the marker
+/// was called "structural" precisely because it was better than re-grepping runner
+/// output, and it still left every fold to remember a string comparison the compiler
+/// could not check.
 [<Literal>]
-let ZeroMatchMarker = "[fshw:no-tests-matched] "
+let ZeroMatchMarker = TestResult.LegacyZeroMatchMarker
 
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
@@ -731,13 +736,14 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
-/// True when this result is a zero-match-under-filter pass (the runner found no
-/// test matching the active `--filter-*`). Detected structurally via the
-/// `ZeroMatchMarker` prefix `executeTests` stamps on such results.
-let internal isZeroMatchResult (result: TestResult) : bool =
-    match result with
-    | TestsPassed(o, _, _) -> o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal)
-    | _ -> false
+/// True when this result is a zero-match-under-filter result (the runner found no
+/// test matching the active `--filter-*`).
+///
+/// Now a one-line delegation to `TestResult.isNoMatch`: since AUTOMATION-272 the fact
+/// is a CASE, so this is a pattern match rather than a `StartsWith` against a magic
+/// output prefix. Kept as a named function because three call sites read better for it
+/// and because it is the run-level question's building block.
+let internal isZeroMatchResult (result: TestResult) : bool = TestResult.isNoMatch result
 
 /// What a run actually VERIFIED.
 ///
@@ -803,11 +809,13 @@ let private formatTestResultsJson (results: TestResults) =
         |> List.map (fun (name, result) ->
             let (status, output) =
                 match result with
-                // A zero-match-under-filter pass gets a DISTINCT status so a
-                // consumer can tell "ran, all green" from "matched nothing".
-                // Strip the internal marker from the surfaced output.
-                | TestsPassed(o, _, _) when o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal) ->
-                    ("no-tests-matched", o.Substring(ZeroMatchMarker.Length))
+                // A zero-match-under-filter result gets a DISTINCT status so a
+                // consumer can tell "ran, all green" from "matched nothing". The
+                // wire string is UNCHANGED by AUTOMATION-272 — only the way it is
+                // recognised moved from a magic output prefix to a case. The CLI's
+                // `coverage` fallback for older daemons parses these per-project
+                // statuses, so renaming this would break it.
+                | TestsNoMatch(o, _) -> ("no-tests-matched", o)
                 | TestsPassed(o, _, _) -> ("passed", o)
                 | TestsFailed(o, _, _) -> ("failed", o)
                 | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
@@ -1670,6 +1678,11 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                       $"%s{project}: errored — %s{reason}"
                       $"The %s{project} test host exited non-zero but wrote no parseable test report, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass; re-run (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green."
               ) ]
+        // No ledger entry, same as a pass. A filter matching nothing in THIS project is
+        // not this project's error — the run-level verdict is where a workspace-wide
+        // zero match is refused (AUTOMATION-272), and duplicating it here would put a
+        // red on every project an ordinary impact selection happened not to name.
+        | TestsNoMatch _
         | TestsPassed _ -> [])
 
 /// Rewrite this plugin's whole slice of the error ledger to be exactly what is still
@@ -2179,11 +2192,15 @@ let private executeTests
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
                                 elif zeroTestsUnderFilter then
-                                    // A filtered run matched no tests here — record
-                                    // like an impact-skip (passed + filtered), NOT a
-                                    // failure. The ZeroMatchMarker lets `run-tests`
-                                    // report `no-tests-matched` distinctly.
-                                    TestsPassed(ZeroMatchMarker + output, true, projectElapsed)
+                                    // A filtered run matched no tests here. Its OWN
+                                    // case (AUTOMATION-272), so downstream folds can
+                                    // ask the question structurally instead of by
+                                    // string prefix. Still not a failure — per project
+                                    // a filter selecting nothing is not that project's
+                                    // fault, and `TestResult.isPassed` stays true for
+                                    // it. What changed is that a RUN can now tell the
+                                    // difference; see `verificationOf`.
+                                    TestsNoMatch(output, projectElapsed)
                                 else
                                     // Report-authoritative verdict (exit code only a
                                     // tie-break). Fixes the false-RED: a dirty-shutdown
@@ -2202,7 +2219,7 @@ let private executeTests
                                 Logging.warn
                                     "test-prune"
                                     $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
-                            | TestsPassed(o, _, _) when o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal) ->
+                            | TestsNoMatch _ ->
                                 logToCtx $"{config.Project}: no tests matched the filter — skipped"
 
                                 Logging.info
@@ -2673,6 +2690,22 @@ let internal cacheKeyFor
             | Aborted _ -> false
             | Normal -> true
 
+        // AUTOMATION-272 — a run that matched NO tests must not mint a cacheable green.
+        //
+        // Same blind spot as `allPassed` above, with a longer half-life: a zero-match
+        // project is `TestsPassed` + `ZeroMatchMarker`, so the all-passed fold cannot see
+        // it, and the entry it writes is REPLAYABLE — a later `BuildCompleted` on the
+        // same tree hits a cached green produced by executing zero tests. The `notAborted`
+        // gate beside this exists for exactly this family (empty results trivially
+        // satisfying an all-passed fold); zero-match is the case it does not cover.
+        //
+        // Deliberately NOT extended to an empty result set: that is the "nothing to
+        // verify" skip, whose cacheability is a separate decision on a separate path.
+        // This changes one thing only — a run where projects ran and matched nothing.
+        let allZeroMatchRun =
+            not completed.Results.IsEmpty
+            && completed.Results |> Map.forall (fun _ r -> isZeroMatchResult r)
+
         // AUTOMATION-125 adds the third condition: a run that passed everything IT ran
         // while an earlier, uncovered failure is still outstanding is NOT green (its
         // terminal status is a Failed carrying the carried-over red), so it is not a
@@ -2688,6 +2721,7 @@ let internal cacheKeyFor
         if
             allPassed
             && notAborted
+            && not allZeroMatchRun
             && (pendingQueueHash ()).IsNone
             && not (hasOutstandingFailures ())
         then
@@ -3916,7 +3950,26 @@ let create
                                 match configsResult with
                                 | Error msg -> return JsonSerializer.Serialize({| error = msg |})
                                 | Ok configs when configs.IsEmpty ->
-                                    return JsonSerializer.Serialize({| error = "no matching test projects" |})
+                                    // Name what was asked for and what exists. A bare
+                                    // "no matching test projects" is unactionable for the
+                                    // one case that actually produces it — a mistyped or
+                                    // renamed `--project` — and the configured names are
+                                    // right here (AUTOMATION-272).
+                                    let msg =
+                                        match projectFilter with
+                                        | Some names ->
+                                            let asked = names |> Set.toList |> List.sort |> String.concat ", "
+
+                                            let known =
+                                                allConfigs
+                                                |> List.map (fun c -> c.Project)
+                                                |> List.sort
+                                                |> String.concat ", "
+
+                                            $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
+                                        | None -> "no matching test projects"
+
+                                    return JsonSerializer.Serialize({| error = msg |})
                                 | Ok configs ->
                                     let reply =
                                         Tasks.TaskCompletionSource<string>(
@@ -4761,6 +4814,34 @@ let create
                                 PluginStatus.failedNow
                                     $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)%s{carriedNote}"
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
+                                    results.Elapsed
+                            )
+                        // AUTOMATION-272 — §3c. Projects RAN, and every one of them
+                        // matched zero tests. Nothing executed, so nothing was verified,
+                        // and this may not be a green.
+                        //
+                        // The ladder below counts `TestResult.isPassed`, and a zero-match
+                        // project is recorded as `TestsPassed` carrying `ZeroMatchMarker`
+                        // (see `executeTests`) — so `isPassed` is TRUE for it, `failed = 0
+                        // && deferred = 0` holds, and the green branch fired. It reported
+                        // "N passed, 0 failed in N projects" about N projects that ran no
+                        // test at all. `isPassed` cannot exclude this the way it excludes
+                        // `Deferred`/`Errored`, because zero-match is not a case — it is a
+                        // string prefix on a pass — so the check has to be made here.
+                        //
+                        // Scoped to ALL projects deliberately. A zero match in ONE project
+                        // is a correct pass for that project: an impact selection naming
+                        // no class in the Integration project must not fail it. Only the
+                        // run-level verdict changes, and only when nothing matched
+                        // anywhere — which is a mis-aimed filter or operator error, never
+                        // a verified pass. `total > 0` keeps the empty-results run (the
+                        // deliberate "nothing to verify" skip) on its existing path, since
+                        // `Map.forall` is vacuously true for an empty map.
+                        | None when total > 0 && results.Results |> Map.forall (fun _ r -> isZeroMatchResult r) ->
+                            ctx.ReportStatus(
+                                PluginStatus.failedNow
+                                    $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
+                                    $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{carriedNote}"
                                     results.Elapsed
                             )
                         | None ->

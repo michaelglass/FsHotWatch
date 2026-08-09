@@ -22,6 +22,35 @@
   `Unavailable of reason`) because `Written` can only be constructed by the code
   holding the open handle: a path in a diagnostic is therefore a path that exists.
 
+- feat!: **`TestResult` gains a `TestsNoMatch` case — "the filter matched no test" is
+  now a state, not a string (AUTOMATION-272).** It was previously encoded as
+  `TestsPassed` carrying a magic `[fshw:no-tests-matched] ` prefix on the output, which
+  made "we ran nothing" a *sub-case of* "we passed": `TestResult.isPassed` was true for
+  it, and every fold over results had to remember to re-derive the fact with a
+  `StartsWith`. Two folds remembered and two did not, which is what produced
+  "N passed, 0 failed in N projects" for projects that executed no test. `TestsTimedOut`
+  already warned against exactly this — "without grepping the output for a magic prefix"
+  — and the next case that needed one got a prefix anyway.
+  **`isPassed` is deliberately still TRUE for `TestsNoMatch`.** Per project, a filter
+  matching nothing is not that project's failure — an impact selection naming no class
+  in some project must leave it passing, or every filtered run goes red. The dishonesty
+  was only ever the RUN-level verdict. New: `TestResult.isNoMatch`, which is the
+  predicate a run-level fold actually wants.
+  Breaking for anyone pattern-matching `TestResult` exhaustively. In this repo the
+  compiler named 8 such sites, and each now records an explicit decision at the call
+  site rather than a catch-all. Note the honest limit of that enumeration: folds that go
+  through `isPassed` are *not* flagged, because `isPassed` remains total and true here —
+  the two aggregators that were actually wrong had to be found and fixed by inspection
+  (see FsHotWatch.TestPrune's entry). What the case buys is that the fact can no longer
+  be lost by forgetting a string comparison, and that every future `match` must decide.
+- fix: **a cache entry written before the above is no longer replayed as a genuine pass
+  (AUTOMATION-272).** Such entries are stored as `"passed"` with the marker embedded in
+  their output; read back naively they would claim a project's tests passed when the
+  filter had matched none of them — the bug resurrected from a warm cache rather than
+  from the code. `FileTaskCache` reconstructs the case from the legacy prefix and strips
+  it, so a replayed entry matches what a fresh run produces. The prefix survives only as
+  `TestResult.LegacyZeroMatchMarker`, read on that one path and constructed by nothing.
+
 - feat: **activity heartbeat.** The daemon rewrites `<repoRoot>/.fshw/heartbeat` —
   Unix epoch seconds, decimal ASCII — every 15s for exactly as long as a run is in
   progress, and **never while idle**. Same contract shape as `daemon.pid`: fshw

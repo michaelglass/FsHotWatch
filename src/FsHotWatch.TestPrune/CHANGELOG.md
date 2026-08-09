@@ -20,7 +20,6 @@
   while the cause ("test shard pool … is already in use by PID 18024") had been
   printed in the first seconds, at the head. Five wrong hypotheses were chased before
   someone ran the suite by hand.
-
 - fix: **a schema recreate could discharge real test debt as a green that ran nothing
   (AUTOMATION-275).** `ChangedSymbolsAllUncovered` buys a "nothing to verify" green that
   executes zero tests, and it was inferred from `QueryAffectedTests` returning empty.
@@ -53,6 +52,30 @@
   would be under-testing, and the failure was that nobody could see the pattern — not
   that nothing could be done once seen. Costs nothing on a healthy queue, where no
   symbol reaches the age threshold.
+
+- fix: **`run-tests` says which project you asked for and which exist when nothing
+  matches (AUTOMATION-272).** The reply was a bare `no matching test projects`, which is
+  unactionable for the one case that actually produces it — a mistyped or renamed
+  `--project` — while the configured project names were right there to list.
+- fix: **a run in which every project matched zero tests is no longer a green
+  (AUTOMATION-272).** Two aggregators were blind to it in the same way. `recordRunOutcome`
+  — the sole producer of this plugin's terminal status — decides on `TestResult.isPassed`
+  counts, and `executeTests` records a zero-match project as `TestsPassed` carrying the
+  `ZeroMatchMarker` prefix. `isPassed` is therefore true, `failed = 0 && deferred = 0`
+  holds, and the green branch fired: the status read **"2 passed, 0 failed in 2 projects"**
+  for two projects that executed no test at all. The cache key's `allPassed` fold had the
+  identical blind spot with a longer half-life — such a run was **cacheable and replayable
+  as a green**, so a later `BuildCompleted` on the same tree could hit a cached pass minted
+  by running nothing. Both now check for an all-zero-match run explicitly.
+  `isPassed` cannot exclude this the way it excludes `TestsDeferred`/`TestsErrored`,
+  because zero-match is not a case — it is a string prefix on a pass — so every fold over
+  results has to remember to re-derive it. Two did; these two did not.
+  **Per-project semantics are unchanged:** a zero match in ONE project is still a pass for
+  that project, because an impact selection naming no class in some project must not fail
+  it. Only the run-level verdict changes, and only when nothing matched anywhere — a
+  mis-aimed filter or operator error, never a verified pass. A run with an empty result set
+  (the deliberate "nothing to verify" skip) keeps its existing path in both places.
+
 - feat: **a run states what it VERIFIED**, instead of leaving the consumer to infer it.
   `allZeroMatch` returned `false` for an empty result set — defensible in isolation
   ("no project ran" is not the claim "every project matched nothing") and wrong in

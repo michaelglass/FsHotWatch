@@ -221,13 +221,50 @@ type TestResult =
     /// transient abort is never replayed as a stale verdict. `reason` documents
     /// what aborted (exit code + "no report written").
     | TestsErrored of reason: string
+    /// The runner RAN, discovered the project's tests, and the active filter matched
+    /// NONE of them — Microsoft.Testing.Platform's exit 8 / "Zero tests ran". Nothing
+    /// executed, so nothing was verified.
+    ///
+    /// A case rather than a flag because it previously was neither: it was encoded as
+    /// `TestsPassed` carrying a magic `ZeroMatchMarker` prefix on the output string
+    /// (AUTOMATION-272). That made "we ran nothing" a SUB-CASE of "we passed", so
+    /// `isPassed` was true for it and every fold over results had to remember to
+    /// re-derive the fact by string comparison. Two folds remembered; two did not, and
+    /// reported "N passed, 0 failed in N projects" about projects that ran no test at
+    /// all. It is exactly the hazard `TestsTimedOut` above calls out — "without
+    /// grepping the output for a magic prefix" — reintroduced by the next case that
+    /// needed one.
+    ///
+    /// Read `isPassed` here carefully: it is TRUE, and deliberately so. Per PROJECT, a
+    /// filter matching nothing is not that project's failure — an impact selection
+    /// naming no class in the Integration project must leave it passing, or every
+    /// filtered run goes red. The dishonesty was never the per-project verdict; it was
+    /// the RUN-level one, where every project matching nothing still summed to a green.
+    /// That question belongs to `RunVerification`/`verificationOf`, which this case now
+    /// lets it answer structurally instead of by string prefix.
+    | TestsNoMatch of output: string * elapsed: System.TimeSpan
 
 module TestResult =
+    /// The magic output prefix a zero-match result used to be encoded with, before
+    /// `TestsNoMatch` existed (AUTOMATION-272).
+    ///
+    /// Retained for ONE reason: entries already written to `.fshw`'s task cache carry
+    /// it, stored as `"passed"`. Reading such an entry back as a plain `TestsPassed`
+    /// would replay a run that executed nothing as a genuine green — the exact bug,
+    /// resurrected from disk for anyone with a warm cache. `FileTaskCache` reconstructs
+    /// the case from this prefix on read.
+    ///
+    /// It is NOT part of the live path any more: nothing constructs a result carrying
+    /// it. Delete once no cache in the wild can predate the change.
+    [<Literal>]
+    let LegacyZeroMatchMarker = "[fshw:no-tests-matched] "
+
     let output =
         function
         | TestsPassed(o, _, _)
         | TestsFailed(o, _, _)
         | TestsTimedOut(o, _, _, _) -> o
+        | TestsNoMatch(o, _) -> o
         | TestsDeferred reason
         | TestsErrored reason -> reason
 
@@ -241,12 +278,21 @@ module TestResult =
         // would lower a coverage baseline.
         | TestsDeferred _
         | TestsErrored _ -> true
+        // A zero match arises ONLY under a filter — an unfiltered run that
+        // discovered no test is a different (and much louder) problem. Reporting it
+        // as filtered is both true and the safe direction: `ranFullSuite` must never
+        // class a run that executed nothing as a full suite entitled to overwrite a
+        // coverage baseline.
+        | TestsNoMatch _ -> true
 
     let elapsed =
         function
         | TestsPassed(_, _, e)
         | TestsFailed(_, _, e)
         | TestsTimedOut(_, _, _, e) -> e
+        // The runner really did start and discover this project's tests, so unlike
+        // the two cases below there IS a genuine wall-clock duration to report.
+        | TestsNoMatch(_, e) -> e
         // Nothing usable ran, so there's no wall-clock duration to report.
         | TestsDeferred _
         | TestsErrored _ -> System.TimeSpan.Zero
@@ -254,12 +300,40 @@ module TestResult =
     let isPassed =
         function
         | TestsPassed _ -> true
+        // TRUE, deliberately — and this is the one case here where that is a
+        // judgement rather than a definition, so it is stated rather than grouped.
+        //
+        // `isPassed` answers a PER-PROJECT question, and per project a filter that
+        // matched nothing is not that project's failure: an impact selection naming no
+        // class in the Integration project must leave it passing, or every filtered run
+        // goes red. Returning false here would be the over-correction — it trades a
+        // false green for a false red on every ordinary impact run.
+        //
+        // What must NOT happen is a RUN summing these into a green, which is what
+        // AUTOMATION-272 was. That question is `verificationOf` (→ `RunVerification`),
+        // and it is the aggregators' job to ask it. If you are writing a new fold over
+        // results, `isPassed` is not the predicate you want for a run-level verdict.
+        | TestsNoMatch _ -> true
         | TestsFailed _
         | TestsTimedOut _
         // A project that never ran (Deferred) or aborted before producing
         // evidence (Errored) must NEVER count as passed — otherwise a
         // build-ordering race or a host crash produces a silent false-green
         // CI verdict.
+        | TestsDeferred _
+        | TestsErrored _ -> false
+
+    /// True for the `TestsNoMatch` case: the project's runner ran and its filter
+    /// matched no test, so this project verified nothing.
+    ///
+    /// The predicate a RUN-level fold wants, and the one `isPassed` deliberately
+    /// cannot be. Replaces a `String.StartsWith` against a magic output prefix.
+    let isNoMatch =
+        function
+        | TestsNoMatch _ -> true
+        | TestsPassed _
+        | TestsFailed _
+        | TestsTimedOut _
         | TestsDeferred _
         | TestsErrored _ -> false
 

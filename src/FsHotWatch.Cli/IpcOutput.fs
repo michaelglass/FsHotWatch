@@ -230,6 +230,49 @@ let renderIpcResult
                                 elif noTestsMatched then "all-zero-match"
                                 else "ran"
 
+                        // AUTOMATION-272 — say what the run actually did, on every
+                        // outcome including the green.
+                        //
+                        // These counts existed only in `daemon.log`, so telling a real
+                        // pass from a vacuous one meant going and reading a log. The
+                        // missing summary line IS the tell: "1 project: 1 matched
+                        // nothing" and "1 project: 12 passed" are the same `✓` without
+                        // it. Printed before the verdict so it is present whichever
+                        // branch below fires.
+                        let statusCounts =
+                            projects.EnumerateArray()
+                            |> Seq.map (fun p ->
+                                match p.TryGetProperty("status") with
+                                | true, s -> s.GetString()
+                                | false, _ -> "unknown")
+                            |> Seq.countBy id
+                            |> Map.ofSeq
+
+                        let countOf key =
+                            statusCounts |> Map.tryFind key |> Option.defaultValue 0
+
+                        let passedCount = countOf "passed"
+                        let failedCount = countOf "failed"
+                        let noMatchCount = countOf "no-tests-matched"
+                        let otherCount = projectCount - passedCount - failedCount - noMatchCount
+
+                        let summaryParts =
+                            [ if passedCount > 0 then
+                                  $"%d{passedCount} passed"
+                              if failedCount > 0 then
+                                  $"%d{failedCount} failed"
+                              if noMatchCount > 0 then
+                                  $"%d{noMatchCount} matched nothing"
+                              // Deferred / timed-out / errored projects. Named as a
+                              // group rather than silently omitted, so the parts always
+                              // add up to the project count.
+                              if otherCount > 0 then
+                                  $"%d{otherCount} did not run" ]
+
+                        if projectCount > 0 then
+                            let detail = summaryParts |> String.concat ", "
+                            UI.info $"  %d{projectCount} project(s): %s{detail}"
+
                         // Both no-op outcomes exit 3, matching `confirm`'s established
                         // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
                         // report a pass nothing earned. Exit 0 here would sail through
@@ -252,7 +295,27 @@ let renderIpcResult
                             UI.info
                                 $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
 
-                            UI.info "  A filter that matches nothing is almost always a typo or a renamed class."
+                            // Two causes, and the ordering matters. The filter is fanned
+                            // out across EVERY configured project, so a class that
+                            // really exists still reports "matched nothing" in each
+                            // project that does not contain it — and if the one that
+                            // does was not among those invoked, the run says the same
+                            // thing as a typo does. Naming only the typo sent the last
+                            // investigation after a class that was never misspelled
+                            // (AUTOMATION-272), so aim is offered first when the run was
+                            // narrow enough for it to be the likely story.
+                            if projectCount = 1 then
+                                UI.info
+                                    "  Either the class lives in a DIFFERENT project than the one that ran, or the pattern is a typo / renamed class."
+
+                                UI.info
+                                    "  Aim it:                    fshw test-rerun --project <name> --filter-class <pattern>"
+                            else
+                                UI.info "  A filter that matches nothing is usually a typo or a renamed class."
+
+                                UI.info
+                                    "  Or aim it at one project:  fshw test-rerun --project <name> --filter-class <pattern>"
+
                             UI.info "  See the discovered names:  fshw status test-prune"
                             UI.info "  Wanted the whole suite?    fshw confirm   (unfiltered)"
                             3

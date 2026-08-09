@@ -115,6 +115,18 @@ let private serializeTestResult (key: string) (result: TestResult) =
         // verdict. Serialized here only for match exhaustiveness / robustness.
         obj["result"] <- "errored"
         obj["output"] <- reason
+    | TestsNoMatch(output, elapsed) ->
+        // Its own stored tag, so a replayed entry comes back as the case it was
+        // written as. Before AUTOMATION-272 this round-tripped as "passed" with the
+        // marker still embedded in `output` — which is what the legacy read in
+        // `deserializeTestResult` has to reconstruct.
+        //
+        // Like `TestsErrored`, this is rarely written in practice: an all-zero-match
+        // run is not cacheable (the cacheKey gate refuses it), so only a MIXED run —
+        // some project matched nothing, another really ran — reaches the write.
+        obj["result"] <- "no-match"
+        obj["output"] <- output
+        obj["elapsedSeconds"] <- elapsed.TotalSeconds
 
     obj
 
@@ -148,7 +160,16 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
 
     let result =
         match obj["result"].GetValue<string>() with
+        // AUTOMATION-272 back-compat, and it must come BEFORE the plain "passed" read.
+        // Entries written before `TestsNoMatch` existed stored a zero match as
+        // `"passed"` with the marker embedded in `output`. Reading one back as a plain
+        // pass would replay a run that executed no test as a genuine green — the bug
+        // itself, resurrected from a warm cache on disk. Reconstruct the case, and
+        // strip the marker so the surfaced output matches what a fresh run produces.
+        | "passed" when output.StartsWith(TestResult.LegacyZeroMatchMarker, StringComparison.Ordinal) ->
+            TestsNoMatch(output.Substring(TestResult.LegacyZeroMatchMarker.Length), elapsed)
         | "passed" -> TestsPassed(output, wasFiltered, elapsed)
+        | "no-match" -> TestsNoMatch(output, elapsed)
         | "failed" -> TestsFailed(output, wasFiltered, elapsed)
         | "timed-out" ->
             let secs =
