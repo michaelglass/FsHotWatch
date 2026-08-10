@@ -135,15 +135,22 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
 
     let output = obj["output"].GetValue<string>()
 
-    // wasFiltered is optional for backward compatibility with caches written
-    // before the field existed; default to false (full run).
-    let wasFiltered =
-        if obj.ContainsKey("wasFiltered") then
-            let node = obj["wasFiltered"]
-
-            if isNull node then false else node.GetValue<bool>()
-        else
-            false
+    // REQUIRED — but only on the shapes whose WRITER emits it. `TestsPassed` /
+    // `TestsFailed` / `TestsTimedOut` carry the flag in the DU and always
+    // serialize it; `TestsNoMatch` / `TestsDeferred` / `TestsErrored` do not
+    // carry it at all, so its absence THERE is not a missing answer and must
+    // stay readable. Hence a thunk forced per branch, not one eager read.
+    //
+    // On the shapes that do carry it, absence is a defect and not a default:
+    // `false` reads as "not filtered", and FileCommandPlugin DERIVES the run
+    // scope from these results (`TestResult.ranFullSuite accumulated`) on the
+    // progress path, so an absent flag launders a filtered run into a full
+    // suite without the `ranFullSuite` field ever being consulted. Read as a
+    // cache MISS instead (caught by `tryGet`, counted as a parse failure).
+    let requireWasFiltered () =
+        match obj["wasFiltered"] with
+        | null -> failwith "task-cache test result has no `wasFiltered` — stale entry, read as miss"
+        | node -> node.GetValue<bool>()
 
     // elapsedSeconds is optional for back-compat with caches written before
     // the field existed; default to TimeSpan.Zero (no recorded duration).
@@ -168,9 +175,9 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
         // strip the marker so the surfaced output matches what a fresh run produces.
         | "passed" when output.StartsWith(TestResult.LegacyZeroMatchMarker, StringComparison.Ordinal) ->
             TestsNoMatch(output.Substring(TestResult.LegacyZeroMatchMarker.Length), elapsed)
-        | "passed" -> TestsPassed(output, wasFiltered, elapsed)
+        | "passed" -> TestsPassed(output, requireWasFiltered (), elapsed)
         | "no-match" -> TestsNoMatch(output, elapsed)
-        | "failed" -> TestsFailed(output, wasFiltered, elapsed)
+        | "failed" -> TestsFailed(output, requireWasFiltered (), elapsed)
         | "timed-out" ->
             let secs =
                 if obj.ContainsKey("timeoutSeconds") then
@@ -178,7 +185,7 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
                 else
                     0.0
 
-            TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered, elapsed)
+            TestsTimedOut(output, TimeSpan.FromSeconds secs, requireWasFiltered (), elapsed)
         | "deferred" -> TestsDeferred output
         | "errored" -> TestsErrored output
         | r -> failwith $"Unknown test result: %s{r}"
@@ -287,9 +294,18 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
             |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
             |> Map.ofSeq
 
+        // REQUIRED on read, for the same reason the format version and the
+        // verdict fields are: neither boolean is an honest reading of an entry
+        // that never recorded the scope. `true` over-gates (CoveragePlugin's
+        // `gateVerdict` turns a `SomeFailed` into a hard `Failed`); `false`
+        // silently switches coverage gating OFF for the replayed run and
+        // exports a false FSHW_RAN_FULL_SUITE to user hooks. An entry with no
+        // recorded scope has no claim to replay, so it reads as a cache MISS
+        // (the throw is caught by `tryGet` and counted as a parse failure) and
+        // the run is simply redone.
         let ranFullSuite =
             match obj["ranFullSuite"] with
-            | null -> true
+            | null -> failwith "task-cache testRunCompleted has no `ranFullSuite` — stale entry, read as miss"
             | node -> node.GetValue<bool>()
 
         CachedTestRunCompleted
