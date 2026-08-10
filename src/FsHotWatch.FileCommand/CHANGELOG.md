@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixed
+
+- **BREAKING (hook contract): `FSHW_RAN_FULL_SUITE` is now three-valued —
+  `"true"` / `"false"` / `"unknown"`.** It could report `"true"` to an
+  `afterTests` command on a run in which the whole suite had NOT run.
+
+  An `afterTests` command fires as soon as its trigger is satisfied, which for
+  `afterTests: true` is the FIRST completed group of a multi-`group` run. The
+  value was derived from the run accumulator at that moment — a strict prefix of
+  the run — so a later, impact-filtered group produced a partial run that the
+  hook had already been told was full. RunId dedupe meant the truthful
+  `TestRunCompleted` (`RanFullSuite = false`) never corrected it. Hooks are
+  arbitrary user code and the documented use is gating baseline refreshes and
+  ratchet tightening, so this could tighten a threshold against partial coverage.
+
+  A prefix can prove PARTIAL (a filtered project stays filtered) but can never
+  prove FULL, and a run that executed nothing proves neither — `"unknown"` is
+  now reported in both cases rather than picking a lie. Empty-result runs (the
+  "0 affected classes" impact-skip and the aborted-preflight lifecycle) carry
+  `RanFullSuite = true` vacuously; they still fire no `afterTests` command at
+  all, and a test now pins that.
+
+  **Migration:** gate on `[ "$FSHW_RAN_FULL_SUITE" = "true" ]` — that idiom is
+  unaffected and gets strictly safer. Hooks that branch on `= "false"`, or treat
+  the variable as a boolean complement, must add an `"unknown"` arm and treat it
+  as "not a full suite".
+
+### Added
+
+- `FullSuiteClaim` (+ `FullSuiteClaim.token` / `FullSuiteClaim.derive`) — the
+  type behind `FSHW_RAN_FULL_SUITE`, and the single place its wire values are
+  written.
+
 ## 0.7.0-alpha.15 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies

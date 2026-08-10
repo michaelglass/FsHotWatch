@@ -9,10 +9,71 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.ProcessHelper
 
 /// Env var name set on every afterTests-triggered child process.
-/// Value is `"true"` iff every project in the triggering run executed without
-/// an impact filter. See README for downstream usage.
+/// Carries a `FullSuiteClaim` token — `"true"` / `"false"` / `"unknown"`.
+/// See README for downstream usage.
 [<Literal>]
 let RanFullSuiteEnvVar = "FSHW_RAN_FULL_SUITE"
+
+/// What an `afterTests` command can HONESTLY be told about the breadth of the
+/// run that fired it.
+///
+/// This was a plain `bool`, and a bool cannot carry the question. Hooks are
+/// ARBITRARY USER CODE — the documented use is "gate baseline refreshes or
+/// threshold tightening on it" — so the one thing that must never happen is a
+/// `"true"` on a run that did not, in fact, run the whole suite. Both boolean
+/// values lie in one direction: `"true"` overstates a run that verified nothing
+/// or is still in flight, and `"false"` asserts a filtered run that never
+/// happened. The third value says "cannot tell you" instead of picking a lie,
+/// and a hook gated on `= "true"` (the documented idiom) is correct under it.
+type FullSuiteClaim =
+    /// The run is COMPLETE, executed at least one test, and no project was
+    /// impact-filtered. The ONLY value that licenses a baseline refresh.
+    | FullSuite
+    /// At least one project in view was impact-filtered. Provable from a
+    /// partial view too — a filtered project stays filtered for the whole run.
+    | PartialSuite
+    /// Unprovable either way: the fire is MID-RUN (a prefix of the run cannot
+    /// prove that nothing LATER is filtered), or the run executed nothing at all.
+    | BreadthUnknown
+
+[<RequireQualifiedAccess>]
+module FullSuiteClaim =
+
+    /// Wire value for `FSHW_RAN_FULL_SUITE`. The ONLY place these strings are written.
+    let token (claim: FullSuiteClaim) : string =
+        match claim with
+        | FullSuite -> "true"
+        | PartialSuite -> "false"
+        | BreadthUnknown -> "unknown"
+
+    /// Derive the claim from the results view a fire is about.
+    ///
+    /// `isFinal` is true ONLY for `TestRunCompleted`, whose `Results` is the whole
+    /// run. A `TestProgress` accumulator is a strict PREFIX: the plugin fires as
+    /// soon as its filter is satisfied, which for `afterTests: true` is the first
+    /// group of a multi-`group` run. Deriving "full suite" from a prefix said the
+    /// whole suite ran while later, impact-filtered groups had yet to report — and
+    /// RunId dedupe means the truthful `TestRunCompleted` never corrects it.
+    ///
+    /// `ranFullSuite` is the caller's authoritative filtered/unfiltered signal
+    /// (`TestRunCompleted.RanFullSuite` for a final view, `TestResult.ranFullSuite`
+    /// over the accumulator for a partial one). It is NOT re-derived here, because
+    /// the event's own field is the contract for the final view.
+    let derive (isFinal: bool) (results: Map<string, TestResult>) (ranFullSuite: bool) : FullSuiteClaim =
+        if not (results |> Map.exists (fun _ r -> TestResult.executedTests r)) then
+            // NOTHING EXECUTED. `TestResult.ranFullSuite` is vacuously TRUE for an
+            // empty map ("nothing was filtered"), and TestPrune's two degenerate
+            // lifecycles — the aborted-preflight one and the "0 affected classes"
+            // impact-skip — both hardcode `RanFullSuite = true` alongside
+            // `Results = Map.empty`. That is precisely how a run that verified
+            // nothing would hand a hook a licence to refresh a coverage baseline.
+            BreadthUnknown
+        elif not ranFullSuite then
+            PartialSuite
+        elif isFinal then
+            FullSuite
+        else
+            BreadthUnknown
 
 type CommandResult =
     | NeverRun
@@ -297,12 +358,12 @@ let create
         (state: FileCommandState)
         (runId: Guid)
         (results: Map<string, TestResult>)
-        (ranFullSuite: bool)
+        (claim: FullSuiteClaim)
         : Async<FileCommandState> =
         async {
             match trigger.AfterTests with
             | Some filter when state.LastFiredRunId <> Some runId && CommandTrigger.matches filter results ->
-                let env = [ RanFullSuiteEnvVar, (if ranFullSuite then "true" else "false") ]
+                let env = [ RanFullSuiteEnvVar, FullSuiteClaim.token claim ]
 
                 let! result = runCommand ctx TestsCompleted env
 
@@ -347,12 +408,19 @@ let create
                             progress.NewResults |> Map.fold (fun a k v -> Map.add k v a) acc
                         | _ -> progress.NewResults
 
-                    // Mid-run view: derive RanFullSuite from the accumulator.
-                    // An afterTests fire during progress only happens once all
-                    // projects its TestProjects filter names have reported, so
-                    // their wasFiltered values are authoritative by then.
-                    let ranFullSuite = TestResult.ranFullSuite accumulated
-                    let! state' = tryFire ctx state progress.RunId accumulated ranFullSuite
+                    // Mid-run view. The accumulator is a strict PREFIX of the run:
+                    // it holds only the projects that have reported so far, and
+                    // the fire happens as soon as the trigger's filter is
+                    // satisfied — for `afterTests: true` that is the FIRST group
+                    // of a multi-`group` run. `wasFiltered` is authoritative for
+                    // the projects present (a filtered one stays filtered), so a
+                    // prefix can prove PARTIAL; it can never prove FULL, because
+                    // a group that has not reported yet may be filtered. Hence
+                    // `isFinal = false` — see `FullSuiteClaim.derive`.
+                    let claim =
+                        FullSuiteClaim.derive false accumulated (TestResult.ranFullSuite accumulated)
+
+                    let! state' = tryFire ctx state progress.RunId accumulated claim
 
                     return
                         { state' with
@@ -361,8 +429,12 @@ let create
                 | TestRunCompleted completed ->
                     // TestRunCompleted always carries the full cumulative Results,
                     // so cache-hit replays (which skip TestProgress) still fire the
-                    // command correctly. Same dedupe semantics.
-                    return! tryFire ctx state completed.RunId completed.Results completed.RanFullSuite
+                    // command correctly. Same dedupe semantics. This is the only
+                    // view that can license a `"true"` claim (`isFinal = true`) —
+                    // and even here only if something actually executed.
+                    let claim = FullSuiteClaim.derive true completed.Results completed.RanFullSuite
+
+                    return! tryFire ctx state completed.RunId completed.Results claim
 
                 | _ -> return state
             }

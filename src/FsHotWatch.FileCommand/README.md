@@ -76,11 +76,34 @@ watcher to cover that pattern so real edits trigger the plugin.
 
 The following environment variables are set on every `afterTests` command:
 
-- `FSHW_RAN_FULL_SUITE`: `"true"` if every project in the test run executed
-  without an impact filter (i.e., the entire test suite ran), `"false"` if at
-  least one project was filtered to a subset. Use this to gate baseline
-  refreshes or threshold tightening — partial runs should not lower a
-  coverage baseline or tighten a ratchet.
+- `FSHW_RAN_FULL_SUITE`: how much of the suite the triggering run covered.
+  **Three values, not two:**
+
+  | value | meaning |
+  |---|---|
+  | `"true"` | The run FINISHED, executed at least one test, and no project was impact-filtered — the entire suite ran. |
+  | `"false"` | At least one project was filtered to a subset. |
+  | `"unknown"` | Can't be established. The command fired mid-run (see below), or the run executed no tests at all. |
+
+  Use it to gate baseline refreshes or threshold tightening — partial runs
+  should not lower a coverage baseline or tighten a ratchet. **Gate on
+  `= "true"`, never on `!= "false"`:**
+
+  ```sh
+  if [ "$FSHW_RAN_FULL_SUITE" = "true" ]; then
+      refresh-coverage-baseline
+  fi
+  ```
+
+  `"unknown"` exists because a boolean here has to lie. An `afterTests` command
+  fires as soon as its trigger is satisfied, which for `afterTests: true` is the
+  first completed *group* of a multi-`group` run — at that moment later groups
+  may still be impact-filtered, so "the whole suite ran" is not yet knowable.
+  Likewise a run that executed nothing (impact analysis found no affected tests,
+  or a `beforeRun` hook aborted the run) filtered nothing, but proved nothing
+  either. Reporting `"true"` there would hand a hook a licence to refresh a
+  baseline off no evidence; reporting `"false"` would assert a filtered run that
+  never happened. `"unknown"` says neither.
 
 ## CLI
 
