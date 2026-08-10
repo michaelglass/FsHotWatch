@@ -104,7 +104,7 @@ This matters more than the feature list, so it is stated up front:
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |
 | `fshw stop` | Stop the running daemon. |
 | `fshw format` | Format the code (Fantomas). |
-| `fshw test-rerun` | Rerun tests for an xUnit v3 `--filter-class` / `--filter-trait` slice. |
+| `fshw test-rerun` | Rerun tests for an xUnit v3 `--filter-class` / `--filter-trait` slice. Add `--project <name>` (repeatable) to aim it at particular test projects — without it the filter is fanned out across every configured project, so a class living in one of them reports zero matches in all the others. |
 | `fshw rerun <plugin>` | Force one plugin to re-run, clearing its cached state. |
 | `fshw init` | Generate a starter `.fshw.json`. |
 | `fshw config check` | Validate `.fshw.json` without starting the daemon. |

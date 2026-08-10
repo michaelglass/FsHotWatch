@@ -902,10 +902,8 @@ let ``a scope this build cannot read is ScopeUnreadable — distinct from "no sc
             | Verdict.Reading.Found v -> v.Scope
             | other -> failwith $"expected a readable verdict, got %A{other}"
 
-        let unreadable (scope: TestScope) =
-            match scope with
-            | ScopeUnreadable _ -> true
-            | _ -> false
+        // The shared, exhaustive predicate — this was a local copy with a wildcard.
+        let unreadable = TestScope.isUnreadable
 
         // POSITIVE CONTROL: the reader CAN produce a plain `ScopeUnknown` — from the one
         // input that means it. Without this, "everything is unreadable" would pass on a
