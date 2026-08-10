@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **fix: a run that executed no test no longer reaches a coverage verdict.**
+  The plugin now declines the check outright — the same thing it already did for
+  an aborted run — instead of gating on a claim that run could not support.
+
+  Previously the decision ran on `TestRunCompleted.RanFullSuite`, which was
+  vacuously `true` for an empty result map. So a run that executed nothing (the
+  "0 affected classes" impact-skip, or one whose every project deferred or
+  errored) chose between gating a shortfall and downgrading it, and **both
+  answers were wrong**: `true` gated on coverage that run never produced, `false`
+  quietly turned a real shortfall into a non-gating notice. Nothing was mis-gated
+  in the safe direction by accident — the exposure was real, it was simply
+  fail-closed at the one consumer that had an `Outcome` guard in front of it.
+  (AUTOMATION-280)
+
+- **BREAKING (internal API): `gateVerdict` takes a `RunScope`, not a `bool`.**
+  New signature `gateVerdict : RunScope -> CheckResult -> CoverageVerdict`.
+  `FullSuite` gates a shortfall; `Partial` downgrades it to a non-gating notice.
+  A run that verified nothing has no `RunScope` to pass, so the case can no
+  longer be smuggled in as `false` — which is what the guard clause above used to
+  intercept by hand. Follows core's `TestRunCompleted.Verification` change.
+  (AUTOMATION-282)
+
+  `coverage-status`' three states (`no check run yet` / `OK` / `FAILED`) are now
+  covered by tests; "no check has run yet" must never be confusable with "OK".
+
 ## 0.7.0-alpha.16 - 2026-08-03
 
 - chore(deps): bump ecosystem tools to latest (fssemantictagger 0.13.0-alpha.20 incl. isCommitPushed fix, coverageratchet 0.15.0-alpha.11, syncdocs 0.13.0-alpha.4, fsprojlint 0.10.0-alpha.14, RefStamp 0.1.0-alpha.2)
