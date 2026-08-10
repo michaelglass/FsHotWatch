@@ -1144,6 +1144,91 @@ let ``convention rules stay silent on conforming code`` () =
 
         test <@ findings.IsEmpty @>)
 
+/// A self-contained stand-in for the real `TestResult` seam, mirroring the one
+/// fact the rule turns on: `isPassed` is TRUE for the zero-match case. The rule
+/// is name-based, so a structurally identical local reproduces it — and stating
+/// the trap here keeps the fixture honest about WHY the fold is wrong.
+let private verdictPreamble =
+    [ "module Test"
+      "type TestResult ="
+      "    | TestsPassed"
+      "    | TestsFailed"
+      "    | TestsNoMatch"
+      "module TestResult ="
+      "    let isPassed r ="
+      "        match r with"
+      "        | TestsFailed -> false"
+      // The whole hazard, in one line: a project that executed nothing passes.
+      "        | TestsPassed"
+      "        | TestsNoMatch -> true"
+      "    let isNoMatch r ="
+      "        match r with"
+      "        | TestsNoMatch -> true"
+      "        | TestsPassed"
+      "        | TestsFailed -> false"
+      "let allZeroMatchOf (results: Map<string, TestResult>) ="
+      "    not results.IsEmpty && results |> Map.forall (fun _ r -> TestResult.isNoMatch r)" ]
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-VERDICT-001 fires on a run verdict folded from isPassed`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource (
+                verdictPreamble
+                @ [ "let green (results: Map<string, TestResult>) ="
+                    "    results |> Map.forall (fun _ r -> TestResult.isPassed r)"
+                    "let green2 (results: TestResult list) = List.forall TestResult.isPassed results"
+                    "let green3 (results: Map<string, TestResult>) ="
+                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
+                    "    allPassed" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
+
+        // One per fold: piped Map.forall, point-free List.forall, and a fold bound
+        // to a name whose decision asks nothing further.
+        test <@ findings.Length = 3 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
+    withAnalyzerGate (fun () ->
+        // The negative control that decides whether this rule is shippable. Every
+        // shape here is live in TestPrunePlugin, and a rule that fires on any of
+        // them is a rule that gets suppressed rather than obeyed.
+        let source =
+            fsSource (
+                verdictPreamble
+                @ [ // Filtering FOR the non-green — `recordRunOutcome`. Correct: it
+                    // selects what to report, it does not infer a green.
+                    "let nonGreen (results: Map<string, TestResult>) ="
+                    "    results |> Map.toList |> List.filter (fun (_, r) -> not (TestResult.isPassed r))"
+                    // Per-project, on a single result.
+                    "let projectPassed (r: TestResult) = TestResult.isPassed r"
+                    // A forall over projects whose predicate is a LOOKUP, not the
+                    // pass predicate — the per-project green-commit fold.
+                    "let covered (results: Map<string, TestResult>) (names: Set<string>) ="
+                    "    names"
+                    "    |> Set.forall (fun n ->"
+                    "        match Map.tryFind n results with"
+                    "        | Some r -> TestResult.isPassed r"
+                    "        | None -> false)"
+                    // The cacheable-green gate: an all-passed fold that DOES ask the
+                    // run-level question, in the same decision.
+                    "let cacheable (results: Map<string, TestResult>) ="
+                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
+                    "    let allZeroMatchRun = allZeroMatchOf results"
+                    "    allPassed && not allZeroMatchRun" ]
+            )
+
+        let findings =
+            runRulesOn source
+            |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
+
+        test <@ findings.IsEmpty @>)
+
 // ===========================================================================
 // BuildPlugin — success and failure
 // ===========================================================================

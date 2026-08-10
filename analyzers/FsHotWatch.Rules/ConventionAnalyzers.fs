@@ -14,6 +14,15 @@
 ///   them. Making it unrepresentable would beat detecting it (host-stamped
 ///   transition times), but that refactor is out of scope — so the class is banned
 ///   here instead.
+///
+///   FSHW-VERDICT-001 — a RUN-level verdict may not be a fold of the PER-PROJECT
+///   `TestResult.isPassed`. This is the sharpest case of "unrepresentable would
+///   beat detecting it" and the one place it is genuinely unreachable: `isPassed`
+///   is TOTAL and deliberately TRUE for `TestsNoMatch`, so `Map.forall isPassed`
+///   over a run where every project executed nothing type-checks, is total, and
+///   folds to green (AUTOMATION-272). No signature can distinguish the two
+///   questions while one predicate is the honest answer to both — so the *fold*
+///   is what gets named here.
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK
@@ -102,11 +111,79 @@ module Detect =
             | _ -> None
         | _ -> None
 
+    /// `Map.forall` / `List.forall` / `Seq.forall` / a bare `forall` — the head of
+    /// a (possibly partially applied) `forall` call.
+    let rec private isForallFunc (e: SynExpr) : bool =
+        match unwrapParen e with
+        | SynExpr.App(funcExpr = f) -> isForallFunc f
+        | SynExpr.TypeApp(expr = inner) -> isForallFunc inner
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> lastIs "forall" ids
+        | SynExpr.Ident id -> id.idText = "forall"
+        | _ -> false
+
+    /// `TestResult.isPassed` in predicate position: passed by name, or as a lambda
+    /// whose body is *only* that call — `fun _ r -> TestResult.isPassed r`.
+    ///
+    /// Deliberately narrow. Anything wrapping the call (`not (isPassed r)`,
+    /// `isPassed r && executedTests r`) roots the application chain in some other
+    /// function and is NOT this rule's business: negating the predicate to select
+    /// the non-green is the correct, common use.
+    let rec private isPassedPredicate (e: SynExpr) : bool =
+        match unwrapParen e with
+        | SynExpr.Lambda(body = body) -> isPassedPredicate body
+        | SynExpr.App(funcExpr = f) -> isPassedPredicate f
+        | SynExpr.Ident id -> id.idText = "isPassed"
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> lastIs "isPassed" ids
+        | _ -> false
+
+    /// A fold of the per-project pass predicate over a whole run's results:
+    /// `results |> Map.forall (fun _ r -> TestResult.isPassed r)`,
+    /// `List.forall TestResult.isPassed results`, and the partial applications.
+    let private passFoldInExpr (e: SynExpr) : range option =
+        match e with
+        | SynExpr.App(funcExpr = f; argExpr = pred) when isForallFunc f && isPassedPredicate pred -> Some e.Range
+        | _ -> None
+
+    /// Names that ask the RUN-level question — "did this run verify anything?" —
+    /// as opposed to the per-project one. A fold sitting in the same decision as
+    /// one of these is already asking it, so the rule stays quiet there. That is
+    /// not a loophole: it is the correct shape (TestPrune's cacheable-green gate
+    /// conjoins `allPassed` with `not (allZeroMatchOf …)`), and the rule exists to
+    /// catch the fold that asks NOTHING else.
+    let private isVerificationName (name: string) =
+        name = "verificationOf"
+        || name = "allZeroMatchOf"
+        || name = "allZeroMatch"
+        || name = "verifiedNothing"
+        || name = "RunVerification"
+        || name = "AllZeroMatch"
+        || name = "NoProjectsSelected"
+
+    let private mentionsVerification (ids: Ident list) =
+        ids |> List.exists (fun i -> isVerificationName i.idText)
+
+    let private posLeq (aLine: int, aCol: int) (bLine: int, bCol: int) =
+        aLine < bLine || (aLine = bLine && aCol <= bCol)
+
+    let private rangeContains (outer: range) (inner: range) =
+        posLeq (outer.StartLine, outer.StartColumn) (inner.StartLine, inner.StartColumn)
+        && posLeq (inner.EndLine, inner.EndColumn) (outer.EndLine, outer.EndColumn)
+
     type private Collector() =
         inherit SyntaxCollectorBase()
 
         member val DiscardedClaims = ResizeArray<range>()
         member val LocalClocks = ResizeArray<range>()
+        member val PassFolds = ResizeArray<range>()
+        member val VerificationGuards = ResizeArray<range>()
+
+        /// Ranges of the enclosing DECISION a fold could be guarded by: a
+        /// `let … in <rest>` (whose body holds the conjuncts that follow the
+        /// binding) and a match arm. Scoped this tightly on purpose — the
+        /// enclosing *function* in TestPrune is thousands of lines long, and
+        /// suppressing a whole handler because it mentions `verificationOf`
+        /// somewhere would blind the rule exactly where both bugs lived.
+        member val DecisionScopes = ResizeArray<range>()
 
         override this.WalkExpr(_path, expr) =
             match discardedClaimInExpr expr with
@@ -116,6 +193,25 @@ module Detect =
             match localClockInExpr expr with
             | Some r -> this.LocalClocks.Add r
             | None -> ()
+
+            match passFoldInExpr expr with
+            | Some r -> this.PassFolds.Add r
+            | None -> ()
+
+            match expr with
+            | SynExpr.LetOrUse _ -> this.DecisionScopes.Add expr.Range
+            | SynExpr.Ident id when isVerificationName id.idText -> this.VerificationGuards.Add expr.Range
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when mentionsVerification ids ->
+                this.VerificationGuards.Add expr.Range
+            | _ -> ()
+
+        override this.WalkClause(_path, clause) = this.DecisionScopes.Add clause.Range
+
+        override this.WalkPat(_path, pat) =
+            match pat with
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when mentionsVerification ids ->
+                this.VerificationGuards.Add pat.Range
+            | _ -> ()
 
         override this.WalkBinding(_path, binding) =
             match binding with
@@ -135,6 +231,28 @@ module Detect =
     /// Ranges where a local (non-UTC) clock is read.
     let localClocks (input: ParsedInput) : range list =
         (collect input).LocalClocks |> List.ofSeq
+
+    /// Ranges where a per-project pass fold stands in for a run-level verdict —
+    /// with no run-level verification question anywhere in the same decision.
+    ///
+    /// The scope is the INNERMOST enclosing `let …` expression or match arm: for
+    /// properly nested ranges that is the one with the latest start position.
+    let runLevelPassFolds (input: ParsedInput) : range list =
+        let c = collect input
+        let scopes = List.ofSeq c.DecisionScopes
+        let guards = List.ofSeq c.VerificationGuards
+
+        let guardedInScope (fold: range) =
+            scopes
+            |> List.filter (fun s -> rangeContains s fold)
+            |> function
+                | [] -> false
+                | containing ->
+                    let innermost = containing |> List.maxBy (fun s -> (s.StartLine, s.StartColumn))
+
+                    guards |> List.exists (rangeContains innermost)
+
+        c.PassFolds |> List.ofSeq |> List.filter (guardedInScope >> not)
 
 [<CliAnalyzer("RunClaimDiscardedAnalyzer",
               "A RunClaim (RunExclusive's result) must be matched, never discarded — a dropped SlotBusy is dropped work (AUTOMATION-99)")>]
@@ -165,6 +283,23 @@ let localClockAnalyzer: Analyzer<CliContext> =
                       Message =
                         "Local clock read (DateTime/DateTimeOffset.Now). Every timestamp in the daemon is UTC — use UtcNow; mixing a local reading into UTC arithmetic skews or negates elapsed times."
                       Code = "FSHW-CLOCK-001"
+                      Severity = Severity.Error
+                      Range = range
+                      Fixes = [] })
+        }
+
+[<CliAnalyzer("RunVerdictFoldAnalyzer",
+              "Forbids folding TestResult.isPassed over a whole run's results as the run-level verdict — a zero-match project passes having verified nothing (AUTOMATION-272)")>]
+let runVerdictFoldAnalyzer: Analyzer<CliContext> =
+    fun (context: CliContext) ->
+        async {
+            return
+                Detect.runLevelPassFolds context.ParseFileResults.ParseTree
+                |> List.map (fun range ->
+                    { Type = "Run verdict folded from isPassed"
+                      Message =
+                        "forall over TestResult.isPassed is not a run-level verdict. isPassed is deliberately TRUE for TestsNoMatch, so a run in which every project matched zero tests folds to green having executed no test (AUTOMATION-272). Ask verificationOf (→ RunVerification) instead — or state the run-level guard beside this fold, which is what silences this rule."
+                      Code = "FSHW-VERDICT-001"
                       Severity = Severity.Error
                       Range = range
                       Fixes = [] })
