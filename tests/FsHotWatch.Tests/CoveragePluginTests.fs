@@ -52,7 +52,7 @@ let private emitRunCompleted (host: PluginHost) =
           TotalElapsed = TimeSpan.Zero
           Outcome = Normal
           Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
-          RanFullSuite = true }
+          Verification = Ran RunScope.FullSuite }
 
 /// Nothing executed, yet the run claims full-suite scope.
 ///
@@ -66,7 +66,7 @@ let private emitRunThatExecutedNothing (host: PluginHost) =
           TotalElapsed = TimeSpan.Zero
           Outcome = Normal
           Results = Map.empty
-          RanFullSuite = true }
+          Verification = NoProjectsSelected }
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
@@ -104,7 +104,7 @@ let private mkFileResult (fileName: string) (linePct: float) (lineThreshold: flo
 let ``gateVerdict: full-suite shortfall gates (Failed)`` () =
     let below = [ mkFileResult "OutOfDiff.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict true (SomeFailed below) with
+    match CovPlugin.gateVerdict RunScope.FullSuite (SomeFailed below) with
     | CovPlugin.Failed results -> test <@ results.Length = 1 @>
     | other -> Assert.Fail $"Expected Failed, got {other}"
 
@@ -114,7 +114,7 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
         [ mkFileResult "OutOfDiff1.fs" 0.0 100.0
           mkFileResult "OutOfDiff2.fs" 0.0 100.0 ]
 
-    match CovPlugin.gateVerdict false (SomeFailed below) with
+    match CovPlugin.gateVerdict RunScope.Partial (SomeFailed below) with
     | CovPlugin.NotGatedFiltered count -> test <@ count = 2 @>
     | other -> Assert.Fail $"Expected NotGatedFiltered, got {other}"
 
@@ -122,14 +122,14 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
 let ``gateVerdict: AllPassed is Passed regardless of full-suite flag`` () =
     test
         <@
-            match CovPlugin.gateVerdict false AllPassed with
+            match CovPlugin.gateVerdict RunScope.Partial AllPassed with
             | CovPlugin.Passed -> true
             | _ -> false
         @>
 
     test
         <@
-            match CovPlugin.gateVerdict true AllPassed with
+            match CovPlugin.gateVerdict RunScope.FullSuite AllPassed with
             | CovPlugin.Passed -> true
             | _ -> false
         @>
@@ -160,7 +160,7 @@ let ``regression: impact-filtered run with stale baseline does not false-red on 
               TotalElapsed = TimeSpan.Zero
               Outcome = Normal
               Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
-              RanFullSuite = false }
+              Verification = Ran RunScope.Partial }
 
         waitUntil
             (fun () ->
@@ -196,7 +196,7 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
 
     let verdicts =
         [ for _ in 1..10 ->
-              match CovPlugin.gateVerdict false (SomeFailed belowFloor) with
+              match CovPlugin.gateVerdict RunScope.Partial (SomeFailed belowFloor) with
               | CovPlugin.NotGatedFiltered n -> Some n
               | CovPlugin.Failed _ -> None
               | CovPlugin.Passed -> Some 0 ]
@@ -370,16 +370,53 @@ let ``plugin ignores aborted test runs`` () =
               TotalElapsed = TimeSpan.Zero
               Outcome = Aborted "timeout"
               Results = Map.empty
-              RanFullSuite = false }
+              Verification = NoProjectsSelected }
 
-        // Wait a bit — plugin should NOT transition (stays Idle or Running briefly then Idle)
-        System.Threading.Thread.Sleep(500)
+        // Quiescence rather than a fixed sleep: returns as soon as the event is
+        // drained, and proves it WAS drained.
+        waitForQuiescent host 5000
 
         let status = host.GetStatus("coverage")
         // Should not have Failed (no check was run on an aborted run)
         test
             <@
                 match status with
+                | Some(Failed _) -> false
+                | _ -> true
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an aborted run is ignored even when it executed and covered the whole suite`` () =
+    // The abort is what disqualifies it, NOT the absence of a verification.
+    //
+    // A run cancelled after some projects reported carries real results and a real
+    // `Ran FullSuite`, so it is the one aborted shape that could reach the gate if
+    // the `Aborted` arm were ever narrowed to "and nothing ran". Its coverage is a
+    // partial artefact of an interrupted run and must not gate a shortfall.
+    withTempDir "coverage" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        // A shortfall that WOULD gate if this run were judged.
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
+
+        host.EmitTestRunCompleted
+            { RunId = Guid.NewGuid()
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Aborted "cancelled after the first project"
+              Results = results
+              Verification = RunVerification.ofResults results }
+
+        waitForQuiescent host 5000
+
+        test
+            <@
+                match host.GetStatus("coverage") with
                 | Some(Failed _) -> false
                 | _ -> true
             @>)
@@ -612,3 +649,44 @@ let ``a second TestRunCompleted while a check is in flight is skipped, not stack
         // Exactly ONE check cycle ran (one Running→terminal transition).
         test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>
         waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
+
+// ---------------------------------------------------------------------------
+// `coverage-status` — the human-facing answer to "what did coverage decide?".
+//
+// Its three states existed untested: the plugin's other branches were covered
+// densely enough to carry the file's ratio, so nothing pointed at them. Each is a
+// distinct claim, and "no check has run yet" is exactly the one that must not be
+// confusable with "OK" — the same absence-read-as-success shape this area exists
+// to prevent, one surface over.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-status distinguishes never-run from OK from FAILED`` () =
+    withTempDir "coverage" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let status () =
+            host.RunCommand("coverage-status", [||]) |> Async.RunSynchronously
+
+        // Nothing has run: it must say so, not report OK.
+        test <@ status () = Some "coverage: no check run yet" @>
+
+        // A passing check. 100% line coverage against a 50% override.
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
+        emitRunCompleted host
+        waitUntil (fun () -> status () = Some "coverage: OK") 10000
+        test <@ status () = Some "coverage: OK" @>
+
+        // A shortfall against the default 100% floor flips it, and the message
+        // points at where the detail lives.
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+        emitRunCompleted host
+
+        waitUntil (fun () -> status () = Some "coverage: FAILED (run `fshw errors` for details)") 10000
+        test <@ status () = Some "coverage: FAILED (run `fshw errors` for details)" @>)

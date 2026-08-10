@@ -46,36 +46,30 @@ module FullSuiteClaim =
         | PartialSuite -> "false"
         | BreadthUnknown -> "unknown"
 
-    /// Derive the claim from the results view a fire is about.
+    /// Turn what a run VERIFIED into what a hook may be told.
     ///
-    /// `isFinal` is true ONLY for `TestRunCompleted`, whose `Results` is the whole
-    /// run. A `TestProgress` accumulator is a strict PREFIX: the plugin fires as
-    /// soon as its filter is satisfied, which for `afterTests: true` is the first
-    /// group of a multi-`group` run. Deriving "full suite" from a prefix said the
-    /// whole suite ran while later, impact-filtered groups had yet to report — and
-    /// RunId dedupe means the truthful `TestRunCompleted` never corrects it.
+    /// The only thing this adds to `RunVerification` is FINALITY, which is genuinely
+    /// FileCommand's own concern: `isFinal` is true ONLY for `TestRunCompleted`,
+    /// whose Results are the whole run. A `TestProgress` accumulator is a strict
+    /// PREFIX — the plugin fires as soon as its filter is satisfied, which for
+    /// `afterTests: true` is the first group of a multi-`group` run. A prefix can
+    /// prove PARTIAL (a filtered project stays filtered) but can never prove FULL,
+    /// because a group that has not reported may yet be filtered. Deriving "full
+    /// suite" from a prefix claimed the whole suite ran while later filtered groups
+    /// were still pending, and RunId dedupe means the truthful `TestRunCompleted`
+    /// never corrects it.
     ///
-    /// `ranFullSuite` is the caller's authoritative filtered/unfiltered signal
-    /// (`TestRunCompleted.RanFullSuite` for a final view, `TestResult.ranFullSuite`
-    /// over the accumulator for a partial one). It is NOT re-derived here, because
-    /// the event's own field is the contract for the final view.
-    let derive (isFinal: bool) (results: Map<string, TestResult>) (ranFullSuite: bool) : FullSuiteClaim =
-        if not (TestResult.executedAnything results) then
-            // NOTHING EXECUTED — so no claim about breadth is available, and a hook
-            // must not be handed a licence to refresh a coverage baseline.
-            //
-            // Deriving it here rather than trusting `ranFullSuite` is still load
-            // bearing after AUTOMATION-281 made the producers honest: `false` means
-            // "filtered OR nothing ran" (see `TestRunCompleted.RanFullSuite`), and
-            // `PartialSuite` is a different claim from "unknown". A replayed cache
-            // entry or an external producer can also arrive here.
-            BreadthUnknown
-        elif not ranFullSuite then
-            PartialSuite
-        elif isFinal then
-            FullSuite
-        else
-            BreadthUnknown
+    /// Everything else it used to decide now comes from the verification itself.
+    /// Before AUTOMATION-282 this took a results map AND a bool and re-derived
+    /// "did anything execute" locally, because the bool could not express it.
+    let derive (isFinal: bool) (verification: RunVerification) : FullSuiteClaim =
+        match RunVerification.scope verification with
+        // No scope established — the run verified nothing, so there is no breadth to
+        // claim and a hook must not be handed a licence to refresh a baseline.
+        | None -> BreadthUnknown
+        | Some Partial -> PartialSuite
+        | Some RunScope.FullSuite when isFinal -> FullSuite
+        | Some RunScope.FullSuite -> BreadthUnknown
 
 type CommandResult =
     | NeverRun
@@ -419,8 +413,7 @@ let create
                     // prefix can prove PARTIAL; it can never prove FULL, because
                     // a group that has not reported yet may be filtered. Hence
                     // `isFinal = false` — see `FullSuiteClaim.derive`.
-                    let claim =
-                        FullSuiteClaim.derive false accumulated (TestResult.ranFullSuite accumulated)
+                    let claim = FullSuiteClaim.derive false (RunVerification.ofResults accumulated)
 
                     let! state' = tryFire ctx state progress.RunId accumulated claim
 
@@ -434,7 +427,7 @@ let create
                     // command correctly. Same dedupe semantics. This is the only
                     // view that can license a `"true"` claim (`isFinal = true`) —
                     // and even here only if something actually executed.
-                    let claim = FullSuiteClaim.derive true completed.Results completed.RanFullSuite
+                    let claim = FullSuiteClaim.derive true completed.Verification
 
                     return! tryFire ctx state completed.RunId completed.Results claim
 

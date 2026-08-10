@@ -389,33 +389,20 @@ module TestResult =
     /// the tree is actually asking.
     ///
     /// It lives here, once, because it was independently hand-rolled at two consumers
-    /// in two packages the moment it was needed. Note `RunVerification` does NOT
-    /// answer it: `verificationOf` returns `Ran` for any non-empty map that is not
-    /// all-no-match, so a run of nothing but deferred/errored projects answers `Ran`
-    /// with zero tests executed. Reach for this, not `verifiedNothing`, when the
-    /// question is "did anything run".
+    /// in two packages the moment it was needed. Since AUTOMATION-282 the run-level
+    /// answer it feeds is `RunVerification.ofResults`, which is what callers should
+    /// reach for; this stays as its building block and for the rare caller that only
+    /// needs the yes/no.
     let executedAnything (results: Map<string, TestResult>) : bool =
         results |> Map.exists (fun _ r -> executedTests r)
 
-    /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
-    /// something executed AND no project was run with an impact filter (i.e., the
-    /// entire test suite ran).
-    ///
-    /// The `executedAnything` conjunct is the whole point (AUTOMATION-281).
-    /// `Map.forall` is vacuously TRUE for an empty map, so this used to answer "the
-    /// full suite ran" for a run that ran nothing — documented as a convention
-    /// ("nothing was filtered"), which is defensible in isolation and wrong in
-    /// effect: consumers gate baseline refreshes and ratchet tightening on this
-    /// value, and a run that executed nothing must not be able to authorise either.
-    ///
-    /// `executedAnything` rather than `not results.IsEmpty` so that all three sites
-    /// asking this question spell it the same way. The two are equivalent *here* —
-    /// a non-empty run in which nothing executed already answers `false`, because
-    /// `wasFiltered` deliberately reports `true` for no-match, deferred and errored
-    /// projects — but only one of them is the question being asked.
-    let ranFullSuite (results: Map<string, TestResult>) : bool =
-        executedAnything results
-        && results |> Map.forall (fun _ r -> not (wasFiltered r))
+    /// True iff no project was reduced by impact analysis. Says NOTHING about
+    /// whether anything ran, which is why it is not the scope answer on its own —
+    /// `Map.forall` is vacuously true for an empty map. `RunVerification.ofResults`
+    /// is the total answer; this is the conjunct it uses once everything else has
+    /// been ruled out.
+    let noneFiltered (results: Map<string, TestResult>) : bool =
+        results |> Map.forall (fun _ r -> not (wasFiltered r))
 
 /// Aggregate test results snapshot. Used as a plain value type by TestPrune's
 /// internals and afterRun hooks — NOT dispatched as an event. Subscribers
@@ -432,51 +419,127 @@ type TestResults =
 /// was silent on the consumer — and the consumer's `else` branch mapped every
 /// unrecognized token to `Tests passed`, exit 0. That is the single outcome this whole
 /// area exists to prevent, so the token is now parsed rather than compared.
+/// How much of the suite a run that DID execute covered.
+///
+/// Only reachable from `RunVerification.Ran`, and that is the entire point
+/// (AUTOMATION-282). It replaces a free-standing `RanFullSuite: bool` that every
+/// run carried, including runs that executed nothing — for which neither value was
+/// true. `false` meant "impact-filtered", so a run that ran nothing had to assert a
+/// filtering that never happened; `true` claimed a suite that never ran. Producers
+/// picked the less harmful lie and three separate consumers bolted on their own
+/// "…and something actually ran" conjunct to undo it. Asking about scope now
+/// requires first establishing that something ran.
+type RunScope =
+    /// At least one project was reduced by impact analysis. Un-run files cannot be
+    /// told apart from genuine zeros, so a shortfall must not gate on this.
+    | Partial
+    /// Every project executed, none impact-filtered — the entire suite ran. The only
+    /// state that may lower a coverage baseline or tighten a ratchet.
+    | FullSuite
+
+/// What a run actually VERIFIED — the run-level answer to "did this prove anything?".
+///
+/// Lives here, in core, rather than inside TestPrune, because BOTH ends of the wire
+/// need it: TestPrune produces the token and the CLI consumes it. When it lived on
+/// only one side the other hand-wrote the string literals, so a rename on the producer
+/// was silent on the consumer — and the consumer's `else` branch mapped every
+/// unrecognized token to `Tests passed`, exit 0. That is the single outcome this whole
+/// area exists to prevent, so the token is now parsed rather than compared.
 type RunVerification =
     /// No project was selected — nothing was invoked.
     | NoProjectsSelected
     /// Projects ran; every one matched zero tests under the active filter.
     | AllZeroMatch of projectCount: int
-    /// At least one project reported something other than a zero match.
+    /// Projects reported, but not one executed a test — every result was deferred,
+    /// errored, or a zero match mixed among them.
     ///
-    /// NOT the same as "a test executed", though it read that way until
-    /// AUTOMATION-281: `verificationOf` returns this for any non-empty map that is
-    /// not all-no-match, so a run of nothing but deferred or errored projects lands
-    /// here having executed nothing. `verifiedNothing` is therefore `false` for such
-    /// a run. If your question is "did anything actually run", ask
-    /// `TestResult.executedAnything` — two consumers hand-rolled that predicate
-    /// rather than use this one, which is what surfaced the distinction.
-    | Ran
+    /// This case did not exist until AUTOMATION-282, and its absence is why two
+    /// consumers hand-rolled `Map.exists executedTests` instead of asking here:
+    /// such a run is not empty and not all-no-match, so it used to answer `Ran`,
+    /// and `verifiedNothing` answered `false` for a run that verified nothing.
+    | NothingExecuted
+    /// At least one project executed at least one test. Carries how much of the
+    /// suite it covered — the only place scope is representable.
+    | Ran of scope: RunScope
 
 [<RequireQualifiedAccess>]
 module RunVerification =
 
     /// Stable wire token. The ONLY place these strings are written.
+    ///
+    /// `Ran` serialises per scope rather than as a bare "ran" plus a second field,
+    /// so a reader cannot obtain a scope without having read that the run ran.
     let token (c: RunVerification) : string =
         match c with
         | NoProjectsSelected -> "no-projects-selected"
         | AllZeroMatch _ -> "all-zero-match"
-        | Ran -> "ran"
+        | NothingExecuted -> "nothing-executed"
+        | Ran Partial -> "ran-partial"
+        | Ran FullSuite -> "ran-full-suite"
 
     /// Read a token off the wire. `None` means "this build cannot interpret it" —
     /// which a caller must treat as NO VERDICT, never as a pass. Deliberately not a
     /// total function with a default: a default here is precisely how an unknown
     /// reading becomes a green one.
+    ///
+    /// The bare "ran" of the pre-282 wire is deliberately NOT accepted. It asserted
+    /// that tests executed while saying nothing about scope, and the missing scope
+    /// used to be supplied by a separate boolean that could claim a full suite for a
+    /// run that executed nothing. Refusing it costs one no-verdict on a daemon/CLI
+    /// version skew — which fails closed, by design — and is cheaper than inventing
+    /// a scope the sender never sent.
     let tryParse (s: string) : RunVerification option =
         match s with
         | "no-projects-selected" -> Some NoProjectsSelected
         // The count is carried separately on the wire; the parsed case exists to say
         // WHICH shape this is, and callers that need the number read it alongside.
         | "all-zero-match" -> Some(AllZeroMatch 0)
-        | "ran" -> Some Ran
+        | "nothing-executed" -> Some NothingExecuted
+        | "ran-partial" -> Some(Ran Partial)
+        | "ran-full-suite" -> Some(Ran FullSuite)
         | _ -> None
 
     /// True when the run verified NOTHING — the property every gate cares about.
     let verifiedNothing (c: RunVerification) : bool =
         match c with
         | NoProjectsSelected
-        | AllZeroMatch _ -> true
-        | Ran -> false
+        | AllZeroMatch _
+        | NothingExecuted -> true
+        | Ran _ -> false
+
+    /// The scope a run established, if it established one. `None` is not "partial":
+    /// it is "this run proved nothing about breadth", and a caller that needs to act
+    /// must decide what to do with that rather than receive a fabricated boolean.
+    let scope (c: RunVerification) : RunScope option =
+        match c with
+        | Ran s -> Some s
+        | NoProjectsSelected
+        | AllZeroMatch _
+        | NothingExecuted -> None
+
+    /// True only for a run that executed AND covered the whole suite. The single
+    /// question the coverage ratchet and the baseline refresh are asking.
+    let ranFullSuite (c: RunVerification) : bool = scope c = Some FullSuite
+
+    /// The verification a per-project result map establishes. TOTAL, and the ONLY
+    /// derivation in the tree — TestPrune, the plugins and the cache all route here,
+    /// so there is one place where these five cases are told apart.
+    ///
+    /// Order matters and is the honest one: emptiness first (nothing was invoked),
+    /// then all-zero-match (projects ran and discovered tests, the filter matched
+    /// none — diagnosable, so it keeps its count), then nothing-executed (they
+    /// reported but not one ran a test), and only then may scope be asked at all.
+    let ofResults (results: Map<string, TestResult>) : RunVerification =
+        if results.IsEmpty then
+            NoProjectsSelected
+        elif results |> Map.forall (fun _ r -> TestResult.isNoMatch r) then
+            AllZeroMatch results.Count
+        elif not (TestResult.executedAnything results) then
+            NothingExecuted
+        elif TestResult.noneFiltered results then
+            Ran FullSuite
+        else
+            Ran Partial
 
 /// Outcome of a complete test run.
 type TestRunOutcome =
@@ -511,17 +574,20 @@ type TestRunCompleted =
         /// for this RunId; materialized here so late subscribers can skip
         /// progress events entirely.
         Results: Map<string, TestResult>
-        /// True iff something executed AND no project ran under an impact filter
-        /// (i.e., the entire test suite ran). Consumers gate baseline
-        /// refreshes/threshold tightening on this — partial runs should not lower a
-        /// coverage baseline or tighten a ratchet.
+        /// What this run VERIFIED, and — only if it verified something — how much of
+        /// the suite it covered.
         ///
-        /// `false` is two situations, not one: at least one project was filtered to
-        /// a subset, OR the run executed nothing at all (AUTOMATION-281 — before it,
-        /// the latter said `true`). A `bool` has no third inhabitant, so a consumer
-        /// that needs to tell those apart must ask `TestResult.executedAnything`
-        /// about `Results`; `false` alone does not mean "filtered".
-        RanFullSuite: bool
+        /// This was `RanFullSuite: bool` until AUTOMATION-282. A boolean had no
+        /// inhabitant for "nothing executed", so the two degenerate lifecycles had to
+        /// assert either a suite that never ran or a filtering that never happened,
+        /// and `CoveragePlugin`, `FileCommandPlugin` and the ledger discharge each
+        /// bolted on a private "…and something actually ran" conjunct to undo it.
+        /// Those conjuncts are gone: ask this field, and the cases that verified
+        /// nothing have no scope to hand you.
+        ///
+        /// Gate baseline refreshes and ratchet tightening on `Ran FullSuite` — via
+        /// `RunVerification.ranFullSuite` — never on "not Partial".
+        Verification: RunVerification
     }
 
 /// Current state of the daemon's scan operation.

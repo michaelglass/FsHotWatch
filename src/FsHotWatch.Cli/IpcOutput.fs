@@ -135,6 +135,13 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
 /// into a pass.
 type private CoverageRead =
     | Understood of RunVerification
+    /// An older daemon sent no `coverage` field, and the reported COUNTS establish
+    /// that projects executed tests. That is all they establish: counts cannot say
+    /// whether the run was impact-filtered, so this deliberately carries no
+    /// `RunScope` rather than inventing one (AUTOMATION-282). The CLI's exit code
+    /// only asks "did anything run", so nothing here needs the breadth — and a
+    /// consumer that DID need it must not be handed a guess.
+    | RanPerCounts
     | Unrecognized of token: string
 
 /// Render a generic IPC result (status JSON or plain text).
@@ -252,12 +259,14 @@ let renderIpcResult
                                 | None -> Unrecognized(c.GetString())
                             | _ ->
                                 // Older daemon: no `coverage` field at all. An ABSENT
-                                // field must never be read as "ran", so derive it.
-                                Understood(
-                                    if projectCount = 0 then NoProjectsSelected
-                                    elif noTestsMatched then AllZeroMatch projectCount
-                                    else Ran
-                                )
+                                // field must never be read as "ran", so derive what the
+                                // counts actually establish — and no more than that.
+                                if projectCount = 0 then
+                                    Understood NoProjectsSelected
+                                elif noTestsMatched then
+                                    Understood(AllZeroMatch projectCount)
+                                else
+                                    RanPerCounts
 
                         // AUTOMATION-272 — say what the run actually did, on every
                         // outcome including the green.
@@ -354,7 +363,10 @@ let renderIpcResult
                             3
                         else
                             match parsedCoverage with
-                            | Understood Ran ->
+                            // Scope is irrelevant to the exit code — this asks only
+                            // whether anything was verified, so both breadths pass.
+                            | Understood(Ran _)
+                            | RanPerCounts ->
                                 UI.success "Tests passed"
                                 0
                             | Unrecognized unknown ->
@@ -369,6 +381,14 @@ let renderIpcResult
                                 UI.info "  Most likely the daemon is NEWER than this CLI. Check both versions:"
                                 UI.info "    ps ax | rg fshotwatch      # the running daemon's package path"
                                 UI.info "  Then restart the daemon so it matches:  fshw stop"
+                                3
+                            | Understood NothingExecuted ->
+                                // Projects reported and not one ran a test. Reachable —
+                                // unlike the two below — because the zero-match branch
+                                // above only catches results that MATCHED nothing, not
+                                // ones that deferred or errored.
+                                UI.fail "Nothing was verified — every project failed to execute a test (not a pass)"
+                                UI.info "  Run `fshw status test-prune` for what each project reported."
                                 3
                             | Understood NoProjectsSelected
                             | Understood(AllZeroMatch _) ->

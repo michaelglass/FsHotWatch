@@ -37,19 +37,24 @@ type CoverageMsg =
     /// (the framework reported Running at the claim).
     | RatchetDone of message: string * elapsed: System.TimeSpan
 
-/// Decide the gated verdict from a raw ratchet `CheckResult` and whether this
-/// cycle ran the full suite. Pure, so the gating policy is unit-testable
-/// without spinning a daemon. On a full-suite run the ratchet gates normally;
-/// on an impact-filtered run a `SomeFailed` is downgraded to a non-gating
-/// notice because un-run files cannot be distinguished from genuine zeros.
-let internal gateVerdict (ranFullSuite: bool) (result: CheckResult) : CoverageVerdict =
-    match result with
-    | AllPassed -> Passed
-    | SomeFailed results ->
-        if ranFullSuite then
-            Failed results
-        else
-            NotGatedFiltered results.Length
+/// Decide the gated verdict from a raw ratchet `CheckResult` and what the run
+/// established. Pure, so the gating policy is unit-testable without spinning a
+/// daemon.
+///
+/// Takes the scope a run PROVED, not a bool (AUTOMATION-282). `FullSuite` gates
+/// normally; `Partial` downgrades a `SomeFailed` to a non-gating notice, because
+/// un-run files cannot be distinguished from genuine zeros.
+///
+/// A run that executed nothing cannot reach here at all — it has no `RunScope` to
+/// pass, so the caller has already had to decide what to do about that. Under the
+/// old `bool` there was no such stop: "nothing ran" arrived as `false`, which reads
+/// as "filtered" and would have quietly downgraded a real shortfall, so the call
+/// site needed a hand-rolled guard clause to intercept it first. That guard is gone.
+let internal gateVerdict (scope: RunScope) (result: CheckResult) : CoverageVerdict =
+    match result, scope with
+    | AllPassed, _ -> Passed
+    | SomeFailed results, FullSuite -> Failed results
+    | SomeFailed results, Partial -> NotGatedFiltered results.Length
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
@@ -131,24 +136,22 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
         fun ctx state event ->
             match event with
             | TestRunCompleted trc ->
-                match trc.Outcome with
-                | Aborted _ -> async { return state }
-                | Normal when not (TestResult.executedAnything trc.Results) ->
-                    // A run that executed no test produced no coverage, so there is
-                    // nothing here to judge and no honest verdict to reach
-                    // (AUTOMATION-280). Declining is the same move `Aborted` above
-                    // already makes, for the same reason.
+                match trc.Outcome, RunVerification.scope trc.Verification with
+                | Aborted _, _ -> async { return state }
+                | Normal, None ->
+                    // The run established no scope because it executed nothing, so it
+                    // produced no coverage and there is nothing here to judge
+                    // (AUTOMATION-280/282). Declining is the same move `Aborted`
+                    // above already makes, for the same reason.
                     //
-                    // Still needed even though TestPrune's own degenerate lifecycles
-                    // now emit `RanFullSuite = false`: `false` means "filtered OR
-                    // nothing ran" (see the field's doc), and `gateVerdict` reads it
-                    // as "filtered" and downgrades a real shortfall to a non-gating
-                    // notice. A non-empty run in which every project deferred or
-                    // errored, a replayed cache entry, and any external producer all
-                    // still arrive here.
+                    // This was a `when` guard hand-rolling `executedAnything` over the
+                    // results, because the old `bool` presented "nothing ran" as
+                    // `false` — indistinguishable from "filtered", which gates
+                    // differently. Now it is simply the case where there is no scope
+                    // to ask about, and `gateVerdict` cannot be called without one.
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
-                | Normal ->
+                | Normal, Some scope ->
                     let claim =
                         ctx.RunExclusive
                             "coverage-check"
@@ -166,8 +169,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                                 // each run ingests into it (max-merge across projects)
                                 // and emits the single shared cobertura. There is no
                                 // separate baseline to refresh here.
-                                return
-                                    CheckDone(gateVerdict trc.RanFullSuite result, System.DateTime.UtcNow - runStarted)
+                                return CheckDone(gateVerdict scope result, System.DateTime.UtcNow - runStarted)
                             })
 
                     match claim with

@@ -237,7 +237,11 @@ let private serializeCachedEvent (evt: CachedEvent) =
             resultsArr.Add(serializeTestResult kvp.Key kvp.Value)
 
         obj["results"] <- resultsArr
-        obj["ranFullSuite"] <- completed.RanFullSuite
+        // The verification token, not a bool (AUTOMATION-282). `RunVerification.token`
+        // is the single place these strings are written, and `tryParse` the only place
+        // they are read — so an entry whose token this build cannot interpret reads as
+        // a MISS rather than as some default verdict.
+        obj["verification"] <- RunVerification.token completed.Verification
     | CachedCommandCompleted result ->
         obj["type"] <- "command"
         obj["name"] <- result.Name
@@ -293,23 +297,25 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
             |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
             |> Map.ofSeq
 
-        // REQUIRED on read, for the same reason the format version and the
-        // verdict fields are: neither boolean is an honest reading of an entry
-        // that never recorded the scope. `true` over-gates (CoveragePlugin's
-        // `gateVerdict` turns a `SomeFailed` into a hard `Failed`); `false`
-        // silently switches coverage gating OFF for the replayed run and
-        // exports a false FSHW_RAN_FULL_SUITE to user hooks. An entry with no
-        // recorded scope has no claim to replay, so it reads as a cache MISS
-        // (the throw is caught by `tryGet` and counted as a parse failure) and
-        // the run is simply redone.
-        let ranFullSuite = obj["ranFullSuite"].GetValue<bool>()
+        // REQUIRED on read, and parsed rather than defaulted. An entry that never
+        // recorded what it verified has no claim to replay: there is no value here
+        // that is an honest reading of "unknown", which is exactly why the field is
+        // a token and not a bool. An absent field throws on `.GetValue<string>()`;
+        // an unrecognised one — a token written by a NEWER build — yields `None`.
+        // Both read as a cache MISS (caught by `tryGet`, counted as a parse failure)
+        // and the run is simply redone. Failing closed on a token from the future is
+        // the designed direction.
+        let verification =
+            match RunVerification.tryParse (obj["verification"].GetValue<string>()) with
+            | Some v -> v
+            | None -> failwith "task-cache testRunCompleted has an uninterpretable verification token"
 
         CachedTestRunCompleted
             { RunId = runId
               TotalElapsed = elapsed
               Outcome = outcome
               Results = results
-              RanFullSuite = ranFullSuite }
+              Verification = verification }
     | "command" ->
         let name = obj["name"].GetValue<string>()
         let output = obj["output"].GetValue<string>()
@@ -330,8 +336,13 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 /// the field is absent) deterministically read as a cache MISS (the throw is
 /// caught by `tryGet` and counted as a parse failure), never as a half-parsed
 /// result carrying a claim the new scope rule forbids.
+/// 3 since AUTOMATION-282: `testRunCompleted` carries a `verification` TOKEN where
+/// it carried a `ranFullSuite` bool. A format-2 entry would otherwise be rejected
+/// one layer deeper, by the token read throwing, which is correct but reports every
+/// stale entry as a parse FAILURE. Bumping states the schema change where the schema
+/// records it, and costs only a one-time re-run of whatever was cached.
 [<Literal>]
-let private EntryFormatVersion = 2
+let private EntryFormatVersion = 3
 
 let private serializeResult (result: TaskCacheResult) =
     let root = JsonObject()

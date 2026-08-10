@@ -859,7 +859,7 @@ let ``FileTaskCache roundtrips cached events`` () =
                           Map.ofList
                               [ "proj1", TestsPassed("ok", false, TimeSpan.Zero)
                                 "proj2", TestsFailed("fail", false, TimeSpan.Zero) ]
-                        RanFullSuite = true } ] }
+                        Verification = Ran RunScope.FullSuite } ] }
 
         c.Set (ck "build" "X.fs") (hash "k") result
 
@@ -869,7 +869,7 @@ let ``FileTaskCache roundtrips cached events`` () =
         test <@ r.Value.EmittedEvents.Length = 3 @>)
 
 [<Fact(Timeout = 15000)>]
-let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
+let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () =
     withTempDir "ftc-filtered" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -889,7 +889,7 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
                           Map.ofList
                               [ "p1", TestsPassed("ok", true, TimeSpan.Zero)
                                 "p2", TestsFailed("bad", true, TimeSpan.Zero) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -904,7 +904,8 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
                 | _ -> None)
 
         test <@ evt.IsSome @>
-        test <@ not evt.Value.RanFullSuite @>
+        // A filtered project: the run RAN, but only partially.
+        test <@ evt.Value.Verification = Ran RunScope.Partial @>
         let p1 = evt.Value.Results.["p1"]
         test <@ TestResult.wasFiltered p1 @>
         test <@ TestResult.isPassed p1 @>)
@@ -931,7 +932,7 @@ let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
                           Map.ofList
                               [ "p1", TestsNoMatch("Zero tests ran", TimeSpan.FromSeconds 2.0)
                                 "p2", TestsPassed("ok", true, TimeSpan.Zero) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -978,7 +979,7 @@ let ``FileTaskCache reads a PRE-272 zero-match entry back as TestsNoMatch, not a
                         TotalElapsed = System.TimeSpan.FromSeconds(1.0)
                         Outcome = Normal
                         Results = Map.ofList [ "p1", legacyZeroMatch ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -1019,7 +1020,7 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
                         TotalElapsed = System.TimeSpan.Zero
                         Outcome = Normal
                         Results = Map.ofList [ "p1", TestsDeferred "apphost not produced; tests did not run" ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -1060,7 +1061,7 @@ let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
                         Outcome = Normal
                         Results =
                           Map.ofList [ "p1", TestsErrored "test host exited non-zero but wrote no parseable report" ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -1239,7 +1240,7 @@ let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting 
                         TotalElapsed = System.TimeSpan.Zero
                         Outcome = Normal
                         Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.FromSeconds 2.0) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set key cacheKey result
 
@@ -1281,7 +1282,7 @@ let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compa
                         TotalElapsed = System.TimeSpan.Zero
                         Outcome = Normal
                         Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.FromSeconds 2.0) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set key cacheKey result
 
@@ -1335,7 +1336,7 @@ let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
                           Map.ofList
                               [ "p1",
                                 TestsTimedOut("output", TimeSpan.FromSeconds(30.0), false, TimeSpan.FromSeconds(30.0)) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
 
@@ -1747,19 +1748,19 @@ let ``FileTaskCache reads an old-format entry as a miss, counted as a parse fail
 // replayed run counts as "the whole suite ran".
 
 [<Fact(Timeout = 15000)>]
-let ``FileTaskCache rejects a testRunCompleted entry with no ranFullSuite, rather than replaying it as a full suite``
+let ``FileTaskCache rejects a testRunCompleted entry with no verification, rather than replaying it as a full suite``
     ()
     =
-    // `RanFullSuite` is a gating input: CoveragePlugin.gateVerdict turns
-    // `SomeFailed` into a hard `Failed` when it is true and downgrades it to a
-    // non-gating `NotGatedFiltered` when it is false, and FileCommandPlugin
-    // exports it to user hooks as FSHW_RAN_FULL_SUITE.
+    // The verification is a gating input: `gateVerdict` gates a `SomeFailed` on
+    // `Ran FullSuite` and downgrades it on `Ran Partial`, and FileCommandPlugin
+    // turns it into FSHW_RAN_FULL_SUITE for user hooks.
     //
-    // So NEITHER boolean is an honest reading of an entry that never recorded
-    // the answer: `true` over-gates, and `false` silently switches coverage
-    // gating OFF for the replayed run. An entry with no recorded scope has no
-    // claim to replay, so it must read as a MISS and the work is simply redone.
-    withTempDir "ftc-no-ranfullsuite" (fun tmpDir ->
+    // An entry that never recorded it has nothing honest to replay — which is why
+    // the field is a TOKEN and not a bool (AUTOMATION-282): with a bool, `true`
+    // over-gated and `false` silently switched coverage gating OFF, and there was
+    // no third value meaning "this entry cannot say". Absent, it reads as a MISS
+    // and the work is simply redone.
+    withTempDir "ftc-no-verification" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
         let key = ck "test-prune" "X.fs"
@@ -1775,7 +1776,7 @@ let ``FileTaskCache rejects a testRunCompleted entry with no ranFullSuite, rathe
                         TotalElapsed = TimeSpan.FromSeconds 1.0
                         Outcome = Normal
                         Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
-                        RanFullSuite = false } ] }
+                        Verification = Ran RunScope.Partial } ] }
 
         c.Set key cacheKey result
 
@@ -1783,7 +1784,7 @@ let ``FileTaskCache rejects a testRunCompleted entry with no ranFullSuite, rathe
         // `None` below would prove only that the rewrite broke something.
         test <@ (c.TryGet key cacheKey).IsSome @>
 
-        // Now the only difference a pre-`ranFullSuite` writer would leave: a
+        // Now the only difference a writer that never recorded it would leave: a
         // current-format entry with that one field absent.
         let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
 
@@ -1791,11 +1792,11 @@ let ``FileTaskCache rejects a testRunCompleted entry with no ranFullSuite, rathe
             System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path)).AsObject()
 
         let evt = root.["emittedEvents"].AsArray().[0].AsObject()
-        evt.Remove("ranFullSuite") |> ignore
+        evt.Remove("verification") |> ignore
         System.IO.File.WriteAllText(path, root.ToJsonString())
 
         // Before the fix this returned Some, with the scope silently flipped to
-        // `true` — the gating value — on an entry that had recorded `false`.
+        // the gating value on an entry that had recorded the opposite.
         let before = cache.ParseFailureCount
         test <@ c.TryGet key cacheKey = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
@@ -1870,7 +1871,10 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
                               [ "p1", TestsNoMatch("no match", TimeSpan.FromSeconds 2.0)
                                 "p2", TestsDeferred "apphost not produced"
                                 "p3", TestsErrored "runner blew up" ]
-                        RanFullSuite = false } ] }
+                        // Not one of these executed a test, so this is what the run
+                        // verified. Under the old bool the fixture could carry any
+                        // scope it liked alongside results that contradicted it.
+                        Verification = NothingExecuted } ] }
 
         c.Set key cacheKey result
 
@@ -1885,4 +1889,7 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
 
         test <@ evt.IsSome @>
         test <@ TestResult.isNoMatch evt.Value.Results.["p1"] @>
-        test <@ not evt.Value.RanFullSuite @>)
+        // Round-trips as what it was written as: a run in which nothing executed.
+        // The bool could not express this at all — it had to be reported as either a
+        // full suite or a filtered run, neither of which happened.
+        test <@ evt.Value.Verification = NothingExecuted @>)

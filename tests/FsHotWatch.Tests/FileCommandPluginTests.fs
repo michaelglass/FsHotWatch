@@ -21,7 +21,7 @@ let private emitRunCompleted (host: PluginHost) (results: (string * TestResult) 
           TotalElapsed = System.TimeSpan.Zero
           Outcome = Normal
           Results = Map.ofList results
-          RanFullSuite = true }
+          Verification = Ran RunScope.FullSuite }
 
 /// Emit a TestProgress event (delta for one group) with the given RunId. Used
 /// by tests that want to simulate the in-progress phase of a run.
@@ -672,7 +672,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
             Map.ofList
                 [ "Other", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero)
                   "ProjA", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
-          RanFullSuite = true }
+          Verification = Ran RunScope.FullSuite }
 
     waitUntil
         (fun () ->
@@ -776,17 +776,22 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
 
 // --- FSHW_RAN_FULL_SUITE environment variable ---
 
-let private emitRunCompletedWithRanFullSuite
-    (host: PluginHost)
-    (results: (string * TestResult) list)
-    (ranFullSuite: bool)
-    =
+/// Emit a completed run whose verification is DERIVED from the results, the way
+/// production derives it.
+///
+/// This used to take the scope as a separate bool, which let a fixture assert a
+/// breadth its own results contradicted — a filtered project alongside a claim of
+/// "full suite". Since AUTOMATION-282 the results are the single input, so a test
+/// cannot pin behaviour against a run that could not exist.
+let private emitRunCompletedFor (host: PluginHost) (results: (string * TestResult) list) =
+    let results = Map.ofList results
+
     host.EmitTestRunCompleted
         { RunId = System.Guid.NewGuid()
           TotalElapsed = System.TimeSpan.Zero
           Outcome = Normal
-          Results = Map.ofList results
-          RanFullSuite = ranFullSuite }
+          Results = results
+          Verification = RunVerification.ofResults results }
 
 /// Writes a probe script to `dir` that echoes `$FSHW_RAN_FULL_SUITE` into
 /// `outFile`. Returns the script path. The script is marked executable.
@@ -850,11 +855,10 @@ let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (driv
 /// A complete run of one project, `afterTests: true`. The project is filtered iff
 /// the run is not a full suite, so the results agree with the claim.
 let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
+    // The project is filtered iff the run is not a full suite, so the verification
+    // derived from these results is exactly the one the caller is asking about.
     runEnvProbeWith pluginName anyTestTrigger (fun host ->
-        emitRunCompletedWithRanFullSuite
-            host
-            [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ]
-            ranFullSuite)
+        emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ])
 
 [<Fact(Timeout = 20000)>]
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
@@ -926,7 +930,7 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
           TotalElapsed = System.TimeSpan.Zero
           Outcome = Normal
           Results = Map.empty
-          RanFullSuite = true }
+          Verification = NoProjectsSelected }
 
     // And the aborted-preflight lifecycle.
     host.EmitTestRunCompleted
@@ -934,7 +938,7 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
           TotalElapsed = System.TimeSpan.Zero
           Outcome = Aborted "beforeRun hook failed"
           Results = Map.empty
-          RanFullSuite = true }
+          Verification = NoProjectsSelected }
 
     // Quiescence rather than a fixed 600ms: returns as soon as both events are
     // drained, and actually proves they were — a sleep proves only that time passed.
@@ -950,43 +954,48 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
 let private passed wasFiltered =
     FsHotWatch.Events.TestsPassed("", wasFiltered, TimeSpan.Zero)
 
+/// The verification a result map establishes — the same derivation production uses.
+let private verificationFor results =
+    RunVerification.ofResults (Map.ofList results)
+
 [<Fact>]
-let ``FullSuiteClaim is unknown for a completed run that executed nothing`` () =
-    // The impact-skip / aborted-preflight shape: empty Results, RanFullSuite
-    // vacuously true.
-    test <@ FullSuiteClaim.derive true Map.empty true = BreadthUnknown @>
+let ``FullSuiteClaim is unknown for a completed run that selected no project`` () =
+    // The impact-skip / aborted-preflight shape. It can no longer be spelled as
+    // "empty results claiming full suite": there is no such value to construct.
+    test <@ FullSuiteClaim.derive true NoProjectsSelected = BreadthUnknown @>
 
 [<Fact>]
 let ``FullSuiteClaim is unknown when every project in a completed run failed to execute`` () =
-    // Non-empty Results, still nothing verified.
-    let results =
-        Map.ofList
+    // Non-empty Results, still nothing verified — NothingExecuted, the case that
+    // did not exist before AUTOMATION-282 and had to be re-derived by each consumer.
+    let verification =
+        verificationFor
             [ "A", FsHotWatch.Events.TestsDeferred "apphost not produced"
               "B", FsHotWatch.Events.TestsNoMatch("", TimeSpan.Zero)
               "C", FsHotWatch.Events.TestsErrored "no parseable report" ]
 
-    test <@ FullSuiteClaim.derive true results (TestResult.ranFullSuite results) = BreadthUnknown @>
+    test <@ verification = NothingExecuted @>
+    test <@ FullSuiteClaim.derive true verification = BreadthUnknown @>
 
 [<Fact>]
 let ``FullSuiteClaim is unknown mid-run even when nothing so far was filtered`` () =
-    let prefix = Map.ofList [ "GroupOne", passed false ]
-    test <@ FullSuiteClaim.derive false prefix true = BreadthUnknown @>
+    // The regression this whole area exists for: a prefix cannot prove FULL.
+    let prefix = verificationFor [ "GroupOne", passed false ]
+    test <@ prefix = Ran RunScope.FullSuite @>
+    test <@ FullSuiteClaim.derive false prefix = BreadthUnknown @>
 
 [<Fact>]
 let ``FullSuiteClaim is partial mid-run once any project is known filtered`` () =
     // A filtered project stays filtered, so PARTIAL is provable from a prefix.
-    let prefix = Map.ofList [ "GroupOne", passed true ]
-    test <@ FullSuiteClaim.derive false prefix false = PartialSuite @>
+    test <@ FullSuiteClaim.derive false (verificationFor [ "GroupOne", passed true ]) = PartialSuite @>
 
 [<Fact>]
 let ``FullSuiteClaim is partial for a completed filtered run`` () =
-    let results = Map.ofList [ "A", passed false; "B", passed true ]
-    test <@ FullSuiteClaim.derive true results false = PartialSuite @>
+    test <@ FullSuiteClaim.derive true (verificationFor [ "A", passed false; "B", passed true ]) = PartialSuite @>
 
 [<Fact>]
 let ``FullSuiteClaim is full only for a completed unfiltered run that executed`` () =
-    let results = Map.ofList [ "A", passed false; "B", passed false ]
-    test <@ FullSuiteClaim.derive true results true = FullSuite @>
+    test <@ FullSuiteClaim.derive true (verificationFor [ "A", passed false; "B", passed false ]) = FullSuite @>
 
 [<Fact>]
 let ``FullSuiteClaim tokens are the documented wire values`` () =

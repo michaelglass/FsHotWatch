@@ -809,15 +809,30 @@ let ``renderIpcResult reads coverage=all-zero-match as a refusal, not a pass`` (
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
-let ``renderIpcResult trusts coverage=ran over an empty-looking payload`` () =
+let ``renderIpcResult trusts a coverage token that ran, over an empty-looking payload`` () =
     // Positive control on the token path: the token is authoritative, so a
     // daemon that says it ran is believed. Without this, a fallback that ignored
     // the token entirely would still satisfy the two tests above.
+    //
+    // Both breadths, because the exit code must not depend on scope — a partial
+    // run that executed and passed is still a pass (AUTOMATION-282).
+    for token in [ "ran-full-suite"; "ran-partial" ] do
+        let json =
+            $"""{{"elapsed":"1.0s","coverage":"{token}","verifiedNothing":false,"projects":[{{"project":"P","status":"passed","output":"Passed! total: 3"}}]}}"""
+
+        test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``the retired bare "ran" token is refused, not read as a pass`` () =
+    // Pre-282 daemons sent `"ran"`: tests executed, breadth unstated. The missing
+    // half used to arrive as a separate bool that could claim a full suite for a run
+    // that executed nothing, so the token is not accepted rather than having a scope
+    // invented for it. A CLI newer than its daemon gets one no-verdict — exit 3,
+    // failing closed — with instructions to restart the daemon.
     let json =
         """{"elapsed":"1.0s","coverage":"ran","verifiedNothing":false,"projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
-    test <@ result = 0 @>
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``an OLDER daemon sending no coverage field still cannot report a no-op as a pass`` () =
@@ -871,10 +886,10 @@ let ``a garbage coverage token is refused too — it is not a whitelist of known
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false typo = 3 @>
 
 [<Fact(Timeout = 15000)>]
-let ``refusing unknown tokens is NOT a blanket — "ran" is still a pass`` () =
+let ``refusing unknown tokens is NOT a blanket — a known ran token is still a pass`` () =
     // Positive control. Without it, a change that refused every token would
     // satisfy both tests above while making every real green a failure.
     let json =
-        """{"elapsed":"1.0s","coverage":"ran","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+        """{"elapsed":"1.0s","coverage":"ran-full-suite","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>

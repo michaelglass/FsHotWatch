@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **BREAKING: `TestRunCompleted.RanFullSuite: bool` is replaced by
+  `Verification: RunVerification`, and scope now lives inside the case that ran.**
+
+  The bool had no inhabitant for "this run executed nothing". `true` claimed a suite
+  that never ran; `false` claimed an impact-filtering that never happened. So the two
+  degenerate lifecycles (the aborted preflight and the "0 affected classes" skip) each
+  picked the less harmful lie — one said so in a comment, *"a lie either way"* — and
+  `CoveragePlugin`, `FileCommandPlugin` and TestPrune's ledger discharge each bolted
+  on a private "…and something actually ran" conjunct to undo it. Three
+  reconstructions of one missing state.
+
+  `RunVerification` gains `NothingExecuted` (projects reported, not one ran a test —
+  previously indistinguishable from a real run, so `verifiedNothing` answered `false`
+  for a run that verified nothing) and `Ran of scope: RunScope`, where
+  `RunScope = Partial | FullSuite`. Asking about breadth now requires first
+  establishing that something ran, so those conjuncts are deleted rather than
+  reworded, and `gateVerdict` takes a `RunScope` it cannot be handed for a run that
+  verified nothing.
+
+  **Migration:** `completed.RanFullSuite` becomes
+  `RunVerification.ranFullSuite completed.Verification` for the gate-on-full-suite
+  question, or match `completed.Verification` when the other cases matter.
+  `TestResult.ranFullSuite` is gone — `RunVerification.ofResults` is the single
+  derivation.
+
+  **Wire:** the `coverage` token `"ran"` is retired for `"ran-partial"` /
+  `"ran-full-suite"`, and `"nothing-executed"` is new. `tryParse` refuses `"ran"`
+  rather than inventing the scope it never carried; a version-skewed CLI gets one
+  no-verdict, which fails closed.
+
+  **Cache:** entry format 2 → 3 (`testRunCompleted` carries a `verification` token,
+  not a `ranFullSuite` bool). Format-2 entries read as a miss and are re-run.
+
 - feat: **`ProcessHelper.runProcessTo` — an output sink fed AS THE CHILD SPEAKS.**
   `runProcess` is unchanged (it is now `runProcessTo None`); the new form takes an
   optional `string -> unit` that receives every chunk on the pump thread, inside the

@@ -127,50 +127,92 @@ let ``TestResult helpers handle the TestsDeferred case`` () =
     test <@ not (TestResult.isDeferred (TestsPassed("ok", false, TimeSpan.Zero))) @>
     test <@ not (TestResult.isDeferred (TestsFailed("bad", false, TimeSpan.Zero))) @>
 
+// --- RunVerification.ofResults: the ONE derivation, and the states it can reach
+//
+// This replaced `TestResult.ranFullSuite : _ -> bool` in AUTOMATION-282. The bool
+// answered a question that has no honest yes/no for a run that executed nothing,
+// so the cases below are what it could not say. Each asserts the WHOLE value, not
+// a predicate over it — a test that only asks "is it full suite?" would pass
+// equally on NoProjectsSelected and NothingExecuted, which is the confusion the
+// type exists to end.
+
 [<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite treats a deferred project as filtered`` () =
-    // A deferred (never-ran) project must not make the run look like a full
-    // suite that could lower a baseline.
+let ``ofResults: no projects selected — nothing was invoked`` () =
+    // Formerly "ranFullSuite is true for an empty map", justified as "nothing was
+    // filtered". That is `Map.forall`'s vacuity, not evidence, and there is now a
+    // case that says what actually happened.
+    test <@ RunVerification.ofResults Map.empty = NoProjectsSelected @>
+    test <@ RunVerification.scope (RunVerification.ofResults Map.empty) = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``ofResults: projects that all matched zero tests keep their count`` () =
+    let results =
+        Map.ofList [ "A", TestsNoMatch("", TimeSpan.Zero); "B", TestsNoMatch("", TimeSpan.Zero) ]
+
+    test <@ RunVerification.ofResults results = AllZeroMatch 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``ofResults: projects reported but not one executed`` () =
+    // The case that did not exist before 282: non-empty, not all-no-match, and
+    // still nothing ran. It used to answer `Ran`, so `verifiedNothing` was false
+    // for a run that verified nothing.
+    let results =
+        Map.ofList
+            [ "A", TestsDeferred "apphost not produced"
+              "B", TestsErrored "no parseable report" ]
+
+    test <@ RunVerification.ofResults results = NothingExecuted @>
+    test <@ RunVerification.verifiedNothing (RunVerification.ofResults results) @>
+
+[<Fact(Timeout = 15000)>]
+let ``ofResults: a deferred project alongside a real one is PARTIAL, never full`` () =
+    // A project that never ran must not let the run claim the whole suite.
     let results =
         Map.ofList
             [ "A", TestsPassed("ok", false, TimeSpan.Zero)
               "B", TestsDeferred "apphost not produced" ]
 
-    test <@ not (TestResult.ranFullSuite results) @>
+    test <@ RunVerification.ofResults results = Ran Partial @>
 
 [<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite is FALSE for an empty map — vacuity is not evidence`` () =
-    // Reversed deliberately (AUTOMATION-281). This asserted `true` on the reading
-    // that "nothing was filtered" — which is simply what `Map.forall` returns for
-    // an empty map. That is vacuity, not evidence: a run that executed no project
-    // cannot have run every project unfiltered, and the value gates baseline
-    // refreshes and ratchet tightening.
-    test <@ not (TestResult.ranFullSuite Map.empty) @>
-
-[<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite is still true for a real unfiltered run — the guard is not a blanket`` () =
-    // Positive control for the reversal above: emptiness is the ONLY thing that
-    // changed. A genuine unfiltered run must still answer `true`, or the fix would
-    // have disabled full-suite gating everywhere instead of fixing one hole.
-    test <@ TestResult.ranFullSuite (Map.ofList [ "A", TestsPassed("ok", false, TimeSpan.Zero) ]) @>
-
-[<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite is true when every project ran unfiltered`` () =
+let ``ofResults: every project executed unfiltered is the ONLY full suite`` () =
+    // The positive control for all of the above: the guard is not a blanket. A
+    // genuine unfiltered run must still reach FullSuite, or gating would be dead
+    // everywhere rather than honest.
     let results =
         Map.ofList
             [ "A", TestsPassed("ok", false, TimeSpan.Zero)
               "B", TestsFailed("fail", false, TimeSpan.Zero) ]
 
-    test <@ TestResult.ranFullSuite results @>
+    test <@ RunVerification.ofResults results = Ran FullSuite @>
+    test <@ RunVerification.ranFullSuite (RunVerification.ofResults results) @>
 
 [<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite is false if any project was filtered`` () =
+let ``ofResults: one filtered project makes the run partial`` () =
     let results =
         Map.ofList
             [ "A", TestsPassed("ok", false, TimeSpan.Zero)
               "B", TestsPassed("ok", true, TimeSpan.Zero) ]
 
-    test <@ not (TestResult.ranFullSuite results) @>
+    test <@ RunVerification.ofResults results = Ran Partial @>
+    test <@ not (RunVerification.ranFullSuite (RunVerification.ofResults results)) @>
+
+[<Fact(Timeout = 15000)>]
+let ``wire tokens round-trip, and scope is unreachable without having run`` () =
+    // The contract both ends of the IPC match on. Every case must survive the
+    // round trip, or a daemon and a CLI disagree silently.
+    for v in
+        [ NoProjectsSelected
+          AllZeroMatch 0
+          NothingExecuted
+          Ran Partial
+          Ran FullSuite ] do
+        test <@ RunVerification.tryParse (RunVerification.token v) = Some v @>
+
+    // The pre-282 token asserted "tests ran" while saying nothing about breadth.
+    // It must not parse: the missing half used to be supplied by a bool that could
+    // claim a full suite for a run that executed nothing.
+    test <@ RunVerification.tryParse "ran" = None @>
 
 // --- RunVerdict: a content-free ✓ is unconstructible (AUTOMATION-99) ---------
 //

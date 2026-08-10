@@ -569,11 +569,11 @@ let private abortedRunLifecycle (reason: string) : TestRunStarted * TestRunCompl
           TotalElapsed = TimeSpan.Zero
           Outcome = Aborted reason
           Results = Map.empty
-          // An aborted run executed nothing, so it cannot claim the suite ran
-          // (AUTOMATION-281). This said `true` — faithful to the old derivation,
-          // where `Map.forall` over the empty `Results` above was vacuously true,
-          // and a lie either way.
-          RanFullSuite = false }
+          // No project was invoked, so that is what it says. Under the old `bool`
+          // this had to pick between claiming a suite that never ran and claiming a
+          // filtering that never happened — the comment here read "a lie either
+          // way". There is now a case for what actually occurred (AUTOMATION-282).
+          Verification = NoProjectsSelected }
 
     started, completed
 
@@ -758,13 +758,12 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 /// instead, and so did `recordRunOutcome`. Three copies of the run-level question in one
 /// file, one of them documented as THE run-level question, purely because of a parameter
 /// type.
-let internal verificationOf (results: Map<string, TestResult>) : RunVerification =
-    if results.IsEmpty then
-        NoProjectsSelected
-    elif results |> Map.forall (fun _ r -> TestResult.isNoMatch r) then
-        AllZeroMatch results.Count
-    else
-        Ran
+///
+/// The derivation itself moved to core in AUTOMATION-282 (`RunVerification.ofResults`),
+/// once scope became part of the answer: the plugins and the cache all need it, and a
+/// second copy is how the two ends drift. This alias stays because the name reads
+/// better at TestPrune's call sites and is what the analyzer allow-list names.
+let internal verificationOf (results: Map<string, TestResult>) : RunVerification = RunVerification.ofResults results
 
 /// "Projects ran, and every one of them matched nothing." The predicate the aggregators
 /// want; `NoProjectsSelected` is deliberately NOT this, because no project is not the
@@ -773,7 +772,8 @@ let internal allZeroMatchOf (results: Map<string, TestResult>) : bool =
     match verificationOf results with
     | AllZeroMatch _ -> true
     | NoProjectsSelected
-    | Ran -> false
+    | NothingExecuted
+    | Ran _ -> false
 
 /// Retained for the existing wire field, which older CLIs still read. Prefer
 /// `verificationOf`: this cannot distinguish an empty run from a real one, which
@@ -2350,7 +2350,8 @@ let private executeTests
               TotalElapsed = sw.Elapsed
               Outcome = Normal
               Results = finalResults
-              RanFullSuite = TestResult.ranFullSuite finalResults }
+              // The real run: whatever the results establish, derived once, in core.
+              Verification = verificationOf finalResults }
 
         match afterRun with
         | Some hook -> hook testResults
@@ -3609,12 +3610,13 @@ let create
                           TotalElapsed = TimeSpan.Zero
                           Outcome = Normal
                           Results = Map.empty
-                          // The skip runs no test, so it proves nothing about scope
-                          // (AUTOMATION-281). Unlike the aborted lifecycle this one is
-                          // `Normal`, so it reaches every consumer that filters on
-                          // `Outcome` — which is exactly why claiming `true` here was
-                          // the more exposed of the two.
-                          RanFullSuite = false }
+                          // Impact analysis selected no project, so none was invoked
+                          // — the same honest statement the aborted lifecycle makes,
+                          // and it now IS a statement rather than the less harmful of
+                          // two lies (AUTOMATION-282). This one is `Normal`, so it
+                          // reaches every consumer that filters on `Outcome`, which
+                          // is why it was the more exposed of the two.
+                          Verification = NoProjectsSelected }
 
                     // The skip EXECUTES NOTHING, so it covers nothing and may clear
                     // nothing (AUTOMATION-125). Empty results already yield an empty
@@ -4810,13 +4812,15 @@ let create
                     //  * `not aborted` — an aborted run has empty Results and verified nothing.
                     //  * every RUNNABLE project passed — `projectPassed` demands the project
                     //    be PRESENT in the results AND green, so a project that never ran
-                    //    cannot be counted. This also rules out the degenerate zero-ran
-                    //    lifecycle (empty Results ⇒ no project passes).
-                    //  * `RanFullSuite` — none of those projects was impact-FILTERED. It is
-                    //    vacuously true for an empty Results map, which is why it is an
-                    //    addition to the check above and never a substitute for it.
+                    //    cannot be counted.
+                    //  * `Ran FullSuite` — the run EXECUTED and none of it was
+                    //    impact-FILTERED. Until AUTOMATION-282 this read `completed.RanFullSuite`,
+                    //    a bool that was vacuously true for an empty Results map, and the
+                    //    emptiness had to be ruled out separately for it to mean anything.
+                    //    The case now carries that: scope is unreachable unless something ran.
                     //  * a non-empty `runnableProjects` — an analysis-only daemon runs no
-                    //    tests, so it can never prove anything and must not discharge.
+                    //    tests, so it can never prove anything and must not discharge. Kept
+                    //    because it asks about the SELECTION, not the results.
                     //
                     // Only now may the ledger be rewritten: `persistQueue` has deliberately
                     // left the corrupt file untouched until this moment, so that a crash
@@ -4826,7 +4830,7 @@ let create
                         Volatile.Read(&ledgerRecoveryOutstandingRef)
                         && not aborted
                         && not (Set.isEmpty runnableProjects)
-                        && completed.RanFullSuite
+                        && completed.Verification = Ran FullSuite
                         && runnableProjects |> Set.forall projectPassed
                     then
                         Volatile.Write(&ledgerRecoveryOutstandingRef, false)
