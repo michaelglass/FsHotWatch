@@ -318,9 +318,11 @@ let renderIpcResult
                             UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
                             UI.info "  Expected your diff to select something?   fshw status test-prune"
                             3
-                        elif (match parsedCoverage with
-                              | Understood(AllZeroMatch _) -> true
-                              | _ -> false) then
+                        elif
+                            (match parsedCoverage with
+                             | Understood(AllZeroMatch _) -> true
+                             | _ -> false)
+                        then
                             UI.fail "No tests matched the filter — nothing was verified (not a pass)"
 
                             UI.info

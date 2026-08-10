@@ -171,7 +171,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
     else
         match coverage with
         | Complete ->
-            match testScope with
+            // Matched as a PAIR, so every (mode, scope) combination is enumerated by
+            // the compiler in one place. Nesting a second `match testScope` inside the
+            // `Confirmation` arm meant that inner match had to re-list `NoTestsRun` and
+            // `ScopeUnreadable` — arms the outer match had already consumed, so they
+            // could never execute. Two lists to keep in step, one of them unreachable,
+            // and no way for a reader to tell which was load-bearing. This diff was the
+            // demonstration: `ScopeUnreadable` was added to both.
+            match mode, testScope with
             // NO TESTS RAN — in EITHER mode.
             //
             // `NoTestsRun` does not mean "impact analysis selected nothing this
@@ -185,7 +192,7 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // question ("did we test AT ALL?"), so unlike `ImpactFiltered` it is
             // refused in the inner loop too. The inner loop is allowed to test LESS;
             // it is not allowed to test NOTHING and call it green.
-            | NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
+            | _, NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
             // THE SCOPE COULD NOT BE READ — in EITHER mode.
             //
             // Not "the daemon reported no scope" (that is `ScopeUnknown`, below, and it
@@ -203,22 +210,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // same principle: a MISSING reading may not be treated as a GOOD one.
             //
             // So it is refused wherever `NoTestsRun` is refused, which is everywhere.
-            | ScopeUnreadable _ -> CheckOutcome.UnearnedScope testScope
-            | FullSuite _
-            | ImpactFiltered _
-            | ScopeUnknown ->
-                match mode with
-                // The inner loop keeps impact filtering, which is what it is good at.
-                // `ScopeUnknown` is tolerated here — a repo with no test-prune plugin
-                // configured has no tests to run, and punishing it would be nonsense.
-                | InnerLoop -> CheckOutcome.Clean
-                | Confirmation ->
-                    match testScope with
-                    | FullSuite _ -> CheckOutcome.Clean
-                    | ImpactFiltered _
-                    | NoTestsRun
-                    | ScopeUnreadable _
-                    | ScopeUnknown -> CheckOutcome.UnearnedScope testScope
+            | _, ScopeUnreadable _ -> CheckOutcome.UnearnedScope testScope
+            // The inner loop keeps impact filtering, which is what it is good at.
+            // `ScopeUnknown` is tolerated here — a repo with no test-prune plugin
+            // configured has no tests to run, and punishing it would be nonsense.
+            | InnerLoop, (FullSuite _ | ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.Clean
+            // `confirm` demands the full suite and accepts nothing narrower.
+            | Confirmation, FullSuite _ -> CheckOutcome.Clean
+            | Confirmation, (ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.UnearnedScope testScope
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
 

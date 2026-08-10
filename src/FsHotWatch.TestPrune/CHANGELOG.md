@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- feat!: **the public `ZeroMatchMarker` literal is removed.** It was the magic output
+  prefix a zero-match result used to be tagged with, before "the filter matched no test"
+  became a `TestResult` case. Nothing constructed a value carrying it any more, and its
+  one remaining reader — reconstructing pre-existing cache entries — names
+  `TestResult.LegacyZeroMatchMarker` in core instead. Anyone referencing
+  `TestPrunePlugin.ZeroMatchMarker` should switch to `TestResult.isNoMatch` to ask the
+  question, or to the core literal if they genuinely need the legacy string.
+- fix: **the run summary no longer counts a project that ran no tests as one that
+  passed.** `passed` was derived by exclusion (`total - failed - deferred`), and
+  `TestResult.isPassed` is deliberately true for a zero-match project, so a mixed run
+  reported "2 passed, 0 failed in 2 projects" while the CLI — which counts them
+  separately — said "2 project(s): 1 passed, 1 matched nothing". Two surfaces describing
+  one run differently, and the daemon's was the one claiming a pass nothing earned.
+  Zero-match now has its own term in the summary.
 - feat: **every test project's output is saved, streamed, for every run**
   (AUTOMATION-279). `.fshw/test-runs/<runId>/<Project>.output.log`, written as the
   runner speaks, on success as well as failure and with no project special-cased —
@@ -50,8 +64,20 @@
   accounting for ≥25% of the selection is now reported by name, with its age and share.
   A warning rather than a quarantine on purpose: dropping a queued symbol on a heuristic
   would be under-testing, and the failure was that nobody could see the pattern — not
-  that nothing could be done once seen. Costs nothing on a healthy queue, where no
-  symbol reaches the age threshold.
+  that nothing could be done once seen.
+
+  Counted per test RUN, at the point a run is launched against the queue. Counting per
+  *flush* — the first shape — ticked 2-3 times per edit-save cycle, because the flush
+  runs on `BatchChecked`, again on `BuildSucceeded` and again on the rerun path; editing
+  one function twice on a green repo was enough to trip the threshold. A guard designed
+  to fire late specifically so it would not cry wolf during an ordinary red-to-green
+  cycle would have done exactly that, and paid a graph query per seed for the privilege.
+  The per-seed check is also budgeted (`MaxSeedsToAttribute`, the same cap the
+  neighbouring attribution breakdown uses) and skipped entirely on an empty selection:
+  each check is a recursive reverse-walk, and the aged-seed list grows precisely when the
+  queue is wedged — the very state the guard exists to report — so an unbudgeted loop
+  would cost most when the daemon could least afford it. As next door, the cap is never
+  silent: a skipped check says so, and why.
 
 - fix: **`run-tests` says which project you asked for and which exist when nothing
   matches (AUTOMATION-272).** The reply was a bare `no matching test projects`, which is

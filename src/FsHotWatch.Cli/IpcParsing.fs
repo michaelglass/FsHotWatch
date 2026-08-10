@@ -117,6 +117,23 @@ module TestScope =
         | ScopeUnknown
         | ScopeUnreadable _ -> false
 
+    /// "We asked what ran and the answer faulted" — as distinct from `ScopeUnknown`,
+    /// which is a legitimate everyday answer meaning the daemon positively reported no
+    /// scope. That difference is the whole of the fail-open fix, so it gets a name
+    /// rather than being re-matched by hand at each site: production matched this case
+    /// in six places with no predicate, and the tests had already grown two private
+    /// copies.
+    ///
+    /// Exhaustive for the same reason as `isFullSuite`: a new scope case is "not
+    /// unreadable" only by an explicit edit here.
+    let isUnreadable (scope: TestScope) : bool =
+        match scope with
+        | ScopeUnreadable _ -> true
+        | FullSuite _
+        | ImpactFiltered _
+        | NoTestsRun
+        | ScopeUnknown -> false
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command

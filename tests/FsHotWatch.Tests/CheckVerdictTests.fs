@@ -428,10 +428,8 @@ let ``parseTestRunReport: a none reply parses as NoTestsRun`` () =
     test <@ (parseTestRunReport json).Scope = NoTestsRun @>
 
 /// Did the parser fail to READ the reply (as opposed to reading an absent scope)?
-let private isUnreadable (scope: TestScope) =
-    match scope with
-    | ScopeUnreadable _ -> true
-    | _ -> false
+/// The shared, exhaustive predicate — this was a local copy with a `| _ ->` wildcard.
+let private isUnreadable = TestScope.isUnreadable
 
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: every unusable reply fails CLOSED, never to FullSuite`` () =
