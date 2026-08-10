@@ -133,6 +133,25 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
             | TestRunCompleted trc ->
                 match trc.Outcome with
                 | Aborted _ -> async { return state }
+                | Normal when not (trc.Results |> Map.exists (fun _ r -> TestResult.executedTests r)) ->
+                    // A run that executed no test produced no coverage, so there is
+                    // nothing here to judge and no honest verdict to reach
+                    // (AUTOMATION-280).
+                    //
+                    // Without this the decision below runs on `trc.RanFullSuite`,
+                    // which is vacuously TRUE for an empty result map — the "0
+                    // affected classes" impact-skip emits exactly that shape. So a
+                    // run that ran nothing would pick between gating a shortfall and
+                    // downgrading it, and BOTH answers are wrong: `true` gates on
+                    // coverage this run did not produce, `false` quietly turns a real
+                    // shortfall into a non-gating notice. Declining is the same move
+                    // `Aborted` above already makes, for the same reason.
+                    //
+                    // Asks `executedTests`, not `Results.IsEmpty`: a run whose every
+                    // project deferred or errored is non-empty and still verified
+                    // nothing.
+                    ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
+                    async { return state }
                 | Normal ->
                     let claim =
                         ctx.RunExclusive

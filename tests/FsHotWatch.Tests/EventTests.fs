@@ -139,8 +139,20 @@ let ``TestResult.ranFullSuite treats a deferred project as filtered`` () =
     test <@ not (TestResult.ranFullSuite results) @>
 
 [<Fact(Timeout = 15000)>]
-let ``TestResult.ranFullSuite is true for empty map`` () =
-    test <@ TestResult.ranFullSuite Map.empty @>
+let ``TestResult.ranFullSuite is FALSE for an empty map — vacuity is not evidence`` () =
+    // Reversed deliberately (AUTOMATION-281). This asserted `true` on the reading
+    // that "nothing was filtered" — which is simply what `Map.forall` returns for
+    // an empty map. That is vacuity, not evidence: a run that executed no project
+    // cannot have run every project unfiltered, and the value gates baseline
+    // refreshes and ratchet tightening.
+    test <@ not (TestResult.ranFullSuite Map.empty) @>
+
+[<Fact(Timeout = 15000)>]
+let ``TestResult.ranFullSuite is still true for a real unfiltered run — the guard is not a blanket`` () =
+    // Positive control for the reversal above: emptiness is the ONLY thing that
+    // changed. A genuine unfiltered run must still answer `true`, or the fix would
+    // have disabled full-suite gating everywhere instead of fixing one hole.
+    test <@ TestResult.ranFullSuite (Map.ofList [ "A", TestsPassed("ok", false, TimeSpan.Zero) ]) @>
 
 [<Fact(Timeout = 15000)>]
 let ``TestResult.ranFullSuite is true when every project ran unfiltered`` () =

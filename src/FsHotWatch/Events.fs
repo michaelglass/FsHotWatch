@@ -385,10 +385,22 @@ module TestResult =
         | _ -> false
 
     /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
-    /// no project was run with an impact filter (i.e., the entire test suite
-    /// ran). Empty map is full-suite by convention (nothing was filtered).
+    /// at least one project reported AND no project was run with an impact filter
+    /// (i.e., the entire test suite ran).
+    ///
+    /// The emptiness conjunct is the whole point (AUTOMATION-281). `Map.forall` is
+    /// vacuously TRUE for an empty map, so this used to answer "the full suite ran"
+    /// for a run that ran nothing — and it was documented as a convention
+    /// ("nothing was filtered"), which is defensible in isolation and wrong in
+    /// effect: consumers gate baseline refreshes and ratchet tightening on this
+    /// value, and a run that executed nothing must not be able to authorise either.
+    ///
+    /// Note this is the ONLY hole the conjunct closes. A NON-empty run in which
+    /// every project failed to execute already answers `false`, because
+    /// `wasFiltered` deliberately reports `true` for no-match, deferred and errored
+    /// projects — see its comment. Emptiness was the one case left over.
     let ranFullSuite (results: Map<string, TestResult>) : bool =
-        results |> Map.forall (fun _ r -> not (wasFiltered r))
+        not results.IsEmpty && results |> Map.forall (fun _ r -> not (wasFiltered r))
 
 /// Aggregate test results snapshot. Used as a plain value type by TestPrune's
 /// internals and afterRun hooks — NOT dispatched as an event. Subscribers

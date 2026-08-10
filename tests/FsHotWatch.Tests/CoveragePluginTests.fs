@@ -40,7 +40,26 @@ let private defaultThresholdsJson = "{}"
 let private thresholdsJsonWithOverride (fileName: string) (line: int) (branch: int) =
     $"""{{ "overrides": {{ "{fileName}": {{ "line": {line}, "branch": {branch} }} }} }}"""
 
+/// A run that actually EXECUTED a test, unfiltered.
+///
+/// This carried `Results = Map.empty` until AUTOMATION-280 — a shape no real run
+/// produces alongside `RanFullSuite = true` except the degenerate lifecycles, and
+/// one the plugin now declines to judge. Every driver below wants the ordinary
+/// case, so the ordinary case is what it emits; the degenerate shape has its own
+/// helper and its own test.
 let private emitRunCompleted (host: PluginHost) =
+    host.EmitTestRunCompleted
+        { RunId = Guid.NewGuid()
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
+          RanFullSuite = true }
+
+/// The degenerate lifecycle: nothing executed, yet the run claims full-suite
+/// scope. `abortedRunLifecycle` and the "0 affected classes" impact-skip both
+/// emit exactly this (empty results); `RanFullSuite = true` is what the field
+/// used to say for them.
+let private emitRunThatExecutedNothing (host: PluginHost) =
     host.EmitTestRunCompleted
         { RunId = Guid.NewGuid()
           TotalElapsed = TimeSpan.Zero
@@ -128,12 +147,18 @@ let ``regression: impact-filtered run with stale baseline does not false-red on 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
-        // Impact-filtered run: RanFullSuite = false.
+        // Impact-filtered run: a project that RAN, under a filter.
+        //
+        // This drove `Results = Map.empty` until AUTOMATION-280. That is not what a
+        // filtered run looks like — a filter narrows which tests run, it does not
+        // remove the project from the results — and the plugin now declines to judge
+        // a run that executed nothing, so the empty map exercised the skip path
+        // instead of the downgrade this test is about.
         host.EmitTestRunCompleted
             { RunId = Guid.NewGuid()
               TotalElapsed = TimeSpan.Zero
               Outcome = Normal
-              Results = Map.empty
+              Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
               RanFullSuite = false }
 
         waitUntil
@@ -206,6 +231,42 @@ let ``plugin reports errors when file is below threshold`` () =
         let fileErrors = errors |> Map.tryFind "MyModule.fs"
         test <@ fileErrors.IsSome @>
         test <@ not fileErrors.Value.IsEmpty @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a run that executed NOTHING reaches no coverage verdict — its full-suite claim is vacuous`` () =
+    // AUTOMATION-280. The gate is `if ranFullSuite then Failed else NotGatedFiltered`,
+    // and `RanFullSuite` is vacuously TRUE for an empty result map — so a run that
+    // executed no test could decide whether a shortfall gates. Neither answer is
+    // honest: `true` gates on coverage this run did not produce, `false` silently
+    // downgrades a real shortfall to a non-gating notice. The only honest move is
+    // to reach no verdict at all, which is what `Aborted` already does.
+    withTempDir "coverage" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+
+        // A shortfall that WOULD gate: 50% line coverage against a 100% default.
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let isFailed () =
+            match host.GetStatus("coverage") with
+            | Some(Failed _) -> true
+            | _ -> false
+
+        emitRunThatExecutedNothing host
+        waitUntil isFailed 2000
+        test <@ not (isFailed ()) @>
+
+        // POSITIVE CONTROL, and the reason the assertion above means anything: the
+        // same fixture, same host, same threshold — driven by a run that actually
+        // executed — must gate. Without this, a broken fixture or a plugin that
+        // never checks anything would pass the absence assertion just as happily.
+        emitRunCompleted host
+        waitUntil isFailed 10000
+        test <@ isFailed () @>)
 
 [<Fact(Timeout = 15000)>]
 let ``plugin clears errors when all files pass`` () =

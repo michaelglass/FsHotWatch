@@ -3628,8 +3628,9 @@ let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () 
     Assert.True evt.RanFullSuite
 
 [<Fact>]
-let ``ranFullSuite is true for empty results`` () =
-    test <@ TestResult.ranFullSuite Map.empty @>
+let ``ranFullSuite is FALSE for empty results — nothing ran, so nothing was proved`` () =
+    // Reversed deliberately (AUTOMATION-281). See the twin in EventTests.
+    test <@ not (TestResult.ranFullSuite Map.empty) @>
 
 [<Fact>]
 let ``ranFullSuite is true when no project was filtered`` () =
