@@ -2035,6 +2035,68 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
         // Reporting green here discharges the debt having executed nothing.
         test <@ File.Exists sentinel @>)
 
+// The door the `WasRecreated` proxy left open. The index here is NOT recreated — it is
+// healthy, populated, and opened compatibly — but it has never heard of the symbol the
+// queue names, because that symbol was renamed or deleted while it sat in the queue.
+//
+// `QueryAffectedTests` answers empty for it, exactly as it does for a symbol that
+// genuinely has no covering test, and the old guard asked "was the index rebuilt?" —
+// which is FALSE here. So the vacuous green was reachable through a healthy index, and
+// the recreate fix did not touch it. What licenses the shortcut is whether the index
+// KNOWS the name, not how it came to be in its current state.
+[<Fact(Timeout = 30000)>]
+let ``a queued symbol the index has never heard of must not discharge as a zero-test green`` () =
+    withTempDir "tp-unknown-symbol" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        // A healthy, populated index — note we never bump `user_version`, so the
+        // plugin's open below is a COMPATIBLE REOPEN and `WasRecreated` is false.
+        let liveSymbol: SymbolInfo =
+            { FullName = "Lib.stillHere"
+              Kind = SymbolKind.Value
+              SourceFile = "src/Lib.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "hash-v1"
+              IsExtern = false }
+
+        let db = Database.create dbPath
+        db.RebuildProjects([ AnalysisResult.Create([ liveSymbol ], [], []) ])
+
+        // Positive controls, both directions: the index IS populated, and it genuinely
+        // does not know the queued name. Without these the test could pass against an
+        // empty database and prove nothing.
+        test <@ (db.GetAllSymbolNames()).Contains "Lib.stillHere" @>
+        test <@ not ((db.GetAllSymbolNames()).Contains "Lib.renamedAway") @>
+
+        // Real debt, queued under a name the index cannot resolve.
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.renamedAway" ])
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let completion = beginAwaitTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        test <@ completion.Wait(TimeSpan.FromSeconds 20.0) @>
+
+        // The index cannot vouch for `Lib.renamedAway`, so "no covering test" is not
+        // proof about it and the run must actually happen.
+        test <@ File.Exists sentinel @>)
+
 // AUTOMATION-275 — the poisoned-seed guard's decision, tested without a daemon.
 // Each half of the conjunction gets a test that would pass if the OTHER half were
 // deleted, so neither can rot into a tautology.
