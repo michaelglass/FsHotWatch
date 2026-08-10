@@ -3613,17 +3613,13 @@ let ``clearFcsCheckCache removes the cache json files and reports the count`` ()
 let ``clearFcsCheckCache is a no-op when there is no cache dir`` () =
     withTempDir "fcs-nocache" (fun repoRoot -> test <@ clearFcsCheckCache repoRoot = 0 @>)
 
-[<Fact>]
-let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
-    let evt =
-        { RunId = System.Guid.NewGuid()
-          TotalElapsed = System.TimeSpan.Zero
-          Outcome = Normal
-          Results = Map.empty
-          RanFullSuite = true }
-
-
-    Assert.True evt.RanFullSuite
+// `TestRunCompleted carries RanFullSuite=true when no projects filtered` stood
+// here. It built an event with EMPTY results and asserted the full-suite flag was
+// true — pinning the vacuity as intended behaviour rather than testing anything
+// about filtering. There is no longer a value that expresses it: an empty run is
+// `NoProjectsSelected`, which has no scope to assert. The real question it meant to
+// ask is `ofResults: every project executed unfiltered is the ONLY full suite`, in
+// EventTests.fs.
 
 // `TestResult.ranFullSuite`'s unit tests are NOT here. It is core (`Events.fs`)
 // and `EventTests.fs` is its home, covering the empty map, the all-unfiltered and
@@ -3632,7 +3628,7 @@ let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () 
 // until the tracked issue had to apply the same reversal in both files.
 
 [<Fact(Timeout = 15000)>]
-let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
+let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` () =
     withTempDir "tp-ranfullsuite-full" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
@@ -3658,7 +3654,7 @@ let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
         waitUntil (fun () -> getCompleted () |> List.isEmpty |> not) 10000
 
         let last = getCompleted () |> List.last
-        test <@ last.RanFullSuite @>)
+        test <@ last.Verification = Ran RunScope.FullSuite @>)
 
 [<Fact(Timeout = 20000)>]
 let ``regression: TestPrune writes a cache entry with TestRunCompleted on terminal status`` () =
@@ -3745,7 +3741,7 @@ let ``TestPrune CacheKey is None for a failing TestsFinished, Some for an all-pa
           TotalElapsed = TimeSpan.Zero
           Outcome = Normal
           Results = Map.ofList results
-          RanFullSuite = true }
+          Verification = Ran RunScope.FullSuite }
 
     let failing =
         Custom(
@@ -3809,7 +3805,7 @@ let ``a run where every project matched zero tests is not cacheable as a green``
           TotalElapsed = TimeSpan.Zero
           Outcome = Normal
           Results = Map.ofList results
-          RanFullSuite = true }
+          Verification = Ran RunScope.FullSuite }
 
     let zeroMatch = TestsNoMatch("Zero tests ran", TimeSpan.Zero)
 
@@ -7764,7 +7760,7 @@ let ``the TestsFinished WRITE is not gated on session evidence`` () =
                   TotalElapsed = TimeSpan.Zero
                   Outcome = Normal
                   Results = Map.ofList [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero) ]
-                  RanFullSuite = true },
+                  Verification = Ran RunScope.FullSuite },
                 fullSuiteLaunch [ "ProjA" ]
             )
         )
@@ -8195,7 +8191,7 @@ let private testsFinishedEvent (results: (string * TestResult) list) (launch: Te
           TotalElapsed = TimeSpan.FromSeconds 1.0
           Outcome = Normal
           Results = Map.ofList results
-          RanFullSuite = TestResult.ranFullSuite (Map.ofList results) }
+          Verification = RunVerification.ofResults (Map.ofList results) }
 
     Custom(TestsFinished(started, completed, launch))
 
@@ -8632,7 +8628,7 @@ let private testsFinishedEventWithReports
           TotalElapsed = TimeSpan.FromSeconds 1.0
           Outcome = Normal
           Results = Map.ofList results
-          RanFullSuite = TestResult.ranFullSuite (Map.ofList results) }
+          Verification = RunVerification.ofResults (Map.ofList results) }
 
     Custom(TestsFinished(started, completed, launch))
 
@@ -8949,7 +8945,7 @@ let ``no cache participation while a red is outstanding`` () =
                   TotalElapsed = TimeSpan.Zero
                   Outcome = Normal
                   Results = Map.ofList [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero) ]
-                  RanFullSuite = true },
+                  Verification = Ran RunScope.FullSuite },
                 fullSuiteLaunch [ "ProjA" ]
             )
         )
@@ -9209,25 +9205,17 @@ let ``verificationOf tells an EMPTY run apart from one that matched nothing — 
 
     test <@ verificationOf emptyRun.Results = NoProjectsSelected @>
     test <@ verificationOf allZero.Results = AllZeroMatch 2 @>
-    test <@ verificationOf ran.Results = Ran @>
+    // `Ran`, and PARTIAL: project A matched nothing, which `wasFiltered` reports as
+    // filtered, so this run cannot claim the whole suite. Under the old bool the
+    // scope rode alongside as a separate field and nothing tied it to having run.
+    test <@ verificationOf ran.Results = Ran RunScope.Partial @>
 
     // The whole point: the old bool collapsed the first two into `false`/`true`
     // in a way that lost the empty case entirely.
     test <@ allZeroMatch emptyRun = false @>
     test <@ allZeroMatch allZero = true @>
 
-[<Fact>]
-let ``RunVerification.verifiedNothing is true for BOTH no-op shapes, and false for a real run`` () =
-    // The property every gate actually cares about, which the bool could not answer.
-    test <@ RunVerification.verifiedNothing NoProjectsSelected @>
-    test <@ RunVerification.verifiedNothing (AllZeroMatch 3) @>
-    test <@ not (RunVerification.verifiedNothing Ran) @>
-
-[<Fact>]
-let ``verification tokens are stable — the wire contract a CLI matches on`` () =
-    // Positive control on the tokens themselves: a rename here silently turns
-    // every consumer's match into its fallback branch, which for an older CLI
-    // means reading a no-op run as "ran".
-    test <@ RunVerification.token NoProjectsSelected = "no-projects-selected" @>
-    test <@ RunVerification.token (AllZeroMatch 1) = "all-zero-match" @>
-    test <@ RunVerification.token Ran = "ran" @>
+// `RunVerification.verifiedNothing` and the wire tokens are core API and are
+// pinned in EventTests.fs, which since the tracked issue covers every case plus the
+// token round-trip and the refusal of the retired bare "ran". They were duplicated
+// here, and this file had to be edited in lockstep with that one for each change.

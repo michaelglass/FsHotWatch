@@ -1284,7 +1284,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
                               TotalElapsed = TimeSpan.Zero
                               Outcome = Normal
                               Results = Map.empty
-                              RanFullSuite = true }
+                              Verification = NoProjectsSelected }
 
                         ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()

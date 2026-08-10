@@ -656,7 +656,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                     TotalElapsed = System.TimeSpan.Zero
                     Outcome = TestRunOutcome.Normal
                     Results = testResults
-                    RanFullSuite = true }
+                    Verification = Ran RunScope.FullSuite }
               TaskCache.CachedCommandCompleted
                   { Name = "noop"
                     Outcome = CommandSucceeded "ok" } ]
