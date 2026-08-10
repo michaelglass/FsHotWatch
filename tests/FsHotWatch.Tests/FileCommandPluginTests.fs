@@ -855,6 +855,160 @@ let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` (
     let contents = runEnvProbe "env-partial" false
     test <@ contents = "false" @>
 
+/// Run the env probe against an arbitrary driver that feeds the host events.
+/// Returns the value the child process observed in `FSHW_RAN_FULL_SUITE`.
+let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (drive: PluginHost -> unit) : string =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let outFile = System.IO.Path.Combine(tmpDir, "out")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let script = writeEnvProbeScript tmpDir outFile
+
+        let handler =
+            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None
+
+        host.RegisterHandler(handler)
+        drive host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus(pluginName) with
+                | Some(Completed _) -> true
+                | _ -> false)
+            8000
+
+        test <@ System.IO.File.Exists(outFile) @>
+        System.IO.File.ReadAllText(outFile)
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+// REGRESSION (hook-scope): the mid-run fire derived its full-suite claim from
+// the ACCUMULATOR — a strict PREFIX of the run. A run whose projects are split
+// across `group`s emits one TestProgress per group, so with `afterTests: true`
+// (the README's own coverage-ratchet example) the hook fires after the FIRST
+// group with a claim computed from that group alone. If a later group is
+// impact-filtered the run is partial, yet the hook was told `"true"` — and
+// RunId dedupe means the truthful `TestRunCompleted` (RanFullSuite=false) can
+// never correct it. A prefix can PROVE "partial" (a filtered project stays
+// filtered) but can never prove "full", so mid-run the only honest answer is
+// `"unknown"`.
+[<Fact(Timeout = 20000)>]
+let ``afterTests command is not told the full suite ran while the run is still in flight`` () =
+    let runId = System.Guid.NewGuid()
+
+    let contents =
+        runEnvProbeWith
+            "env-midrun"
+            { FilePattern = None
+              AfterTests = Some AnyTest }
+            (fun host ->
+                // Group 1 finishes, unfiltered. Groups 2..n have not reported.
+                emitProgress host runId [ "GroupOne", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ])
+
+    test <@ contents = "unknown" @>
+
+// REGRESSION (hook-scope): a run that EXECUTED NOTHING must never tell a hook
+// the full suite ran. Both degenerate lifecycles TestPrune builds carry
+// `Results = Map.empty` with `RanFullSuite = true` (vacuously — nothing was
+// filtered): `abortedRunLifecycle` (TestPrunePlugin.fs, `Outcome = Aborted`)
+// and the "0 affected classes" impact-skip (`Outcome = Normal`).
+//
+// They are blocked today only because `CommandTrigger.matches AnyTest` requires
+// a non-empty results map, and config rejects an empty `afterTests` list — an
+// INCIDENTAL guard that nothing pinned. This pins it: an empty run fires no
+// afterTests command at all.
+[<Fact(Timeout = 20000)>]
+let ``afterTests command does not fire for a run that executed nothing`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "env-empty-run") trigger "echo" "ran" "/tmp" None
+
+    host.RegisterHandler(handler)
+
+    // The impact-skip lifecycle, verbatim: Normal, no results, vacuously full.
+    host.EmitTestRunCompleted
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.empty
+          RanFullSuite = true }
+
+    // And the aborted-preflight lifecycle.
+    host.EmitTestRunCompleted
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Aborted "beforeRun hook failed"
+          Results = Map.empty
+          RanFullSuite = true }
+
+    System.Threading.Thread.Sleep(600)
+    test <@ host.GetStatus("env-empty-run") = Some Idle @>
+
+// --- FullSuiteClaim: the whole truth table, in one place ---
+// The env var's value is decided HERE, so this is where the contract is pinned.
+// The dangerous cell is the first one: a `"true"` on a run that verified nothing
+// is a licence, handed to arbitrary user code, to refresh a coverage baseline
+// off no evidence.
+
+let private passed wasFiltered =
+    FsHotWatch.Events.TestsPassed("", wasFiltered, TimeSpan.Zero)
+
+[<Fact>]
+let ``FullSuiteClaim is unknown for a completed run that executed nothing`` () =
+    // The impact-skip / aborted-preflight shape: empty Results, RanFullSuite
+    // vacuously true.
+    test <@ FullSuiteClaim.derive true Map.empty true = BreadthUnknown @>
+
+[<Fact>]
+let ``FullSuiteClaim is unknown when every project in a completed run failed to execute`` () =
+    // Non-empty Results, still nothing verified.
+    let results =
+        Map.ofList
+            [ "A", FsHotWatch.Events.TestsDeferred "apphost not produced"
+              "B", FsHotWatch.Events.TestsNoMatch("", TimeSpan.Zero)
+              "C", FsHotWatch.Events.TestsErrored "no parseable report" ]
+
+    test <@ FullSuiteClaim.derive true results (TestResult.ranFullSuite results) = BreadthUnknown @>
+
+[<Fact>]
+let ``FullSuiteClaim is unknown mid-run even when nothing so far was filtered`` () =
+    let prefix = Map.ofList [ "GroupOne", passed false ]
+    test <@ FullSuiteClaim.derive false prefix true = BreadthUnknown @>
+
+[<Fact>]
+let ``FullSuiteClaim is partial mid-run once any project is known filtered`` () =
+    // A filtered project stays filtered, so PARTIAL is provable from a prefix.
+    let prefix = Map.ofList [ "GroupOne", passed true ]
+    test <@ FullSuiteClaim.derive false prefix false = PartialSuite @>
+
+[<Fact>]
+let ``FullSuiteClaim is partial for a completed filtered run`` () =
+    let results = Map.ofList [ "A", passed false; "B", passed true ]
+    test <@ FullSuiteClaim.derive true results false = PartialSuite @>
+
+[<Fact>]
+let ``FullSuiteClaim is full only for a completed unfiltered run that executed`` () =
+    let results = Map.ofList [ "A", passed false; "B", passed false ]
+    test <@ FullSuiteClaim.derive true results true = FullSuite @>
+
+[<Fact>]
+let ``FullSuiteClaim tokens are the documented wire values`` () =
+    test <@ FullSuiteClaim.token FullSuite = "true" @>
+    test <@ FullSuiteClaim.token PartialSuite = "false" @>
+    test <@ FullSuiteClaim.token BreadthUnknown = "unknown" @>
+
 // --- Cache-key salt regression tests ---
 // Bug: editing a config file referenced in args (e.g. coverage-ratchet.json
 // thresholds) didn't invalidate the FileCommandPlugin cache because the key
