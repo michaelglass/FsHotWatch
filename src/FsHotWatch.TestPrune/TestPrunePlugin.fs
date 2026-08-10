@@ -569,7 +569,11 @@ let private abortedRunLifecycle (reason: string) : TestRunStarted * TestRunCompl
           TotalElapsed = TimeSpan.Zero
           Outcome = Aborted reason
           Results = Map.empty
-          RanFullSuite = true }
+          // An aborted run executed nothing, so it cannot claim the suite ran
+          //This said `true` — faithful to the old derivation,
+          // where `Map.forall` over the empty `Results` above was vacuously true,
+          // and a lie either way.
+          RanFullSuite = false }
 
     started, completed
 
@@ -3605,7 +3609,12 @@ let create
                           TotalElapsed = TimeSpan.Zero
                           Outcome = Normal
                           Results = Map.empty
-                          RanFullSuite = true }
+                          // The skip runs no test, so it proves nothing about scope
+                          //Unlike the aborted lifecycle this one is
+                          // `Normal`, so it reaches every consumer that filters on
+                          // `Outcome` — which is exactly why claiming `true` here was
+                          // the more exposed of the two.
+                          RanFullSuite = false }
 
                     // The skip EXECUTES NOTHING, so it covers nothing and may clear
                     // nothing. Empty results already yield an empty
