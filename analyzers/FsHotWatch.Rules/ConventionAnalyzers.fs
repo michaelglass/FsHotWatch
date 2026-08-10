@@ -128,6 +128,35 @@ module Detect =
     /// `isPassed r && executedTests r`) roots the application chain in some other
     /// function and is NOT this rule's business: negating the predicate to select
     /// the non-green is the correct, common use.
+    ///
+    /// The SCOPE fold — `Map.forall (fun _ r -> not (wasFiltered r))`, i.e.
+    /// `TestResult.ranFullSuite` — is likewise uncovered, and asked for on the
+    /// grounds that it too is vacuously true for an empty map. Measured and
+    /// declined, because the two folds are not the same bug:
+    ///
+    ///   * `isPassed` is wrong on a NON-empty map — three zero-match projects fold
+    ///     to green — and no guard beside the fold can see that, because the
+    ///     predicate itself is the lie. Naming the fold is the only place left.
+    ///   * a scope fold is RIGHT on every non-empty map: `wasFiltered` returns true
+    ///     for NoMatch/Deferred/Errored precisely so that it is. It is wrong only on
+    ///     the empty map — `forall`'s vacuity, which every fold in this tree shares
+    ///     and which is discharged where it arises, by an explicit emptiness conjunct
+    ///     beside the use (`isAllTerminal`, `allPluginsAtRest`, `allZeroMatchOf`, the
+    ///     ledger discharge's `not (Set.isEmpty runnableProjects)`).
+    ///
+    /// And the rule would have nothing to point at. `isPassed`'s diagnostic names
+    /// `verificationOf`, which answers the run-level question totally (`IsEmpty` →
+    /// `NoProjectsSelected` first). Scope has no such answer: the alternative to a
+    /// hand-rolled scope fold is `ranFullSuite`, whose body IS that fold and whose
+    /// empty-map `true` is a pinned, tested contract. A rule that flagged the fold
+    /// and recommended a function returning the identical value is DRY advice
+    /// wearing a false-green warning's clothes — and gets suppressed, taking
+    /// FSHW-VERDICT-001 with it. Pinned by the negative control in
+    /// IntegrationTests.fs.
+    ///
+    /// Revisit only if scope gains a `RunVerification`-shaped total answer that
+    /// distinguishes "nothing ran" from "everything ran unfiltered". Then there is
+    /// something to point at, and widening becomes worth its false-positive budget.
     let rec private isPassedPredicate (e: SynExpr) : bool =
         match unwrapParen e with
         | SynExpr.Lambda(body = body) -> isPassedPredicate body

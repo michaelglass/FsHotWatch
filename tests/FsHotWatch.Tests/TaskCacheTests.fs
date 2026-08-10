@@ -1210,11 +1210,61 @@ let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
 // threshold drifts in/out of fail across runs (deterministic shortfall,
 // not flake — see coverage_ratchet_lucky_ceiling memory).
 
+// The two fields this pair separates were once both "tolerate null, default to
+// the safe-looking value". They are NOT the same kind of field. An unknown
+// DURATION is genuinely unknown and reports as Zero, harming nothing. An
+// unknown SCOPE is a gating input, and the old default answered it with the
+// value that makes a filtered run look like a full one — so it is now a
+// rejection. The split is the point: tolerate absent evidence, never invent it.
+
 [<Fact(Timeout = 15000)>]
-let ``FileTaskCache tolerates explicit null wasFiltered/elapsedSeconds (old cache back-compat)`` () =
-    // Old caches written before these fields existed (and any that serialized
-    // them as JSON null) must still deserialize, defaulting to false / Zero.
-    // Exercises the `isNull node` branches in deserializeTestResult.
+let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting it to unfiltered`` () =
+    // Note what the old behaviour did here: the entry is WRITTEN with
+    // `wasFiltered = true` (a filtered run) and used to read back `false`. That
+    // is not a lenient default, it is a reversal — and `TestResult.ranFullSuite`
+    // reads exactly this flag, so the replayed run claimed to be the whole suite.
+    withTempDir "ftc-null-wasfiltered" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "X.fs"
+        let cacheKey = hash "k"
+
+        let result =
+            { CacheKey = cacheKey
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.Zero
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.FromSeconds 2.0) ]
+                        RanFullSuite = false } ] }
+
+        c.Set key cacheKey result
+
+        // POSITIVE CONTROL: untouched, the entry round-trips.
+        test <@ (c.TryGet key cacheKey).IsSome @>
+
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+        let raw = System.IO.File.ReadAllText(path)
+
+        let patched =
+            raw
+                .Replace("\"wasFiltered\":true", "\"wasFiltered\":null")
+                .Replace("\"wasFiltered\": true", "\"wasFiltered\": null")
+
+        System.IO.File.WriteAllText(path, patched)
+
+        let before = cache.ParseFailureCount
+        test <@ c.TryGet key cacheKey = None @>
+        test <@ cache.ParseFailureCount = before + 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compat)`` () =
+    // A duration is not a claim about what ran, so an entry that never recorded
+    // one still has everything a replay needs. Defaults to Zero, and exercises
+    // the `isNull node` branch in deserializeTestResult.
     withTempDir "ftc-null-fields" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1235,15 +1285,14 @@ let ``FileTaskCache tolerates explicit null wasFiltered/elapsedSeconds (old cach
 
         c.Set key cacheKey result
 
-        // Rewrite the on-disk JSON, replacing the stored wasFiltered/elapsedSeconds
-        // values with explicit nulls (the "old/partial cache" shape).
+        // Rewrite the on-disk JSON, replacing the stored elapsedSeconds value
+        // with an explicit null (the "old/partial cache" shape). `wasFiltered`
+        // is left intact — it is required, and its own test above covers it.
         let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
         let raw = System.IO.File.ReadAllText(path)
 
         let patched =
             raw
-                .Replace("\"wasFiltered\":true", "\"wasFiltered\":null")
-                .Replace("\"wasFiltered\": true", "\"wasFiltered\": null")
                 .Replace("\"elapsedSeconds\":2", "\"elapsedSeconds\":null")
                 .Replace("\"elapsedSeconds\": 2", "\"elapsedSeconds\": null")
 
@@ -1261,9 +1310,9 @@ let ``FileTaskCache tolerates explicit null wasFiltered/elapsedSeconds (old cach
 
         test <@ evt.IsSome @>
         let p1 = evt.Value.Results.["p1"]
-        // Null fields → safe defaults.
-        test <@ not (TestResult.wasFiltered p1) @>
-        test <@ TestResult.elapsed p1 = TimeSpan.Zero @>)
+        // Null duration → Zero. The scope the entry recorded is untouched.
+        test <@ TestResult.elapsed p1 = TimeSpan.Zero @>
+        test <@ TestResult.wasFiltered p1 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
@@ -1690,3 +1739,150 @@ let ``FileTaskCache reads an old-format entry as a miss, counted as a parse fail
         let result = c.TryGet key cacheKey
         test <@ result = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
+
+// --- Absent scope fields are a DEFECT, not a default ------------------------
+// Same class as the two rejections above (format-1 entries, pre-verdict
+// terminals): a field that is ABSENT is not a field that holds the convenient
+// value. These two pin the scope fields — the ones that decide whether a
+// replayed run counts as "the whole suite ran".
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache rejects a testRunCompleted entry with no ranFullSuite, rather than replaying it as a full suite``
+    ()
+    =
+    // `RanFullSuite` is a gating input: CoveragePlugin.gateVerdict turns
+    // `SomeFailed` into a hard `Failed` when it is true and downgrades it to a
+    // non-gating `NotGatedFiltered` when it is false, and FileCommandPlugin
+    // exports it to user hooks as FSHW_RAN_FULL_SUITE.
+    //
+    // So NEITHER boolean is an honest reading of an entry that never recorded
+    // the answer: `true` over-gates, and `false` silently switches coverage
+    // gating OFF for the replayed run. An entry with no recorded scope has no
+    // claim to replay, so it must read as a MISS and the work is simply redone.
+    withTempDir "ftc-no-ranfullsuite" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "X.fs"
+        let cacheKey = hash "k"
+
+        let result =
+            { CacheKey = cacheKey
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = Guid.NewGuid()
+                        TotalElapsed = TimeSpan.FromSeconds 1.0
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
+                        RanFullSuite = false } ] }
+
+        c.Set key cacheKey result
+
+        // POSITIVE CONTROL: untouched, this entry round-trips. Without it, a
+        // `None` below would prove only that the rewrite broke something.
+        test <@ (c.TryGet key cacheKey).IsSome @>
+
+        // Now the only difference a pre-`ranFullSuite` writer would leave: a
+        // current-format entry with that one field absent.
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+
+        let root =
+            System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path)).AsObject()
+
+        let evt = root.["emittedEvents"].AsArray().[0].AsObject()
+        evt.Remove("ranFullSuite") |> ignore
+        System.IO.File.WriteAllText(path, root.ToJsonString())
+
+        // Before the fix this returned Some, with the scope silently flipped to
+        // `true` — the gating value — on an entry that had recorded `false`.
+        let before = cache.ParseFailureCount
+        test <@ c.TryGet key cacheKey = None @>
+        test <@ cache.ParseFailureCount = before + 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache rejects a passed test result with no wasFiltered, rather than replaying it as unfiltered`` () =
+    // The same lie through the other door. FileCommandPlugin does not read the
+    // event's `RanFullSuite` on the progress path — it DERIVES the scope from
+    // the accumulated results (`TestResult.ranFullSuite accumulated`) and
+    // exports that. So a replayed progress result whose `wasFiltered` is absent
+    // and defaults to `false` reads as "not filtered" — i.e. a filtered run
+    // laundered into a full suite, with the `ranFullSuite` field never involved.
+    withTempDir "ftc-no-wasfiltered" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "Y.fs"
+        let cacheKey = hash "k"
+
+        let result =
+            { CacheKey = cacheKey
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestProgress
+                      { RunId = Guid.NewGuid()
+                        NewResults = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ] } ] }
+
+        c.Set key cacheKey result
+
+        // POSITIVE CONTROL, as above.
+        test <@ (c.TryGet key cacheKey).IsSome @>
+
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+
+        let root =
+            System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path)).AsObject()
+
+        let res =
+            root.["emittedEvents"].AsArray().[0].AsObject().["newResults"].AsArray().[0].AsObject()
+
+        res.Remove("wasFiltered") |> ignore
+        System.IO.File.WriteAllText(path, root.ToJsonString())
+
+        let before = cache.ParseFailureCount
+        test <@ c.TryGet key cacheKey = None @>
+        test <@ cache.ParseFailureCount = before + 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () =
+    // The guard above must key off the shapes whose WRITER emits the flag.
+    // `TestsNoMatch` / `TestsDeferred` / `TestsErrored` hold no `wasFiltered` in
+    // the DU, so `serializeTestResult` omits it and its absence there is not a
+    // missing answer. Requiring it everywhere would reject live entries — this
+    // is the regression that would catch that overreach.
+    withTempDir "ftc-flagless-shapes" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "Z.fs"
+        let cacheKey = hash "k"
+
+        let result =
+            { CacheKey = cacheKey
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = Guid.NewGuid()
+                        TotalElapsed = TimeSpan.FromSeconds 1.0
+                        Outcome = Normal
+                        Results =
+                          Map.ofList
+                              [ "p1", TestsNoMatch("no match", TimeSpan.FromSeconds 2.0)
+                                "p2", TestsDeferred "apphost not produced"
+                                "p3", TestsErrored "runner blew up" ]
+                        RanFullSuite = false } ] }
+
+        c.Set key cacheKey result
+
+        let r = c.TryGet key cacheKey
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        test <@ TestResult.isNoMatch evt.Value.Results.["p1"] @>
+        test <@ not evt.Value.RanFullSuite @>)

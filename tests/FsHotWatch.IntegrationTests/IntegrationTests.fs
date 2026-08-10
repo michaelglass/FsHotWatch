@@ -1166,6 +1166,15 @@ let private verdictPreamble =
       "        | TestsNoMatch -> true"
       "        | TestsPassed"
       "        | TestsFailed -> false"
+      // The SCOPE predicate, present so the negative control can pin that the
+      // rule does not reach for it. Note the shape the real one has: true for
+      // the zero-match case, deliberately, so a scope fold cannot be fooled by
+      // a project that executed nothing.
+      "    let wasFiltered r ="
+      "        match r with"
+      "        | TestsPassed -> false"
+      "        | TestsFailed -> false"
+      "        | TestsNoMatch -> true"
       "let allZeroMatchOf (results: Map<string, TestResult>) ="
       "    not results.IsEmpty && results |> Map.forall (fun _ r -> TestResult.isNoMatch r)" ]
 
@@ -1220,7 +1229,14 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
                     "let cacheable (results: Map<string, TestResult>) ="
                     "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
                     "    let allZeroMatchRun = allZeroMatchOf results"
-                    "    allPassed && not allZeroMatchRun" ]
+                    "    allPassed && not allZeroMatchRun"
+                    // The SCOPE fold — `TestResult.ranFullSuite`'s body. Silence here is
+                    // a DECISION, not an oversight, and this line is what pins it: see
+                    // `isPassedPredicate` in ConventionAnalyzers.fs for why the two folds
+                    // are different bugs. If you are widening the rule to cover scope,
+                    // this is the assertion you have to come and delete on purpose.
+                    "let ranFullSuite (results: Map<string, TestResult>) ="
+                    "    results |> Map.forall (fun _ r -> not (TestResult.wasFiltered r))" ]
             )
 
         let findings =
