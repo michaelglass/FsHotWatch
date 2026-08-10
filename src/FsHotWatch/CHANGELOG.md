@@ -50,6 +50,18 @@
   from the code. `FileTaskCache` reconstructs the case from the legacy prefix and strips
   it, so a replayed entry matches what a fresh run produces. The prefix survives only as
   `TestResult.LegacyZeroMatchMarker`, read on that one path and constructed by nothing.
+- feat: **`FSHW-VERDICT-001` — a third repo-local convention rule
+  (`analyzers/FsHotWatch.Rules`), closing the honest limit named two bullets up.** The
+  new case made every `match` decide, but a `forall` over `TestResult.isPassed` still
+  type-checks, is still total, and still folds a run in which every project executed
+  nothing into a green — which is why the two aggregators that were wrong had to be
+  found by hand. The rule names the *fold*: a `Map`/`List`/`Seq`/`Set.forall` whose
+  predicate is `isPassed`, pointing at `verificationOf` → `RunVerification` instead. It
+  stays quiet on the shapes that are correct — filtering *for* the non-green, any
+  per-project use on a single result, and a fold that states the run-level guard beside
+  it (TestPrune's cacheable-green gate, which conjoins its `allPassed` with
+  `not (allZeroMatchOf …)`). Pinned by positive *and* negative controls, like the other
+  two.
 
 - feat: **activity heartbeat.** The daemon rewrites `<repoRoot>/.fshw/heartbeat` —
   Unix epoch seconds, decimal ASCII — every 15s for exactly as long as a run is in
