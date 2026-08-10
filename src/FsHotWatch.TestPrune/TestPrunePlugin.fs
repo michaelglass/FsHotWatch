@@ -3249,30 +3249,52 @@ let create
         // actually happens, and it is the run that discharges the debt. Erring toward
         // running is the only direction `PendingVerification`'s header permits.
         //
-        // Scoped tightly: on a genuine cold start the queue is empty, `symbols` is
-        // empty, and this is already false. The conjunct changes behaviour ONLY when
-        // a rebuilt index meets a non-empty surviving queue. Note it closes AN
-        // unsound case, not the whole class: a symbol unknown to a NON-recreated
-        // index — a stale queue entry naming a deleted or renamed symbol — still
-        // takes the same route. Asking the index directly (is this name known?)
-        // would cover both; `WasRecreated` is a cheap proxy for the common one.
-        // One predicate, split on whether the index can be believed. Spelling the two
-        // conjuncts out twice meant a future change to what "no covering test" means
-        // could land in one and not the other — and the failure mode is a log that
-        // lies: the warning below says "Refusing the zero-test green" while the flag
-        // beneath it does not refuse.
+        // Ask the index the question directly, rather than the proxy this first used.
+        //
+        // The proxy was `db.WasRecreated` — "was the index rebuilt this session?" — and
+        // it was wrong in both directions. Over-inclusive: it stays true for the whole
+        // session, so the shortcut remained disabled long after a re-index had made the
+        // index perfectly able to answer. Under-inclusive, and this is the one that
+        // matters: a symbol unknown to a NOT-recreated index — a stale queue entry
+        // naming a symbol since deleted or renamed — took exactly the vacuous-green
+        // route the recreate case was fixed to close. Same bug, different door.
+        //
+        // What licenses the shortcut is not how the index came to be in this state, but
+        // whether it KNOWS the names being asked about. For a known symbol, an empty
+        // `QueryAffectedTests` is proof: nothing covers it. For an unknown one the same
+        // empty result means "I have never heard of this", which proves nothing and may
+        // be concealing real debt.
+        //
+        // Cost is paid only where it can change the answer: `GetAllSymbolNames` is a
+        // full read of the `symbols` table, so it is behind `noCoveringTest`, which is
+        // already the rare branch (queued symbols AND a zero-length selection). On the
+        // ordinary path — anything affected — the index is never consulted.
+        //
+        // This subsumes the recreate case rather than sitting beside it: a recreated
+        // index is empty, so every queued name is unknown and the shortcut is refused
+        // exactly as before. The symbols are still dropped from the queue above, so a
+        // permanently-absent name cannot wedge it; the run happens once and discharges
+        // the debt.
         let noCoveringTest = not symbols.IsEmpty && List.isEmpty affectedTests
-        let indexCannotVouch = noCoveringTest && db.WasRecreated
+
+        let unknownToIndex =
+            if not noCoveringTest then
+                []
+            else
+                let known = db.GetAllSymbolNames()
+                symbols |> List.filter (fun s -> not (known.Contains s)) |> List.sort
+
+        let indexCannotVouch = noCoveringTest && not (List.isEmpty unknownToIndex)
 
         if indexCannotVouch then
             Logging.warn
                 "test-prune"
-                $"%d{symbols.Length} queued symbol(s) resolved to no covering test, but the symbol index was \
-                  REBUILT this session (schema recreate) — so that is 'the index cannot answer', not proof they \
-                  are untested. Refusing the zero-test green; this run verifies them for real. Seeds: \
-                  %s{describeAll (List.sort symbols)}"
+                $"%d{symbols.Length} queued symbol(s) resolved to no covering test, but %d{unknownToIndex.Length} \
+                  of them are NOT KNOWN to the symbol index — so for those that is 'the index cannot answer', not \
+                  proof they are untested. Refusing the zero-test green; this run verifies them for real. \
+                  Unknown: %s{describeAll unknownToIndex}"
 
-        let allChangesUncovered = noCoveringTest && not db.WasRecreated
+        let allChangesUncovered = noCoveringTest && List.isEmpty unknownToIndex
 
         { flushedState with
             ChangedSymbols = remainingSymbols
