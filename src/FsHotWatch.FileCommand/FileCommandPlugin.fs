@@ -60,13 +60,15 @@ module FullSuiteClaim =
     /// over the accumulator for a partial one). It is NOT re-derived here, because
     /// the event's own field is the contract for the final view.
     let derive (isFinal: bool) (results: Map<string, TestResult>) (ranFullSuite: bool) : FullSuiteClaim =
-        if not (results |> Map.exists (fun _ r -> TestResult.executedTests r)) then
-            // NOTHING EXECUTED. `TestResult.ranFullSuite` is vacuously TRUE for an
-            // empty map ("nothing was filtered"), and TestPrune's two degenerate
-            // lifecycles — the aborted-preflight one and the "0 affected classes"
-            // impact-skip — both hardcode `RanFullSuite = true` alongside
-            // `Results = Map.empty`. That is precisely how a run that verified
-            // nothing would hand a hook a licence to refresh a coverage baseline.
+        if not (TestResult.executedAnything results) then
+            // NOTHING EXECUTED — so no claim about breadth is available, and a hook
+            // must not be handed a licence to refresh a coverage baseline.
+            //
+            // Deriving it here rather than trusting `ranFullSuite` is still load
+            // bearing after AUTOMATION-281 made the producers honest: `false` means
+            // "filtered OR nothing ran" (see `TestRunCompleted.RanFullSuite`), and
+            // `PartialSuite` is a different claim from "unknown". A replayed cache
+            // entry or an external producer can also arrive here.
             BreadthUnknown
         elif not ranFullSuite then
             PartialSuite

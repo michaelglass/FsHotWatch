@@ -384,23 +384,38 @@ module TestResult =
         | TestsErrored _ -> true
         | _ -> false
 
-    /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
-    /// at least one project reported AND no project was run with an impact filter
-    /// (i.e., the entire test suite ran).
+    /// Did this run EXECUTE anything? The run-level half of `executedTests`, and the
+    /// question every "a run that verified nothing must not claim it did" guard in
+    /// the tree is actually asking.
     ///
-    /// The emptiness conjunct is the whole point (AUTOMATION-281). `Map.forall` is
-    /// vacuously TRUE for an empty map, so this used to answer "the full suite ran"
-    /// for a run that ran nothing — and it was documented as a convention
+    /// It lives here, once, because it was independently hand-rolled at two consumers
+    /// in two packages the moment it was needed. Note `RunVerification` does NOT
+    /// answer it: `verificationOf` returns `Ran` for any non-empty map that is not
+    /// all-no-match, so a run of nothing but deferred/errored projects answers `Ran`
+    /// with zero tests executed. Reach for this, not `verifiedNothing`, when the
+    /// question is "did anything run".
+    let executedAnything (results: Map<string, TestResult>) : bool =
+        results |> Map.exists (fun _ r -> executedTests r)
+
+    /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
+    /// something executed AND no project was run with an impact filter (i.e., the
+    /// entire test suite ran).
+    ///
+    /// The `executedAnything` conjunct is the whole point (AUTOMATION-281).
+    /// `Map.forall` is vacuously TRUE for an empty map, so this used to answer "the
+    /// full suite ran" for a run that ran nothing — documented as a convention
     /// ("nothing was filtered"), which is defensible in isolation and wrong in
     /// effect: consumers gate baseline refreshes and ratchet tightening on this
     /// value, and a run that executed nothing must not be able to authorise either.
     ///
-    /// Note this is the ONLY hole the conjunct closes. A NON-empty run in which
-    /// every project failed to execute already answers `false`, because
+    /// `executedAnything` rather than `not results.IsEmpty` so that all three sites
+    /// asking this question spell it the same way. The two are equivalent *here* —
+    /// a non-empty run in which nothing executed already answers `false`, because
     /// `wasFiltered` deliberately reports `true` for no-match, deferred and errored
-    /// projects — see its comment. Emptiness was the one case left over.
+    /// projects — but only one of them is the question being asked.
     let ranFullSuite (results: Map<string, TestResult>) : bool =
-        not results.IsEmpty && results |> Map.forall (fun _ r -> not (wasFiltered r))
+        executedAnything results
+        && results |> Map.forall (fun _ r -> not (wasFiltered r))
 
 /// Aggregate test results snapshot. Used as a plain value type by TestPrune's
 /// internals and afterRun hooks — NOT dispatched as an event. Subscribers
@@ -422,7 +437,15 @@ type RunVerification =
     | NoProjectsSelected
     /// Projects ran; every one matched zero tests under the active filter.
     | AllZeroMatch of projectCount: int
-    /// At least one project executed at least one test.
+    /// At least one project reported something other than a zero match.
+    ///
+    /// NOT the same as "a test executed", though it read that way until
+    /// AUTOMATION-281: `verificationOf` returns this for any non-empty map that is
+    /// not all-no-match, so a run of nothing but deferred or errored projects lands
+    /// here having executed nothing. `verifiedNothing` is therefore `false` for such
+    /// a run. If your question is "did anything actually run", ask
+    /// `TestResult.executedAnything` — two consumers hand-rolled that predicate
+    /// rather than use this one, which is what surfaced the distinction.
     | Ran
 
 [<RequireQualifiedAccess>]
@@ -488,11 +511,16 @@ type TestRunCompleted =
         /// for this RunId; materialized here so late subscribers can skip
         /// progress events entirely.
         Results: Map<string, TestResult>
-        /// True iff every project in this run executed without an impact filter
-        /// (i.e., the entire test suite ran). False if at least one project was
-        /// filtered to a subset. Consumers gate baseline refreshes/threshold
-        /// tightening on this — partial runs should not lower a coverage
-        /// baseline or tighten a ratchet.
+        /// True iff something executed AND no project ran under an impact filter
+        /// (i.e., the entire test suite ran). Consumers gate baseline
+        /// refreshes/threshold tightening on this — partial runs should not lower a
+        /// coverage baseline or tighten a ratchet.
+        ///
+        /// `false` is two situations, not one: at least one project was filtered to
+        /// a subset, OR the run executed nothing at all (AUTOMATION-281 — before it,
+        /// the latter said `true`). A `bool` has no third inhabitant, so a consumer
+        /// that needs to tell those apart must ask `TestResult.executedAnything`
+        /// about `Results`; `false` alone does not mean "filtered".
         RanFullSuite: bool
     }
 

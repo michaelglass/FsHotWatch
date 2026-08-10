@@ -133,23 +133,19 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
             | TestRunCompleted trc ->
                 match trc.Outcome with
                 | Aborted _ -> async { return state }
-                | Normal when not (trc.Results |> Map.exists (fun _ r -> TestResult.executedTests r)) ->
+                | Normal when not (TestResult.executedAnything trc.Results) ->
                     // A run that executed no test produced no coverage, so there is
                     // nothing here to judge and no honest verdict to reach
-                    // (AUTOMATION-280).
+                    // (AUTOMATION-280). Declining is the same move `Aborted` above
+                    // already makes, for the same reason.
                     //
-                    // Without this the decision below runs on `trc.RanFullSuite`,
-                    // which is vacuously TRUE for an empty result map — the "0
-                    // affected classes" impact-skip emits exactly that shape. So a
-                    // run that ran nothing would pick between gating a shortfall and
-                    // downgrading it, and BOTH answers are wrong: `true` gates on
-                    // coverage this run did not produce, `false` quietly turns a real
-                    // shortfall into a non-gating notice. Declining is the same move
-                    // `Aborted` above already makes, for the same reason.
-                    //
-                    // Asks `executedTests`, not `Results.IsEmpty`: a run whose every
-                    // project deferred or errored is non-empty and still verified
-                    // nothing.
+                    // Still needed even though TestPrune's own degenerate lifecycles
+                    // now emit `RanFullSuite = false`: `false` means "filtered OR
+                    // nothing ran" (see the field's doc), and `gateVerdict` reads it
+                    // as "filtered" and downgrades a real shortfall to a non-gating
+                    // notice. A non-empty run in which every project deferred or
+                    // errored, a replayed cache entry, and any external producer all
+                    // still arrive here.
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
                 | Normal ->

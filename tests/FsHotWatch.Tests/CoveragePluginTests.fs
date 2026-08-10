@@ -42,11 +42,10 @@ let private thresholdsJsonWithOverride (fileName: string) (line: int) (branch: i
 
 /// A run that actually EXECUTED a test, unfiltered.
 ///
-/// This carried `Results = Map.empty` until AUTOMATION-280 — a shape no real run
-/// produces alongside `RanFullSuite = true` except the degenerate lifecycles, and
-/// one the plugin now declines to judge. Every driver below wants the ordinary
-/// case, so the ordinary case is what it emits; the degenerate shape has its own
-/// helper and its own test.
+/// This carried `Results = Map.empty` until AUTOMATION-280 — a shape the plugin
+/// now declines to judge, so it exercised the skip path rather than the check.
+/// Every driver below wants the ordinary case, so the ordinary case is what it
+/// emits; the degenerate shape has its own helper and its own test.
 let private emitRunCompleted (host: PluginHost) =
     host.EmitTestRunCompleted
         { RunId = Guid.NewGuid()
@@ -55,10 +54,12 @@ let private emitRunCompleted (host: PluginHost) =
           Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
           RanFullSuite = true }
 
-/// The degenerate lifecycle: nothing executed, yet the run claims full-suite
-/// scope. `abortedRunLifecycle` and the "0 affected classes" impact-skip both
-/// emit exactly this (empty results); `RanFullSuite = true` is what the field
-/// used to say for them.
+/// Nothing executed, yet the run claims full-suite scope.
+///
+/// `RanFullSuite = true` is the HARSHER input, deliberately: TestPrune's own
+/// degenerate lifecycles say `false` since AUTOMATION-281, but a replayed cache
+/// entry or an external producer can still say `true`, and that is the case the
+/// guard has to survive.
 let private emitRunThatExecutedNothing (host: PluginHost) =
     host.EmitTestRunCompleted
         { RunId = Guid.NewGuid()
@@ -257,7 +258,12 @@ let ``a run that executed NOTHING reaches no coverage verdict — its full-suite
             | _ -> false
 
         emitRunThatExecutedNothing host
-        waitUntil isFailed 2000
+        // Quiescence, not a fixed wait. `waitUntil isFailed 2000` burns the FULL 2s
+        // every run — the condition it polls for never becomes true, which is the
+        // whole point — and proves only that 2s elapsed. This returns the instant
+        // the plugin has drained the event, and proves the stronger thing: the
+        // plugin CONSUMED the run and still reached no gating verdict.
+        waitForQuiescent host 5000
         test <@ not (isFailed ()) @>
 
         // POSITIVE CONTROL, and the reason the assertion above means anything: the

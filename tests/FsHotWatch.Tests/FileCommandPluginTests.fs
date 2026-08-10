@@ -804,59 +804,17 @@ let private writeEnvProbeScript (dir: string) (outFile: string) =
 
     scriptPath
 
-let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
-
-    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
-    let outFile = System.IO.Path.Combine(tmpDir, "out")
-
-    try
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-
-        let trigger =
-            { FilePattern = None
-              AfterTests = Some AnyTest }
-
-        let script = writeEnvProbeScript tmpDir outFile
-
-        let handler =
-            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None
-
-        host.RegisterHandler(handler)
-
-        emitRunCompletedWithRanFullSuite
-            host
-            [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ]
-            ranFullSuite
-
-        waitUntil
-            (fun () ->
-                match host.GetStatus(pluginName) with
-                | Some(Completed _) -> true
-                | _ -> false)
-            8000
-
-        test <@ System.IO.File.Exists(outFile) @>
-        System.IO.File.ReadAllText(outFile)
-    finally
-        try
-            System.IO.Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
-
-[<Fact(Timeout = 20000)>]
-let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
-    let contents = runEnvProbe "env-full" true
-    test <@ contents = "true" @>
-
-[<Fact(Timeout = 20000)>]
-let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
-    let contents = runEnvProbe "env-partial" false
-    test <@ contents = "false" @>
+/// The `afterTests: true` trigger — no file pattern, fire after any test run.
+let private anyTestTrigger: CommandTrigger =
+    { FilePattern = None
+      AfterTests = Some AnyTest }
 
 /// Run the env probe against an arbitrary driver that feeds the host events.
 /// Returns the value the child process observed in `FSHW_RAN_FULL_SUITE`.
+///
+/// The ONE env-probe harness: the temp-dir lifecycle, the 8000ms status budget and
+/// the swallowed cleanup live here only. `runEnvProbe` below is this function with
+/// the two things it fixes — trigger and driver — supplied.
 let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (drive: PluginHost -> unit) : string =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -888,6 +846,25 @@ let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (driv
             System.IO.Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+/// A complete run of one project, `afterTests: true`. The project is filtered iff
+/// the run is not a full suite, so the results agree with the claim.
+let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
+    runEnvProbeWith pluginName anyTestTrigger (fun host ->
+        emitRunCompletedWithRanFullSuite
+            host
+            [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ]
+            ranFullSuite)
+
+[<Fact(Timeout = 20000)>]
+let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
+    let contents = runEnvProbe "env-full" true
+    test <@ contents = "true" @>
+
+[<Fact(Timeout = 20000)>]
+let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
+    let contents = runEnvProbe "env-partial" false
+    test <@ contents = "false" @>
 
 // REGRESSION (hook-scope): the mid-run fire derived its full-suite claim from
 // the ACCUMULATOR — a strict PREFIX of the run. A run whose projects are split
@@ -937,7 +914,13 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
 
     host.RegisterHandler(handler)
 
-    // The impact-skip lifecycle, verbatim: Normal, no results, vacuously full.
+    // The impact-skip lifecycle: Normal, no results.
+    //
+    // `RanFullSuite = true` is the HARSHER input, deliberately — it is what these
+    // lifecycles emitted before AUTOMATION-281 made them say `false`. Keeping the
+    // old value here means the guard is tested against the worst thing that can
+    // arrive (a replayed cache entry or an external producer can still say `true`),
+    // rather than only against today's honest producer.
     host.EmitTestRunCompleted
         { RunId = System.Guid.NewGuid()
           TotalElapsed = System.TimeSpan.Zero
@@ -953,7 +936,9 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
           Results = Map.empty
           RanFullSuite = true }
 
-    System.Threading.Thread.Sleep(600)
+    // Quiescence rather than a fixed 600ms: returns as soon as both events are
+    // drained, and actually proves they were — a sleep proves only that time passed.
+    waitForQuiescent host 5000
     test <@ host.GetStatus("env-empty-run") = Some Idle @>
 
 // --- FullSuiteClaim: the whole truth table, in one place ---

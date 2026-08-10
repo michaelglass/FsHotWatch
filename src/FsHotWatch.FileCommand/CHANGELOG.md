@@ -20,9 +20,8 @@
   A prefix can prove PARTIAL (a filtered project stays filtered) but can never
   prove FULL, and a run that executed nothing proves neither — `"unknown"` is
   now reported in both cases rather than picking a lie. Empty-result runs (the
-  "0 affected classes" impact-skip and the aborted-preflight lifecycle) carry
-  `RanFullSuite = true` vacuously; they still fire no `afterTests` command at
-  all, and a test now pins that.
+  "0 affected classes" impact-skip and the aborted-preflight lifecycle) fire no
+  `afterTests` command at all, and a test now pins that.
 
   **Migration:** gate on `[ "$FSHW_RAN_FULL_SUITE" = "true" ]` — that idiom is
   unaffected and gets strictly safer. Hooks that branch on `= "false"`, or treat

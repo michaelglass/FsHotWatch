@@ -129,32 +129,40 @@ module Detect =
     /// function and is NOT this rule's business: negating the predicate to select
     /// the non-green is the correct, common use.
     ///
-    /// The SCOPE fold — `Map.forall (fun _ r -> not (wasFiltered r))`, i.e.
-    /// `TestResult.ranFullSuite` — is likewise uncovered, and asked for on the
-    /// grounds that it too is vacuously true for an empty map. Measured and
-    /// declined, because the two folds are not the same bug:
+    /// The SCOPE fold — a bare `Map.forall (fun _ r -> not (wasFiltered r))` — is
+    /// likewise uncovered, and asked for on the grounds that it too is vacuously
+    /// true for an empty map. Measured and declined, because the two folds are not
+    /// the same bug:
     ///
     ///   * `isPassed` is wrong on a NON-empty map — three zero-match projects fold
     ///     to green — and no guard beside the fold can see that, because the
     ///     predicate itself is the lie. Naming the fold is the only place left.
     ///   * a scope fold is RIGHT on every non-empty map: `wasFiltered` returns true
     ///     for NoMatch/Deferred/Errored precisely so that it is. It is wrong only on
-    ///     the empty map — `forall`'s vacuity, which every fold in this tree shares
-    ///     and which is discharged where it arises, by an explicit emptiness conjunct
-    ///     beside the use (`isAllTerminal`, `allPluginsAtRest`, `allZeroMatchOf`, the
-    ///     ledger discharge's `not (Set.isEmpty runnableProjects)`).
+    ///     the empty map — `forall`'s vacuity, shared by every fold in this tree.
     ///
-    /// And the rule would have nothing to point at. `isPassed`'s diagnostic names
-    /// `verificationOf`, which answers the run-level question totally (`IsEmpty` →
-    /// `NoProjectsSelected` first). Scope has no such answer: the alternative to a
-    /// hand-rolled scope fold is `ranFullSuite`, whose body IS that fold and whose
-    /// empty-map `true` is a pinned, tested contract. A rule that flagged the fold
-    /// and recommended a function returning the identical value is DRY advice
-    /// wearing a false-green warning's clothes — and gets suppressed, taking
-    /// FSHW-VERDICT-001 with it. Pinned by the negative control in
-    /// IntegrationTests.fs.
+    /// REVISED (AUTOMATION-281). Two legs of the original argument have since been
+    /// falsified by the code they described, so they are struck rather than left to
+    /// mislead:
     ///
-    /// Revisit only if scope gains a `RunVerification`-shaped total answer that
+    ///   * It said the vacuity is "discharged where it arises, beside the use". For
+    ///     THIS fold it no longer is — the discharge moved inside
+    ///     `TestResult.ranFullSuite`.
+    ///   * It said the rule would have nothing to point at, because `ranFullSuite`'s
+    ///     body IS the bare fold and its empty-map `true` a pinned contract, so
+    ///     recommending it would be DRY advice wearing a false-green warning's
+    ///     clothes. `ranFullSuite` is now `executedAnything results && Map.forall …`
+    ///     and its empty map is pinned `false`. It is therefore strictly SAFER than
+    ///     a hand-rolled fold, and naming it would be real advice.
+    ///
+    /// The decision not to widen still stands, on the leg that survives: the only
+    /// scope fold in the tree is `ranFullSuite`'s own definition, so a naive rule
+    /// flags exactly the one sanctioned site and an allowlisted rule flags nothing.
+    /// Zero true positives, present or plausible — that is the whole case now.
+    /// Reopen it on evidence (a second hand-rolled scope fold appearing), not on the
+    /// struck reasoning above.
+    ///
+    /// Revisit sooner if scope gains a `RunVerification`-shaped total answer that
     /// distinguishes "nothing ran" from "everything ran unfiltered". Then there is
     /// something to point at, and widening becomes worth its false-positive budget.
     let rec private isPassedPredicate (e: SynExpr) : bool =

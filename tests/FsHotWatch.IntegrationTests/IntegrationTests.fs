@@ -1230,11 +1230,18 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
                     "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
                     "    let allZeroMatchRun = allZeroMatchOf results"
                     "    allPassed && not allZeroMatchRun"
-                    // The SCOPE fold — `TestResult.ranFullSuite`'s body. Silence here is
-                    // a DECISION, not an oversight, and this line is what pins it: see
-                    // `isPassedPredicate` in ConventionAnalyzers.fs for why the two folds
-                    // are different bugs. If you are widening the rule to cover scope,
-                    // this is the assertion you have to come and delete on purpose.
+                    // A bare SCOPE fold. Silence here is a DECISION, not an oversight,
+                    // and this line is what pins it: see `isPassedPredicate` in
+                    // ConventionAnalyzers.fs for why the two folds are different bugs.
+                    // If you are widening the rule to cover scope, this is the
+                    // assertion you have to come and delete on purpose.
+                    //
+                    // NOT `TestResult.ranFullSuite`'s body, though it was when this
+                    // control was written — AUTOMATION-281 made the real one
+                    // `executedAnything results && Map.forall …`. Deliberately kept as
+                    // the BARE fold: that is the expression a widened rule would flag,
+                    // so it is the one worth pinning. Naming it `ranFullSuite` here is
+                    // just fixture shadowing, not a copy of core.
                     "let ranFullSuite (results: Map<string, TestResult>) ="
                     "    results |> Map.forall (fun _ r -> not (TestResult.wasFiltered r))" ]
             )

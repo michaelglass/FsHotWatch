@@ -3627,28 +3627,11 @@ let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () 
 
     Assert.True evt.RanFullSuite
 
-[<Fact>]
-let ``ranFullSuite is FALSE for empty results — nothing ran, so nothing was proved`` () =
-    // Reversed deliberately (AUTOMATION-281). See the twin in EventTests.
-    test <@ not (TestResult.ranFullSuite Map.empty) @>
-
-[<Fact>]
-let ``ranFullSuite is true when no project was filtered`` () =
-    let results =
-        Map.ofList
-            [ "A", TestsPassed("", false, TimeSpan.Zero)
-              "B", TestsFailed("", false, TimeSpan.Zero) ]
-
-    test <@ TestResult.ranFullSuite results @>
-
-[<Fact>]
-let ``ranFullSuite is false when at least one project was filtered`` () =
-    let results =
-        Map.ofList
-            [ "A", TestsPassed("", false, TimeSpan.Zero)
-              "B", TestsPassed("", true, TimeSpan.Zero) ]
-
-    test <@ not (TestResult.ranFullSuite results) @>
+// `TestResult.ranFullSuite`'s unit tests are NOT here. It is core (`Events.fs`)
+// and `EventTests.fs` is its home, covering the empty map, the all-unfiltered and
+// any-filtered cases, deferred-counts-as-filtered, and the positive control that
+// a real unfiltered run still answers true. Three of those lived here as well
+// until AUTOMATION-281 had to apply the same reversal in both files.
 
 [<Fact(Timeout = 15000)>]
 let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
