@@ -207,15 +207,78 @@ type Cache() =
     let directReferences (projectFile: string) : Result<string list, string> =
         try
             let projDir = Path.GetDirectoryName projectFile
+            let doc = XDocument.Load(projectFile)
+
+            // An `Include` may be COMPUTED — `Include="$(SomeProject)"`, with the
+            // property declared in this same file. Read textually that is a search for
+            // a file literally named `$(SomeProject)`, which never exists, so the gate
+            // answered `InputsUndeterminable` and deferred every run on a tree that was
+            // perfectly fresh. Hit against TestPrune, whose test project computes its
+            // optional Falco.UnionRoutes reference exactly this way.
+            //
+            // Deliberately a SMALL expansion, not an MSBuild evaluation: the properties
+            // this file declares, plus the two well-known directory properties. That
+            // covers a reference computed from the project's own `PropertyGroup`, which
+            // is the shape that occurs in practice. Anything it cannot expand stays
+            // unexpanded, so the path does not exist and the fail-closed arm below still
+            // runs — the worst case is exactly the behaviour we had before, never a
+            // false "fresh".
+            let properties =
+                let declared =
+                    doc.Descendants()
+                    |> Seq.filter (fun el -> not (isNull el.Parent) && el.Parent.Name.LocalName = "PropertyGroup")
+                    |> Seq.map (fun el -> el.Name.LocalName, el.Value)
+                    |> List.ofSeq
+
+                // Well-known ones LAST, so a project cannot redefine them out from under us.
+                declared
+                @ [ "MSBuildThisFileDirectory", projDir + string Path.DirectorySeparatorChar
+                    "MSBuildProjectDirectory", projDir ]
+                |> Map.ofList
+
+            let rec expand depth (s: string) =
+                // Bounded: a property defined in terms of itself must not spin.
+                if depth > 10 || not (s.Contains "$(") then
+                    s
+                else
+                    let replaced =
+                        Text.RegularExpressions.Regex.Replace(
+                            s,
+                            @"\$\(([A-Za-z_][A-Za-z0-9_]*)\)",
+                            (fun m ->
+                                match properties.TryFind m.Groups[1].Value with
+                                | Some v -> v
+                                | None -> m.Value)
+                        )
+
+                    if replaced = s then s else expand (depth + 1) replaced
 
             let resolve (el: XElement) =
                 match el.Attribute(XName.Get "Include") |> Option.ofObj with
                 | None -> Error $"%s{projectFile} has a <ProjectReference> with no Include"
                 | Some attr ->
-                    let path = Path.GetFullPath(Path.Combine(projDir, attr.Value.Replace('\\', '/')))
+                    let path =
+                        Path.GetFullPath(Path.Combine(projDir, expand 0 (attr.Value.Replace('\\', '/'))))
 
                     if File.Exists path then
-                        Ok path
+                        Ok(Some path)
+                    elif not (isNull (el.Attribute(XName.Get "Condition"))) then
+                        // OPTIONAL BY CONSTRUCTION. The project itself guards this
+                        // reference with a `Condition`, which is how an optional sibling
+                        // checkout is expressed — TestPrune's Falco reference is
+                        // `Condition="'$(FalcoUnionRoutesAvailable)' == 'true'"` and its
+                        // absence is a supported, documented state. We do not evaluate
+                        // MSBuild conditions, so on a machine without that sibling the
+                        // alternative is deferring every run forever over a reference the
+                        // build correctly ignores.
+                        //
+                        // The trade, stated plainly: a REQUIRED reference wrongly carrying
+                        // an always-true `Condition` is now skipped rather than refused.
+                        // Narrower than it looks — the build runs before this gate and
+                        // fails loudly on a missing reference, which is the very deferral
+                        // this module says it wants ("let the BUILD report the real
+                        // error"). An UNCONDITIONAL missing reference is still an error.
+                        Ok None
                     else
                         Error $"%s{projectFile} references %s{path}, which does not exist"
 
@@ -229,9 +292,10 @@ type Cache() =
                 | el :: rest ->
                     match resolve el with
                     | Error e -> Error e
-                    | Ok path -> resolveAll (path :: acc) rest
+                    | Ok(Some path) -> resolveAll (path :: acc) rest
+                    | Ok None -> resolveAll acc rest
 
-            XDocument.Load(projectFile).Descendants()
+            doc.Descendants()
             |> Seq.filter (fun el -> el.Name.LocalName = "ProjectReference")
             |> List.ofSeq
             |> resolveAll []

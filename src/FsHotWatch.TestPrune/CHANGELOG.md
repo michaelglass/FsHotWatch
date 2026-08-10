@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- fix: **a `ProjectReference` whose `Include` is an MSBuild property no longer defers
+  every test run.** The artifact-freshness gate resolved an `Include` by joining it onto
+  the project directory with no property expansion, so a computed reference —
+  `<ProjectReference Include="$(SomeProject)" />` — became a search for a file literally
+  named `$(SomeProject)`. That never exists, so the gate answered "cannot determine what
+  this test run's inputs are" and deferred the run as *waiting on build*, permanently, on
+  a tree that was perfectly fresh. Found against TestPrune, whose test project computes an
+  optional sibling reference exactly this way: `dotnet fshw check` exited **2** with scope
+  `none` and no test ever ran.
+
+  The gate now expands properties declared in the project's own `PropertyGroup`s, plus
+  `MSBuildThisFileDirectory` and `MSBuildProjectDirectory`. Deliberately *not* an MSBuild
+  evaluation — anything it cannot expand stays unexpanded, the path still does not exist,
+  and the existing fail-closed arm still refuses. The worst case is exactly the old
+  behaviour, never a false "fresh".
+
+  Also: **a reference the project guards with a `Condition` is treated as optional** when
+  it resolves to a missing file, rather than as an undeterminable input. That is how an
+  optional sibling checkout is expressed, and without it a machine that has not cloned the
+  sibling defers every run over a reference the build correctly ignores. The trade, stated
+  plainly: a *required* reference wrongly carrying an always-true `Condition` is now
+  skipped rather than refused — narrower than it sounds, since the build runs before this
+  gate and fails loudly on a genuinely missing reference, which is the deferral this gate
+  says it wants. An **unconditional** missing reference is still an error.
 - feat!: **the public `ZeroMatchMarker` literal is removed.** It was the magic output
   prefix a zero-match result used to be tagged with, before "the filter matched no test"
   became a `TestResult` case. Nothing constructed a value carrying it any more, and its

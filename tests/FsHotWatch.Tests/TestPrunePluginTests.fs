@@ -9221,3 +9221,143 @@ let ``verificationOf tells an EMPTY run apart from one that matched nothing — 
 // pinned in EventTests.fs, which since AUTOMATION-282 covers every case plus the
 // token round-trip and the refusal of the retired bare "ran". They were duplicated
 // here, and this file had to be edited in lockstep with that one for each change.
+
+// ── ProjectReference Include with an MSBuild property ────────────────────────
+//
+// `directReferences` resolved an `Include` by string-concatenating it onto the
+// project directory, with no MSBuild property expansion. A computed reference —
+//
+//   <FalcoUnionRoutesProject>$(MSBuildThisFileDirectory)../../Other/Other.fsproj</…>
+//   <ProjectReference Include="$(FalcoUnionRoutesProject)" Condition="…" />
+//
+// — therefore became a search for a file literally named `$(FalcoUnionRoutesProject)`,
+// which of course does not exist. The gate then answered `InputsUndeterminable` and
+// the whole test run was deferred as "waiting on build", forever, on a tree that was
+// perfectly fresh. Observed against TestPrune, whose test project computes its
+// optional Falco.UnionRoutes reference exactly this way.
+//
+// The fail-CLOSED behaviour is not the bug and must survive: an `Include` that
+// genuinely cannot be resolved still has to be an error, or this fix reintroduces
+// the fail-open hole the module exists to close. Both directions are asserted.
+
+let private writeProj (path: string) (contents: string) =
+    Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
+    File.WriteAllText(path, contents)
+
+[<Fact(Timeout = 15000)>]
+let ``ProjectReference Include is resolved through MSBuild properties`` () =
+    withTempDir "af-msbuild-prop" (fun tmpDir ->
+        let other = Path.Combine(tmpDir, "Other", "Other.fsproj")
+        writeProj other "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"
+
+        // The shape that broke: the Include is a property, defined in this same file
+        // in terms of another well-known MSBuild property.
+        let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
+
+        writeProj
+            main
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \  <PropertyGroup>\n\
+             \    <OtherProject>$(MSBuildThisFileDirectory)../Other/Other.fsproj</OtherProject>\n\
+             \  </PropertyGroup>\n\
+             \  <ItemGroup>\n\
+             \    <ProjectReference Include=\"$(OtherProject)\" />\n\
+             \  </ItemGroup>\n\
+             </Project>"
+
+        match ArtifactFreshness.Cache().Closure main with
+        | Ok refs ->
+            // Resolved to the real file, not to a literal `$(OtherProject)`.
+            test <@ refs |> List.exists (fun r -> Path.GetFileName r = "Other.fsproj") @>
+        | Error e -> Assert.Fail($"a property-computed ProjectReference must resolve, got: %s{e}"))
+
+[<Fact(Timeout = 15000)>]
+let ``an unresolvable ProjectReference still fails closed`` () =
+    // The positive control for the test above. If expansion made every reference
+    // resolvable, the gate would answer "fresh" for a project whose inputs it cannot
+    // actually determine — the exact fail-open this module was written to prevent.
+    withTempDir "af-msbuild-missing" (fun tmpDir ->
+        let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
+
+        writeProj
+            main
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \  <ItemGroup>\n\
+             \    <ProjectReference Include=\"../Nope/Nope.fsproj\" />\n\
+             \  </ItemGroup>\n\
+             </Project>"
+
+        match ArtifactFreshness.Cache().Closure main with
+        | Ok refs -> Assert.Fail($"a missing ProjectReference must NOT resolve, got: %A{refs}")
+        | Error _ -> ())
+
+[<Fact(Timeout = 15000)>]
+let ``a CONDITIONAL ProjectReference to a missing project is optional, not undeterminable`` () =
+    // The arm carrying this fix's one trade-off, so it gets its own test rather than
+    // riding on the others. A project guards an optional sibling checkout with a
+    // Condition; on a machine that has not cloned it the file is absent. Deferring the
+    // whole run over a reference the build correctly ignores is what we are fixing.
+    withTempDir "af-cond-missing" (fun tmpDir ->
+        let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
+
+        writeProj
+            main
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \  <PropertyGroup>\n\
+             \    <Optional>$(MSBuildThisFileDirectory)../Absent/Absent.fsproj</Optional>\n\
+             \    <HaveIt Condition=\"Exists('$(Optional)')\">true</HaveIt>\n\
+             \  </PropertyGroup>\n\
+             \  <ItemGroup>\n\
+             \    <ProjectReference Include=\"$(Optional)\" Condition=\"'$(HaveIt)' == 'true'\" />\n\
+             \  </ItemGroup>\n\
+             </Project>"
+
+        match ArtifactFreshness.Cache().Closure main with
+        | Ok refs ->
+            // Skipped, not resolved — and emphatically not a phantom entry.
+            test <@ refs |> List.forall (fun r -> Path.GetFileName r <> "Absent.fsproj") @>
+        | Error e -> Assert.Fail($"a conditional reference to an absent project must not be an error, got: %s{e}"))
+
+[<Fact(Timeout = 15000)>]
+let ``an UNCONDITIONAL reference to an unexpandable property still fails closed`` () =
+    // The other side of the same coin. Nothing defines `$(Nope)`, so it stays
+    // unexpanded and the path cannot exist — and with no Condition to mark it optional
+    // the gate must still refuse. If expansion ever made this resolvable, the module's
+    // whole fail-closed contract would be gone.
+    withTempDir "af-unexpandable" (fun tmpDir ->
+        let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
+
+        writeProj
+            main
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \  <ItemGroup>\n\
+             \    <ProjectReference Include=\"$(Nope)\" />\n\
+             \  </ItemGroup>\n\
+             </Project>"
+
+        match ArtifactFreshness.Cache().Closure main with
+        | Ok refs -> Assert.Fail($"an unexpandable unconditional reference must fail closed, got: %A{refs}")
+        | Error _ -> ())
+
+[<Fact(Timeout = 15000)>]
+let ``a self-referential property does not spin`` () =
+    // The expansion loop is bounded. A property defined in terms of itself would
+    // otherwise never reach a fixed point; the bound turns it into an ordinary
+    // unresolvable path, which then fails closed like any other.
+    withTempDir "af-self-ref" (fun tmpDir ->
+        let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
+
+        writeProj
+            main
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \  <PropertyGroup>\n\
+             \    <Loop>$(Loop)/x.fsproj</Loop>\n\
+             \  </PropertyGroup>\n\
+             \  <ItemGroup>\n\
+             \    <ProjectReference Include=\"$(Loop)\" />\n\
+             \  </ItemGroup>\n\
+             </Project>"
+
+        match ArtifactFreshness.Cache().Closure main with
+        | Ok refs -> Assert.Fail($"a self-referential property must not resolve, got: %A{refs}")
+        | Error _ -> ())
