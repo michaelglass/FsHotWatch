@@ -10,7 +10,7 @@
       "rollForward": false
     },
     "dotnet-fsharplint": {
-      "version": "0.26.11--date20260212-1023.git-8e20e0b",
+      "version": "0.27.0",
       "commands": [
         "dotnet-fsharplint"
       ],
