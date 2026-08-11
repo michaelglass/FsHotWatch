@@ -513,6 +513,37 @@ every consumer, including any that *do* select the MessagePack formatter that
 StreamJsonRpc 2.x was not built against. Tracking the line StreamJsonRpc targets is
 both safer downstream and two fewer pins to carry.
 
+### deps: a sweep of the rest, and two more pins retired
+
+Surveyed every direct dependency with `dotnet list package --outdated`, once on
+stable and once `--include-prerelease`. Almost everything is already current; what
+came back as "behind" was mostly next-major pre-release lines this repo has no
+business tracking — `FSharp.Core` 11.0.101-preview, `Microsoft.Data.Sqlite` /
+`Microsoft.SourceLink.GitHub` / `System.Security.Cryptography.Xml` 11.0.0-preview
+(all .NET 11 previews against a `net10.0` target), `xunit.v3` 4.0.0-pre,
+`Fantomas.Core` 8.0.0-alpha — plus `dotnet-fsharplint` 0.27.1--date20260810, a
+nightly rather than a release. `FSharp.Core` and `FSharp.Compiler.Service` float
+(`10.1.*`, `43.*`) and are already at the newest in-range build. All seven pinned
+`dotnet-tools.json` tools are at their latest published versions, so the manifest is
+unchanged.
+
+Two real changes fell out:
+
+- **`FSharpLintAnalyzerShim` 0.3.0-alpha.6 → 0.3.0-alpha.7** in
+  `tools/fsharplint-shim`. The `.fshw.json` analyzer path is version-independent
+  (`bin/Debug/net10.0/`), so nothing else moves with it.
+- **Both `SQLitePCLRaw.lib.e_sqlite3` pins removed** — from `FsHotWatch.Cli` and
+  `FsHotWatch.TestPrune`. Same story as MessagePack, one layer over: the pin existed
+  to clear GHSA-2m69-gcr7-jv3q (High) out of the transitive 2.1.11, and
+  `TestPrune.Core` 6.1.2 now declares `SQLitePCLRaw.lib.e_sqlite3 3.50.3` itself. A
+  forced `--no-cache` restore confirms 3.50.3 resolves with both pins gone. The
+  first restore after removing them *appeared* to confirm it too, from a stale
+  assets file — the answer only counts because the forced one agrees.
+
+`SQLitePCLRaw.lib.e_sqlite3` 3.53.3 exists and is newer than the 3.50.3 we land on.
+Taking it here would mean re-adding exactly the pin just removed, so it belongs in
+`TestPrune.Core` — the package that owns the constraint — and is left for that repo.
+
 ## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-24)
 
 _These narratives are all shipped. This root file is a human-readable summary that fell
