@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.2 - 2026-08-11
+
 - feat!: **Your `.test-prune.db` is rebuilt on first run (SchemaVersion 8→9).** The index now rejects unqualified symbol names at the database
   level, which SQLite can only add by rebuilding the table. The old cache file is
   deleted and recreated automatically — nothing you need to do, but the first

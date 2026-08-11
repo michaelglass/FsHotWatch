@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.1.2 - 2026-08-11
+
 - feat!: **SchemaVersion 8→9 — an unqualified `full_name` is now a hard DB error.**
   The `symbols` table gains
   `CHECK (kind = 'Module' OR full_name LIKE '%.%')`. An unqualified name is never a
