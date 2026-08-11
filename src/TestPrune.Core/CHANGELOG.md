@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- chore(deps): **`SQLitePCLRaw.lib.e_sqlite3` 3.50.3 → 3.53.3.** The pin exists because
+  the SQLitePCLRaw bundle pulls native `lib.e_sqlite3` 2.1.11, flagged High by
+  GHSA-2m69-gcr7-jv3q; the native binary re-versions onto SQLite's own line
+  independently of the 2.1.x managed core/provider/bundle and carries no managed
+  dependencies, so pinning it forward stays clean.
+
+  This is the right home for the pin, and now the only one. Because
+  `CentralPackageTransitivePinningEnabled` is on, the `PackageVersion` entry becomes a
+  real dependency of the published package — verified against the packed nuspec, which
+  declares `SQLitePCLRaw.lib.e_sqlite3 3.53.3`. Consumers therefore inherit the floor
+  and need no pin of their own; FsHotWatch carried two duplicates of this constraint
+  until 2026-08-11 and has now dropped both.
+
 ## 6.1.2 - 2026-08-11
 
 - feat!: **SchemaVersion 8→9 — an unqualified `full_name` is now a hard DB error.**
