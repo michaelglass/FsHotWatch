@@ -94,16 +94,7 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.26" />
-    <PackageReference Include="StreamJsonRpc" Version="2.24.92" />
-    <!-- Direct ref lifts StreamJsonRpc's transitive MessagePack above GHSA-hv8m-jj95-wg3x
-         (LZ4 decompression AccessViolation, patched in 2.5.301). Now on the 3.x line,
-         comfortably above that fix, so the reason for the pin still holds.
-         StreamJsonRpc 2.24.92 asks for `[2.5.198, )` — an OPEN upper bound, so nothing
-         constrained us to 2.x; the previous "on the 2.x line" wording described where we
-         happened to be, not a ceiling. 3.0 was a breaking rewrite, so this is verified
-         rather than assumed: the 43 IPC tests here include real client/server RunCommand
-         round-trips that exercise StreamJsonRpc's serialization at runtime, and pass. -->
-    <PackageReference Include="MessagePack" Version="3.1.8" />
+    <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.*" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />

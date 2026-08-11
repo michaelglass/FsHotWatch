@@ -486,6 +486,33 @@ reporting nothing, which is the same failure this release is otherwise about.
 `TreatWarningsAsErrors`, so a new DU case breaks the examples loudly instead of
 quietly leaving them teaching a stale API.
 
+### deps: `StreamJsonRpc` 2.25.29 retires both MessagePack pins
+
+Two pins existed to hold StreamJsonRpc's transitive serializers above advisories: a
+direct `MessagePack` reference in `src/FsHotWatch/FsHotWatch.fsproj`
+(GHSA-hv8m-jj95-wg3x, LZ4 decompression AccessViolation, patched 2.5.301) and a
+repo-wide `Nerdbank.MessagePack` pin in `Directory.Build.props`
+(GHSA-2cwq-pwfr-wcw3, attacker-controlled `stackalloc` in `DateTime` decoding,
+patched 1.1.62). Both were compensating for floors StreamJsonRpc 2.24.92 declared
+*below* the fixes — `MessagePack [2.5.198, )`.
+
+`StreamJsonRpc` 2.25.29 declares `MessagePack [2.5.302, )` and
+`Nerdbank.MessagePack [1.2.4, )`. The floors now come from the dependency itself, so
+**both pins are removed**: restore resolves 2.5.302 and 1.2.4 transitively, with no
+advisories solution-wide. Dropping the direct reference *without* the StreamJsonRpc
+bump was measured, not assumed — it resolves the range floor `MessagePack 2.5.198`
+and fails restore under `NU1903`/`NU1902` with seven advisories.
+
+This supersedes the `MessagePack 3.1.8` bump earlier in this cycle. FsHotWatch never
+executes MessagePack at all — `Ipc.fs` builds `JsonRpc` over a bare
+`HeaderDelimitedMessageHandler`, StreamJsonRpc's default **JSON** formatter — so that
+change's claim to have verified 3.x at runtime through the IPC tests was wrong; those
+tests exercise the JSON path. And since a direct `PackageReference` becomes a public
+dependency of the published package, it pushed MessagePack's breaking 3.x rewrite onto
+every consumer, including any that *do* select the MessagePack formatter that
+StreamJsonRpc 2.x was not built against. Tracking the line StreamJsonRpc targets is
+both safer downstream and two fewer pins to carry.
+
 ## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-24)
 
 _These narratives are all shipped. This root file is a human-readable summary that fell

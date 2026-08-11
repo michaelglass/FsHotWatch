@@ -2,18 +2,30 @@
 
 ## Unreleased
 
-- chore(deps): **MessagePack 2.5.301 → 3.1.8.** The direct reference exists to lift
-  StreamJsonRpc's transitive MessagePack above GHSA-hv8m-jj95-wg3x (LZ4 decompression
-  AccessViolation, patched in 2.5.301); 3.1.8 is comfortably above that, so the security
-  reason for the pin is unchanged.
+- chore(deps): **StreamJsonRpc 2.24.92 → 2.25.29; both MessagePack pins removed.**
 
-  Held back initially on the theory that MessagePack 3.0 being a breaking rewrite made
-  crossing a major line unsafe for StreamJsonRpc. Checked rather than assumed:
-  StreamJsonRpc 2.24.92 declares `MessagePack [2.5.198, )` — an open upper bound, so
-  nothing constrained us to 2.x. Restore, build and the full suite pass, and the suite
-  covers the relevant path rather than merely compiling it: 43 IPC tests, including real
-  client/server `RunCommand` round-trips, exercise StreamJsonRpc's serialization at
-  runtime.
+  The direct `MessagePack` reference here and the repo-wide `Nerdbank.MessagePack` pin
+  in `Directory.Build.props` both existed only to lift StreamJsonRpc's transitive floors
+  above advisories — GHSA-hv8m-jj95-wg3x (MessagePack LZ4 decompression
+  AccessViolation, patched 2.5.301) and GHSA-2cwq-pwfr-wcw3 (Nerdbank.MessagePack
+  attacker-controlled stackalloc in `DateTime` decoding, patched 1.1.62). StreamJsonRpc
+  2.25.29 asks for `MessagePack [2.5.302, )` and `Nerdbank.MessagePack [1.2.4, )`, both
+  above their fixes, so the dependency now carries its own floors and neither pin does
+  any work. Removed both: restore resolves 2.5.302 and 1.2.4 transitively with zero
+  advisories solution-wide. Dropping the direct reference without the StreamJsonRpc bump
+  was checked too, and does not work — it resolves the range floor, `MessagePack
+  2.5.198`, which is seven advisories below the fix.
+
+  This also reverses the 3.1.8 bump from earlier in this cycle, which was a worse answer
+  than it looked. **FsHotWatch never uses MessagePack**: `Ipc.fs` builds `JsonRpc` over
+  a bare `HeaderDelimitedMessageHandler`, which is StreamJsonRpc's default *JSON*
+  formatter. The previous entry claimed 43 IPC round-trip tests exercise MessagePack 3.x
+  at runtime; they do not — they exercise the JSON path and say nothing about
+  MessagePack either way. And because a direct `PackageReference` is a public dependency
+  of the published package, it pushed MessagePack 3.x — a breaking rewrite that
+  StreamJsonRpc 2.x was not built against — onto every consumer, including any that do
+  select the MessagePack formatter. Tracking the 2.x line StreamJsonRpc actually targets
+  is both safer for consumers and two fewer pins to maintain.
 
 ## 0.10.0-alpha.7 - 2026-08-11
 

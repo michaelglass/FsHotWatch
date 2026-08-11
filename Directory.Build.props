@@ -16,13 +16,6 @@
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
   </ItemGroup>
-  <!-- Pin transitive Nerdbank.MessagePack to a patched version (1.0.2 has
-       GHSA-2cwq-pwfr-wcw3 — attacker-controlled stackalloc in DateTime
-       decoding causes process-terminating StackOverflowException; patched
-       in 1.1.62, kept current at 1.2.4). Pulled in via StreamJsonRpc. -->
-  <ItemGroup>
-    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.36" />
-  </ItemGroup>
 
   <!-- RefStamp: embeds the source ref (change-id.commit-id[.dirty]) into the
        package version at pack time, so a local pack advertises exactly which
