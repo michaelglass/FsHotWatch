@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.16 - 2026-08-11
+
 ### Fixed
 
 - **BREAKING (hook contract): `FSHW_RAN_FULL_SUITE` is now three-valued —

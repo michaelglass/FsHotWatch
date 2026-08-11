@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.7 - 2026-08-11
+
 - **BREAKING: `TestRunCompleted.RanFullSuite: bool` is replaced by
   `Verification: RunVerification`, and scope now lives inside the case that ran.**
 

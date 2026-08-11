@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.8 - 2026-08-11
+
 - fix: **a `ProjectReference` whose `Include` is an MSBuild property no longer defers
   every test run.** The artifact-freshness gate resolved an `Include` by joining it onto
   the project directory with no property expansion, so a computed reference —
