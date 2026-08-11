@@ -21,7 +21,7 @@
        decoding causes process-terminating StackOverflowException; patched
        in 1.1.62, kept current at 1.2.4). Pulled in via StreamJsonRpc. -->
   <ItemGroup>
-    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.4" />
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.36" />
   </ItemGroup>
 
   <!-- RefStamp: embeds the source ref (change-id.commit-id[.dirty]) into the
