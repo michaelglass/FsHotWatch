@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.17 - 2026-08-11
+
 - **fix: a run that executed no test no longer reaches a coverage verdict.**
   The plugin now declines the check outright — the same thing it already did for
   an aborted run — instead of gating on a claim that run could not support.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.18 - 2026-08-11
+
+- chore(deps): TestPrune.Core 6.1.2, FSharpLint 0.27.0, and two others
+
+
 ## 0.7.0-alpha.17 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies

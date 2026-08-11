@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.12 - 2026-08-11
+
 - feat: **`test-rerun --project <name>` aims the rerun at specific test projects
   (AUTOMATION-272).** Repeatable; omitting it keeps the existing behaviour of running
   every configured project. Without it a `--filter-class` is fanned out across ALL of

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-08-11
+
 - fix: **a promoted finding says `[promoted from warning]`, not `[warning]`.**
   `promoteIfFailing` turns a sub-error finding into an `Error` when it meets the failure
   threshold and prefixes the message with its ORIGINAL severity, so the provenance
