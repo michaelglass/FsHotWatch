@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- chore(deps): **the `SQLitePCLRaw.lib.e_sqlite3` pin is removed — `TestPrune.Core`
+  carries that floor itself now.** The pin existed because `Microsoft.Data.Sqlite` and
+  `TestPrune.Core`'s `SqliteSymbolStore` pulled `lib.e_sqlite3` 2.1.11 transitively,
+  which carries GHSA-2m69-gcr7-jv3q (High, `NU1903`). `TestPrune.Core` 6.1.2 declares
+  `SQLitePCLRaw.lib.e_sqlite3 3.50.3` as its own dependency, so a forced no-cache
+  restore resolves 3.50.3 with the pin gone. Removing it also stops this package
+  advertising a native SQLite build it never calls directly. Restore-time `NU1903`
+  stays the actual guard if a vulnerable version ever resolves again — that check is
+  automatic, where the pin was a hand-copy of a constraint whose owner had moved on.
+
 ## 0.14.0-alpha.12 - 2026-08-11
 
 - feat: **`test-rerun --project <name>` aims the rerun at specific test projects
