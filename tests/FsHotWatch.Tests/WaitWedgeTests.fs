@@ -331,3 +331,50 @@ let ``a plugin whose loop died fails the wait immediately, naming it`` () =
     // The dispatch fault is handled and the loop survives, so nothing is
     // faulted and the wait must still be able to resolve normally.
     test <@ host.FaultedPlugins() |> List.isEmpty @>
+
+[<Fact(Timeout = 60_000)>]
+let ``CompletedDispatches counts events finished, not events posted`` () =
+    // The distinction the stall detector depends on. If this counted POSTS it
+    // would move while a plugin was wedged (posts still arrive at a dead
+    // mailbox), and the detector would call a wedge healthy — the exact failure
+    // it exists to catch, inverted.
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    use release = new ManualResetEventSlim(false)
+    host.RegisterHandler(stuckHandler "gated-plugin" release)
+
+    test <@ host.CompletedDispatches() = 0L @>
+
+    host.EmitBuildCompleted(BuildSucceeded)
+
+    // Posted and picked up, but the handler is blocked: busy, zero finished.
+    test <@ waitUntilTrue (fun () -> host.AnyPluginBusy()) 10_000 @>
+    test <@ host.CompletedDispatches() = 0L @>
+
+    release.Set()
+
+    // Now it finishes, and only now does progress move.
+    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > 0L) 10_000 @>
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
+
+[<Fact(Timeout = 60_000)>]
+let ``CompletedDispatches keeps moving while a plugin drains a queue`` () =
+    // What makes a drain distinguishable from a stall: the count must advance
+    // repeatedly, not once. A detector sampling it twice across the threshold
+    // sees motion and cannot mistake this for stuck.
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    host.RegisterHandler(slowDrainingHandler "draining-plugin")
+
+    for _ in 1..10 do
+        host.EmitBuildCompleted(BuildSucceeded)
+
+    let firstMove = waitUntilTrue (fun () -> host.CompletedDispatches() >= 1L) 10_000
+    test <@ firstMove @>
+
+    let afterFirst = host.CompletedDispatches()
+
+    // It advances AGAIN — the property a single sample cannot establish.
+    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > afterFirst) 10_000 @>
+
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 20_000 @>
+    test <@ host.CompletedDispatches() = 10L @>
