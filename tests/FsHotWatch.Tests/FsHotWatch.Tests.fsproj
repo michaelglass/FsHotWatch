@@ -14,6 +14,9 @@
 
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
+    <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
+         that watches a directory. -->
+    <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
     <Compile Include="StringHelpersTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
