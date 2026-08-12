@@ -1366,7 +1366,7 @@ type RealWatchTests() =
                 let fired =
                     dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
 
-                Assert.True(fired, "expected watcher callback within 15s")
+                Assert.True(fired, $"expected watcher callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s")
                 test <@ observed.Value.Contains("config") @>)
 
     [<Fact(Timeout = 20000)>]
@@ -1382,7 +1382,7 @@ type RealWatchTests() =
                 let fired =
                     dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
 
-                Assert.True(fired, "expected callback within 15s"))
+                Assert.True(fired, $"expected callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s"))
 
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
@@ -1399,7 +1399,7 @@ type RealWatchTests() =
                 let fired =
                     dir.WriteUntil(".fshw.json", "{not valid json", (fun () -> signal.IsSet))
 
-                Assert.True(fired, "expected watcher callback within 15s")
+                Assert.True(fired, $"expected watcher callback within %d{WatchedDir.DefaultProbeTimeoutMs / 1000}s")
                 Assert.Contains("invalid", observed.Value))
 
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---

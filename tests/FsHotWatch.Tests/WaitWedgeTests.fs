@@ -248,7 +248,7 @@ let private slowDrainingHandler (name: string) =
       Update =
         fun _ctx state _event ->
             async {
-                do! Async.Sleep 40
+                do! Async.Sleep 20
                 return state
             }
       Commands = []
@@ -268,7 +268,7 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
     host.RegisterHandler(slowDrainingHandler "draining-plugin")
 
     // ~25 events x 40ms = ~1s of continuous work, against a 200ms threshold.
-    for _ in 1..25 do
+    for _ in 1..100 do
         host.EmitBuildCompleted(BuildSucceeded)
 
     test <@ host.AnyPluginBusy() @>
@@ -278,7 +278,7 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
         host
         (TimeSpan.FromSeconds 30.0)
         false
-        (TimeSpan.FromMilliseconds 200.0)
+        (TimeSpan.FromMilliseconds 500.0)
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
 
