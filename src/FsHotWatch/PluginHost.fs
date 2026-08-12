@@ -422,7 +422,9 @@ type PluginHost
         registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
 
     /// WHICH plugins report work in flight. Same predicate as `AnyPluginBusy`,
-    /// but naming the offenders.
+    /// but naming the offenders. Kept separate rather than folded into one
+    /// accessor because `AnyPluginBusy` is polled every 50ms and must not
+    /// allocate a list to answer a boolean.
     ///
     /// This exists because a `WaitForComplete` that times out on the busy leg
     /// could previously only say "all terminal but quiescence check failed" —
@@ -435,6 +437,24 @@ type PluginHost
         registeredPlugins
         |> Seq.filter (fun p -> p.IsBusy())
         |> Seq.map (fun p -> PluginFramework.PluginName.value p.Name)
+        |> List.ofSeq
+
+    /// Total events every plugin has FINISHED handling. The stall detector
+    /// compares this across polls: if it moved, work is being done, whatever the
+    /// busy set looks like. Busy-set identity cannot answer that — one plugin
+    /// draining a long backlog keeps the very same set for the whole drain.
+    member _.CompletedDispatches() : int64 =
+        registeredPlugins |> Seq.sumBy (fun p -> p.CompletedDispatches())
+
+    /// Plugins whose message loop has died, with the fault that killed it.
+    ///
+    /// Such a plugin reports busy forever — the in-flight count is incremented
+    /// at post time and only the loop decrements it — so without this the wait
+    /// can only infer death from silence, and the cheapest correct inference
+    /// took an hour. Empty in every healthy daemon.
+    member _.FaultedPlugins() : (string * exn) list =
+        registeredPlugins
+        |> Seq.choose (fun p -> p.Fault() |> Option.map (fun ex -> PluginFramework.PluginName.value p.Name, ex))
         |> List.ofSeq
 
     member _.StartSubtask(pluginName: string, key: string, label: string) =

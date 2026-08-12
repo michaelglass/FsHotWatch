@@ -8,6 +8,7 @@ open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
+open FsHotWatch.Tests.TestHelpers
 
 // A plugin whose handler never returns keeps its inflight count above zero
 // forever, so `AnyPluginBusy` stays true and BOTH satisfaction paths in
@@ -20,10 +21,12 @@ open FsHotWatch.PluginFramework
 // terminal but quiescence check failed". Three of those cost an hour each and
 // blocked every deploy behind them, because `check` gates the deploy preflight.
 //
-// The hand-off this state legitimately covers — a run finishing and its
-// completion message being handled — takes milliseconds. A plugin doing real
-// work is `Running`, which is a different branch. So a busy set that does not
-// change for the threshold is a stuck plugin, and saying so beats hanging.
+// What separates stuck from slow is PROGRESS, not the busy set. A plugin
+// draining a long `FileChecked` backlog is busy continuously with nothing
+// Running, and the set of busy names stays identical for the whole drain — so a
+// detector keyed on that set fires on a healthy check of a large repo. The host
+// counts events finished (`CompletedDispatches`); a drain moves it constantly,
+// a stopped agent never does.
 
 /// A handler subscribed to BuildCompleted whose Update blocks until the test
 /// releases it. Models the real shape: an event whose handler never returns.
@@ -82,26 +85,6 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
         // Release the handler so the blocked mailbox thread can unwind.
         release.Set()
 
-/// Poll until `cond` holds, up to `timeout`. Returns whether it held.
-///
-/// A FIXED sleep cannot express what these tests assert. The bug is that the
-/// count never returns to zero — not that it is non-zero at some instant — and
-/// under parallel test load a plugin that is merely still working is non-zero
-/// for a good reason. A sleep long enough to be reliable would also be long
-/// enough to hide a slow leak; this distinguishes "transiently busy" from
-/// "busy forever" without either race. Pre-fix the count only rises, so no
-/// timeout makes this pass.
-let private waitUntil (timeout: TimeSpan) (cond: unit -> bool) =
-    let deadline = DateTime.UtcNow + timeout
-
-    let mutable ok = cond ()
-
-    while not ok && DateTime.UtcNow < deadline do
-        Thread.Sleep 25
-        ok <- cond ()
-
-    ok
-
 // A handler whose CACHE-KEY function throws. This is not a contrived fault: the
 // dispatch loop computes `handler.CacheKey event` BEFORE entering the
 // `try/finally` that decrements the inflight count (PluginFramework, dispatch
@@ -152,8 +135,7 @@ let ``a fault in the dispatch loop must not leave the plugin busy forever`` () =
 
     // The fault must be ACCOUNTED FOR, not swallowed: the work it was counting
     // is over, so the plugin must not still claim work in flight.
-    let settled =
-        waitUntil (TimeSpan.FromSeconds 10.0) (fun () -> not (host.AnyPluginBusy()))
+    let settled = waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000
 
     test <@ settled @>
     test <@ host.BusyPluginNames() |> List.isEmpty @>
@@ -180,11 +162,11 @@ let ``a second event after a dispatch fault must still be counted correctly`` ()
 
     host.EmitBuildCompleted(BuildSucceeded)
 
-    test <@ waitUntil (TimeSpan.FromSeconds 10.0) (fun () -> not (host.AnyPluginBusy())) @>
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
 
     host.EmitBuildCompleted(BuildSucceeded)
 
-    test <@ waitUntil (TimeSpan.FromSeconds 10.0) (fun () -> not (host.AnyPluginBusy())) @>
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
 
 [<Fact(Timeout = 60_000)>]
 let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
@@ -244,10 +226,12 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
 
         // Wait until the run has actually claimed and published Running.
         let running =
-            waitUntil (TimeSpan.FromSeconds 10.0) (fun () ->
-                match host.GetStatus "run-owns-status" with
-                | Some(Running _) -> true
-                | _ -> false)
+            waitUntilTrue
+                (fun () ->
+                    match host.GetStatus "run-owns-status" with
+                    | Some(Running _) -> true
+                    | _ -> false)
+                10_000
 
         test <@ running @>
 
@@ -286,3 +270,64 @@ let ``a host with no busy plugins resolves instead of reporting a wedge`` () =
         (TimeSpan.FromMilliseconds 300.0)
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
+
+/// A handler that takes a little time per event but always finishes. Models the
+/// shape that matters: a plugin working through a QUEUE, busy the whole time,
+/// never `Running` (it reports no status), with an unchanging busy set.
+let private slowDrainingHandler (name: string) =
+    { Name = PluginName.create name
+      Init = ()
+      Update =
+        fun _ctx state _event ->
+            async {
+                do! Async.Sleep 40
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+      CacheKey = None
+      Teardown = None }
+
+[<Fact(Timeout = 60_000)>]
+let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
+    // The false positive that a busy-set-identity detector produces, and the
+    // reason this is measured as progress instead.
+    //
+    // Queue far more work than the stall threshold allows: the busy set is
+    // ["draining-plugin"] and NEVER changes, nothing is ever Running, and the
+    // drain runs many times longer than the threshold. A detector keyed on the
+    // busy set not changing would fail here — and would therefore fail every
+    // real check of a large repo, where one plugin drains thousands of
+    // FileChecked events. Keyed on events finished, this is plainly progress.
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    host.RegisterHandler(slowDrainingHandler "draining-plugin")
+
+    // ~25 events x 40ms = ~1s of continuous work, against a 200ms threshold.
+    for _ in 1..25 do
+        host.EmitBuildCompleted(BuildSucceeded)
+
+    test <@ host.AnyPluginBusy() @>
+
+    // Must RESOLVE, not raise. The drain finishes and the wait returns.
+    Daemon.waitForAllTerminalCore
+        host
+        (TimeSpan.FromSeconds 30.0)
+        false
+        (TimeSpan.FromMilliseconds 200.0)
+        CancellationToken.None
+    |> fun t -> t.GetAwaiter().GetResult()
+
+[<Fact(Timeout = 60_000)>]
+let ``a plugin whose loop died fails the wait immediately, naming it`` () =
+    // A dead agent no longer has to be inferred from silence over a threshold —
+    // the plugin publishes the fault, so the wait can refuse at once and say
+    // that fshw itself broke rather than blaming the tree under check.
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    host.RegisterHandler(throwingCacheKeyHandler "faulting-plugin")
+
+    host.EmitBuildCompleted(BuildSucceeded)
+    test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
+
+    // The dispatch fault is handled and the loop survives, so nothing is
+    // faulted and the wait must still be able to resolve normally.
+    test <@ host.FaultedPlugins() |> List.isEmpty @>

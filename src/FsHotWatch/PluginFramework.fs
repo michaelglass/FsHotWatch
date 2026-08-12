@@ -235,6 +235,29 @@ type RegisteredPlugin =
         /// observably Idle but an event has been posted to its mailbox and
         /// will trigger work as soon as the handler runs.
         IsBusy: unit -> bool
+        /// How many dispatched events this plugin has FINISHED handling, ever.
+        /// Monotonic, incremented in the same `finally` that releases the
+        /// in-flight count.
+        ///
+        /// This is the difference between "busy" and "making progress", and
+        /// they are not the same question. A plugin draining a long
+        /// `FileChecked` backlog is busy continuously, with nothing `Running`,
+        /// for as long as the drain takes — a state indistinguishable from a
+        /// stuck one if you only look at `IsBusy`, or at WHICH plugins are busy
+        /// (that set does not change while one plugin drains). Watching this
+        /// counter instead means a draining plugin can never be called stuck,
+        /// and a stopped one always is.
+        CompletedDispatches: unit -> int64
+        /// The fault that killed this plugin's message loop, if one did.
+        ///
+        /// A dead agent is otherwise INDISTINGUISHABLE from a busy one: the
+        /// in-flight count is incremented when an event is posted and only
+        /// decremented by the loop, so once the loop stops the count can only
+        /// rise. `WaitForComplete` would then wait forever on a plugin that can
+        /// never make progress. Liveness is a state, not a quantity — one
+        /// integer cannot say "0 and alive" apart from "n and dead" — so it is
+        /// published separately rather than inferred from silence.
+        Fault: unit -> exn option
     }
 
 /// Host-provided services bundled into a record to avoid fragile positional params.
@@ -409,6 +432,14 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     // never dips to zero anywhere between "run claimed" and "completion
     // handled".
     let inflightCount = ref 0
+
+    // Monotonic count of dispatched events this plugin has finished handling.
+    // Read by the wait's stall detector to tell "draining a backlog" from
+    // "stopped": see `RegisteredPlugin.CompletedDispatches`.
+    let completedDispatches = ref 0L
+
+    // Set once if the message loop dies. See `RegisteredPlugin.Fault`.
+    let mutable agentFault: exn option = None
 
     let post (msg: 'Msg) =
         match agentRef with
@@ -774,6 +805,30 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     /// crashing per-file handler manufactured a terminal status mid-test-run
                     /// (the observed "terminal with started: but no elapsed:" signature).
                     /// The crash is still logged loudly either way.
+                    /// Force a terminal `Failed` for a fault the plugin could not report
+                    /// itself, subject to the ownership rule above: a live exclusive run
+                    /// already published `Running` and its completion path delivers a
+                    /// terminal, so a forced status there would stomp a run still executing.
+                    ///
+                    /// `what` names the layer that faulted ("handler", "dispatch"), and
+                    /// `startedAt` is when that layer began — so the verdict carries a
+                    /// MEASURED elapsed. `runOne` states the rule this obeys: never a
+                    /// fabricated zero-length run.
+                    let reportForcedFailure (what: string) (startedAt: DateTime) (ex: exn) =
+                        error (PluginName.value handler.Name) $"%s{what} failed: %s{ex.ToString()}"
+
+                        reportUnlessRunOwns
+                            (fun () ->
+                                FsHotWatch.Logging.debug
+                                    (PluginName.value handler.Name)
+                                    $"%s{what} fault: suppressing forced Failed status — an exclusive run is in flight and owns the status")
+                            (Failed(
+                                ex.ToString(),
+                                DateTime.UtcNow,
+                                RunVerdict.create $"%s{what} failed: %s{ex.Message}" (DateTime.UtcNow - startedAt)
+                            ))
+                        |> ignore
+
                     let safeUpdate pluginCtx state event =
                         async {
                             let handlerStarted = DateTime.UtcNow
@@ -781,25 +836,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             try
                                 return! handler.Update pluginCtx state event
                             with ex ->
-                                error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
-
-                                let forcedFailed =
-                                    Failed(
-                                        ex.ToString(),
-                                        DateTime.UtcNow,
-                                        RunVerdict.create
-                                            $"handler failed: %s{ex.Message}"
-                                            (DateTime.UtcNow - handlerStarted)
-                                    )
-
-                                reportUnlessRunOwns
-                                    (fun () ->
-                                        FsHotWatch.Logging.debug
-                                            (PluginName.value handler.Name)
-                                            "handler fault: suppressing forced Failed status — an exclusive run is in flight and owns the status")
-                                    forcedFailed
-                                |> ignore
-
+                                reportForcedFailure "Plugin handler" handlerStarted ex
                                 return state
                         }
 
@@ -973,6 +1010,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // the status and delivers its own terminal), and
                                 // SURVIVABLE (the loop continues, so the plugin
                                 // keeps serving later events).
+                                let dispatchStarted = DateTime.UtcNow
+
                                 let! nextState =
                                     async {
                                         try
@@ -1020,36 +1059,14 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 else
                                                     return! runAndCache event state cacheKeyOpt
                                             with ex ->
-                                                // Not `safeUpdate`'s net: this catches the
-                                                // dispatch machinery AROUND the handler — the
-                                                // cache-key thunks and the replay lookup — which
-                                                // `safeUpdate` never covered because it wraps
-                                                // `handler.Update` alone.
-                                                error
-                                                    (PluginName.value handler.Name)
-                                                    $"Dispatch failed (cache key or cache replay), plugin kept alive: %s{ex.ToString()}"
-
-                                                let forcedFailed =
-                                                    Failed(
-                                                        ex.ToString(),
-                                                        DateTime.UtcNow,
-                                                        RunVerdict.create
-                                                            $"dispatch failed: %s{ex.Message}"
-                                                            TimeSpan.Zero
-                                                    )
-
-                                                // Same ownership rule as `safeUpdate`: a live
-                                                // exclusive run reported Running at its claim and
-                                                // its completion path delivers a terminal, so
-                                                // stomping Failed over it would manufacture a
-                                                // verdict mid-run.
-                                                reportUnlessRunOwns
-                                                    (fun () ->
-                                                        FsHotWatch.Logging.debug
-                                                            (PluginName.value handler.Name)
-                                                            "dispatch fault: suppressing forced Failed status — an exclusive run is in flight and owns the status")
-                                                    forcedFailed
-                                                |> ignore
+                                                // Not `safeUpdate`'s net: that one wraps
+                                                // `handler.Update` alone, while this catches the
+                                                // dispatch machinery AROUND it — the cache-key
+                                                // thunks and the replay lookup.
+                                                reportForcedFailure
+                                                    "Dispatch (cache key or cache replay)"
+                                                    dispatchStarted
+                                                    ex
 
                                                 return state
                                         finally
@@ -1060,6 +1077,13 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                             // before this event has actually been
                                             // processed.
                                             System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
+
+                                            // Paired with the decrement on purpose: one
+                                            // event finished is exactly one unit of
+                                            // progress, so a plugin that is still
+                                            // draining can never look stalled.
+                                            System.Threading.Interlocked.Increment(&completedDispatches.contents)
+                                            |> ignore
                                     }
 
                                 return! loop nextState
@@ -1068,17 +1092,21 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     loop handler.Init)
             )
 
-    // Last resort, matching `ErrorLedger` and the scan-signal agent. The
-    // dispatch arm above now handles its own faults and keeps looping, so this
-    // should never fire; if it ever does — a fault in `inbox.Receive()` or the
-    // state-reply arm — the agent stops, and a stopped plugin agent is the worst
-    // failure this framework has: `inflightCount` can only rise from then on and
-    // `WaitForComplete` can never be satisfied again. Silence is what made that
-    // cost three hour-long deploy stalls, so say it loudly.
+    // Last resort, matching `ErrorLedger` and the scan-signal agent. The loop
+    // body handles its own faults and keeps going, so this should never fire;
+    // if it ever does the agent has STOPPED, which is the worst failure this
+    // framework has — `inflightCount` can only rise from then on.
+    //
+    // Recording the exception is the point, not just logging it. Silence is what
+    // cost three hour-long deploy stalls: the waiter had no way to tell a dead
+    // agent from a busy one and could only infer it, slowly, from a plugin that
+    // never spoke again. Publishing the fault makes that inference unnecessary.
     agent.Error.Add(fun ex ->
+        agentFault <- Some ex
+
         error
             (PluginName.value handler.Name)
-            $"Mailbox loop crashed (programming bug, agent stopped — this plugin will now pin WaitForComplete): %s{ex.ToString()}")
+            $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     agentRef <- Some agent
 
@@ -1125,7 +1153,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
       // run had not yet produced (AUTOMATION-95/99). Run tokens are released in
       // a `finally`, so this stays bounded — and the verdict deadline
       // (Ipc.resolveVerdictDeadline) still bounds a genuinely wedged run.
-      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 }
+      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0
+      CompletedDispatches = fun () -> System.Threading.Volatile.Read(&completedDispatches.contents)
+      Fault = fun () -> agentFault }
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
 module PluginCtxHelpers =

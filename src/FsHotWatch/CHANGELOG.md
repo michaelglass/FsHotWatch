@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- fix: **the wedge detector no longer fails a healthy check of a large repo.** It
+  compared the set of busy plugin NAMES across polls and called an unchanged set a
+  stall. That set does not change while a single plugin drains a long
+  `FileChecked` backlog — busy throughout, nothing `Running` — so any drain longer
+  than the threshold was reported as `WEDGED`. Measured on a green run of a large
+  repo: three uninterrupted minutes in that state, against a five-minute
+  threshold.
+
+  It now measures **progress**: `PluginHost.CompletedDispatches()` counts events
+  plugins have actually finished, incremented in the same `finally` that releases
+  the in-flight count. A drain moves it on every event and can never look stalled;
+  a stopped agent never moves it and always does. The distinction is structural
+  rather than a tuned threshold.
+
+- feat: **a plugin whose message loop dies now says so** —
+  `PluginHost.FaultedPlugins()` and `RegisteredPlugin.Fault`. `WaitForComplete`
+  fails immediately naming that plugin, and says the failure is in fshw rather
+  than in the tree being checked.
+
+  Liveness is a state, not a quantity: `IsBusy` is `inflightCount > 0`, and one
+  integer cannot tell "0 and alive" from "n and dead". So a dead agent could only
+  be inferred — from silence, over a threshold, at best five minutes late and at
+  worst never. Publishing the fault removes the inference.
+
+- perf: **the wait's 50ms poll no longer does a status round-trip and a
+  per-plugin activity copy just to ask "is anything running?"**. The wedge check
+  now tests the allocation-free busy predicate first and the expensive question
+  last, and the every-10s diagnostic is no longer formatted-then-discarded at the
+  default log level. Over an hour-long wait that is ~72,000 avoided round-trips,
+  each of which copied every running plugin's activity tail.
+
+- fix: **a forced `Failed` from a dispatch fault now carries a measured elapsed**,
+  not a fabricated `TimeSpan.Zero` — the rule `runOne` states about itself. The
+  three hand-copied fault paths are one `reportForcedFailure`, so the
+  ownership rule that keeps a fault from stomping a live exclusive run's status
+  is stated once instead of transcribed three times.
+
 - fix: **a fault in a plugin's dispatch loop no longer wedges `WaitForComplete`
   forever.** `check`/`confirm` could hang with every plugin terminal, nothing
   `Running`, and the wait spinning to its timeout. Three deploys in a downstream

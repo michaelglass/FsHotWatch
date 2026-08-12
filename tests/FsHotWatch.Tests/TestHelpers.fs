@@ -67,12 +67,25 @@ let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
 
         proc.Dispose()
 
+/// Poll until condition is true or timeout (50ms poll interval). Returns
+/// whether it actually became true.
+///
+/// Prefer this over `waitUntil` when the wait itself is what the test is
+/// asserting: `waitUntil` cannot tell "the condition held" from "we gave up", so
+/// a test that only checks state afterwards can pass vacuously by timing out.
+let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
+    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+    let mutable ok = condition ()
+
+    while not ok && DateTime.UtcNow < deadline do
+        Thread.Sleep(50)
+        ok <- condition ()
+
+    ok
+
 /// Poll until condition is true or timeout (default 50ms poll interval).
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-
-    while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(50)
+    waitUntilTrue condition timeoutMs |> ignore
 
 /// Run `write` every 2s until `hasEvent` returns true or timeout expires.
 /// Use this for FSEvents tests: brand-new temp directories can have 4-20s cold-start
