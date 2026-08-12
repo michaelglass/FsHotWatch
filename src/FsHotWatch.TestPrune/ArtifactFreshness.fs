@@ -1,51 +1,25 @@
-/// The freshness gate for a `--no-build` test run.
-///
-/// The question this module answers is exactly one: **would running
+/// The freshness gate for a `--no-build` test run: would running
 /// `dotnet run --project <test> --no-build` execute bits that do not match the
-/// sources on disk?** A "yes" blocks the run (the `--no-build`-against-stale-binary
-/// hole this gate closes); a "no" lets it through.
+/// sources on disk? A "yes" blocks the run.
 ///
-/// Freshness is decided per-project, over the test project's OWN transitive
-/// `ProjectReference` closure, in terms of the two — and only two — things a build
-/// does to produce a runnable output tree:
+/// Decided per-project over the test project's own transitive `ProjectReference`
+/// closure, over the two things a build does: it COMPILES each project's sources
+/// into that project's own assembly (`AssemblyOlderThanSource`), and it COPIES
+/// dependency assemblies and content/fixture items into the test project's output
+/// dir (`CopyDiffersFromOrigin`). Nothing outside the closure is asserted about, and
+/// both checks are exactly what a plain `dotnet build` fixes.
 ///
-///   1. It COMPILES each project's sources into that project's own assembly.
-///      ⇒ `AssemblyOlderThanSource`: a compile input newer than the assembly built
-///        from it means the compile did not run since the edit. A `.fs` and the
-///        `.dll` compiled from it have no content relation, so an mtime is the ONLY
-///        signal available here.
-///   2. It COPIES files into the test project's output dir — dependency assemblies,
-///      and content/fixture items (transitively, from referenced projects).
-///      ⇒ `CopyDiffersFromOrigin`: a copy whose BYTES are not the bytes of any output
-///        it could have been copied from means the copy did not happen since the edit.
-///
-/// A copy is judged by CONTENT, never by an mtime. The rule, one rule with two
-/// applications: **a copy is current iff its bytes are the bytes of one of the outputs
-/// the build could have copied it from** — for a content item, the file at that
-/// relative path in a closure project; for a dependency assembly, any of that
-/// project's per-TFM outputs. Content is TFM-agnostic, so a multi-targeted dependency
-/// (whose per-TFM DLLs build at different times and hash differently) cannot be
-/// mis-judged by comparing across TFMs, and neither a working-copy restamp nor a
-/// coarse-timestamp rebuild-within-one-tick can fool it. This is the same doctrine
-/// `TreeHash` states — content, never mtimes — and it uses core's ONE hasher,
-/// `ContentHash`, inheriting its fail-closed sentinel: a file we cannot read is
+/// A copy is judged by CONTENT, never by an mtime — current iff its bytes are the
+/// bytes of one of the outputs the build could have copied it from — so a
+/// multi-targeted dependency, a working-copy restamp and a coarse-timestamp
+/// rebuild-within-one-tick cannot fool it. Hashing goes through core's `ContentHash`
+/// and inherits its fail-closed sentinel: a file we cannot read is
 /// `InputsUndeterminable`, never "fresh".
 ///
-/// Content items are covered too (not just `.fs`/`.cs`): a changed test FIXTURE
-/// copied in from a shared project is a `CopyDiffersFromOrigin`, so it can never run
-/// `--no-build` against a stale copy still sitting in `bin/`. Both checks are exactly
-/// what a plain `dotnet build` fixes, and NOTHING else is asserted — a file outside
-/// the closure cannot make the gate fire.
-///
-/// Shadowing: a relative path can be claimed by SEVERAL projects in one closure
-/// (MSBuild copies them all to one destination, last writer wins). A copy is checked
-/// against EVERY claimant and is current if it matches ANY — otherwise a shadowed
-/// project would be condemned for a build doing exactly what it means to do.
-///
-/// This module is deliberately self-contained (on-disk `.fsproj` parse rather than
-/// `IProjectGraphReader`): `executeTests` is graph-free — shared with the one-off
-/// `run-tests` command, which has no daemon and no discovered graph — and the graph
-/// tracks `Compile` items only, so it could not see content items even if reachable.
+/// Self-contained (on-disk `.fsproj` parse rather than `IProjectGraphReader`)
+/// because `executeTests` is graph-free — shared with the one-off `run-tests`
+/// command, which has no daemon and no discovered graph — and the graph tracks
+/// `Compile` items only, so it could not see content items even if reachable.
 module FsHotWatch.TestPrune.ArtifactFreshness
 
 open System
@@ -82,11 +56,11 @@ type RunnerTarget =
 type StaleInput =
     /// A compile input is newer than the assembly compiled from it: the compile
     /// did not run since the edit. `Project` is the owning project's directory
-    /// leaf — it may be the test project itself or any project in its closure.
+    /// leaf — the test project itself, or any project in its closure.
     ///
-    /// The one MTIME judgement left in this module, and the only one that can be
-    /// made: a `.fs` source and the `.dll` compiled from it share no bytes, so
-    /// there is nothing to compare but the clock.
+    /// The only mtime judgement in this module, and the only one that can be made:
+    /// a `.fs` source and the `.dll` compiled from it share no bytes, so there is
+    /// nothing to compare but the clock.
     | AssemblyOlderThanSource of project: string * source: string * sourceMtime: DateTime * assemblyMtime: DateTime
     /// A file the build copies into the test project's output dir (a dependency
     /// assembly, or a content/fixture item — its own, or one carried in from a
@@ -94,18 +68,15 @@ type StaleInput =
     /// been copied from: the copy did not happen since the edit, so the run would
     /// read the old bytes.
     ///
-    /// Deliberately carries NO MTIMES. Two per-TFM outputs of one project are
-    /// built minutes apart, so comparing a copy's mtime against an origin's is
-    /// meaningless unless their frameworks match — and this module cannot know
-    /// which framework MSBuild chose. A verdict that has no
-    /// mtimes in it cannot compare two of them across a TFM boundary: the error is
-    /// not corrected here, it is UNREPRESENTABLE.
+    /// Carries NO MTIMES, deliberately. Two per-TFM outputs of one project are built
+    /// minutes apart and this module cannot know which framework MSBuild chose, so a
+    /// verdict holding no mtimes cannot compare two across a TFM boundary.
     | CopyDiffersFromOrigin of origin: string * copy: string
     /// The gate could not determine what this run's inputs ARE — an unreadable or
-    /// unparseable project file, or a `ProjectReference` it cannot resolve. This is
-    /// the FAIL-CLOSED case: a freshness gate that answers "up to date" because it
-    /// could not look is precisely the bug this whole module exists to kill. Refuse
-    /// the run and let the build report the real error.
+    /// unparseable project file, or a `ProjectReference` it cannot resolve. FAIL
+    /// CLOSED: a freshness gate that answers "up to date" because it could not look
+    /// is the bug this module exists to kill. Refuse the run and let the build
+    /// report the real error.
     | InputsUndeterminable of project: string * reason: string
 
 /// Compile inputs — the files whose edit must force a recompile before a verdict
@@ -153,20 +124,12 @@ let private binDirOf (projectDir: string) =
 /// A memo whose value factory runs AT MOST ONCE per key, however many threads ask
 /// for that key at once.
 ///
-/// `ConcurrentDictionary.GetOrAdd(key, valueFactory)` does NOT give that, and the
-/// difference is the whole point of a memo. It is free to invoke the factory
-/// CONCURRENTLY on several threads for the same key and publish only one result;
-/// the losing threads still did the work, and it is thrown away. For a memo whose
-/// entire job is to eliminate duplicated directory walks and `XDocument.Load`
-/// parses, that eliminates nothing — and the duplicate is the NORMAL case here,
-/// not a rare race: test groups genuinely run in parallel and their
-/// `ProjectReference` closures overlap heavily, so they collide on the same cold
-/// key by construction.
-///
-/// A `Lazy` under `ExecutionAndPublication` IS the guarantee: exactly one
-/// execution, and every other caller blocks on it and takes its result. (The
-/// dictionary may still construct several `Lazy` objects for one key — but a
-/// `Lazy` is a cheap wrapper, and only the published one is ever forced.)
+/// `ConcurrentDictionary.GetOrAdd(key, valueFactory)` does NOT give that: it may
+/// invoke the factory concurrently on several threads for one key and publish only
+/// one result, so the losers still did the work. Here that duplicate is the NORMAL
+/// case — test groups run in parallel and their `ProjectReference` closures overlap
+/// heavily. A `Lazy` under `ExecutionAndPublication` IS the guarantee: one
+/// execution, every other caller blocks on it.
 type internal OnceMemo<'K, 'V when 'K: equality>() =
     let entries = ConcurrentDictionary<'K, Lazy<'V>>()
 
@@ -179,13 +142,8 @@ type internal OnceMemo<'K, 'V when 'K: equality>() =
 
 /// Per-run memo. The directory walks and `.fsproj` parses are the expensive part
 /// of the gate, and every test config in a run shares the same closure prefixes —
-/// so each project is walked at most ONCE per run, even when several test projects
-/// depend on it. Thread-safe: test groups run in parallel.
-///
-/// "At most once" is the `OnceMemo` guarantee, and it has to be: a plain
-/// `ConcurrentDictionary.GetOrAdd` would let the parallel test groups each run the
-/// same walk and discard all but one result, which is the cost this type exists to
-/// avoid.
+/// so each project is walked at most ONCE per run (the `OnceMemo` guarantee), even
+/// when several test projects depend on it. Thread-safe: test groups run in parallel.
 type Cache() =
     let closures = OnceMemo<string, Result<string list, string>>()
     let files = OnceMemo<string, (string * DateTime) list>()
@@ -200,29 +158,25 @@ type Cache() =
     /// `ProjectReference` we cannot resolve (no `Include`, or an `Include` naming
     /// a project that does not exist) means WE DO NOT KNOW WHAT THIS RUN'S INPUTS
     /// ARE. Swallowing that into "no references" would shrink the closure to
-    /// nothing and let a stale dependency sail through as fresh — this gate's own
-    /// bug, reborn inside its fix. "I could not look" is not "it is up to date":
-    /// it is `Error`, and the caller refuses the run and lets the BUILD report the
-    /// real error (which it will, loudly, on the same malformed file).
+    /// nothing and let a stale dependency sail through as fresh. "I could not look"
+    /// is `Error`: the caller refuses the run and lets the BUILD report the real
+    /// error, which it will, loudly, on the same malformed file.
     let directReferences (projectFile: string) : Result<string list, string> =
         try
             let projDir = Path.GetDirectoryName projectFile
             let doc = XDocument.Load(projectFile)
 
-            // An `Include` may be COMPUTED — `Include="$(SomeProject)"`, with the
-            // property declared in this same file. Read textually that is a search for
-            // a file literally named `$(SomeProject)`, which never exists, so the gate
-            // answered `InputsUndeterminable` and deferred every run on a tree that was
-            // perfectly fresh. Hit against TestPrune, whose test project computes its
-            // optional Falco.UnionRoutes reference exactly this way.
+            // An `Include` may be COMPUTED — `Include="$(SomeProject)"` (TestPrune's
+            // own test project computes its optional Falco.UnionRoutes reference this
+            // way). Read textually that is a search for a file literally named
+            // `$(SomeProject)`, which never exists, so the gate answers
+            // `InputsUndeterminable` and defers every run on a perfectly fresh tree.
             //
-            // Deliberately a SMALL expansion, not an MSBuild evaluation: the properties
-            // this file declares, plus the two well-known directory properties. That
-            // covers a reference computed from the project's own `PropertyGroup`, which
-            // is the shape that occurs in practice. Anything it cannot expand stays
-            // unexpanded, so the path does not exist and the fail-closed arm below still
-            // runs — the worst case is exactly the behaviour we had before, never a
-            // false "fresh".
+            // Deliberately a SMALL expansion, not an MSBuild evaluation: this file's
+            // own declared properties plus the two well-known directory ones, which
+            // covers the shape that occurs in practice. Anything it cannot expand
+            // stays unexpanded, so the path does not exist and the fail-closed arm
+            // below still runs — never a false "fresh".
             let properties =
                 let declared =
                     doc.Descendants()
@@ -272,20 +226,17 @@ type Cache() =
                         // alternative is deferring every run forever over a reference the
                         // build correctly ignores.
                         //
-                        // The trade, stated plainly: a REQUIRED reference wrongly carrying
-                        // an always-true `Condition` is now skipped rather than refused.
-                        // Narrower than it looks — the build runs before this gate and
-                        // fails loudly on a missing reference, which is the very deferral
-                        // this module says it wants ("let the BUILD report the real
-                        // error"). An UNCONDITIONAL missing reference is still an error.
+                        // The trade: a REQUIRED reference wrongly carrying an always-true
+                        // `Condition` is skipped rather than refused. The build runs
+                        // before this gate and fails loudly on a missing reference
+                        // anyway. An UNCONDITIONAL missing reference is still an error.
                         Ok None
                     else
                         Error $"%s{projectFile} references %s{path}, which does not exist"
 
-            // The FIRST reference we cannot resolve ends it. There is no such thing
-            // as a partially-known closure, so there is deliberately no arm here
-            // that keeps the references it managed to resolve and drops the rest —
-            // that arm IS the fail-open bug.
+            // The FIRST reference we cannot resolve ends it: there is no such thing
+            // as a partially-known closure, so there is deliberately no arm that
+            // keeps what resolved and drops the rest — that arm IS the fail-open bug.
             let rec resolveAll acc elements =
                 match elements with
                 | [] -> Ok(acc |> List.rev |> List.distinct)
@@ -337,13 +288,8 @@ type Cache() =
         )
 
     /// EVERY `<assemblyName>.dll` this project has built, one per per-TFM output
-    /// dir. These are the outputs a consumer's copy of this assembly could have
-    /// come from — and the gate deliberately does NOT try to work out WHICH of them
-    /// MSBuild chose. That question needs the nearest-compatible-framework rules
-    /// (a net10.0 consumer takes a netstandard2.0 dependency's netstandard2.0
-    /// output quite happily), and a graph-free on-disk parse cannot answer it. It
-    /// does not need to: the copy is judged against these outputs by CONTENT, and
-    /// content does not care which framework produced it.
+    /// dir — the full set of outputs a consumer's copy could have come from, since
+    /// which one MSBuild chose is not knowable here (see `copyVerdict`).
     ///
     /// Empty when the project has not been built yet. That is NOT staleness: a
     /// missing artifact is the presence probe's business (a build in flight may
@@ -364,12 +310,11 @@ type Cache() =
     /// mtime — across its per-TFM output dirs, or `None` when the project has not
     /// been built yet. `None` is NOT staleness (see `OwnAssemblyOutputs`).
     ///
-    /// Used ONLY by the compile check, where the comparison is against the
-    /// project's OWN sources and the NEWEST output is the lenient — and so
-    /// conservative-against-false-stale — choice: if any framework was compiled
-    /// after the edit, the compile ran. It must never be used as the ORIGIN of a
-    /// copy: across TFMs, "newest" and "the one that was copied" are different
-    /// files.
+    /// Used ONLY by the compile check, where the comparison is against the project's
+    /// OWN sources and the NEWEST output is the conservative-against-false-stale
+    /// choice: if any framework was compiled after the edit, the compile ran. It must
+    /// never be used as the ORIGIN of a copy — across TFMs, "newest" and "the one
+    /// that was copied" are different files.
     member this.OwnAssembly(projectDir: string, assemblyName: string) : (string * DateTime) option =
         assemblies.GetOrAdd(
             Path.Combine(projectDir, assemblyName),
@@ -394,20 +339,16 @@ type Cache() =
 let private projectLabel (projectDir: string) =
     Path.GetFileName(projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
 
-/// THE copy rule, and the only one: **is `copy` — the file the `--no-build` run
-/// will actually load — byte-identical to one of the `candidates` the build could
-/// have copied it from?**
-///
+/// THE copy rule: is `copy` — the file the `--no-build` run will actually load —
+/// byte-identical to one of the `candidates` the build could have copied it from?
 /// `None` = current. `Some` = the run would read bytes no current build produces.
 ///
-/// There is deliberately no mtime anywhere in here, and no attempt to work out
-/// WHICH candidate MSBuild picked. Both are the same mistake in different clothes:
-/// the module cannot know the chosen target framework, and the moment it guesses it
-/// starts making accusations no build can answer. It does not
-/// need to know. If the copy's bytes are the bytes of ANY current output of its
-/// origin, then the run loads code that matches the sources on disk — which is the
-/// only question this gate was ever asking. If they match NONE of them, the copy
-/// is old bytes whichever framework produced it, and the run must not happen.
+/// No mtime anywhere in here, and no attempt to work out WHICH candidate MSBuild
+/// picked. Answering that needs the nearest-compatible-framework rules (a net10.0
+/// consumer takes a netstandard2.0 dependency's netstandard2.0 output quite
+/// happily), which a graph-free on-disk parse cannot do — and need not: bytes
+/// matching ANY current output of the origin means the run loads code that matches
+/// the sources; matching NONE means old bytes whichever framework produced them.
 ///
 /// FAILS CLOSED on a file it cannot read (`ContentHash`'s sentinel matches
 /// nothing, so an unreadable file could otherwise masquerade as a mismatch — or,
@@ -433,8 +374,7 @@ let private copyVerdict (cache: Cache) (project: string) (copy: string) (candida
 
 /// The origin candidates, ordered so the one the consumer most likely consumes is
 /// FIRST — purely so a stale message names the framework the reader is looking at.
-/// The VERDICT does not depend on this order (it is content, over the whole set);
-/// only the wording does.
+/// The VERDICT is content over the whole set and does not depend on this order.
 let private consumerTfmFirst (tfmDir: string) (candidates: string list) : string list =
     let consumerTfm =
         Path.GetFileName(tfmDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
@@ -454,10 +394,9 @@ let private consumerTfmFirst (tfmDir: string) (candidates: string list) : string
 /// build has placed there.
 ///
 /// `outputs` is a SET, not a map to mtimes. All the copy check ever asks of it is
-/// *"did the build put something here?"*, because a file the build does not copy
-/// has no destination and is never asserted about — that is what keeps a false
-/// positive unrepresentable. What is at that destination is then settled by
-/// content, so its mtime was never wanted.
+/// *"did the build put something here?"* — a file the build does not copy has no
+/// destination and is never asserted about, which is what keeps a false positive
+/// unrepresentable. What is at that destination is then settled by content.
 let private staleContribution
     (cache: Cache)
     (tfmDir: string)
@@ -470,20 +409,12 @@ let private staleContribution
     let project = projectLabel projectDir
 
     /// Every file in the CLOSURE that the build could have copied to `rel` — this
-    /// project's first, so a stale message names the project being judged.
-    ///
-    /// It is not always this project's alone. Two projects in one closure may hold
-    /// a file at the SAME relative path (`xunit.runner.json` sits in five of them in
-    /// the consumer this gate was fixed against); MSBuild copies both to the same
-    /// destination and the last writer wins. Compare the surviving copy against only
-    /// ONE claimant and the other is condemned for being SHADOWED — an accusation no
-    /// build can answer, because the build is doing exactly what it means to do.
-    ///
-    /// So the copy is checked against every claimant, and is current if it matches
-    /// ANY of them. That is not a loosening: the copy the run loads came from one of
-    /// these files, and if it matches one of them it holds bytes a current build
-    /// produces — which is the only thing this gate asserts. If it matches NONE, it
-    /// is stale whoever wrote it.
+    /// project's first, so a stale message names the project being judged. Not
+    /// always this project's alone: two closure projects may hold a file at the SAME
+    /// relative path (`xunit.runner.json` sits in five of them here), MSBuild copies
+    /// both to one destination and the last writer wins. Checked against every
+    /// claimant, and current if it matches ANY — otherwise the shadowed project is
+    /// condemned for a build doing exactly what it means to do.
     let claimantsOf (rel: string) =
         let mine = Path.Combine(projectDir, rel)
 
@@ -497,9 +428,9 @@ let private staleContribution
     // (1) COMPILE. The project's own assembly must be newer than every compile
     //     input it was built from. Judged against the project's OWN output, never
     //     the consumer's: a private-only edit to a dependency need not relink its
-    //     consumers (reference assemblies exist precisely to avoid that), so
-    //     comparing a dependency's source against the TEST project's DLL would be
-    //     the same unanswerable accusation in a smaller costume.
+    //     consumers (that is what reference assemblies are for), so comparing a
+    //     dependency's source against the TEST project's DLL would be an
+    //     accusation no build can answer.
     let staleCompile =
         match cache.OwnAssembly(projectDir, assemblyName) with
         | None -> None // not built yet — the presence probe's business, not ours
@@ -511,10 +442,8 @@ let private staleContribution
                 AssemblyOlderThanSource(project, Path.Combine(projectDir, rel), mtime, assemblyMtime))
 
     // (2) COPY. Every file of this project that the build has copied into the test
-    //     project's output dir must hold the bytes it was copied from. Keyed on the
-    //     COPY existing, so a file the build does not copy is never asserted about
-    //     — that is what makes a false positive unrepresentable here. Covers content
-    //     and fixture items (its own, and those carried in transitively) …
+    //     project's output dir must hold the bytes it was copied from — content and
+    //     fixture items included, its own and those carried in transitively …
     let staleCopy () =
         sources
         |> List.tryPick (fun (rel, _) ->
@@ -525,12 +454,8 @@ let private staleContribution
 
     // … and (3) the dependency's ASSEMBLY, which the same copy carries into the
     //     consumer's output dir. Catches "only the dependency was rebuilt": its own
-    //     DLL is fresh, but the copy the test run would actually load is not.
-    //
-    //     The candidates are ALL of the dependency's per-TFM outputs, because which
-    //     one MSBuild copied is not knowable here — and, judged by content, does
-    //     not need to be. (For the test project itself the copy IS one of the
-    //     candidates — the very same path — so this is a no-op, as it should be.)
+    //     DLL is fresh, but the copy the test run would actually load is not. (For
+    //     the test project itself the copy IS one of the candidates, so it no-ops.)
     let staleAssemblyCopy () =
         let copy = Path.Combine(tfmDir, assemblyName + ".dll")
 
@@ -549,12 +474,9 @@ let private staleContribution
 /// closure contributing something out of date to it? `ordered` is that closure,
 /// test project first.
 let private staleInTfmDir (cache: Cache) (ordered: (string * string) list) (tfmDir: string) : StaleInput option =
-    // A hash SET, not an F# `Map` and not a map to mtimes. This is read exactly one
-    // way — "is there a copy at `rel`?" — and it is built from a full walk of the
-    // output dir (hundreds of DLLs here, before content and fixtures). A `Map`
-    // would pay O(n log n) and one heap node per file to build an ordering nothing
-    // ever asks for; a map to mtimes would carry a value no caller may use any
-    // more. `HashSet` builds in O(n) and answers the one question asked.
+    // A hash SET, not an F# `Map`: read exactly one way ("is there a copy at
+    // `rel`?") over a full walk of the output dir (hundreds of DLLs before content
+    // and fixtures), so paying O(n log n) for an ordering nothing asks for is waste.
     let outputs =
         SafeWalk.enumerateFiles Set.empty tfmDir
         |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName))
@@ -575,24 +497,18 @@ let private staleInTfmDir (cache: Cache) (ordered: (string * string) list) (tfmD
 ///
 /// It FAILS CLOSED on ignorance. If the closure cannot be determined — an
 /// unreadable/unparseable project file, an unresolvable `ProjectReference` — the
-/// answer is `InputsUndeterminable`, NOT `None`. A gate that reports "up to date"
-/// because it could not look is the very bug it exists to prevent.
+/// answer is `InputsUndeterminable`, NOT `None`.
 ///
 /// A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
 /// which TFM `dotnet run` selects is not knowable here, so a single fresh output
-/// dir means there is a fresh way to run — conservative against false-stale, which
-/// is the whole point.
+/// dir means there is a fresh way to run — conservative against false-stale.
 let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
     let sw = Stopwatch.StartNew()
 
-    // The closure: the test project itself, plus every project it transitively
-    // references. Sources ANYWHERE ELSE in the repo are — by construction — not
-    // inputs to this test binary and cannot make it stale.
-    //
-    // No project FILE (a `--project` naming a directory that holds none) is not
-    // ignorance — there are no declared references to fail to read, and `dotnet
-    // run` would itself fail on such a path. That directory's own files are the
-    // inputs, and they are fully knowable.
+    // No project FILE (a `--project` naming a directory that holds none) is NOT
+    // ignorance — there are no declared references to fail to read, and `dotnet run`
+    // would itself fail on such a path. That directory's own files are the inputs,
+    // and they are fully knowable.
     let closure =
         match target.ProjectFile with
         | Some projectFile ->
@@ -616,8 +532,7 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
 
     let verdict =
         match ordered with
-        // FAIL CLOSED: we could not work out what this run's inputs are, so we
-        // cannot certify it. Refuse, and let the build report the real error.
+        // FAIL CLOSED: inputs unknown, so we cannot certify.
         | Error reason -> Some(InputsUndeterminable(target.AssemblyName, reason))
         | Ok _ when Array.isEmpty candidateTfmDirs -> None // nothing built to be stale — presence probe's business
         | Ok ordered ->

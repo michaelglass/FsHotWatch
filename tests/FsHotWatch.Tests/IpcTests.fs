@@ -17,7 +17,6 @@ open FsHotWatch.Events
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
-/// Poll until IPC server is accepting connections.
 let private waitForServer (pipeName: string) =
     waitUntil
         (fun () ->
@@ -277,10 +276,8 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
             ))
     )
 
-    // Trigger status updates
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Wait for all plugins to process their events
     waitUntil
         (fun () ->
             match host.GetStatus("failed-p") with
@@ -332,11 +329,10 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         with _ ->
             ()
 
-// `DaemonRpcTarget.GetStatus without IPC serializes all status variants`
-// moved to FsHotWatch.IntegrationTests 2026-04-30 — flaked under load
-// (~20% rate locally), 4-handler dispatch is integration-grade.
+// `GetStatus without IPC serializes all status variants` lives in
+// FsHotWatch.IntegrationTests — 4-handler dispatch flaked ~20% here.
 
-// --- Wedge-aware status (AUTOMATION-15 item 4) ---
+// --- Wedge-aware status ---
 
 [<Fact(Timeout = 15000)>]
 let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
@@ -415,11 +411,10 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``status stays responsive over a real pipe while another op is wedged`` () =
-    // The end-to-end acceptance: a real daemon over a real pipe, ONE RPC op
-    // blocked indefinitely (a stuck WaitForComplete), and a concurrent `status`
-    // call must STILL return — reporting the wedge + stuck op — instead of the
-    // consumer blindly timing out on a dead socket. This is what 2026-06-16's
-    // "could not connect to daemon: operation timed out" looked like; the
+    // End-to-end acceptance: a real daemon over a real pipe, ONE RPC op blocked
+    // indefinitely (a stuck WaitForComplete), and a concurrent `status` call must
+    // STILL return — reporting the wedge + stuck op — instead of the consumer timing
+    // out on a dead socket ("could not connect to daemon: operation timed out"). The
     // multi-acceptor server + watchdog make status land on a free acceptor.
     let pipeName = $"fshw-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -462,8 +457,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
         if wedged.IsCompleted then
             failwithf "wedged WaitForComplete should still be parked, but completed with: %s" wedged.Result
 
-        // The defining assertion: a concurrent `status` over the same pipe MUST
-        // still return within a bounded time, not hang on the wedged op.
+        // The defining assertion: `status` must return within a bounded time.
         let statusTask = Async.StartAsTask(async { return! IpcClient.getStatus pipeName })
 
         let completed = statusTask.Wait(TimeSpan.FromSeconds(8.0))
@@ -517,13 +511,12 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
-    // Test with empty args
     let result1 =
         target.RunCommand("hello", "") |> Async.AwaitTask |> Async.RunSynchronously
 
     test <@ result1 = "hello world" @>
 
-    // Test with non-empty args (exercises the else branch of argsJson parsing)
+    // Exercises the else branch of argsJson parsing.
     let result2 =
         target.RunCommand("hello", "test-arg")
         |> Async.AwaitTask
@@ -621,32 +614,29 @@ let ``WaitForScan blocks until generation advances`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
-    // Regression: WaitForGeneration(-1, currentGen>0) must not hang.
-    // On a hot daemon the scan already completed (generation=1+),
-    // so the legacy path (afterGeneration=-1) should return immediately.
+    // Regression: WaitForGeneration(-1, currentGen>0) must not hang. On a hot daemon
+    // the scan already completed, so the legacy path returns immediately.
     let signal = FsHotWatch.Daemon.ScanSignal()
     let task = signal.WaitForGeneration(-1L, 1L)
     test <@ task.IsCompleted @>
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForScan legacy path blocks on cold daemon`` () =
-    // On a cold daemon (generation=0), the legacy path should block
-    // until a scan completes.
+    // Cold daemon = generation 0.
     let signal = FsHotWatch.Daemon.ScanSignal()
     let task = signal.WaitForGeneration(-1L, 0L)
     test <@ not task.IsCompleted @>
-    // Signal generation 1 — should resolve (Post is fire-and-forget, so wait for completion)
+    // Post is fire-and-forget, so wait for completion rather than asserting at once.
     signal.SignalGeneration(1L)
     task.Wait(System.TimeSpan.FromSeconds(5.0)) |> ignore
     test <@ task.IsCompleted @>
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForGeneration does not hang when scan completes before waiter is registered`` () =
-    // Race: client reads currentGeneration=0, then before posting WaitFor to the
-    // agent the scan completes and SignalGeneration(1) fires. Without latching
-    // the latest seen generation in the agent, the WaitFor message arrives after
-    // Signal has already been processed (no waiters present), and the waiter
-    // hangs forever despite the scan being done.
+    // Race: the client reads currentGeneration=0, then before posting WaitFor to the
+    // agent the scan completes and SignalGeneration(1) fires. Without latching the
+    // latest seen generation in the agent, WaitFor arrives after Signal was processed
+    // (no waiters present) and hangs forever despite the scan being done.
     let signal = FsHotWatch.Daemon.ScanSignal()
     // Simulate: signal arrives BEFORE waiter registration.
     signal.SignalGeneration(1L)
@@ -794,7 +784,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetDiagnostics("")
-    // Verify the detail field is present with the full output, not just the message
+    // The full output, not just the message.
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("println debug: x = 42") @>
 
@@ -951,7 +941,6 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
     host.RegisterHandler(handler)
 
-    // Put plugin into Running state
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitUntil
@@ -976,12 +965,11 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``WaitForComplete client observes failure when daemon is shut down mid-wait`` () =
-    // Drives the real IPC over a real named pipe: client blocks in
-    // WaitForComplete on a stuck-Running plugin, we cancel the server CTS,
-    // the client must observe a failure within a bounded time. Catches
-    // regressions where the daemon-side wait stops observing the shutdown
-    // token and the client hangs (in-process callers) or races OS pipe
-    // teardown for a clean exit.
+    // Real IPC over a real named pipe: the client blocks in WaitForComplete on a
+    // stuck-Running plugin, we cancel the server CTS, and the client must observe a
+    // failure within a bounded time. Catches regressions where the daemon-side wait
+    // stops observing the shutdown token and the client hangs, or races OS pipe
+    // teardown into a clean exit.
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1048,8 +1036,8 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
 
         match clientTask.Result with
         | Choice1Of2 result ->
-            // Silent success would let `fshw errors --wait` exit 0 even though
-            // the daemon went away. That's the bug we want to prevent.
+            // Silent success would let `fshw errors --wait` exit 0 after the daemon
+            // went away.
             failwithf "client returned success after daemon shutdown: %s" result
         | Choice2Of2 _ -> ()
     finally
@@ -1083,20 +1071,17 @@ let ``repeated scan force via IPC increments generation each time`` () =
     test <@ gen1 >= 1L @>
 
     try
-        // First scan
         let scanResult1 = IpcClient.scan pipeName |> Async.RunSynchronously
         test <@ scanResult1.Contains("scan started") @>
 
-        // Wait for this scan to complete
         IpcClient.waitForScan pipeName gen1 |> Async.RunSynchronously |> ignore
         let gen2 = daemon.GetScanGeneration()
         test <@ gen2 > gen1 @>
 
-        // Second scan — this is the one that was reported as broken
+        // Second scan — the one that was reported as broken.
         let scanResult2 = IpcClient.scan pipeName |> Async.RunSynchronously
         test <@ scanResult2.Contains("scan started") @>
 
-        // Wait for this scan to complete
         IpcClient.waitForScan pipeName gen2 |> Async.RunSynchronously |> ignore
         let gen3 = daemon.GetScanGeneration()
         test <@ gen3 > gen2 @>
@@ -1113,13 +1098,11 @@ let ``repeated scan force via IPC increments generation each time`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``WaitForScan client observes failure when daemon is shut down mid-wait`` () =
-    // Companion to the WaitForComplete shutdown test, for the OTHER blocking
-    // wait: a real daemon over a real pipe, a client parked in WaitForScan for
-    // a generation that will never arrive (no scan is triggered), then the
-    // daemon's CTS is cancelled. The client must observe a failure — without
-    // the shutdown-token race in WaitForScanGeneration, the RPC could resolve
-    // cleanly during teardown and `fshw scan --wait` would exit 0 even though
-    // the daemon went away.
+    // Companion to the WaitForComplete shutdown test, for the OTHER blocking wait: a
+    // client parked in WaitForScan for a generation that will never arrive (no scan is
+    // triggered), then the daemon's CTS is cancelled. Without the shutdown-token race
+    // in WaitForScanGeneration the RPC could resolve cleanly during teardown and
+    // `fshw scan --wait` would exit 0 after the daemon went away.
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-scanwait-{Guid.NewGuid():N}")
 
@@ -1178,21 +1161,16 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
 
 // --- Listener-wedge survival under malformed client traffic ---
 //
-// Hypothesis (from rpc-overflow investigation): when a client connection
-// triggers an exception inside StreamJsonRpc's read path (e.g. an
-// `OverflowException` arising from a malformed/oversized `Content-Length`
-// header), the daemon-side `IpcServer.acceptOne` *should* dispose just that
-// connection and let the outer accept loop spawn a replacement listener,
-// keeping subsequent well-formed RPC calls working.
-//
-// If the server instead got wedged after one bad message, every subsequent
-// CLI invocation would surface the same error — which is what the
-// Intelligence Phase D stress test reported. This test exercises the
-// recovery path deterministically without a 7.8 GB daemon.
+// When a client connection faults StreamJsonRpc's read path (e.g. an
+// `OverflowException` from a malformed/oversized `Content-Length` header),
+// `IpcServer.acceptOne` must dispose just that connection and let the outer accept
+// loop spawn a replacement listener, keeping subsequent well-formed RPC calls
+// working. A server wedged after one bad message makes every later CLI invocation
+// surface the same error — what the Intelligence Phase D stress test reported.
 
-/// Connect raw to the named pipe, write garbage, close. Returns true if the
-/// raw connect/write/close succeeded — the *server's* response is whatever
-/// the rpc layer does with our malformed bytes.
+/// Connect raw to the named pipe, write garbage, close. Returns true if the raw
+/// connect/write/close succeeded — the *server's* response is whatever the rpc layer
+/// does with our malformed bytes.
 let private writeMalformedFrame (pipeName: string) (payload: byte[]) : bool =
     try
         use pipeClient =
@@ -1232,8 +1210,7 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
         let beforeStatus = IpcClient.getStatus pipeName |> Async.RunSynchronously
         test <@ beforeStatus.Contains("wedge-test") @>
 
-        // Hit the server with several rounds of garbage, mimicking the kinds
-        // of frames StreamJsonRpc might trip an OverflowException on:
+        // Frames StreamJsonRpc might trip an OverflowException on:
         //   1. Content-Length larger than fits in Int32 → integer-parse OF.
         //   2. Random binary noise (no header at all).
         //   3. Truncated header with no body.
@@ -1247,9 +1224,8 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
             // Give the server a moment to react / dispose.
             Thread.Sleep(50)
 
-        // The whole point: a well-formed RPC after the garbage MUST still
-        // succeed. If the listener was wedged we'd time out or get an
-        // exception here.
+        // A well-formed RPC after the garbage MUST still succeed; a wedged listener
+        // times out or throws here.
         let afterStatus = IpcClient.getStatus pipeName |> Async.RunSynchronously
         test <@ afterStatus.Contains("wedge-test") @>
     finally
@@ -1260,15 +1236,15 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
         with _ ->
             ()
 
-// === Item 3 regression: accept loop must not silently swallow acceptor faults ===
+// === Regression: the accept loop must not silently swallow acceptor faults ===
 //
-// A pipe name that (with the runtime's `CoreFxPipe_` temp-dir prefix) exceeds
-// the platform's Unix-domain-socket path limit makes the NamedPipeServerStream
-// constructor throw deterministically — a PERSISTENT bind failure. On the old
-// code the accept loop's `| _ -> ()` (and the unobserved faulted task handed
-// back by Task.WhenAny) silently respawned acceptors in a tight spin with no
-// diagnostic at all. The loop must log the fault loudly (and back off) while
-// still shutting down cleanly on cancellation.
+// A pipe name that (with the runtime's `CoreFxPipe_` temp-dir prefix) exceeds the
+// platform's Unix-domain-socket path limit makes the NamedPipeServerStream
+// constructor throw deterministically — a PERSISTENT bind failure. The old accept
+// loop's `| _ -> ()` (and the unobserved faulted task handed back by Task.WhenAny)
+// silently respawned acceptors in a tight spin with no diagnostic at all. The loop
+// must log the fault loudly (and back off) while still shutting down cleanly on
+// cancellation.
 //
 // Touches Logging.logLevel + Console.Error → joins the LogGlobal serialized
 // collection (see TestHelpers).
@@ -1323,10 +1299,10 @@ type AcceptLoopFaultTests() =
             FsHotWatch.Logging.setLogLevel original
 
 // --- resolveVerdictDeadline: override precedence (pure — no process env touched) ---
-// Regression for the 2026-07-13 test-prune wedge: a client-unbounded
-// WaitForComplete used to become TimeSpan.MaxValue — an INFINITE wait that
-// heartbeat-logged for 8h36m while a plugin was wedged. The daemon now always
-// applies a finite bound; there is deliberately no "infinite" setting.
+// Regression for the test-prune wedge: a client-unbounded WaitForComplete used to
+// become TimeSpan.MaxValue — an INFINITE wait that heartbeat-logged for 8h36m while a
+// plugin was wedged. The daemon now always applies a finite bound; there is
+// deliberately no "infinite" setting.
 
 [<Fact(Timeout = 15000)>]
 let ``resolveVerdictDeadline: absent override falls back to the default`` () =
@@ -1345,20 +1321,19 @@ let ``resolveVerdictDeadline: junk / non-positive override falls back to the def
     Assert.Equal(DefaultVerdictDeadline, resolveVerdictDeadline (Some value))
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-98 finding 1 — EVERY tracked RPC is bounded, at the seam.
+// EVERY tracked RPC is bounded, at the seam (AUTOMATION-98).
 // ---------------------------------------------------------------------------
 //
 // The regression this pins: `WaitForScan` had NO deadline. `WaitForScanGeneration`
 // raced only daemon shutdown, never a clock; the CLI passes `-1L` (including on
 // every convergence re-scan); and it is `check`'s FIRST step. So any hang inside
-// `performScan` — the Fantomas preprocessor, an Ionide design-time evaluation, an
-// FCS `ParseAndCheckFileInProject` — meant "Scanning…" forever: no timeout, no
-// error, no verdict. Exactly the 8h36m wedge, on a path nobody had bounded.
+// `performScan` — the Fantomas preprocessor, an FCS `ParseAndCheckFileInProject` —
+// meant "Scanning…" forever: no timeout, no error, no verdict. The 8h36m wedge, on
+// a path nobody had bounded.
 //
-// The fix is at the `trackedTask` SEAM rather than in `WaitForScan`, so the
-// property holds for every bracketed RPC — including ones not yet written. These
-// tests therefore assert the SEAM, using an RPC (`WaitForScan`) whose own body
-// still contains no timeout code at all.
+// The fix is at the `trackedTask` SEAM rather than in `WaitForScan`, so the property
+// holds for every bracketed RPC — including ones not yet written. These tests assert
+// the SEAM, using an RPC (`WaitForScan`) whose own body contains no timeout code.
 //
 // RED-BEFORE-GREEN: drop the deadline race from `trackedTask` and the first test
 // hangs until xUnit kills it at 15s.
@@ -1379,14 +1354,13 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     let inner = ex.InnerException
     Assert.IsType<TimeoutException>(inner) |> ignore
     test <@ inner.Message.Contains("WaitForScan") @>
-    // The wedge report's inline recovery rides along, so the client is never left
-    // to guess what to do.
+    // The wedge report's inline recovery rides along, so the client knows what to do.
     test <@ inner.Message.Contains("fshw stop") @>
 
 [<Fact(Timeout = 15000)>]
 let ``an RPC that completes inside the deadline returns normally`` () =
     // The seam must not fire on healthy work — the deadline is a backstop, not a
-    // budget. A scan that signals immediately still returns its scan status.
+    // budget.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let config =
@@ -1399,14 +1373,12 @@ let ``an RPC that completes inside the deadline returns normally`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``the seam refuses an infinite deadline rather than obeying it`` () =
-    // The one way left to ask for an unbounded RPC is to pass an infinite deadline
-    // to the seam. It is not honoured: it falls back to the ambient deadline. A
-    // caller cannot re-open the hole by "configuring" it shut.
+    // The one way left to ask for an unbounded RPC is to pass an infinite deadline to
+    // the seam. It is not honoured: it falls back to the ambient deadline.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let target =
         DaemonRpcTarget(defaultRpcConfig host, deadline = Timeout.InfiniteTimeSpan)
 
-    // Healthy work still returns (proving the fallback deadline is finite-but-ample,
-    // not zero).
+    // Healthy work still returns — the fallback deadline is finite but ample, not zero.
     test <@ target.WaitForScan(-1L).Result = "idle" @>

@@ -75,7 +75,6 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
 
         let absSource = Path.GetFullPath(sourceFile)
 
-        // Use GetProjectOptionsFromScript to build minimal project options
         let options, _diagnostics =
             checker.GetProjectOptionsFromScript(
                 absSource,
@@ -160,7 +159,6 @@ let ``PrepareForRediscovery clears stale file options`` () =
 
     pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
 
-    // Verify both files and the project are registered
     test
         <@
             pipeline.GetAllRegisteredFiles()
@@ -184,7 +182,6 @@ let ``PrepareForRediscovery clears stale file options`` () =
 
     pipeline.RegisterProject("/tmp/MyProject.fsproj", updatedOptions)
 
-    // FileA should still be registered, FileB should be gone
     test
         <@
             pipeline.GetAllRegisteredFiles()
@@ -295,7 +292,7 @@ let ``CheckFile assigns increasing version numbers`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-// --- InvalidateFile coverage (lines 44-54) ---
+// --- InvalidateFile coverage ---
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile with cache backend calls Invalidate for registered file`` () =
@@ -326,8 +323,7 @@ let ``InvalidateFile with cache backend calls Invalidate for registered file`` (
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile skips Invalidate when registered file is unreadable (F7 None branch)`` () =
     // F7: when GetFileHash returns None, makeCacheKeyFast returns None and
-    // InvalidateFile must skip the call entirely (no key to invalidate).
-    // Exercises the None match arm introduced by the F7 fix.
+    // InvalidateFile must skip the call entirely — there is no key to invalidate.
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
@@ -349,18 +345,16 @@ let ``InvalidateFile with cache backend does nothing for unregistered file`` () 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile without cache backend does not throw`` () =
     let pipeline = CheckPipeline(nullChecker)
-    // No cache backend — should be a no-op without error
     pipeline.InvalidateFile(AbsFilePath.create "/tmp/NoCacheFile.fs")
 
-// --- cancelAndDispose already-disposed CTS (lines 17-18) ---
+// --- cancelAndDispose with an already-disposed CTS ---
 
 [<Fact(Timeout = 15000)>]
 let ``CancelPreviousCheck tolerates already-disposed CTS`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Disposable.fs")
-    // Manually dispose the CTS before the pipeline tries to cancel it
     cts.Dispose()
-    // This second call will try to cancel+dispose the first (already disposed) CTS
+    // The second call cancels+disposes the first, already-disposed CTS.
     let newCts = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Disposable.fs")
     test <@ not newCts.IsCancellationRequested @>
 
@@ -376,7 +370,7 @@ let ``PrepareForRediscovery clears cache backend`` () =
     pipeline.PrepareForRediscovery()
     test <@ cache.ClearCalls.Value = 1 @>
 
-// --- CheckProject with missing project (line 186) ---
+// --- CheckProject with missing project ---
 
 [<Fact(Timeout = 15000)>]
 let ``CheckProject returns None for missing project`` () =
@@ -387,7 +381,7 @@ let ``CheckProject returns None for missing project`` () =
     let result = pipeline.CheckProject("/tmp/Missing.fsproj") |> Async.RunSynchronously
     test <@ result = None @>
 
-// --- Cancellation during CheckFile (lines 174-176) ---
+// --- Cancellation during CheckFile ---
 
 [<Fact(Timeout = 15000)>]
 let ``CheckFile returns None when cancelled before FCS call`` () =
@@ -409,11 +403,9 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
-    // Deterministic version of the in-flight cancellation contract: a caller-supplied
-    // cancellation token that is already cancelled when CheckFile is called must
-    // produce None without invoking FCS. The previous in-flight variant of this test
-    // raced against FCS speed under parallel test load — when FCS finished before
-    // the cancel loop fired, the assertion failed spuriously.
+    // A caller token already cancelled when CheckFile is called must produce None
+    // without invoking FCS. Deliberately NOT an in-flight cancel: that variant raced
+    // FCS under parallel load and failed whenever FCS won.
     FsHotWatch.Tests.TestHelpers.withTempDir "cancel-precancelled" (fun tmpDir ->
         let checker =
             FSharpChecker.Create(projectCacheSize = 1, keepAssemblyContents = true)
@@ -438,13 +430,6 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
             |> Async.RunSynchronously
 
         test <@ result = None @>)
-
-// The two integration tests that used to live here ("file cache enables fast
-// cold-start check", "cached check returns None because partial FCS results are
-// unusable by plugins") went away with the on-disk `FileCheckCache` in
-// AUTOMATION-98 — read their names again and they were, all along, a description
-// of a cache that could not hit. `tryGetCachedFullCheck` below is the surviving
-// invariant they were really pinning: a `ParseOnly` entry is a MISS.
 
 // --- tryGetCachedFullCheck pure-logic tests (no disk, no FCS) ---
 
@@ -507,15 +492,13 @@ let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
-    // Pre-populate the cache with a FullCheck entry. CheckFile should return it
-    // without ever calling the (null) checker — proving cache lookup happens
-    // before FCS dispatch and disk read.
+    // The checker is null: returning a result at all proves the cache lookup happens
+    // before FCS dispatch and the disk read.
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
-    // Use a real on-disk file: F7 makes makeCacheKey return None when the
-    // file is unreadable (so the cache lookup is bypassed). To test the
-    // cache-hit path we need a real file the provider can hash.
+    // A real on-disk file: since F7, makeCacheKey returns None for an unreadable
+    // file and the cache lookup is bypassed, so the hit path needs a hashable file.
     let tempDir =
         Path.Combine(Path.GetTempPath(), $"fshw-cachehit-{System.Guid.NewGuid():N}")
 

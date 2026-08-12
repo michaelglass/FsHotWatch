@@ -7,10 +7,9 @@ open Swensen.Unquote
 open FsHotWatch.PluginFramework
 open FsHotWatch.TestPrune.DependencyFanout
 
-// Unit coverage for the pure dependency-fanout primitives. The end-to-end
-// daemon behaviour (skip-gate closing) is covered in TestPrunePluginTests; these
-// pin the fingerprint/diff building blocks directly, including the missing-DLL,
-// unreadable-fsproj, and PackageReference-parse branches.
+// The pure dependency-fanout primitives. End-to-end daemon behaviour (skip-gate
+// closing) lives in TestPrunePluginTests; these pin the fingerprint/diff building
+// blocks directly.
 
 let private writeTempProject (body: string) =
     let dir = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString())
@@ -99,13 +98,9 @@ module ``computeProjectFingerprint`` =
     [<Fact>]
     let ``a referenced project whose DLL will not RESOLVE is folded in, never dropped`` () =
         // `List.choose graph.GetCanonicalDllPath` DROPPED any project the graph could not
-        // give a DLL path for. A dropped project contributes nothing to the fingerprint,
-        // so the fingerprint never moves when it changes — and a dependency bump inside it
-        // never fans out. That is UNDER-SELECTION: the exact failure DependencyFanout
-        // exists to prevent, rebuilt inside it.
-        //
-        // ContentHash names this as unsafe answer #1: "SKIP the file — the hash matches,
-        // and the claim silently covers a file nobody looked at."
+        // give a DLL path for. A dropped project contributes nothing to the fingerprint, so
+        // the fingerprint never moves when it changes and a dependency bump inside it never
+        // fans out — the under-selection DependencyFanout exists to prevent.
         let dir, testFsproj = writeTempProject "<Project></Project>"
         let known = Path.Combine(dir, "Known.fsproj")
         let knownDll = Path.Combine(dir, "Known.dll")
@@ -139,10 +134,9 @@ module ``computeProjectFingerprint`` =
 
     [<Fact>]
     let ``an unresolvable DLL and a missing DLL are ONE value — the repo-wide unhashable sentinel`` () =
-        // `DaemonIdentity` states the claim out loud: "one value for I-could-not-read-it,
-        // repo-wide". This module had its own two ("missing", "unreadable"), which made
-        // that claim false as written. Both ways of not having a DLL now hash to
-        // `ContentHash.UnhashableContent`, so the two fingerprints agree.
+        // `DaemonIdentity` promises one value for I-could-not-read-it, repo-wide. Both
+        // ways of not having a DLL hash to `ContentHash.UnhashableContent`, so the two
+        // fingerprints agree — a second local sentinel here would break that promise.
         let dir, testFsproj = writeTempProject "<Project></Project>"
         let lib = Path.Combine(dir, "Lib.fsproj")
         File.WriteAllText(lib, "<Project></Project>")
@@ -243,7 +237,6 @@ module ``computeProjectFingerprint`` =
                 GetCanonicalDllPath = fun p -> if p = c then Some cDll else None }
 
         try
-            // Terminates (no infinite loop) and incorporates C's DLL.
             let fp = computeProjectFingerprint graph testFsproj
             test <@ fp.Length > 0 @>
         finally

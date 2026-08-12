@@ -6,11 +6,10 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 
-/// Build a PluginCtx that records every call for assertion. Statuses are
-/// recorded as VALUES (not `%A` renderings): asserting on a formatted string
-/// couples the test to F#'s layout algorithm, which reflows the moment a type's
-/// field names or widths change — a brittleness that says nothing about the
-/// behaviour under test.
+/// Build a PluginCtx that records every call for assertion. Statuses are recorded
+/// as VALUES, not `%A` renderings: asserting on a formatted string couples the
+/// test to F#'s layout algorithm, which reflows whenever a field name or width
+/// changes.
 let private makeRecordingCtx () =
     let calls = System.Collections.Generic.List<string>()
     let statuses = System.Collections.Generic.List<PluginStatus>()
@@ -83,9 +82,8 @@ let ``completeWith reports a Completed status carrying the verdict`` () =
 
     PluginCtxHelpers.completeWith ctx "done" (TimeSpan.FromSeconds 1.5)
 
-    // ONE call: the Completed status carries the summary AND the measured
-    // duration (RunVerdict) — there is no separate summary channel for the two
-    // to disagree through.
+    // ONE call: the Completed status carries the summary AND the measured duration
+    // (RunVerdict), so there is no second channel for the two to disagree through.
     test <@ calls.Count = 1 @>
     test <@ statuses.Count = 1 @>
 
@@ -105,9 +103,9 @@ let ``failedWith reports a Failed status carrying BOTH the diagnosis and the ver
 
     match statuses.[0] with
     | Failed(err, _, v) ->
-        // The error is the DIAGNOSIS; the verdict is the human summary + the
-        // measured duration. Carrying both is what stops the run record
-        // guessing a start time (the "started: with no elapsed:" signature).
+        // The error is the DIAGNOSIS; the verdict is the human summary plus the
+        // measured duration. Carrying both stops the run record guessing a start
+        // time (the "started: with no elapsed:" signature).
         test <@ err = "stack trace" @>
         test <@ v.Summary = "2 failed: A, B" @>
         test <@ v.Elapsed = TimeSpan.FromSeconds 4.0 @>

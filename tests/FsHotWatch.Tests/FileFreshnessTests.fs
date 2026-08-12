@@ -1,8 +1,6 @@
-/// Tests for FsHotWatch.TestPrune.FileFreshness — fshw-owned per-file
-/// "FCS check was clean" sidecar. Survives daemon restarts; gates the
-/// `detectChanges` call site so cross-restart Phase B replay only trusts
-/// rows that ended their last session FCS-clean. Path D in the design
-/// (sidecar JSON), keeps TestPrune.Core schema unchanged.
+/// FileFreshness is an fshw-owned per-file "FCS check was clean" sidecar that
+/// survives daemon restarts. It gates the `detectChanges` call site so cross-restart
+/// Phase B replay only trusts rows that ended their last session FCS-clean.
 module FsHotWatch.Tests.FileFreshnessTests
 
 open System
@@ -85,13 +83,11 @@ let ``markDirty on absent file inserts entry with no LastCleanCheckAt`` () =
         @>
 
 // =============================================================================
-// markUnverified — Item 3 (BuildCompleted-gated stamping). Used in place of
-// markDirty when the plugin can't promote a file to clean (because no
-// BuildCompleted has fired yet, or the FCS check itself reported errors).
-//
-// The Item 3 invariant: once a file has been stamped clean, a later
-// transient-dirty event must NOT erase that record. The next genuine clean
-// stamp will refresh it; until then the prior clean record holds.
+// markUnverified — used in place of markDirty when the plugin cannot promote a
+// file to clean: no BuildCompleted has fired yet, or the FCS check reported
+// errors. The invariant: once a file has been stamped clean, a later
+// transient-dirty event must NOT erase that record. The next genuine clean stamp
+// refreshes it; until then the prior clean record holds.
 // =============================================================================
 
 [<Fact(Timeout = 5000)>]
@@ -108,9 +104,8 @@ let ``markUnverified on absent file inserts fcsClean=false`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``markUnverified preserves prior clean state — does NOT downgrade clean to dirty`` () =
-    // Item 3 invariant: cold-start reliability over correctness on the
-    // user-broke-their-code edge case. The next genuine markClean will
-    // refresh the timestamp; until then the prior clean record holds.
+    // The deliberate trade: cold-start reliability over correctness on the
+    // user-broke-their-code edge case.
     let earlier = DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)
 
     let store =
@@ -122,7 +117,6 @@ let ``markUnverified preserves prior clean state — does NOT downgrade clean to
 
     let updated = markUnverified "src/Foo.fs" store
 
-    // Identity: the prior clean record survives unchanged.
     test
         <@
             Map.tryFind "src/Foo.fs" updated = Some
@@ -170,10 +164,10 @@ let ``isClean returns true only when entry is present and fcsClean = true`` () =
     test <@ not (isClean "absent.fs" store) @>
 
 // =============================================================================
-// classify — three-way trust (Clean / Dirty / Unknown) consumed by the
-// detectChanges call site. The Unknown-vs-Dirty split is what lets a seeded
-// test-impact.db (ADR-010) whose sidecar didn't travel be diffed (Unknown)
-// while explicitly-poisoned rows stay bypassed (Dirty). AUTOMATION-67.
+// classify — three-way trust (Clean / Dirty / Unknown) consumed by detectChanges.
+// The Unknown-vs-Dirty split lets a seeded test-impact.db (ADR-010) whose sidecar
+// didn't travel still be diffed, while explicitly-poisoned rows stay bypassed.
+// AUTOMATION-67.
 // =============================================================================
 
 [<Fact(Timeout = 5000)>]
@@ -202,9 +196,9 @@ let ``classify: explicit dirty entry -> Dirty (poisoned rows, stays bypassed)`` 
 
 [<Fact(Timeout = 5000)>]
 let ``classify: absent entry -> Unknown (seeded-DB case, diffable when rows exist)`` () =
-    // The seeded-workspace under-selection root cause: a copied test-impact.db
-    // has rows but no matching sidecar record, so every seeded file classifies
-    // Unknown (NOT Dirty). The call site diffs Unknown-over-nonempty rows.
+    // The seeded-workspace under-selection root cause: a copied test-impact.db has
+    // rows but no sidecar record, so every seeded file classifies Unknown, and the
+    // call site diffs Unknown-over-nonempty rows.
     test <@ classify "never-seen.fs" Map.empty = Unknown @>
 
 [<Fact(Timeout = 5000)>]
@@ -215,9 +209,8 @@ let ``classify: Unknown is distinct from Dirty — the load-bearing polarity spl
 
 [<Fact(Timeout = 5000)>]
 let ``save uses atomic write — partial state never visible at sidecar path`` () =
-    // Indirect check: after save the .tmp file should not exist alongside,
-    // and the sidecar file must parse cleanly. (This is a smoke test against
-    // the implementation forgetting to rename / delete the .tmp.)
+    // Indirect: a leftover .tmp alongside the sidecar means the rename never
+    // happened, so partial state was writable at the real path.
     withTempDir "ff-atomic" (fun tmpDir ->
         let store =
             Map.empty
@@ -233,9 +226,8 @@ let ``save uses atomic write — partial state never visible at sidecar path`` (
 
 [<Fact(Timeout = 5000)>]
 let ``corrupt sidecar JSON falls back to empty store rather than throwing`` () =
-    // The sidecar is derivative — losing it means we just over-mark files
-    // dirty for one cycle. Crashing the plugin on a corrupt sidecar would
-    // be a worse trade.
+    // The sidecar is derivative: losing it over-marks files dirty for one cycle,
+    // which is a better trade than crashing the plugin.
     withTempDir "ff-corrupt" (fun tmpDir ->
         let p = sidecarPath tmpDir
         let dir = Path.GetDirectoryName p

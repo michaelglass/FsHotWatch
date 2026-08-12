@@ -43,10 +43,9 @@ let ``parseConfig with empty JSON returns defaults`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``loadConfig on a repo with no .fshw.json applies the baked-in default timeout (not infinite)`` () =
-    // The PRIMARY wedge cure: with no config at all, the daemon's global default
-    // timeout is a real, generous-but-finite bound — NOT Infinite. This is the
-    // production default path (defaultConfigFor), distinct from parseConfig's
-    // "inherit the caller's defaults" fallback.
+    // The primary wedge cure: with no config at all the bound must be finite, not
+    // Infinite. This is the production path (defaultConfigFor), distinct from
+    // parseConfig's "inherit the caller's defaults" fallback.
     let tmp =
         Path.Combine(Path.GetTempPath(), $"fshw-noconfig-{System.Guid.NewGuid():N}")
 
@@ -55,7 +54,6 @@ let ``loadConfig on a repo with no .fshw.json applies the baked-in default timeo
     try
         let config = loadConfig tmp
         test <@ config.TimeoutSec = Some DefaultGlobalTimeoutSec @>
-        // Sanity: the documented default is generous but finite.
         test <@ DefaultGlobalTimeoutSec = 600 @>
     finally
         Directory.Delete(tmp, true)
@@ -72,7 +70,6 @@ let ``parseConfig timeoutSec false disables the global default`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``positive global timeoutSec flows to build/tests/fileCommands entries that omit their own`` () =
-    // Per-entry omitted timeoutSec inherits the global via Option.orElse.
     let json =
         """{ "timeoutSec": 45,
              "build": { "command": "dotnet", "args": "build" },
@@ -80,8 +77,8 @@ let ``positive global timeoutSec flows to build/tests/fileCommands entries that 
              "fileCommands": [ { "name": "fc", "pattern": "*.sql", "command": "echo" } ] }"""
 
     let config = parseConfig json defaults
-    // The global default is set; per-entry overrides remain None and inherit it
-    // at registration time (registerPlugins: `b.TimeoutSec |> Option.orElse config.TimeoutSec`).
+    // Per-entry overrides stay None and inherit at registration time, via
+    // `b.TimeoutSec |> Option.orElse config.TimeoutSec` in registerPlugins.
     test <@ config.TimeoutSec = Some 45 @>
 
     match config.Build with
@@ -130,13 +127,11 @@ let ``parseConfig fsEventsLatencyMs zero is valid (no coalescing)`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig fsEventsLatencyMs negative falls back to default 250`` () =
-    // A negative latency is invalid; warn and fall back to the default.
     let config = parseConfig """{"fsEventsLatencyMs": -10}""" defaults
     test <@ config.FsEventsLatencyMs = 250 @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
-    // A non-number value is invalid; warn and fall back to the default.
     let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
     test <@ config.FsEventsLatencyMs = 250 @>
 
@@ -175,8 +170,7 @@ let ``parseConfig runHookTimeoutSec false or zero yields None (falls through the
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig runHookCommands absent brackets BOTH verbs`` () =
-    // THE compatibility property. This key is a pure addition: every config that
-    // existed before it must behave exactly as it did, so an fshw upgrade can
+    // The compatibility property: this key is a pure addition, so an fshw upgrade must
     // never silently stop bracketing a run that used to be bracketed.
     let config = parseConfig "{}" defaults
     test <@ config.RunHookCommands = DefaultRunHookCommands @>
@@ -195,17 +189,16 @@ let ``parseConfig runHookCommands accepts both verbs explicitly, in any case or 
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig runHookCommands empty array is legal and brackets nothing`` () =
-    // Chosen semantics: an explicit `[]` is HONOURED, matching the opt-out idiom
-    // the sibling run-hook keys already use. It is the one input that can disable
-    // bracketing, and it must be written out deliberately to do so.
+    // An explicit `[]` is HONOURED, matching the opt-out idiom of the sibling run-hook
+    // keys. It is the only input that can disable bracketing.
     let config = parseConfig """{"runHookCommands": []}""" defaults
     test <@ Set.isEmpty config.RunHookCommands @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig runHookCommands falls back to BOTH when nothing parses`` () =
-    // A typo must never un-gate. Unrecognised entries leave the set empty, which
-    // would silently disable the bracket — so a non-empty array that yields
-    // nothing usable resolves to the safe default, not to "bracket nothing".
+    // A typo must never un-gate: unrecognised entries would leave the set empty and
+    // silently disable the bracket, so a non-empty array yielding nothing usable
+    // resolves to the safe default instead.
     let config = parseConfig """{"runHookCommands": ["chekc", "confrim"]}""" defaults
     test <@ config.RunHookCommands = DefaultRunHookCommands @>
 
@@ -216,7 +209,6 @@ let ``parseConfig runHookCommands keeps the verbs it understood, dropping a typo
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig runHookCommands of the wrong type falls back to BOTH`` () =
-    // Same safe direction for a wrongly-typed value as for a typo.
     for json in
         [ """{"runHookCommands": "confirm"}"""
           """{"runHookCommands": 3}"""
@@ -228,8 +220,8 @@ let ``parseConfig runHookCommands of the wrong type falls back to BOTH`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig keeps the run-level beforeRun separate from tests.beforeRun`` () =
-    // The top-level `beforeRun` (run-level, AUTOMATION-188) and `tests.beforeRun`
-    // (TestPrune, per test run) are DIFFERENT scopes and must not fold into each other.
+    // Top-level `beforeRun` is run-level; `tests.beforeRun` is per test run. Different
+    // scopes, and they must not fold into each other.
     let config =
         parseConfig
             """{"beforeRun": "run-level", "tests": {"beforeRun": "test-level", "projects": [{"project": "P"}]}}"""
@@ -284,13 +276,11 @@ let ``parseConfig idleExitMin negative yields Disabled`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig idleExitMin true yields Disabled`` () =
-    // `true` is not a valid threshold; treated as disabled (no implicit window).
     let config = parseConfig """{"idleExitMin": true}""" defaults
     test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Disabled @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig idleExitMin non-numeric string yields Absent`` () =
-    // A garbage value falls through to the default (Absent / AUTO).
     let config = parseConfig """{"idleExitMin": "nope"}""" defaults
     test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent @>
 
@@ -328,7 +318,6 @@ let ``parseConfig pressureIdleFloorMin true yields Disabled`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig pressureIdleFloorMin non-numeric string yields Absent`` () =
-    // A garbage value falls through to the default (Absent / default 2).
     let config = parseConfig """{"pressureIdleFloorMin": "nope"}""" defaults
     test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent @>
 
@@ -487,11 +476,9 @@ let ``parseConfig cache memory returns InMemoryOnly 500`` () =
     let config = parseConfig """{"cache": "memory"}""" defaults
     test <@ config.Cache = InMemoryOnly 500 @>
 
-// AUTOMATION-98: `"cache": "file"` / `"jj"` selected an on-disk FCS check cache
-// that could never produce a hit. Warning about it was not enough — a warning
-// scrolls past in a 10-minute gate, so the dead key sat in a real repo's
-// .fshw.json for weeks while every run reported it. Dead config now FAILS the
-// load: a setting that cannot do what it says must stop the run, not narrate.
+// `"cache": "file"` / `"jj"` selected an on-disk FCS check cache that could never
+// produce a hit. A warning was not enough — it scrolls past in a 10-minute gate, and the
+// dead key sat in a real repo's .fshw.json for weeks. Dead config now FAILS the load.
 [<Theory(Timeout = 15000)>]
 [<InlineData("file")>]
 [<InlineData("jj")>]
@@ -499,8 +486,8 @@ let ``parseConfig raises ConfigError on the removed file cache backend`` (value:
     let ex =
         Assert.Throws<ConfigError>(fun () -> parseConfig $$"""{"cache": "{{value}}"}""" defaults |> ignore)
 
-    // The message must name the removal and the offending value, and hand back
-    // both fixes — otherwise a hard failure is just a worse warning.
+    // Without the offending value and both fixes in the message, a hard failure is just
+    // a worse warning.
     Assert.Contains("has been REMOVED", ex.Message)
     Assert.Contains(value, ex.Message)
     Assert.Contains("\"cache\": \"memory\"", ex.Message)
@@ -569,7 +556,6 @@ let ``parseConfig format string variants land deterministically`` () =
     test <@ (parseConfig """{"format":"check"}""" defaults).Format = Check @>
     test <@ (parseConfig """{"format":"off"}""" defaults).Format = Off @>
     test <@ (parseConfig """{"format":"false"}""" defaults).Format = Off @>
-    // Unknown format value falls through to Auto with a warning.
     test <@ (parseConfig """{"format":"weird"}""" defaults).Format = Auto @>
 
 [<Fact(Timeout = 15000)>]
@@ -719,8 +705,9 @@ let ``parseConfig no coverage section yields None`` () =
     test <@ config.Coverage.IsNone @>
 
 // --- parseConfig: tests.coverageDir ---
-// Coverage XMLs are emitted under <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"),
-// and ratcheting is driven by fileCommands afterTests invoking an external tool or the coverage plugin.
+// Coverage XMLs land under <repoRoot>/<tests.coverageDir>/<project>/ (default
+// "coverage"); ratcheting is driven by a fileCommands afterTests hook or the coverage
+// plugin.
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests without coverageDir defaults to coverage`` () =
@@ -748,8 +735,6 @@ let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off and warns 
         (parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults)
             .Tests.Value.Projects.[0].ReportVerificationFormat
 
-    // Absent → AutoDetect (the default); explicit values map to their cases; an
-    // unknown value warns and falls back to AutoDetect.
     test <@ absent = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
     test <@ parseFmt "auto" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
     test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf @>
@@ -964,8 +949,7 @@ let ``parseConfig test project without coverage defaults to true`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage as object captures argsTemplate`` () =
-    // Custom coverage args for an AltCover-style runner — any template that
-    // doesn't match the MTP default.
+    // An AltCover-style template, i.e. one that doesn't match the MTP default.
     let json =
         """{
         "tests": {
@@ -1139,8 +1123,8 @@ let ``stripConfig caller can restore build config`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``stripConfig preserves the run-level hooks (run-once must honor them)`` () =
-    // `--run-once` is the transport CI uses, so the run-level gate-lock the hooks
-    // bracket must survive the run-once strip untouched (AUTOMATION-188).
+    // `--run-once` is the transport CI uses, so the run-level gate-lock the hooks bracket
+    // must survive the strip untouched.
     let withHooks =
         { defaults with
             BeforeRun = Some "acquire-lock"
@@ -1210,10 +1194,8 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``registerPlugins raises ConfigError when configured analyzers load zero`` () =
-    // Fail-loud guard end-to-end through registerPlugins: a CONFIGURED analyzers
-    // path that loads no analyzers (here: a non-existent dir — the actual CI bug)
-    // must raise ConfigError rather than register a do-nothing plugin that lets
-    // the gate pass silently.
+    // A non-existent dir is the actual CI bug (bin built in the wrong config). The
+    // alternative to raising is registering a do-nothing plugin that lets the gate pass.
     withTempDir "cfg-analyzers-zero" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
@@ -1230,10 +1212,7 @@ let ``registerPlugins raises ConfigError when configured analyzers load zero`` (
         let ex = Assert.Throws<ConfigError>(fun () -> registerPlugins daemon tmpDir config)
 
         Assert.Contains("loaded 0 analyzers", ex.Message)
-        // The offending path is named (resolved to absolute under the repo root).
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
-        // The plugin must NOT have registered — a silent do-nothing handler is
-        // exactly the failure mode the guard exists to prevent.
         test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
 
 [<Fact(Timeout = 15000)>]
@@ -1298,9 +1277,9 @@ let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig raises ConfigError on fileCommands pattern with embedded wildcard`` () =
-    // Embedded `*` diverges between FileSystemWatcher.Filter (globs) and
-    // FilePattern.matches (literal) — must fail at config-load with a clean
-    // ConfigError, not an unhandled ArgumentException at registration time.
+    // An embedded `*` diverges between FileSystemWatcher.Filter (glob) and
+    // FilePattern.matches (literal). Failing at config-load beats the unhandled
+    // ArgumentException it used to throw at registration time.
     let json =
         """{ "fileCommands": [ { "pattern": "schema.*.sql", "command": "echo", "args": "hi" } ] }"""
 
@@ -1351,37 +1330,27 @@ let ``countPlugins returns 0 for stripped config`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
-    // No live OS event is awaited here (it asserts the callback does NOT fire),
-    // so it stays a parallel module-level fact — only the tests that block on a
-    // real FileSystemWatcher delivery are serialized (see RealWatchTests below).
+    // Asserts the callback does NOT fire, so it awaits no OS event and can stay a
+    // parallel module-level fact. Only RealWatchTests below need serializing.
     withTempDir "cfg-watch-none" (fun tmpDir ->
         let mutable called = false
         use w = watchRepoConfigFile tmpDir (fun _ -> called <- true)
         System.Threading.Thread.Sleep(50)
         test <@ not called @>)
 
-// The next three tests block on a live `FileSystemWatcher` OS event. Under
-// heavy parallel load the OS can take >5s to deliver, so they're grouped into
-// the FileWatch DisableParallelization collection (mirrors MacFsEventsTests)
-// to keep delivery deterministic instead of racing the saturated suite.
-//
-// Coverage note (2026-06-12): these tests are also what pins the watcher
-// handler's lines as deterministically covered in this (ratcheted) suite — a
-// passing run means the callback fired. The handler's BRANCHES live in the
-// extracted `debounceShouldFire`/`configChangeReason` functions (unit-tested
-// directly below with injected clocks), so an OS double-fire during these
-// tests can only re-hit already-covered branches and the ratchet stays
-// deterministic.
+// The next three tests block on a live `FileSystemWatcher` OS event, which under heavy
+// parallel load can take >5s to deliver — hence the DisableParallelization collection.
+// They also pin the watcher handler's LINES as covered; its BRANCHES are covered by the
+// injected-clock unit tests below, so an OS double-fire here can only re-hit already
+// covered branches and the ratchet stays deterministic.
 [<Collection(FileWatchCollectionName)>]
 type RealWatchTests() =
 
-    // All three run through `withWatchedDir` (tests/FsHotWatch.Tests/WatchedDir.fs).
-    // The setup lambda seeds the file and returns the live watcher; the body then
-    // has NO path to write to and exactly one mutation — `WriteUntil`, which
-    // rewrites until the callback fires and hands back whether it ever did. The
-    // shape these tests used to have (sleep 100ms, write once, `signal.Wait(5000)`)
-    // is not expressible against this fixture, which is the point: it was a coin
-    // flip against 4-20s of FSEvents cold-start latency on a fresh temp dir.
+    // All three go through `withWatchedDir`, whose body gets no path to write to and
+    // exactly one mutation — `WriteUntil`, which rewrites until the callback fires. The
+    // shape these used to have (sleep 100ms, write once, `signal.Wait(5000)`) is not
+    // expressible against that fixture: it was a coin flip against 4-20s of FSEvents
+    // cold-start latency on a fresh temp dir.
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile invokes callback when .fshw.json is written``() =
         use signal = new System.Threading.ManualResetEventSlim(false)
@@ -1434,10 +1403,9 @@ type RealWatchTests() =
                 Assert.Contains("invalid", observed.Value))
 
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
-// Direct tests with injected clocks so BOTH arms of every watcher branch are
-// covered deterministically — production only hits the suppressed-debounce arm
-// when the OS double-fires within the window, which is nondeterministic and
-// used to coin-flip this file's branch coverage in the ratchet.
+// Injected clocks so BOTH arms of every watcher branch are covered deterministically.
+// Production reaches the suppressed-debounce arm only on an OS double-fire inside the
+// window, which used to coin-flip this file's branch coverage in the ratchet.
 
 [<Fact(Timeout = 15000)>]
 let ``debounceShouldFire fires on first event and suppresses within the window`` () =
@@ -1491,10 +1459,10 @@ let ``onConfigFsEvent dispatches once per debounce window`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
-    // F3 (audit/2026-05-02): the watcher previously did `try onChange reason with _ -> ()`,
-    // silently swallowing any exception from the daemon-stop callback. A user editing
-    // .fshw.json would see no effect with no log line. The dispatch is now extracted
-    // so we can inject a logError sink directly — no stderr capture race in parallel.
+    // The watcher used to do `try onChange reason with _ -> ()`, so an exception from the
+    // daemon-stop callback vanished: editing .fshw.json had no effect and no log line.
+    // The dispatch is extracted so the sink can be injected, avoiding a stderr-capture
+    // race under parallel run.
     let captured = ResizeArray<string>()
 
     let sink (msg: string) =
@@ -1567,15 +1535,11 @@ let ``parseConfig fileCommand timeoutSec lands on entry`` () =
     | _ -> failwith "expected one file command"
 
 // ---------------------------------------------------------------------------
-// FcsSuppressedCodes — daemon must not embed project-level policy
+// FcsSuppressedCodes — the daemon-level default must stay EMPTY. It used to default to
+// `[1182]` to silence one downstream project's noisy generated code, which put a
+// project-level policy in the daemon. Projects that need it declare `<NoWarn>` or
+// `#nowarn` themselves.
 // ---------------------------------------------------------------------------
-//
-// Regression: the daemon used to default `FcsSuppressedCodes` to `[1182]`
-// (silencing F# warning FS1182, "unused binding") because one downstream
-// project (SqlHydra) generated noisy code. That embedded a project-level
-// policy in the daemon — the wrong layer. Projects that hit FS1182 now
-// declare it explicitly via `<NoWarn>FS1182</NoWarn>` in the fsproj or
-// `#nowarn "1182"` in source. The daemon-level default is empty.
 
 [<Fact(Timeout = 5000)>]
 let ``FcsSuppressedCodes default resolves to empty Set when not configured`` () =
@@ -1595,15 +1559,10 @@ let ``FcsSuppressedCodes Some resolves to that Set`` () =
     test <@ resolved = Set.ofList [ 42; 99 ] @>
 
 // ---------------------------------------------------------------------------
-// shellInvocation — shell-hook command dispatch
+// shellInvocation — hooks used to run through `splitCommand` → `runProcess`, which
+// tokenizes without invoking a shell, so `&&`, `|` and `$VAR` were silently ignored.
+// Dispatch is now `/bin/sh -c` (unix) or `cmd /C` (windows).
 // ---------------------------------------------------------------------------
-//
-// Regression: `beforeRun`/hooks used to run the user's command via
-// `splitCommand` → `runProcess`, which tokenizes but doesn't invoke a shell.
-// That silently ignored `&&`, `|`, `$VAR`, etc., because those are shell
-// metacharacters, not arguments. Now we dispatch through `/bin/sh -c`
-// (unix) or `cmd /C` (windows) so the string is interpreted as a shell
-// command.
 
 [<Fact(Timeout = 2000)>]
 let ``shellInvocation wraps with /bin/sh -c`` () =
@@ -1623,20 +1582,16 @@ let ``shellInvocation escapes double quotes in the passed command`` () =
     test <@ args.Contains("\\\"hello world\\\"") @>
 
 // ---------------------------------------------------------------------------
-// makeShellHookWithResult — the `beforeRun` hook must be BOUNDED (AUTOMATION-98)
+// makeShellHookWithResult — `beforeRun` runs INSIDE the `RunExclusive "tests"` slot, so a
+// hook that hangs holds that slot forever: TestPrune stays `Running`, every later `check`
+// burns its full deadline, and only a daemon restart recovers. It used to run through
+// `runProcess` with `InfiniteTimeSpan`. Two distinct ways to hang, one test each.
 // ---------------------------------------------------------------------------
-//
-// The regression these pin: the hook ran through `runProcess` with
-// `InfiniteTimeSpan`. `beforeRun` executes INSIDE the `RunExclusive "tests"`
-// slot, so a hook that hangs — intelligence's is a 7-command chain including a
-// network `dotnet restore` — held that slot forever: TestPrune stayed `Running`,
-// every later `check` burned its full 60-min deadline, and only a daemon restart
-// recovered. Two distinct ways to hang, one test each.
 
 [<Fact(Timeout = 20000)>]
 let ``a beforeRun hook that hangs TIMES OUT instead of wedging the tests slot`` () =
-    // RED-BEFORE-GREEN: pass `None` for the timeout (the old InfiniteTimeSpan
-    // behaviour) and this blocks for 60s, past the xUnit budget.
+    // To see this go red, pass `None` for the timeout (the old InfiniteTimeSpan
+    // behaviour): it then blocks for 60s, past the xUnit budget.
     let sw = System.Diagnostics.Stopwatch.StartNew()
 
     let hook =
@@ -1655,12 +1610,11 @@ let ``a beforeRun hook that hangs TIMES OUT instead of wedging the tests slot`` 
 
 [<Fact(Timeout = 20000)>]
 let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` () =
-    // The nastier shape, and the one no timeout would have caught quickly: the
-    // hook itself EXITS immediately and successfully, but a grandchild it spawned
-    // (an MSBuild node, a Playwright driver — here a backgrounded `sleep`)
-    // inherited the stdout pipe and holds it open. The old success-path
-    // `Task.WaitAll` waited on stream EOF that would never come, so a hook that
-    // had already SUCCEEDED never returned. Bounded post-exit drain → it does.
+    // The shape a timeout alone would not have caught quickly: the hook exits
+    // immediately and successfully, but a grandchild it spawned (an MSBuild node, a
+    // Playwright driver — here a backgrounded `sleep`) inherited the stdout pipe and
+    // holds it open. The old success-path `Task.WaitAll` waited on an EOF that never
+    // came, so a hook that had already SUCCEEDED never returned.
     let sw = System.Diagnostics.Stopwatch.StartNew()
 
     let hook =
@@ -1748,9 +1702,8 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
 
 [<Fact(Timeout = 2000)>]
 let ``analyzerPathFailures fires per-path: one path loads, one loads zero`` () =
-    // The key behavior the old aggregate guard MISSED: a multi-path config where
-    // some paths load and ONE silently loads 0 must still go RED, naming the
-    // offending path(s) — both the empty-dir and the nonexistent-dir flavours.
+    // The shape the old aggregate (total == 0) guard MISSED: some paths load, one
+    // silently loads 0.
     let result =
         analyzerPathFailures
             [ "/repo/good/bin", 3 // loads fine
@@ -1760,13 +1713,11 @@ let ``analyzerPathFailures fires per-path: one path loads, one loads zero`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("/repo/empty/bin") @>
     test <@ result.Value.Contains("/repo/missing/bin") @>
-    // The path that loaded fine must NOT be named.
     test <@ not (result.Value.Contains("/repo/good/bin")) @>
     test <@ result.Value.Contains(".fshw.json analyzers.paths") @>
 
 [<Fact(Timeout = 2000)>]
 let ``analyzerPathFailures fires when every configured path loads zero`` () =
-    // The prior total==0 cases still fail — now as a subset of the per-path guard.
     let single = analyzerPathFailures [ "/repo/a/bin", 0 ]
     test <@ single.IsSome @>
     test <@ single.Value.Contains("/repo/a/bin") @>
@@ -1787,6 +1738,4 @@ let ``analyzerPathFailures silent when every configured path loads at least one`
 
 [<Fact(Timeout = 2000)>]
 let ``analyzerPathFailures silent when analyzers unconfigured`` () =
-    // No analyzers requested (empty list) is fine — "no analyzers" is not a
-    // misconfiguration.
     test <@ (analyzerPathFailures []).IsNone @>

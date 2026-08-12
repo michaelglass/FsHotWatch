@@ -7,11 +7,9 @@ open Swensen.Unquote
 open FsHotWatch.DaemonIdentity
 open FsHotWatch.Tests.TestHelpers
 
-// AUTOMATION-147: the daemon/CLI binary-identity handshake. A new CLI must
-// never silently talk to an old daemon — the AUTOMATION-123 trap (a label
-// that doesn't match its contents) as a process. The detection must work
-// UNILATERALLY: an old daemon that never recorded an identity reads as
-// unknown, which is stale, which restarts it.
+// The daemon/CLI binary-identity handshake: a new CLI must never silently talk to
+// an old daemon. Detection works UNILATERALLY — an old daemon that never recorded
+// an identity reads as unknown, which is stale, which restarts it.
 
 let private ident v h : BinaryIdentity = { Version = v; ContentHash = h }
 
@@ -34,8 +32,8 @@ let ``parse rejects garbage`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parse takes the LAST space as separator so a spaced version still parses`` () =
-    // Defensive: a historic record with an unsanitized version must not read
-    // as a match for something else — but it should still parse coherently.
+    // A historic record with an unsanitized version must still parse coherently,
+    // and must not read as a match for something else.
     let parsed = BinaryIdentity.parse "1.0.0 build 7 aabbccdd"
     test <@ parsed = Some(ident "1.0.0 build 7" "aabbccdd") @>
 
@@ -50,8 +48,8 @@ let ``compareIdentity matches identical identities`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``compareIdentity is stale when the content hash differs even with the same version`` () =
-    // LITERALLY AUTOMATION-123: a locally-repacked build shares the version
-    // string and differs in content. The version label lies; the hash cannot.
+    // A locally-repacked build shares the version string and differs in content:
+    // the version label can lie, the hash cannot (AUTOMATION-123).
     let recorded = ident "1.0.0" "aaaa"
     let current = ident "1.0.0" "bbbb"
     test <@ compareIdentity (Some recorded) current = IdentityVerdict.Stale(StaleReason.DifferentBinary recorded) @>
@@ -64,9 +62,8 @@ let ``compareIdentity is stale when the version differs`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``compareIdentity treats a missing record as stale — never as a match`` () =
-    // THE release-critical case: the very next repin runs a NEW CLI against a
-    // daemon from a build that never wrote an identity. Unknown ⇒ stale ⇒
-    // restart — unilaterally, no cooperation from the old daemon.
+    // The release case: a NEW CLI meets a daemon from a build that never wrote an
+    // identity. Unknown ⇒ stale ⇒ restart, with no cooperation from that daemon.
     test <@ compareIdentity None (ident "1.0.0" "aaaa") = IdentityVerdict.Stale StaleReason.NotRecorded @>
 
 // ---------------------------------------------------------------------------
@@ -106,9 +103,9 @@ let ``buildIdentity falls back to the process path when no entry dll resolves`` 
 
 [<Fact(Timeout = 15000)>]
 let ``buildIdentity uses the DETERMINISTIC unhashable sentinel when nothing is readable`` () =
-    // Deterministic on purpose: a daemon and CLI running the same unhashable
-    // binary must still AGREE, or every command would restart the daemon and
-    // thrash the warm FCS cache forever.
+    // Deterministic on purpose: a daemon and CLI running the same unhashable binary
+    // must still AGREE, or every command restarts the daemon and thrashes the warm
+    // FCS cache.
     let a = buildIdentity (Some "1.0.0") "/nonexistent" None
     let b = buildIdentity (Some "1.0.0") "/nonexistent" None
     test <@ a.ContentHash = UnhashableContent @>
@@ -203,9 +200,8 @@ let ``hashFile is deterministic for identical content and differs for different 
 
 [<Fact(Timeout = 15000)>]
 let ``currentIdentity reports a usable version and a real content hash for this process`` () =
-    // Exercises the live reflection path (informational version, else the
-    // assembly version, else the unknown-version fallback) against the running
-    // test binary — the same path the daemon takes at startup.
+    // The live reflection path (informational version, else assembly version, else
+    // the unknown-version fallback) — the same path the daemon takes at startup.
     let id = currentIdentity ()
     test <@ not (String.IsNullOrWhiteSpace id.Version) @>
     // The version must never contain the record's separator, or the record
@@ -214,7 +210,6 @@ let ``currentIdentity reports a usable version and a real content hash for this 
     // The test assembly is a real file on disk, so the hash is real, not the sentinel.
     test <@ id.ContentHash <> UnhashableContent @>
     test <@ id.ContentHash.Length = 16 @>
-    // ...and it round-trips through the on-disk record format.
     test <@ BinaryIdentity.parse (BinaryIdentity.render id) = Some id @>
 
 [<Fact(Timeout = 15000)>]
@@ -249,9 +244,9 @@ let ``identityOf with a real entry assembly hashes that assembly's file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``identityOf with NO entry assembly falls back to the process path`` () =
-    // The single-file / shim host, where GetEntryAssembly() is null. It must
-    // still produce a usable, DETERMINISTIC identity — not throw, and not a
-    // random value that would restart the daemon on every command.
+    // The single-file / shim host, where GetEntryAssembly() is null: it must still
+    // produce a usable, DETERMINISTIC identity — not throw, and not a random value
+    // that would restart the daemon on every command.
     withTempDir "identity-noentry" (fun tmpDir ->
         let exe = Path.Combine(tmpDir, "fshw-single-file")
         File.WriteAllBytes(exe, [| 7uy; 7uy; 7uy |])
@@ -271,7 +266,7 @@ let ``identityOf with neither an assembly nor a readable exe is the deterministi
             a = { Version = "unknown-version"
                   ContentHash = UnhashableContent }
         @>
-    // Deterministic — two such daemons AGREE, so the CLI does not thrash the
-    // warm cache by restarting on every single command.
+    // Deterministic, so two such daemons AGREE and the CLI does not restart on
+    // every command.
     test <@ a = b @>
     test <@ compareIdentity (Some a) b = IdentityVerdict.Match @>

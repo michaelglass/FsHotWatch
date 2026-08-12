@@ -28,9 +28,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
-/// Build a `BatchChecked` payload covering `files`, with deterministic
-/// timestamps + Generation = 1 — sufficient for unit tests that only care
-/// about the `Files` set the cohort signal carries.
+/// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
+/// Generation = 1.
 let fakeBatchChecked (files: string list) : BatchChecked =
     let now = DateTime.UtcNow
 
@@ -49,10 +48,9 @@ let startSleep (seconds: int) : Process =
     psi.RedirectStandardError <- true
     Process.Start(psi)
 
-/// Run `body` with a freshly-spawned `sleep` child, force-killing the process
-/// in `finally` so an assertion failure inside `body` cannot leak the child
-/// (registry KillAll swallows errors, so `use proc = startSleep ...` alone is
-/// not enough on its own).
+/// Run `body` with a freshly-spawned `sleep` child, force-killing it in `finally` so an
+/// assertion failure inside `body` cannot leak the child (registry KillAll swallows errors,
+/// so `use proc = startSleep ...` is not enough on its own).
 let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
     let proc = startSleep seconds
 
@@ -67,12 +65,12 @@ let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
 
         proc.Dispose()
 
-/// Poll until condition is true or timeout (50ms poll interval). Returns
-/// whether it actually became true.
+/// Poll until condition is true or timeout (50ms poll interval). Returns whether it
+/// actually became true.
 ///
-/// Prefer this over `waitUntil` when the wait itself is what the test is
-/// asserting: `waitUntil` cannot tell "the condition held" from "we gave up", so
-/// a test that only checks state afterwards can pass vacuously by timing out.
+/// Prefer this over `waitUntil` when the wait itself is what the test asserts: `waitUntil`
+/// cannot tell "the condition held" from "we gave up", so a test that only checks state
+/// afterwards can pass vacuously by timing out.
 let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
     let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable ok = condition ()
@@ -87,11 +85,10 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     waitUntilTrue condition timeoutMs |> ignore
 
-/// Run `write` every 2s until `hasEvent` returns true or timeout expires.
-/// Use this for FSEvents tests: brand-new temp directories can have 4-20s cold-start
-/// latency, and after a large initial event batch, fseventsd may batch subsequent events
-/// for 15-30s regardless of kFSEventStreamCreateFlagNoDefer. Repeated writes ensure the
-/// event fires as soon as fseventsd is ready, without relying on fixed timeouts.
+/// Run `write` every 2s until `hasEvent` returns true or timeout expires. For FSEvents
+/// tests: brand-new temp dirs have 4-20s cold-start latency, and fseventsd may batch
+/// events for 15-30s regardless of kFSEventStreamCreateFlagNoDefer. Repeated writes fire
+/// the event as soon as fseventsd is ready instead of relying on a fixed timeout.
 let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
     let overall = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable probe = 0
@@ -99,7 +96,6 @@ let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
     while not (hasEvent ()) && DateTime.UtcNow < overall do
         write probe
         probe <- probe + 1
-        // Poll for up to 2s per write before retrying
         let batchEnd = min overall (DateTime.UtcNow.AddMilliseconds(2000.0))
 
         while not (hasEvent ()) && DateTime.UtcNow < batchEnd do
@@ -120,14 +116,9 @@ let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: 
         timeoutMs
 
 /// Subscribe to `OnStatusChanged` BEFORE querying current status, returning a
-/// `Task<PluginStatus>` that completes the first time `pred` matches a status
-/// for `pluginName`. Use this when a test needs to observe a plugin's terminal
-/// state deterministically (no polling, no xUnit `Fact(Timeout)` race).
-///
-/// Usage pattern — subscribe, then trigger the work, then await:
-///   let completion = TestHelpers.beginAwaitStatus host "plugin" (function Completed _ -> true | _ -> false)
-///   host.EmitBuildCompleted(BuildSucceeded)
-///   let status = completion.Wait(TimeSpan.FromSeconds 15.0)
+/// `Task<PluginStatus>` that completes the first time `pred` matches a status for
+/// `pluginName`. Callers subscribe, then trigger the work, then await — this observes a
+/// terminal state deterministically (no polling, no xUnit `Fact(Timeout)` race).
 let beginAwaitStatusWith
     (host: FsHotWatch.PluginHost.PluginHost)
     (pluginName: string)
@@ -143,10 +134,9 @@ let beginAwaitStatusWith
                 tcs.TrySetResult(s) |> ignore)
 
     host.OnStatusChanged.AddHandler(handler)
-    // Fast path: the plugin may already be at the desired status when we subscribe.
-    // Subscribe-then-check ordering is required — check-then-subscribe races.
-    // Callers that need to observe the *next* transition (e.g. after an emit
-    // that'll cycle Running→Completed) pass matchCurrent=false.
+    // Subscribe-then-check ordering is required — check-then-subscribe races. Callers that
+    // need the *next* transition (e.g. after an emit that cycles Running→Completed) pass
+    // matchCurrent=false.
     if matchCurrent then
         match host.GetStatus(pluginName) with
         | Some s when pred s -> tcs.TrySetResult(s) |> ignore
@@ -188,12 +178,10 @@ let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string)
             | _ -> true)
         timeoutMs
 
-/// Poll until every registered plugin has drained its mailbox (no plugin
-/// busy), with a timeout. This is the correct synchronization after emitting
-/// events like `BatchChecked`/`FileChecked` that persist as a side-effect
-/// WITHOUT a status transition: `beginAwaitNextTerminal` hangs the full
-/// timeout on those (it waits for a Completed/Failed transition that never
-/// fires), whereas quiescence returns the instant the handler finishes.
+/// Poll until every registered plugin has drained its mailbox, with a timeout. This is the
+/// correct synchronization after emitting events like `BatchChecked`/`FileChecked` that
+/// persist as a side-effect WITHOUT a status transition: `beginAwaitNextTerminal` hangs the
+/// full timeout on those, whereas quiescence returns the instant the handler finishes.
 let waitForQuiescent (host: FsHotWatch.PluginHost.PluginHost) (timeoutMs: int) =
     waitUntil (fun () -> not (host.AnyPluginBusy())) timeoutMs
 
@@ -270,9 +258,8 @@ let commandCounter (pluginName: string) =
 
     ((fun () -> count.Value), handler)
 
-/// Create a plugin that records TestCompleted events in order.
-/// Returns (getEvents, handler) — getEvents returns a snapshot of all received
-/// TestProgress events (delta per group) in FIFO order.
+/// Returns (getEvents, handler) — getEvents snapshots all received TestProgress events
+/// (delta per group) in FIFO order.
 let testProgressRecorder () =
     let received =
         System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestProgress>()
@@ -296,10 +283,8 @@ let testProgressRecorder () =
 
     ((fun () -> received |> Seq.toList), handler)
 
-/// Returns (getEvents, handler) — getEvents returns a snapshot of all received
-/// TestRunCompleted events in FIFO order. (Renamed from testCompletedRecorder
-/// to reflect the new event lifecycle: subscribers observe TestRunCompleted
-/// for the end-of-run summary.)
+/// Returns (getEvents, handler) — getEvents snapshots all received TestRunCompleted events
+/// (the end-of-run summary) in FIFO order.
 let testRunCompletedRecorder () =
     let received =
         System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestRunCompleted>()
@@ -323,18 +308,14 @@ let testRunCompletedRecorder () =
 
     ((fun () -> received |> Seq.toList), handler)
 
-/// A fully-populated `DaemonConfiguration` with deterministic, env-independent
-/// values for tests. The single source of truth for the record's shape: every
-/// test that needs a config builds on this via record-update
-/// (`{ defaultTestConfig () with Tests = ... }`) and overrides only the fields
-/// it cares about. Adding a new config field is then a one-line edit here rather
-/// than ~20 mechanical edits across the test suite.
+/// A fully-populated `DaemonConfiguration` with deterministic, env-independent values, and
+/// the single source of truth for the record's shape: tests build on it via record-update
+/// (`{ defaultTestConfig () with Tests = ... }`), so a new config field is a one-line edit
+/// here rather than ~20 across the suite.
 ///
-/// Values mirror the product defaults (`DaemonConfig.defaultConfigFor`) except
-/// where determinism matters: `Cache = NoCache` is set explicitly (matching the
-/// product default, which AUTOMATION-98 made honest — it was the never-hitting
-/// file backend, which behaved as NoCache anyway), so config-shape tests stay
-/// stable regardless of environment.
+/// Values mirror `DaemonConfig.defaultConfigFor` except where determinism matters:
+/// `Cache = NoCache` is explicit so config-shape tests stay stable regardless of
+/// environment.
 let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
     { Build =
         Some
@@ -362,7 +343,6 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       RunHookTimeoutSec = None
       RunHookCommands = FsHotWatch.Cli.DaemonConfig.DefaultRunHookCommands }
 
-/// Create an ErrorEntry for tests.
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
     { Message = msg
       Severity = sev
@@ -370,10 +350,8 @@ let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch
       Column = 0
       Detail = None }
 
-/// Create a temp directory with the given prefix, run the body, then clean up.
-/// Returns the result of the body function.
-/// Construct an FSharpProjectOptions with sensible defaults for tests that
-/// only care about ProjectFileName / SourceFiles / OtherOptions.
+/// Construct an FSharpProjectOptions with sensible defaults for tests that only care about
+/// ProjectFileName / SourceFiles / OtherOptions.
 let makeProjectOptions (projectFile: string) (sourceFiles: string list) (otherOptions: string list) =
     { ProjectFileName = projectFile
       ProjectId = None
@@ -401,26 +379,13 @@ let withEnv (name: string) (value: string option) (body: unit -> unit) =
 
 /// Recursively delete a throwaway temp dir, tolerating the daemon-teardown race.
 ///
-/// Root cause (2026-06-17, CI flake on `check --run-once`, Linux): a daemon test
-/// cancels its daemon and waits a bounded time (`task.Wait(5s)`) for shutdown,
-/// but the daemon's watcher / FCS / FileErrorReporter pipeline is cooperative —
-/// in-flight checks can still emit `FileChecked` and have `FileErrorReporter`
-/// (re)create `.fshw/errors/` and write JSON *after* `Wait` returns. When
-/// `withTempDir`'s `finally` then runs `Directory.Delete(tmpDir, recursive=true)`
-/// on the test thread, that background writer races the recursive delete: the OS
-/// removes a subdir's entries, the writer recreates one, and `Directory.Delete`
-/// throws `IOException "Directory not empty"` / `DirectoryNotFoundException`.
-/// That exception escapes the test body via `finally` and is recorded by the
-/// test host as an unattributed failure ("failed: 1" with no per-test name and
-/// some tests unreported) — exactly the observed CI signature. (The same race is
-/// already *tolerated* inside `FileErrorReporter.tryDelete`; the only unguarded
-/// spot was this cleanup.) A direct micro-repro throws on ~80% of attempts.
+/// Daemon shutdown is cooperative: after a bounded `task.Wait`, in-flight checks can still
+/// have `FileErrorReporter` recreate `.fshw/errors/` and write JSON. That background writer
+/// races `withTempDir`'s `Directory.Delete(recursive=true)`, which then throws IOException
+/// "Directory not empty" from a `finally` — surfacing as an unattributed test-host failure
+/// with no per-test name. Cleanup is therefore best-effort: retry, then swallow.
 ///
-/// Fix: the temp dir is genuinely transient, so cleanup is best-effort. Retry the
-/// recursive delete a few times (the daemon's background work drains in well under
-/// a second once cancelled), and if it still races, swallow — a test verdict must
-/// never depend on whether the OS finished tearing down a scratch dir. This does
-/// NOT mask real failures: a failing assertion throws from `body` *before*
+/// This does NOT mask real failures — a failing assertion throws from `body` before
 /// `finally`, so it propagates unchanged.
 let private deleteTempDirResilient (tmpDir: string) =
     let mutable remaining = 10
@@ -437,9 +402,8 @@ let private deleteTempDirResilient (tmpDir: string) =
         with
         | :? IOException
         | :? UnauthorizedAccessException ->
-            // A not-yet-drained daemon is still writing into the tree. Give it a
-            // moment to finish, then retry. On the final attempt, give up: leaking
-            // a scratch temp dir is harmless and far better than failing the test.
+            // A not-yet-drained daemon is still writing into the tree. On the final
+            // attempt, give up: leaking a scratch temp dir beats failing the test.
             if remaining = 0 then
                 deleted <- true
             else
@@ -459,10 +423,9 @@ let withTempDir (prefix: string) (body: string -> 'a) =
     finally
         deleteTempDirResilient tmpDir
 
-/// Write a minimal `.fsproj` with a `<TargetFramework>` and the given
-/// `<Compile Include="…">` items. Returns nothing — the caller already knows
-/// the path. Useful for tests that need `RegisterFromFsproj` to record both
-/// TFM and source files (e.g. anything exercising canonical-DLL path lookup).
+/// Write a minimal `.fsproj` with a `<TargetFramework>` and the given `<Compile Include="…">`
+/// items, for tests that need `RegisterFromFsproj` to record both TFM and source files
+/// (e.g. anything exercising canonical-DLL path lookup).
 let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) =
     let compileItems =
         compiles
@@ -480,21 +443,12 @@ let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) 
     File.WriteAllText(projPath, xml)
 
 // ----------------------------------------------------------------------------
-// Seeded test-prune environment scaffolding.
-//
-// Three TestPrunePlugin tests share ~25 lines of identical setup: write a
-// single-file F# script into a temp dir, derive ProjectOptions, run a baseline
-// `analyzeSource`, write the symbols into a fresh DB via `RebuildProjects`, mark
-// the freshness sidecar clean for that file, then stand up a CheckPipeline +
-// PluginHost wired to a TestPrunePlugin handler. The body block then performs
-// the test-specific work (re-check, AST edit, etc.) and asserts.
-//
-// `withSeededTestEnv` factors that prelude into one place so the regression
-// guards don't accumulate near-duplicate boilerplate.
+// Seeded test-prune environment scaffolding: `withSeededTestEnv` factors the ~25-line
+// prelude several TestPrunePlugin regression guards share, so they don't accumulate
+// near-duplicate boilerplate.
 // ----------------------------------------------------------------------------
 
-/// State handed to a `withSeededTestEnv` body. All paths are temp-dir-relative
-/// where appropriate; `FilePath` is absolute (the temp dir + RelPath) and
+/// State handed to a `withSeededTestEnv` body. `FilePath` is absolute (temp dir + RelPath);
 /// `RelPath` is the `Lib.fs` / `Lib.fsx` form the plugin sees.
 type SeededTestEnv =
     { TmpDir: string
@@ -507,24 +461,18 @@ type SeededTestEnv =
       FilePath: string
       SeededSymbols: TestPrune.AstAnalyzer.SymbolInfo list }
 
-/// Seed a one-file F# project into a temp dir, persist its symbols to a fresh
-/// SQLite DB, mark the freshness sidecar clean, and hand the body block a fully
-/// wired pipeline + plugin host. The body performs whatever test-specific edits
-/// + assertions it needs; cleanup happens in `withTempDir`'s `finally`.
+/// Seed a one-file F# project into a temp dir, persist its symbols to a fresh SQLite DB,
+/// mark the freshness sidecar clean, and hand the body a fully wired pipeline + plugin
+/// host. Cleanup happens in `withTempDir`'s `finally`.
 let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body: SeededTestEnv -> unit) : unit =
     withTempDir prefix (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let filePath = Path.Combine(tmpDir, relPath)
 
-        // Fresh checker per call (NOT sharedChecker): these envs drive a full
-        // script-closure resolution + analyzeSource + CheckPipeline through the
-        // checker while ~5 other test classes hit the shared instance
-        // concurrently, so shared FCS caches (keyed by options/paths) could
-        // bleed state across tests nondeterministically. Measured cost
-        // (2026-06-12): ~3s per env for the un-amortized framework/script
-        // resolution — the calling tests went 7s → 17s as a sequential class,
-        // ~+10s (~1.1x) on the full suite, far under the 2x bar set for this
-        // isolation change.
+        // Fresh checker per call (NOT sharedChecker): these envs drive script-closure
+        // resolution + analyzeSource + CheckPipeline while ~5 other test classes hit the
+        // shared instance concurrently, so its caches (keyed by options/paths) could bleed
+        // state across tests. Costs ~3s per env for un-amortized framework resolution.
         let checker =
             FSharpChecker.Create(
                 projectCacheSize = 200,
@@ -589,57 +537,35 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
 // ----------------------------------------------------------------------------
 // Log-global capture + serialization.
 //
-// `FsHotWatch.Logging.logLevel`/`verbose` are module-level mutables and
-// `System.Console.Error` is process-wide. Several test modules need to set a
-// log level and capture stderr to assert on log output. Under xUnit parallel
-// execution these globals race across test classes: module A's `setLogLevel`
-// or `Console.SetError` lands between module B's set and assert, so B reads the
-// wrong level / captures the wrong writer and fails nondeterministically.
-//
-// Guard: every module that touches these globals carries
-// `[<Collection(LogGlobalCollectionName)>]`, a DisableParallelization
-// collection (see below). That serializes ONLY those modules with respect to
-// each other; the ~40 other test modules keep running in parallel. Each site
-// keeps its own save-level / SetError / restore-in-`finally` dance (now safe
-// because no other mutator runs concurrently).
-//
-// De-globalizing `Logging` (threading an injected level through every
-// `log`/`info`/`warn` call in the daemon, plugins, and ledger) would be far
-// more invasive and would churn the public API surface that `check-api`
-// guards, so the surgical serialized-collection approach is used instead —
-// mirroring the existing `MacFsEvents` DisableParallelization collection.
+// `Logging.logLevel`/`verbose` are module-level mutables and `Console.Error` is
+// process-wide. Under xUnit parallel execution these race across test classes: A's
+// `setLogLevel`/`Console.SetError` lands between B's set and assert, so B reads the wrong
+// level or captures the wrong writer. Every module touching them therefore carries
+// `[<Collection(LogGlobalCollectionName)>]`, which serializes ONLY those modules; the ~40
+// others keep running in parallel. Each site still does its own save / restore-in-`finally`
+// dance, now safe because no other mutator runs concurrently.
 // ----------------------------------------------------------------------------
 
-/// Name of the serialized collection that groups every test class touching
-/// PROCESS-GLOBAL state: the logging globals, `Console.Error`, and the process
-/// ENVIRONMENT (`withEnv`). A literal so it can be used in the
-/// `[<Collection(...)>]` / `[<CollectionDefinition(...)>]` attributes.
+/// Name of the serialized collection grouping every test class touching PROCESS-GLOBAL
+/// state: the logging globals, `Console.Error`, and the process ENVIRONMENT (`withEnv`).
 ///
-/// The environment is the third global and the last to be noticed: a class that
-/// mutates it and then spawns a child which snapshots it is racing every other
-/// class doing the same, and the symptom is a child that simply does not see the
-/// variable that was just set — no exception, no timeout, just an empty string
-/// where a value was expected.
+/// The environment is the easiest of the three to miss: a class that mutates it and spawns
+/// a child which snapshots it races every other class doing the same, and the symptom is
+/// silent — an empty string where a value was expected, no exception, no timeout.
 [<Literal>]
 let LogGlobalCollectionName = "LogGlobal"
 
-/// xUnit collection that serializes every test class touching the logging
-/// globals (`Logging.logLevel`/`verbose`) or `Console.Error`. Parallelization
-/// is disabled so these classes never run concurrently with one another.
+/// Serializes every test class touching the logging globals or `Console.Error`.
 [<Xunit.CollectionDefinition(LogGlobalCollectionName, DisableParallelization = true)>]
 type LogGlobalCollection() = class end
 
 // ----------------------------------------------------------------------------
 // Real-filesystem-watch serialization.
 //
-// Tests that exercise a live `FileSystemWatcher` (waiting on an OS file-change
-// event) are timing-dependent: under heavy parallel CPU load the OS can take
-// several seconds to deliver the event, blowing the test's `signal.Wait`
-// budget and flaking nondeterministically (e.g. the DaemonConfig
-// `watchConfigFile`/`watchRepoConfigFile` tests). This mirrors the existing
-// `MacFsEvents` DisableParallelization collection: serialize the real-watcher
-// tests so they don't compete with the rest of the suite (or each other) for
-// file-watch delivery while the machine is saturated.
+// Tests waiting on a live `FileSystemWatcher` OS event are timing-dependent: under heavy
+// parallel CPU load the OS can take seconds to deliver, blowing the test's `signal.Wait`
+// budget. Serializing them (as `MacFsEvents` already does) stops them competing with the
+// rest of the suite for file-watch delivery while the machine is saturated.
 // ----------------------------------------------------------------------------
 
 /// Name of the serialized collection grouping tests that wait on a live
@@ -650,9 +576,8 @@ let FileWatchCollectionName = "FileWatch"
 [<Xunit.CollectionDefinition(FileWatchCollectionName, DisableParallelization = true)>]
 type FileWatchCollection() = class end
 
-/// A minimal RunVerdict for tests that only exercise the status TRANSITION —
-/// the verdict content is irrelevant to them, but the type (correctly) will
-/// not let a terminal status exist without one.
+/// A minimal RunVerdict for tests that only exercise the status TRANSITION — the content is
+/// irrelevant to them, but the type will not let a terminal status exist without one.
 let testVerdict: FsHotWatch.Events.RunVerdict =
     FsHotWatch.Events.RunVerdict.create "test verdict" System.TimeSpan.Zero
 
@@ -664,21 +589,20 @@ let completedAt (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
 let failedAt (error: string) (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
     FsHotWatch.Events.Failed(error, at, testVerdict)
 
-/// Cached per-file terminal for cache-entry fixtures. Per-file entries carry
-/// no summary or timestamp BY CONSTRUCTION (AUTOMATION-186) — only the
-/// measured duration; the replay derives the summary from the live ledger.
+/// Cached per-file terminal for cache-entry fixtures. Per-file entries carry no summary or
+/// timestamp by construction (AUTOMATION-186), only the measured duration — the replay
+/// derives the summary from the live ledger.
 let cachedFileDone: FsHotWatch.TaskCache.CachedStatus =
     FsHotWatch.TaskCache.CachedFileCompleted System.TimeSpan.Zero
 
-/// Cached whole-run terminal carrying the canonical test verdict (run entries
-/// are keyed on their full input, so the verdict replays verbatim).
+/// Cached whole-run terminal carrying the canonical test verdict (run entries are keyed on
+/// their full input, so the verdict replays verbatim).
 let cachedRunDone: FsHotWatch.TaskCache.CachedStatus =
     FsHotWatch.TaskCache.CachedRunCompleted testVerdict
 
-/// `IpcParsing.parsePluginStatuses`, for tests that are asserting on the CONTENTS of a
-/// payload they already know parses. It FAILS the test on an unreadable payload rather
-/// than degrading to an empty map — which is the same rule the production callers now
-/// follow, and the reason a test can't quietly start asserting over nothing.
+/// `IpcParsing.parsePluginStatuses` for tests asserting on the CONTENTS of a payload they
+/// already know parses. Fails the test on an unreadable payload rather than degrading to an
+/// empty map, so a test can't quietly start asserting over nothing.
 let parseStatuses (json: string) : Map<string, FsHotWatch.Cli.RunOnceOutput.ParsedPluginStatus> =
     match FsHotWatch.Cli.IpcParsing.parsePluginStatuses json with
     | Ok statuses -> statuses

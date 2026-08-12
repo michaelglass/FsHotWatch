@@ -52,12 +52,10 @@ type DiagnosticsResponse =
 /// caller is trusted to make. Nothing here may EVER read as full-suite unless it
 /// positively is one, exactly as `Coverage.Unknown` must never read as `Complete`.
 ///
-/// AUTOMATION-150's principle, applied here: THERE IS NO SCOPE TO REPORT and I COULD
-/// NOT READ THE SCOPE are different facts and are different values. They used to be
-/// one (`ScopeUnknown`), and because the inner loop tolerates the first — a repo with
-/// no test projects configured must not be punished for having none — it tolerated
-/// the second too. So any fault on the read path turned a refusal into a pass. See
-/// `ScopeUnreadable`.
+/// THERE IS NO SCOPE TO REPORT and I COULD NOT READ THE SCOPE are different facts and
+/// are therefore different values. Conflating them makes the inner loop's (correct)
+/// tolerance of the first tolerate the second as well, so any fault on the read path
+/// becomes a pass. See `ScopeUnreadable`.
 type TestScope =
     /// Every configured test project ran, none of them impact-filtered.
     | FullSuite of projects: int
@@ -81,12 +79,10 @@ type TestScope =
     /// Distinct from `ScopeUnknown` because the safe answers differ. `ScopeUnknown` is a
     /// provable absence of test evidence to report; this is an absence of KNOWLEDGE about
     /// test evidence that may well exist and may well be `NoTestsRun` — the state both
-    /// modes already refuse. Collapsing the two let a fault on the read path launder that
-    /// refusal into a green, so this is refused in BOTH modes, like `NoTestsRun`.
+    /// modes already refuse. So it is refused in BOTH modes, like `NoTestsRun`.
     ///
-    /// Carries WHY, because "safe-by-default is right; safe-and-mute is how a broken
-    /// check stays broken" — and a check that starts refusing must be able to say what
-    /// it could not read.
+    /// Carries WHY: a check that starts refusing must be able to say what it could not
+    /// read.
     | ScopeUnreadable of reason: string
 
 module TestScope =
@@ -118,11 +114,8 @@ module TestScope =
         | ScopeUnreadable _ -> false
 
     /// "We asked what ran and the answer faulted" — as distinct from `ScopeUnknown`,
-    /// which is a legitimate everyday answer meaning the daemon positively reported no
-    /// scope. That difference is the whole of the fail-open fix, so it gets a name
-    /// rather than being re-matched by hand at each site: production matched this case
-    /// in six places with no predicate, and the tests had already grown two private
-    /// copies.
+    /// which means the daemon positively reported no scope. Named here rather than
+    /// re-matched by hand at each of its several call sites.
     ///
     /// Exhaustive for the same reason as `isFullSuite`: a new scope case is "not
     /// unreadable" only by an explicit edit here.
@@ -140,10 +133,9 @@ module TestScope =
 /// and resolves to nothing, so passing `"test-prune"` here would return the
 /// unknown-command sentinel and `confirm` would read it as `ScopeUnknown` → exit 3.
 ///
-/// They live HERE, next to the parser of their replies, because there are FOUR
-/// callers — `confirm` and `confirm --run-once`, over two different transports — and a
-/// literal that four call sites can spell independently is a literal three of them can
-/// spell wrong.
+/// They live HERE, next to the parser of their replies, because four call sites use
+/// them (`confirm` and `confirm --run-once`, over two transports) and a literal spelled
+/// independently at each is a literal three of them can spell wrong.
 [<Literal>]
 let TestScopeCommand = "test-scope"
 
@@ -166,18 +158,16 @@ let FullSuiteScopeArgs = """{"scope":"full"}"""
 /// replay (AUTOMATION-224).
 ///
 /// The build cache key is a content merkle over SOURCE files only, so a cache hit
-/// asserts "the outputs are up to date" on evidence that never covered the
-/// outputs. After a working-copy flip (`jj new main`) the sources can match a
-/// previously-built tree while `bin/` still holds the PREVIOUS tree's artifacts —
-/// the build replays "built N projects (cached)" without running, TestPrune's
-/// freshness gate correctly sees stale output and defers every affected project as
-/// "waiting on build", and neither side ever moves. That deadlock blocked a
-/// production deploy three times.
+/// asserts "the outputs are up to date" on evidence that never covered the outputs.
+/// After a working-copy flip (`jj new main`) the sources can match a previously-built
+/// tree while `bin/` still holds the PREVIOUS tree's artifacts: the build replays "built
+/// N projects (cached)" without running, TestPrune's freshness gate correctly sees stale
+/// output and defers every affected project as "waiting on build", and neither side ever
+/// moves. That deadlock blocked a production deploy three times.
 ///
 /// `confirm` is the unfiltered merge verb, so it forces the build the same way it
-/// already forces a from-disk scan and a full-suite run: it does not get to trust a
-/// cache when its whole job is to be the thing you trust. Plain `check` keeps the
-/// cache (and reports the residual honestly as incomplete/exit 2).
+/// already forces a from-disk scan and a full-suite run. Plain `check` keeps the cache
+/// (and reports the residual honestly as incomplete/exit 2).
 [<Literal>]
 let ForceRebuildCommand = "force-rebuild"
 
@@ -196,17 +186,16 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
     | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
     | _ -> None
 
-/// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into
-/// the CLI-side `StatusView`. TOTAL — every way of not understanding the element is a
-/// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from
-/// the map (which would make `isAllTerminal` read true for a plugin it can no longer
-/// see). The verdict isn't carried here at all; it travels in `lastRun`, the one channel.
+/// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into the CLI-side
+/// `StatusView`. TOTAL — every way of not understanding the element is a
+/// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from the
+/// map (which would make `isAllTerminal` read true for a plugin it can no longer see).
+/// The verdict travels in `lastRun`, not here.
 ///
-/// The `running`/`since` arm is the one that bites hardest. `since` is the ONLY input to
-/// the wedge classifier (`pluginOutcomeOf` fires it on `StatusView.Running since` and
-/// nowhere else), so an unparseable `since` must read as unreadable, not idle —
-/// otherwise a WEDGED plugin would silently become an idle one and wedge detection would
-/// be defeated from a timestamp.
+/// The `running`/`since` arm bites hardest: `since` is the ONLY input to the wedge
+/// classifier (`pluginOutcomeOf` fires it on `StatusView.Running since` and nowhere
+/// else), so an unparseable `since` must read as unreadable rather than idle — otherwise
+/// a WEDGED plugin becomes an idle one and wedge detection is defeated by a timestamp.
 let parseTaggedStatus (el: JsonElement) : StatusView =
     let unreadable (why: string) =
         StatusView.Unreadable $"unreadable plugin status: %s{why}"
@@ -335,9 +324,8 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 /// AN UNREADABLE MAP IS NOT AN EMPTY ONE. Swallowing a `JsonException` and returning
 /// `Map.empty` would make every plugin vanish — nothing Failed, nothing Running — and
 /// any verdict computed over a clean ledger would stay green. `Map.empty` is a CLAIM
-/// ("no plugin has anything to say"); a parse failure is the absence of one, and the
-/// two must not be spelled the same way. Same shape as `Verdict.read`, which already
-/// refuses to round an unreadable file to a verdict.
+/// ("no plugin has anything to say"); a parse failure is the absence of one. Same
+/// shape as `Verdict.read`.
 ///
 /// Only `JsonException` is caught. A real programming bug (null, ArgumentException)
 /// still propagates — a fail-closed reader is not a bug-swallowing one.
@@ -431,18 +419,17 @@ type TestRunReport =
 /// Parse the JSON reply from the test-prune `test-scope` command.
 ///
 /// Fails CLOSED in every direction — nothing here can round UP to `FullSuite` — but the
-/// two ways of not getting a scope are kept APART, because the inner loop treats them
-/// differently and must:
+/// two ways of not getting a scope are kept APART, because the inner loop must treat
+/// them differently:
 ///
 ///   * `running` is an ANSWER: a run is in flight, so no scope has been earned yet.
-///     `ScopeUnknown`, which `check` tolerates. (An `{"error": ...}` reply from a
-///     daemon with no test-prune plugin never reaches here — both transports detect the
-///     unknown-command sentinel first and report `ScopeUnknown` themselves.)
+///     `ScopeUnknown`, which `check` tolerates. (An `{"error": ...}` reply from a daemon
+///     with no test-prune plugin never reaches here — both transports detect the
+///     unknown-command sentinel first.)
 ///   * ANY other unrecognized reply is a FAILURE to get one: not JSON, a shape from
 ///     another version, or a daemon contradicting its own counts ("full", 2 of 4 — the
 ///     counts are the evidence and the label is not). `ScopeUnreadable`, which BOTH
-///     modes refuse: it may be concealing a `NoTestsRun`, and a vacuous green is
-///     exactly what `NoTestsRun` exists to prevent.
+///     modes refuse (see the case's docs).
 let parseTestRunReport (json: string) : TestRunReport =
     try
         use doc = JsonDocument.Parse(json)

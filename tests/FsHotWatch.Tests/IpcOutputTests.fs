@@ -44,17 +44,13 @@ let ``parseDiagnosticsResponse extracts statuses`` () =
 // ---------------------------------------------------------------------------
 // AN UNREADABLE PLUGIN STATUS IS NOT A PASSING ONE.
 //
-// `Verdict.read` already states the policy one file away: "a plugin outcome token
-// this build does not recognize is NOT dropped and NOT rounded to `Ok` — it becomes
-// `Fail`. An unknown state is not a passing state." The IPC parser did the opposite:
-// four separate places rounded an unparseable status DOWN to `Idle` — quiescent, no
-// failure, omitted from the verdict entirely.
+// `Verdict.read` states the policy one file away: an outcome token this build does not
+// recognize becomes `Fail`, never `Ok`. The IPC parser did the opposite — four places
+// rounded an unparseable status DOWN to `Idle`: quiescent, no failure, omitted from the
+// verdict entirely. A live cross-version hazard, since `PluginOutcome` gained `Wedged`.
 //
-// This is a LIVE cross-version hazard, not a hypothetical: `PluginOutcome` gained
-// `Wedged` in this batch, so "old CLI, new daemon" is a shape that exists.
-//
-// Asserted through `hasFailures` — the one predicate both `check` and `confirm`
-// decide on — so the tests pin the CONSEQUENCE, not the representation.
+// Asserted through `hasFailures` — the one predicate both `check` and `confirm` decide on —
+// so these pin the CONSEQUENCE, not the representation.
 // ---------------------------------------------------------------------------
 
 let private responseWithStatus (statusJson: string) =
@@ -66,17 +62,17 @@ let private responseWithStatus (statusJson: string) =
 
 [<Fact(Timeout = 15000)>]
 let ``a status tag this build does not recognize is a FAILURE, not idle`` () =
-    // A newer daemon reporting a state we have no name for. Rounding it to `Idle`
-    // makes the plugin quiescent, clean, and INVISIBLE in the verdict's `plugins[]`.
+    // Rounding a newer daemon's unknown state to `Idle` makes the plugin quiescent, clean,
+    // and INVISIBLE in the verdict's `plugins[]`.
     let resp = responseWithStatus """{"tag":"quantum-superposition"}"""
     test <@ hasFailures false resp @>
     test <@ exitCodeFromResponse false resp = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``a running status whose since cannot be parsed is a FAILURE, not idle`` () =
-    // This one silently defeated ALL of AUTOMATION-147's wedge detection: the wedge
-    // classifier only ever fires on `StatusView.Running since`, so a `since` we could
-    // not parse turned a WEDGED plugin into an idle one — the 8h36m silence, restored.
+    // This silently defeated all of AUTOMATION-147's wedge detection: the classifier only
+    // fires on `StatusView.Running since`, so an unparseable `since` turned a WEDGED plugin
+    // into an idle one.
     let resp = responseWithStatus """{"tag":"running","since":"not-a-timestamp"}"""
     test <@ hasFailures false resp @>
 
@@ -258,15 +254,10 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with noTestsMatched run returns 3 — refuses to green without evidence`` () =
-    // A filtered run that matched NOTHING is reported distinctly and exits 3,
-    // never 0. Exit 3 is this tool's established "refuse to green without
-    // evidence" code (the same one `confirm` returns on a warm cache).
-    //
-    // This assertion previously demanded 0. That was wrong and it cost real time:
-    // `dotnet fshw test-rerun --filter-class '*LlmCallBudget*'` printed
-    // "✓ Tests passed" and exited 0 having run ZERO tests, and a reviewer read
-    // that as verification. An exit code that sails through `&&` is not a
-    // distinct outcome no matter what the text beside it says.
+    // Exit 3 is this tool's "refuse to green without evidence" code. The trap: this
+    // assertion once demanded 0, so a filter matching zero tests printed "✓ Tests passed"
+    // and exited 0 — an exit code that sails through `&&` is not a distinct outcome no
+    // matter what the text beside it says.
     let json =
         """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
 
@@ -275,12 +266,9 @@ let ``renderIpcResult with noTestsMatched run returns 3 — refuses to green wit
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with an EMPTY projects array returns 3, never "Tests passed"`` () =
-    // The case `noTestsMatched` cannot express. `allZeroMatch` is deliberately
-    // false for an empty result set — "no project ran" is a different claim from
-    // "every project matched nothing" — so this JSON sets neither `hasFailed` nor
-    // `noTestsMatched` and used to fall through to `UI.success "Tests passed"`,
-    // exit 0. A run that executed nothing at all reported the best possible
-    // outcome.
+    // The case `noTestsMatched` cannot express: `allZeroMatch` is deliberately false for an
+    // empty result set ("no project ran" ≠ "every project matched nothing"), so this JSON
+    // sets neither flag and used to fall through to `UI.success "Tests passed"`, exit 0.
     let json = """{"elapsed":"0.0s","projects":[]}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
@@ -288,9 +276,8 @@ let ``renderIpcResult with an EMPTY projects array returns 3, never "Tests passe
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult still returns 0 for a genuine pass — the guard is not a blanket`` () =
-    // Positive control for the two assertions above: tightening "nothing ran"
-    // must not turn a real green into a refusal. Without this, both tests above
-    // would still pass if `renderIpcResult` simply never returned 0.
+    // Positive control for the two assertions above: without it, both would still pass if
+    // `renderIpcResult` simply never returned 0.
     let json =
         """{"elapsed":"1.2s","projects":[{"project":"RealProject","status":"passed","output":"Passed! total: 7"}]}"""
 
@@ -299,11 +286,9 @@ let ``renderIpcResult still returns 0 for a genuine pass — the guard is not a 
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with busy status NEVER returns 0 — no run, no green`` () =
-    // AUTOMATION-99. `test-rerun` is the repo's explicit "prove it ran" verb, so
-    // a reply that carries NO run result must never exit 0: a vacuous green is
-    // exactly the false verdict this ticket exists to kill. It is still DISTINCT
-    // from "Tests failed" (nothing is known to be broken) — the message says so —
-    // but the exit code is non-zero so no caller can read it as a pass.
+    // AUTOMATION-99: `test-rerun` is the "prove it ran" verb, so a reply carrying NO run
+    // result must never exit 0. The message still distinguishes it from "Tests failed"
+    // (nothing is known to be broken), but the exit code is non-zero either way.
     let json =
         """{"status":"busy","message":"the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"}"""
 
@@ -360,11 +345,9 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
 
 // --- Regression: parsePluginStatuses format drift ---
 //
-// If parsePluginStatuses rejects the GetStatus JSON shape (e.g. a fixture
-// returning `{"plugin": "Completed at ..."}` with a bare-string value instead of
-// the real `{"plugin": {"status": "..."}}` object shape), the parse silently
-// yields an empty map — which once hung a status-polling consumer for 40+ minutes
-// before being caught. These tests pin the accepted vs rejected wire shapes.
+// If parsePluginStatuses rejects the GetStatus JSON shape, the parse silently yields an
+// empty map — which once hung a status-polling consumer for 40+ minutes before being
+// caught. These pin the accepted vs rejected wire shapes.
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
@@ -373,7 +356,6 @@ let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses accepts object-valued entries with status field`` () =
-    // The real GetStatus JSON shape. Object-per-plugin with a status string.
     let json =
         """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
@@ -382,44 +364,19 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 
 // --- Regression: check soundness (false green before the test-prune verdict) ---
 //
-// THE BUG (observed on alpha.30 against a large consumer repo): `fshw check`
-// returned exit 0 "No errors" having computed N affected tests, but BEFORE the
-// test-prune run's verdict was captured — the test-prune run launched/finished
-// AFTER `check` had already exited green, so real test failures sat behind a
-// green exit.
+// The scan signals its generation as soon as FCS check + BatchChecked finish; at that
+// instant test-prune can still be Idle (its queued `BuildCompleted` has not been handled,
+// so it has not transitioned Idle->Running). `isAllTerminal` treats Idle as quiescent and
+// never consults the host's inflight/busy state, so `check` concluded "settled", read
+// diagnostics during that Idle window, and exited 0 while real test failures were still
+// pending. `pollAndRender` now blocks on `WaitForComplete` before reading diagnostics;
+// status polling is rendering-only.
 //
-// ROOT CAUSE: the CLI `check` (`pollAndRender`) settled on the
-// Idle-tolerant `isAllTerminal` status predicate instead of the daemon's
-// authoritative `WaitForComplete` verdict. The scan signals its generation as
-// soon as FCS check + BatchChecked finish; at that instant test-prune can still
-// be Idle (the build's `BuildCompleted` event is queued in its mailbox but its
-// handler hasn't run, so it hasn't transitioned Idle->Running yet). `isAllTerminal`
-// treats Idle as quiescent and never consults the host's inflight/busy state, so
-// the check concluded "settled" and read diagnostics during that Idle window —
-// missing the test-prune failure that surfaces only once the run completes.
-//
-// THE FIX: `pollAndRender` now blocks on `WaitForComplete` (the daemon's
-// `waitForVerdict`, which gates on plugin busy/inflight + generation advancement
-// + quiescence) before reading diagnostics; status polling is rendering-only.
-//
-// This test drives `pollAndRender` through the exact ordering with injected,
-// fully-deterministic seams (no real daemon, no sleep race):
-//   - `getStatus` reports FCS=Completed + test-prune=Idle during the race window
-//     (the false-green trap), flipping test-prune to Completed only once the
-//     authoritative wait has run.
-//   - `waitForComplete` is the authoritative settle: invoking it marks the
-//     test-prune run finished (as `waitForVerdict` would, by blocking until the
-//     inflight BuildCompleted -> run reaches terminal).
-//   - `getErrors` reports the test failure ONLY after the run finished — i.e. a
-//     check that reads diagnostics during the Idle window sees a (false) clean.
-//
-// With the fix the check waits for `waitForComplete`, so the failure is surfaced
-// (exit 1). Without it the check stops at `isAllTerminal` while test-prune is Idle
-// and reads the clean diagnostics (exit 0) — the false green. The assertion
-// `exit = 1` is therefore red-before / green-after.
+// The seams below reproduce the exact ordering deterministically — no real daemon, no
+// sleep race — so `exit = 1` is red-before / green-after.
 
-/// GetStatus JSON: fcs Completed; test-prune Idle until the run has finished,
-/// then Completed. The Idle window is the false-green trap.
+/// GetStatus JSON: fcs Completed; test-prune Idle until the run has finished, then
+/// Completed. The Idle window is the false-green trap.
 let private statusJsonFor (testRunFinished: bool) : string =
     let testPruneStatus =
         if testRunFinished then
@@ -429,9 +386,9 @@ let private statusJsonFor (testRunFinished: bool) : string =
 
     $"""{{"fcs":{{"status":{{"tag":"completed","at":"2026-01-01T00:00:00.0000000Z"}},"subtasks":[],"activityTail":[],"lastRun":null}},"test-prune":{{"status":%s{testPruneStatus},"subtasks":[],"activityTail":[],"lastRun":null}}}}"""
 
-/// GetDiagnostics JSON: complete coverage (unchecked 0). One test-prune failure
-/// becomes visible ONLY after the test-prune run finished — before that the
-/// ledger is (deceptively) clean, exactly as it is during the Idle race window.
+/// GetDiagnostics JSON: complete coverage (unchecked 0). The one test-prune failure becomes
+/// visible ONLY after the run finished — before that the ledger is deceptively clean,
+/// exactly as during the Idle race window.
 let private diagnosticsJsonFor (testRunFinished: bool) : string =
     if testRunFinished then
         """{"count":1,"files":{"tests/Foo.fs":[{"plugin":"test-prune","message":"1 test failed","severity":"error","line":0,"column":0,"detail":null}]},"statuses":{},"unchecked":0}"""
@@ -440,49 +397,36 @@ let private diagnosticsJsonFor (testRunFinished: bool) : string =
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)`` () =
-    // Shared mutable: the test-prune run's terminal state. Flipped true ONLY by
-    // the authoritative wait, mirroring `waitForVerdict` blocking until the
-    // BuildCompleted -> affected-tests run reaches its terminal verdict.
+    // The test-prune run's terminal state, flipped true ONLY by the authoritative wait —
+    // mirroring `waitForVerdict` blocking until the BuildCompleted -> run reaches terminal.
     let mutable testRunFinished = false
     let mutable waitForCompleteCalls = 0
 
-    // Determinism gate (coverage stability): `pollUntilSettled` runs
-    // `waitForComplete` on a `Task.Run` and exits as soon as that task's
-    // `IsCompleted` is observed true. If the task finishes before the FIRST
-    // `isSettled` poll (idle machine), the loop never takes its
-    // `if not allDone then Thread.Sleep(200)` arm — so that branch in
-    // IpcOutput.fs flips covered/uncovered run-to-run (the observed 28/54 <->
-    // 29/54 branch-coverage flake around the 53% floor). We pin it
-    // deterministically: `waitForComplete` blocks until the render loop has
-    // completed a FULL un-settled iteration (status read + `isSettled` returned
-    // false + the sleep arm taken). `getStatus` runs at the top of every
-    // iteration; releasing the gate on the SECOND poll (not the first) keeps the
-    // task un-finished THROUGH the first `isSettled` check, so the loop is
-    // guaranteed to take the wait-and-retry branch once, then converge. The
-    // branch is now ALWAYS covered, with no wall-clock race.
+    // Determinism gate: `pollUntilSettled` runs `waitForComplete` on a `Task.Run` and exits
+    // as soon as it observes `IsCompleted`. On an idle machine that can happen before the
+    // FIRST `isSettled` poll, so the `if not allDone then Thread.Sleep(200)` arm flips
+    // covered/uncovered run-to-run. Releasing this gate on the SECOND `getStatus` (not the
+    // first) keeps the task un-finished through the first `isSettled` check, so the loop
+    // always takes the wait-and-retry branch once, with no wall-clock race.
     use releaseComplete = new System.Threading.ManualResetEventSlim(false)
     let mutable pollCount = 0
 
     let waitForScan () : string =
-        // The scan generation is signalled; test-prune has NOT yet processed its
-        // queued BuildCompleted. This is the false-green window.
+        // Generation signalled; test-prune has NOT yet processed its queued
+        // BuildCompleted. This is the false-green window.
         "idle"
 
     let waitForComplete () : string =
-        // The daemon's sound verdict wait: it returns only once the test-prune
-        // run has reached terminal. Block until the render loop has done one full
-        // un-settled iteration (so `pollUntilSettled` takes its wait-and-retry
-        // branch), then mark the run finished.
+        // The sound verdict wait: returns only once the run has reached terminal. Blocks
+        // until the render loop has done one full un-settled iteration.
         releaseComplete.Wait()
         waitForCompleteCalls <- waitForCompleteCalls + 1
         testRunFinished <- true
         statusJsonFor true
 
     let getStatus () : string =
-        // Called at the top of each `pollUntilSettled` iteration, before the
-        // `isSettled` check. The first poll observes the task still running (gate
-        // closed) so `isSettled` is false and the loop sleeps; the second poll
-        // releases the gate, letting `waitForComplete` finish and the loop exit.
+        // Runs at the top of each iteration, before the `isSettled` check: the first poll
+        // leaves the gate closed so the loop sleeps; the second releases it.
         pollCount <- pollCount + 1
 
         if pollCount >= 2 then
@@ -514,28 +458,20 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
 
     // The authoritative settle MUST have been consulted...
     test <@ waitForCompleteCalls >= 1 @>
-    // ...and the test-prune failure surfaced. Exit 1 (failure) only happens if
-    // the check waited for the verdict before reading diagnostics. With the bug
-    // (settle on `isAllTerminal` while test-prune is Idle) the check reads the
-    // clean ledger during the Idle window and returns exit 0 — the false green.
+    // ...and exit 1 only happens if the check waited for the verdict before reading
+    // diagnostics. Settling on `isAllTerminal` reads the clean ledger during the Idle
+    // window and returns 0 — the false green.
     test <@ exitCode = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` () =
-    // The legitimate "nothing failed" case: the authoritative wait completes and
-    // the ledger is clean -> exit 0. Guards against the fix over-blocking or
+    // The legitimate "nothing failed" case — guards against the fix over-blocking or
     // mis-reporting a genuinely green run.
     //
-    // Determinism gate (coverage stability): this test pins the OTHER arm of
-    // `pollUntilSettled`'s `if not allDone then Thread.Sleep(200)` branch — the
-    // SKIP arm, taken when the verdict task has already completed by the first
-    // `isSettled` poll (so no sleep). Without pinning, whether the `Task.Run`
-    // beats the first poll is a wall-clock race. We force it: `waitForComplete`
-    // signals `completed` when it finishes, and the first `getStatus` (top of the
-    // loop, before the `isSettled` check) blocks until that signal — so the loop's
-    // first `isSettled` is GUARANTEED true and the sleep arm is skipped. Together
-    // with the verdict test (which always takes the sleep arm), both arms of the
-    // branch are deterministically covered, stabilising IpcOutput.fs at its peak.
+    // Determinism gate: this pins the OTHER arm of `pollUntilSettled`'s
+    // `if not allDone then Thread.Sleep(200)` branch — the SKIP arm, taken when the verdict
+    // task has already completed by the first `isSettled` poll. Blocking the first
+    // `getStatus` on `completed` guarantees that ordering instead of racing the `Task.Run`.
     use completed = new System.Threading.ManualResetEventSlim(false)
     let mutable firstStatusPoll = true
 
@@ -547,8 +483,6 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
     let getStatus () : string =
         if firstStatusPoll then
             firstStatusPoll <- false
-            // Ensure the verdict task has finished before the loop's first
-            // `isSettled` check, so the loop exits without sleeping (skip arm).
             completed.Wait()
 
         statusJsonFor true
@@ -578,13 +512,13 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
     test <@ exitCode = 0 @>
 
 // --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
-// Regression for AUTOMATION-65: a WaitForComplete that faults because the daemon
-// shut down / the pipe dropped mid-wait must be recognised so the check yields a
-// diagnostic verdict (exit 2) instead of an opaque crash / silent connection drop.
+// AUTOMATION-65: a WaitForComplete that faults because the daemon shut down or the pipe
+// dropped mid-wait must be recognised, so the check yields a diagnostic verdict (exit 2)
+// rather than an opaque crash or a silent connection drop.
 
-/// A stand-in whose type name contains "ConnectionLost" — exercises the
-/// StreamJsonRpc connection-loss detection without a compile-time dependency on
-/// the transport assembly (the production match is by type-name substring).
+/// A stand-in whose type NAME contains "ConnectionLost" — exercises the StreamJsonRpc
+/// connection-loss detection without a compile-time dependency on the transport assembly
+/// (the production match is by type-name substring).
 type private FakeConnectionLostException() =
     inherit exn("connection lost")
 
@@ -601,15 +535,14 @@ let ``isDaemonShutdownDuringWait recognises transport + shutdown faults`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isDaemonShutdownDuringWait ignores unrelated faults`` () =
-    // A real timeout or an arbitrary bug is NOT a mid-wait teardown — it must not
-    // be silently reclassified as a shutdown.
+    // A real timeout or an arbitrary bug is NOT a mid-wait teardown.
     test <@ not (isDaemonShutdownDuringWait (System.TimeoutException("WaitForComplete timed out after 00:30:00"))) @>
     test <@ not (isDaemonShutdownDuringWait (exn "boom")) @>
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
-    // End-to-end: a faulting WaitForComplete (daemon shut down mid-settle) drives
-    // pollAndRender to the diagnostic exit-2 path rather than propagating a crash.
+    // End-to-end: a faulting WaitForComplete reaches the diagnostic exit-2 path rather than
+    // propagating a crash.
     let waitForComplete () : string =
         raise (System.IO.IOException("pipe is broken"))
 
@@ -635,11 +568,10 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
     test <@ exitCode = 2 @>
 
 // --- isVerdictWaitTimeout (verdict-deadline breach classification) ---
-// Regression for the 2026-07-13 test-prune wedge: the daemon now bounds a
-// client-unbounded WaitForComplete (`resolveVerdictDeadline`), and its
-// TimeoutException crosses the RPC boundary as a remote error recognisable
-// only by its message. The check must turn that into a diagnostic exit 2
-// naming the wedged plugin — never an opaque crash, never an endless wait.
+// The daemon bounds a client-unbounded WaitForComplete (`resolveVerdictDeadline`), and its
+// TimeoutException crosses the RPC boundary as a remote error recognisable ONLY by its
+// message. The check must turn that into a diagnostic exit 2 naming the wedged plugin —
+// never an opaque crash, never an endless wait.
 
 [<Fact(Timeout = 15000)>]
 let ``isVerdictWaitTimeout recognises the daemon's deadline breach`` () =
@@ -663,8 +595,8 @@ let ``isVerdictWaitTimeout ignores unrelated faults`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
-    // End-to-end: the daemon's deadline TimeoutException drives pollAndRender to
-    // the diagnostic exit-2 path (bounded + legible) instead of crashing.
+    // End-to-end: the daemon's deadline TimeoutException reaches the diagnostic exit-2 path
+    // instead of crashing.
     let waitForComplete () : string =
         raise (System.TimeoutException("WaitForComplete timed out after 01:00:00 — still running: test-prune (1h 0m)"))
 
@@ -692,21 +624,16 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
 // ---------------------------------------------------------------------------
 // AUTOMATION-117 — `confirm` EARNS its evidence.
 //
-// `set-scope full` makes the next test run unfiltered. It does not make a run
-// HAPPEN. On a warm daemon whose impact DB says nothing changed, the scan provokes
-// no run at all, so `confirm` read the LAST (filtered) run's coverage and refused —
-// correctly (it had no whole-suite evidence) but uselessly: there was no way to
-// produce any. A check that can only be satisfied by luck is a check people route
-// around with a shell script, which is exactly how a 40-line unverified bash
-// harness ended up making merge decisions on this repo.
-//
-// So `confirm` now RUNS the suite it demands, and only then judges it.
+// `set-scope full` makes the next test run unfiltered; it does not make a run HAPPEN. On a
+// warm daemon whose impact DB says nothing changed, the scan provokes no run at all, so
+// `confirm` read the LAST (filtered) run's coverage and refused — correctly, but with no
+// way for the caller to ever produce a satisfying answer. `confirm` now RUNS the suite it
+// demands, and only then judges it.
 // ---------------------------------------------------------------------------
 
-/// A `pollAndRender` drive whose test scope starts out impact-filtered and only
-/// becomes full-suite once `forceFullRun` has actually been invoked — i.e. the
-/// daemon behaves exactly as a warm daemon with nothing to do: it reports the last
-/// filtered run until something forces a new one.
+/// A `pollAndRender` drive whose test scope starts impact-filtered and becomes full-suite
+/// only once `forceFullRun` has been invoked — i.e. a warm daemon with nothing to do,
+/// reporting the last filtered run until something forces a new one.
 let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
     let mutable forceCalls = 0
 
@@ -738,10 +665,8 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
 
 [<Fact(Timeout = 15000)>]
 let ``a confirm with no full-suite evidence FORCES the run and then goes green`` () =
-    // RED BEFORE THE FIX: `confirm` never called `forceFullRun`, read the stale
-    // ImpactFiltered scope, and returned exit 3 (UnearnedScope) — with no way for the
-    // caller to ever get a different answer. GREEN AFTER: it runs the suite, re-reads
-    // what that run actually covered, and earns the verdict.
+    // Without the force, `confirm` reads the stale ImpactFiltered scope and returns exit 3
+    // (UnearnedScope) with no way for the caller to get a different answer.
     let exitCode, forceCalls = driveConfirm CheckVerdict.Confirmation
 
     test <@ forceCalls = 1 @>
@@ -749,10 +674,9 @@ let ``a confirm with no full-suite evidence FORCES the run and then goes green``
 
 [<Fact(Timeout = 15000)>]
 let ``a confirm that already has full-suite evidence does NOT run the suite twice`` () =
-    // The force is a BACKSTOP, not the mechanism. On a cold daemon the scan already
-    // provoked the unfiltered run (`set-scope full` was sent first), so the scope reads
-    // full-suite here and `confirm` must pay for exactly ONE suite. A check that re-ran
-    // the world every time would be a check people turn off.
+    // The force is a BACKSTOP, not the mechanism. On a cold daemon the scan already provoked
+    // the unfiltered run (`set-scope full` was sent first), so the scope reads full-suite
+    // here and `confirm` must pay for exactly ONE suite.
     let mutable forceCalls = 0
 
     let exitCode =
@@ -777,19 +701,17 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
 
 [<Fact(Timeout = 15000)>]
 let ``the inner loop NEVER forces a full suite`` () =
-    // `check` is the fast loop. An impact-filtered green is precisely the answer it
-    // wants, and a fast loop that secretly runs the whole suite is not a fast loop.
+    // An impact-filtered green is precisely the answer the inner loop wants.
     let exitCode, forceCalls = driveConfirm CheckVerdict.InnerLoop
 
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
 
 // ---------------------------------------------------------------------------
-// The `coverage` token is what a CURRENT daemon sends. These cover the other
-// side of the contract: a CLI talking to an OLDER daemon that does not send it.
-// The rule the fallback exists to hold is that an ABSENT field must never be
-// read as "ran" — otherwise upgrading the CLI ahead of the daemon silently
-// reintroduces the exact green-for-nothing this release removes.
+// The `coverage` token is what a CURRENT daemon sends. These cover the other side of the
+// contract: a CLI talking to an OLDER daemon that omits it. The rule the fallback holds is
+// that an ABSENT field must never read as "ran", or upgrading the CLI ahead of the daemon
+// silently reintroduces green-for-nothing.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
@@ -810,12 +732,11 @@ let ``renderIpcResult reads coverage=all-zero-match as a refusal, not a pass`` (
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult trusts a coverage token that ran, over an empty-looking payload`` () =
-    // Positive control on the token path: the token is authoritative, so a
-    // daemon that says it ran is believed. Without this, a fallback that ignored
-    // the token entirely would still satisfy the two tests above.
+    // Positive control on the token path: without it, a fallback that ignored the token
+    // entirely would still satisfy the two tests above.
     //
-    // Both breadths, because the exit code must not depend on scope — a partial
-    // run that executed and passed is still a pass (AUTOMATION-282).
+    // Both breadths, because the exit code must not depend on scope — a partial run that
+    // executed and passed is still a pass (AUTOMATION-282).
     for token in [ "ran-full-suite"; "ran-partial" ] do
         let json =
             $"""{{"elapsed":"1.0s","coverage":"{token}","verifiedNothing":false,"projects":[{{"project":"P","status":"passed","output":"Passed! total: 3"}}]}}"""
@@ -824,11 +745,10 @@ let ``renderIpcResult trusts a coverage token that ran, over an empty-looking pa
 
 [<Fact(Timeout = 15000)>]
 let ``the retired bare "ran" token is refused, not read as a pass`` () =
-    // Pre-282 daemons sent `"ran"`: tests executed, breadth unstated. The missing
-    // half used to arrive as a separate bool that could claim a full suite for a run
-    // that executed nothing, so the token is not accepted rather than having a scope
-    // invented for it. A CLI newer than its daemon gets one no-verdict — exit 3,
-    // failing closed — with instructions to restart the daemon.
+    // Pre-282 daemons sent `"ran"`: tests executed, breadth unstated. The missing half used
+    // to arrive as a separate bool that could claim a full suite for a run that executed
+    // nothing, so the token is refused rather than having a scope invented for it — a CLI
+    // newer than its daemon gets one exit 3 and instructions to restart it.
     let json =
         """{"elapsed":"1.0s","coverage":"ran","verifiedNothing":false,"projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
@@ -836,9 +756,8 @@ let ``the retired bare "ran" token is refused, not read as a pass`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``an OLDER daemon sending no coverage field still cannot report a no-op as a pass`` () =
-    // The upgrade-skew case. No `coverage`, no `noTestsMatched`, empty projects —
-    // the fallback must reconstruct "no project ran" from the counts rather than
-    // defaulting to "ran".
+    // The upgrade-skew case: with no `coverage` and no `noTestsMatched`, the fallback must
+    // reconstruct "no project ran" from the counts rather than defaulting to "ran".
     let noCoverageEmpty = """{"elapsed":"0.0s","projects":[]}"""
 
     let noCoverageZeroMatch =
@@ -853,15 +772,10 @@ let ``an OLDER daemon sending no coverage field still cannot report a no-op as a
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
 
 // ---------------------------------------------------------------------------
-// The gap three independent reviewers found in the same afternoon: the token
-// was string-COMPARED, and anything unrecognized fell through an `else` to
-// `Tests passed`, exit 0. A newer daemon, a typo, or a future case such as
-// "all-deferred" would each have reported a green — the single outcome this
-// whole area exists to prevent, reachable by the absence of a match arm.
-//
-// The sibling parser added in the same release already got this right
-// (`IpcParsing`'s `ScopeUnreadable`). These pin the CLI to the same rule:
-// a reading you cannot interpret is never a good one.
+// The token was string-COMPARED, and anything unrecognized fell through an `else` to
+// `Tests passed`, exit 0 — so a newer daemon, a typo, or a future case such as
+// "all-deferred" each reported a green, reachable by the mere absence of a match arm.
+// These pin the CLI to `IpcParsing`'s rule: a reading you cannot interpret is never good.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
@@ -887,8 +801,8 @@ let ``a garbage coverage token is refused too — it is not a whitelist of known
 
 [<Fact(Timeout = 15000)>]
 let ``refusing unknown tokens is NOT a blanket — a known ran token is still a pass`` () =
-    // Positive control. Without it, a change that refused every token would
-    // satisfy both tests above while making every real green a failure.
+    // Positive control: without it, a change that refused every token would satisfy both
+    // tests above while making every real green a failure.
     let json =
         """{"elapsed":"1.0s","coverage":"ran-full-suite","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 

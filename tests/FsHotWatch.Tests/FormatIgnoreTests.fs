@@ -13,10 +13,8 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact(Timeout = 20000)>]
 let ``format check skips files matched by fantomasignore`` () =
     withTempDir "fmt-fantomasignore" (fun tmpDir ->
-        // Create .fantomasignore that excludes vendor/
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
 
-        // Create an unformatted file in vendor/
         let vendorDir = Path.Combine(tmpDir, "vendor")
         Directory.CreateDirectory(vendorDir) |> ignore
         let file = Path.Combine(vendorDir, "Bad.fs")
@@ -35,7 +33,6 @@ let ``format check skips files matched by fantomasignore`` () =
                 | _ -> false)
             5000
 
-        // File should NOT be reported as unformatted — it's ignored
         let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 0") @>)
@@ -43,10 +40,8 @@ let ``format check skips files matched by fantomasignore`` () =
 [<Fact(Timeout = 20000)>]
 let ``format check skips files matched by gitignore`` () =
     withTempDir "fmt-gitignore" (fun tmpDir ->
-        // Create .gitignore that excludes generated files
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.generated.fs\n")
 
-        // Create an unformatted generated file
         let file = Path.Combine(tmpDir, "Types.generated.fs")
         File.WriteAllText(file, "module Types\nlet   x=1\n")
 
@@ -63,7 +58,6 @@ let ``format check skips files matched by gitignore`` () =
                 | _ -> false)
             5000
 
-        // File should NOT be reported as unformatted — it's git-ignored
         let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 0") @>)
@@ -71,10 +65,9 @@ let ``format check skips files matched by gitignore`` () =
 [<Fact(Timeout = 20000)>]
 let ``format check still checks files not in any ignore file`` () =
     withTempDir "fmt-no-ignore" (fun tmpDir ->
-        // Create .gitignore that excludes something else
+        // The ignore file matches something else, so Bad.fs stays in scope.
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
 
-        // Create an unformatted source file
         let file = Path.Combine(tmpDir, "Bad.fs")
         File.WriteAllText(file, "module Bad\nlet   x=1\n")
 
@@ -91,7 +84,6 @@ let ``format check still checks files not in any ignore file`` () =
                 | _ -> false)
             5000
 
-        // File SHOULD be reported as unformatted
         let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 1") @>)
@@ -110,7 +102,6 @@ let ``FormatPreprocessor skips files matched by fantomasignore`` () =
         let modified = preprocessor.Process [ file ] tmpDir
         test <@ modified.IsEmpty @>
 
-        // File should be untouched
         let contents = File.ReadAllText(file)
         test <@ contents = "module Bad\nlet   x=1\n" @>)
 

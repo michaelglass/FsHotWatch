@@ -8,30 +8,24 @@ open Swensen.Unquote
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
-// AUTOMATION-147 — the daemon must REAP the children its plugins spawned.
+// AUTOMATION-147 — the daemon must REAP the children its plugins spawned; the
+// wedge self-heal restarts on the same graceful path as `fshw stop`, so a leak
+// there re-creates the mess the operator was clearing with `kill -9`.
 //
-// The wedge self-heal restarts the daemon on the same graceful path as
-// `fshw stop`. If that path leaks the wedged plugin's process, the "fix" just
-// launders the mess the operator was already cleaning up with `kill -9`.
+// It leaked on an ordering bug: the process registry is an `AsyncLocal`, visible
+// only to ExecutionContexts captured AFTER it is set, and the daemon installed it
+// in its CONSTRUCTOR — after the PluginHost and the scan/change mailboxes already
+// existed. `ProcessRegistry.track` then silently dropped the child and `KillAll`
+// reaped nothing.
 //
-// It DID leak. The process registry is scoped by an `AsyncLocal`, and an
-// AsyncLocal is only visible to ExecutionContexts captured AFTER it is set.
-// The daemon installed its registry in the `Daemon` CONSTRUCTOR — by which time
-// the PluginHost and the scan/change mailboxes already existed. So when the scan
-// mailbox dispatched to a plugin, the plugin's `runProcess` resolved NO registry,
-// `ProcessRegistry.track` silently dropped the child, `KillAll` reaped nothing,
-// and the child outlived the daemon reparented to init. Proven on a live daemon:
-//   [PROBE] track pid=69166 -> NO REGISTRY (dropped)
-//   [PROBE] KillAll: 0 tracked
-//
-// This test pins the ordering. It spawns its child from a PREPROCESSOR, because
-// preprocessors run INSIDE the scan mailbox (`performScan` -> `RunPreprocessors`)
-// — the exact context that used to be blind to the registry. Spawning from the
-// test thread would prove nothing: that thread is the one that installed it.
+// So the child is spawned from a PREPROCESSOR: preprocessors run INSIDE the scan
+// mailbox (`performScan` -> `RunPreprocessors`), the context that was blind to the
+// registry. Spawning from the test thread proves nothing — that thread is the one
+// that installed it.
 
-/// A preprocessor that spawns a long-lived child the way `ProcessHelper.runProcess`
-/// does — `Process.Start` followed by `ProcessRegistry.track` — from whatever
-/// context the daemon runs preprocessors in.
+/// Spawns a long-lived child the way `ProcessHelper.runProcess` does
+/// (`Process.Start` then `ProcessRegistry.track`), from whatever context the
+/// daemon runs preprocessors in.
 type private ChildSpawningPreprocessor() =
     let spawned = ResizeArray<Process>()
 
@@ -91,9 +85,8 @@ let ``a child spawned by a daemon-dispatched plugin is tracked and reaped on shu
 
         test <@ not child.HasExited @>
 
-        // The child must be VISIBLE to the daemon's registry. This is the assertion
-        // that fails on the old ordering: the child was spawned into a context with
-        // no registry, so the daemon could not have reaped it even in principle.
+        // The assertion that fails on the old ordering: without a registry in the
+        // spawning context the daemon could not reap the child even in principle.
         let tracked = daemon.ProcessRegistry.Snapshot() |> List.map (fun p -> p.Id)
         test <@ List.contains child.Id tracked @>
 

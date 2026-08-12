@@ -36,9 +36,9 @@ let private fakeIpc () : IpcOps =
       LaunchDaemon = fun _ _ _ -> () }
 
 // --- computeConfigHashWith tests ---
-// The hash covers `.fshw.json` content ONLY. Binary staleness moved to the
-// DaemonIdentity handshake (AUTOMATION-147) — the old exe-mtime input tracked
-// the WRONG file for dotnet-hosted invocations (the muxer, not the fshw dll).
+// The hash covers `.fshw.json` content ONLY. Do not put binary staleness back in:
+// exe mtime tracks the WRONG file for dotnet-hosted invocations (the muxer, not
+// the fshw dll). That job belongs to the DaemonIdentity handshake.
 
 [<Fact(Timeout = 15000)>]
 let ``computeConfigHashWith returns 16-char hex string`` () =
@@ -153,7 +153,6 @@ let ``killStaleDaemonWith handles invalid pid file gracefully`` () =
           KillProcess = fun _ -> ()
           WaitForExit = fun _ _ -> true }
 
-    // Should not throw
     killStaleDaemonWith fileOps processOps "/tmp/repo"
 
 // --- startFreshDaemonWith tests ---
@@ -227,7 +226,7 @@ let ``restart flow is triggered when stored config hash differs`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``restart flow handles shutdown failure gracefully`` () =
-    // decideRunningDaemonAction returns a restart; the shutdown exception is caught by ensureDaemon
+    // The shutdown exception itself is caught by ensureDaemon, not here.
     let action =
         decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "old-hash" "new-hash"
 
@@ -350,8 +349,8 @@ let ``executeCommand Completions returns 0`` () =
 // --- Start command singleton guarantee ---
 
 /// Simulate a running daemon by pre-holding an exclusive lock on
-/// `.fs-hot-watch/daemon.lock` within `tmpDir`, the same handle `Start`
-/// uses to enforce singleton. Returns a disposable that releases the lock.
+/// `.fshw/daemon.lock`, the same handle `Start` uses to enforce singleton.
+/// The returned disposable releases the lock.
 let private holdDaemonLock (tmpDir: string) (pid: int) : IDisposable =
     let stateDir = Path.Combine(tmpDir, ".fshw")
     Directory.CreateDirectory(stateDir) |> ignore
@@ -392,8 +391,6 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
     // createDaemon. The file lock is OS-enforced, so concurrent holders are
     // impossible regardless of probe-timing races.
     withTempDir "prog-start-concurrent" (fun tmpDir ->
-        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
-        // passes and execution actually reaches the lock-acquisition code.
         let srcDir = System.IO.Path.Combine(tmpDir, "src")
         System.IO.Directory.CreateDirectory(srcDir) |> ignore
 
@@ -576,8 +573,8 @@ let ``config hash changes when config file is added`` () =
 [<Fact(Timeout = 15000)>]
 let ``reuse path does not launch daemon when hash matches`` () =
     withTempDir "prog-reuse" (fun tmpDir ->
-        // Reuse also requires the identity handshake to match (AUTOMATION-147):
-        // record THIS process's identity as the running daemon's.
+        // Reuse also requires the identity handshake to match: record THIS
+        // process's identity as the running daemon's.
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
 
         let ipc =
@@ -613,9 +610,8 @@ let ``reuse path does not launch daemon when hash matches`` () =
 
 let private assertFailsWhenDaemonDown (cmd: Command) =
     withTempDir "prog-daemon-down" (fun tmpDir ->
-        // Stage a fake .fsproj so executeCommand's no-projects pre-check
-        // (which now exits 2) doesn't preempt the daemon-launch failure
-        // path this helper is exercising.
+        // Stage a fake .fsproj so executeCommand's no-projects pre-check (exit 2)
+        // doesn't preempt the daemon-launch failure path under test.
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
@@ -636,9 +632,8 @@ let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFai
 let ``executeCommand Rerun returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (Rerun "coverage-ratchet")
 
-/// The agent-mode banner advertises a curated set of subcommands. If any name
-/// drifts from the real command tree (typo, rename, removed subcommand) this
-/// test fails — catching drift that the hardcoded banner string would otherwise hide.
+/// The banner is a hardcoded string: without this test a typo, rename or removed
+/// subcommand would advertise a command that no longer exists.
 [<Fact>]
 let ``agent banner command names all exist as subcommands`` () =
     let bannerLine =
@@ -666,9 +661,9 @@ let ``unwrapIpcException returns the exception unchanged when not aggregate`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``unwrapIpcException unwraps single-inner AggregateException`` () =
-    // Real-world: StreamJsonRpc surfaces pipe-corruption OOM wrapped in an Aggregate.
-    // The CLI used to print "One or more errors occurred. (Insufficient memory ...)" —
-    // we want the inner OOM directly so the operator sees the real cause.
+    // StreamJsonRpc surfaces pipe-corruption OOM wrapped in an Aggregate, which the
+    // CLI would otherwise print as "One or more errors occurred." — the operator
+    // needs the inner OOM.
     let inner =
         OutOfMemoryException("Insufficient memory to continue the execution of the program.")
 
@@ -685,8 +680,8 @@ let ``unwrapIpcException recurses through nested AggregateException`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``unwrapIpcException stops at multi-inner AggregateException`` () =
-    // If multiple distinct errors are aggregated, picking one would lose info.
-    // We unwrap to the first inner via .InnerException to keep behaviour predictable.
+    // Several distinct errors: unwrapping past the aggregate would lose the rest,
+    // so it stops at the first inner and keeps the behaviour predictable.
     let a = InvalidOperationException("a")
     let b = InvalidOperationException("b")
     let agg = AggregateException(a, b)
@@ -706,13 +701,9 @@ let ``ipcErrorHint maps OutOfMemoryException to pipe-corruption hint`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ipcErrorHint maps OverflowException to pipe-corruption hint`` () =
-    // Same root cause as the OOM case, but a different exception path: when the
-    // Content-Length parses to a value that overflows Int32 during downstream
-    // arithmetic (or when stream-position bookkeeping overflows on a long-lived
-    // socket carrying massive payloads), StreamJsonRpc surfaces an
-    // `OverflowException: Arithmetic operation resulted in an overflow.` to the
-    // CLI. Without a hint, the user sees a cryptic error and no recovery path.
-    // Observed in production during Intelligence stress test (fshw 0.10.0-stresstest4).
+    // Same root cause as the OOM case on a different exception path: a
+    // Content-Length that overflows Int32 downstream (seen in production) surfaces
+    // as OverflowException, which without a hint is cryptic and has no recovery path.
     let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
     let hint = ipcErrorHint ex
     test <@ hint.IsSome @>
@@ -742,9 +733,8 @@ let ``tryDeleteForCleanup returns Some on successful delete`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``tryDeleteForCleanup logs at debug and returns None on failure (F9)`` () =
-    // F9: bare `with _` previously hid the exception class. After the fix, the
-    // helper logs at Debug naming the exception class so failures are
-    // diagnosable on --verbose.
+    // F9: a bare `with _` hid the exception class. The helper now logs it at Debug
+    // so cleanup failures are diagnosable on --verbose.
     let original = FsHotWatch.Logging.logLevel
     let sb = System.Text.StringBuilder()
     let writer = new StringWriter(sb)

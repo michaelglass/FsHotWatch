@@ -1,11 +1,8 @@
-// This class mutates the PROCESS ENVIRONMENT (`withEnv`) and then spawns children
-// that snapshot it — two globals, interacting. Run in parallel with the other
-// global-state classes it flaked under saturation: the child of
-// `runProcess inherits the parent process environment` came up with the probe
-// variable EMPTY (observed 2026-07-14 at load ~26, only inside `mise run ci`,
-// which forks compile + lint + tests at once). Serialized with the rest of the
-// process-global-state classes, per the pattern this repo already uses for the
-// logging globals and the live file watchers.
+// This class mutates the PROCESS ENVIRONMENT (`withEnv`) and then spawns children that
+// snapshot it — two globals interacting. Run in parallel with the other global-state
+// classes it flaked under saturation: the child of `runProcess inherits the parent process
+// environment` came up with the probe variable EMPTY. Hence the serialized collection the
+// repo already uses for the logging globals and the live file watchers.
 [<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.ProcessHelperTests
 
@@ -15,11 +12,9 @@ open Xunit.Sdk
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Tests.TestHelpers
 
-/// Bounds for the spawn tests that care about something OTHER than the bounds
-/// (the child-env contract, the process registry): every one of them runs a
-/// trivial `sh -c echo` that exits in milliseconds, so a plain finite timeout is
-/// all they need. Named so a reader is never in doubt that the bounds are
-/// incidental here — the bound-specific behaviour has its own tests below.
+/// Bounds for the spawn tests that care about something OTHER than the bounds (the child-env
+/// contract, the process registry). Named so the bounds read as incidental — the
+/// bound-specific behaviour has its own tests below.
 let private quick = ProcessBounds.silent (TimeSpan.FromSeconds 30.0)
 
 /// Shadows `ProcessHelper.runProcess` with the 4-arg form those tests want.
@@ -31,29 +26,17 @@ let private runProcessBounded command args bounds =
     FsHotWatch.ProcessHelper.runProcess command args "." [] bounds
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-126 — THE DISEASE, IN OUR OWN TEST ASSERTIONS.
+// AUTOMATION-126 — a drain that never finished, asserted against as if it had.
 //
-// Every stdout assertion in this file used to be shaped like
+// Stdout assertions here used to compare against a plain `string`. On a loaded box the 2s
+// post-exit drain window expired before the thread-pool-scheduled reader ever ran, so `out`
+// came back `""` and the assertion compared against it AS IF IT HAD MEASURED AN EMPTY
+// OUTPUT. Where `expected` was `""` (the env-strip tests below!) it PASSED, proving nothing.
 //
-//     match runProcess "sh" (echoEnv key) "." [] with
-//     | Succeeded out -> Assert.Equal(expected, out)
-//
-// and `out` was a plain `string`. On a loaded box the 2 s post-exit drain window
-// expired before the thread-pool-scheduled reader ever ran, so `out` came back
-// `""` — and the assertion compared against it AS IF IT HAD MEASURED AN EMPTY
-// OUTPUT. Three sightings on 2026-07-14. When `expected` was `""` (the env-strip
-// tests!) it PASSED, proving nothing; when it wasn't, it failed with a mismatch
-// that named the wrong culprit.
-//
-// That is the same failure as a `top` that cannot sample reporting a healthy box,
-// or a check that cannot run tests reporting no failures: a measurement that could
-// not be taken, reported as a measurement of nothing. The cure is not a longer
-// window — it is that "I never finished draining" and "the child printed nothing"
-// are now DIFFERENT VALUES (`ProcessOutput.DrainTimedOut` vs `Drained ""`), and
-// only the second can be asserted against.
-//
-// `expectStdout` below is the one door every stdout assertion goes through, and it
-// slams on the first.
+// The cure is not a longer window: "I never finished draining" and "the child printed
+// nothing" are now DIFFERENT VALUES (`ProcessOutput.DrainTimedOut` vs `Drained ""`), and
+// only the second may be asserted against. `expectStdout` is the one door every stdout
+// assertion goes through, and it slams on the first.
 // ---------------------------------------------------------------------------
 
 let private expectStdout (expected: string) (outcome: ProcessOutcome) =
@@ -84,9 +67,8 @@ let ``pumpReachedEof: an expected drain failure did NOT reach EOF`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``pumpReachedEof: an UNEXPECTED failure is re-raised, never laundered into a verdict`` () =
-    // A read that failed for a reason we do not understand must not be quietly
-    // downgraded to "not drained" — that would hide a real bug inside an outcome
-    // the caller is trained to tolerate. It escapes.
+    // A read that failed for a reason we do not understand must not be downgraded to "not
+    // drained" — that hides a real bug inside an outcome the caller is trained to tolerate.
     Assert.Throws<NullReferenceException>(fun () -> pumpReachedEof (Some(NullReferenceException())) |> ignore)
     |> ignore
 
@@ -128,8 +110,8 @@ let ``classifyDrain: both pumps at EOF inside the window is the child's complete
 
 [<Fact(Timeout = 5000)>]
 let ``ProcessOutput.text hands back the captured bytes, untagged, either way`` () =
-    // For text-SEARCHING (a marker either present or not), where a short capture
-    // can only cost a hit, never invent one.
+    // For text-SEARCHING (a marker either present or not), where a short capture can only
+    // cost a hit, never invent one.
     Assert.Equal("hi", ProcessOutput.text (ProcessOutput.Drained "hi"))
     Assert.Equal("hi", ProcessOutput.text (ProcessOutput.DrainTimedOut("hi", TimeSpan.FromSeconds 2.0)))
 
@@ -204,18 +186,15 @@ let ``runWithCancellableTimeout with InfiniteTimeSpan passes a non-cancelled tok
 
 [<Fact(Timeout = 20000)>]
 let ``runWithCancellableTimeout CANCELS a stuck unit on timeout (no orphaned thread)`` () =
-    // The audit's core defect: a timed-out in-process unit used to leave its
-    // orphan thread running (still holding whatever lock it grabbed). With real
-    // cancellation, a cooperative unit observes the token and unwinds — proven
-    // here by a flag the work sets ONLY when it sees the cancellation, plus an
-    // "still running" flag that must be cleared by the time we observe cancel.
+    // A timed-out in-process unit used to leave its orphan thread running, still holding
+    // whatever lock it grabbed. The flags below prove the token actually fired and the
+    // thread actually unwound, rather than the call merely returning.
     let observedCancellation = new System.Threading.ManualResetEventSlim(false)
     let workExited = new System.Threading.ManualResetEventSlim(false)
 
     let work (ct: System.Threading.CancellationToken) =
         try
-            // Cooperative wait that releases the instant the token is cancelled —
-            // models a stuck unit that honours cancellation (FCS/Fantomas/etc.).
+            // Models a stuck unit that honours cancellation (FCS/Fantomas/etc.).
             ct.WaitHandle.WaitOne() |> ignore
             observedCancellation.Set()
             42
@@ -228,16 +207,13 @@ let ``runWithCancellableTimeout CANCELS a stuck unit on timeout (no orphaned thr
     | WorkTimedOut _ -> ()
     | WorkCompleted _ -> Assert.Fail "expected timeout"
 
-    // The defining assertion: the work was actually cancelled (token fired) and
-    // its thread unwound — it is NOT orphaned still-running.
     Assert.True(observedCancellation.Wait(TimeSpan.FromSeconds 5.0), "work never observed cancellation — orphaned")
     Assert.True(workExited.Wait(TimeSpan.FromSeconds 5.0), "work thread never exited — orphaned")
 
 [<Fact(Timeout = 20000)>]
 let ``runWithCancellableTimeout cancelled unit releases its lock so the next unit proceeds`` () =
-    // Concretely models the wedge: unit A grabs a lock and hangs; on timeout it
-    // is cancelled and releases the lock; unit B must then be able to acquire it.
-    // Pre-fix (orphan thread holding the lock forever) B would block indefinitely.
+    // The wedge, concretely: A grabs a lock and hangs, times out, and must release it so B
+    // can acquire it. With an orphan thread holding the lock forever, B blocks indefinitely.
     let gate = new System.Threading.SemaphoreSlim(1, 1)
 
     let stuck (ct: System.Threading.CancellationToken) =
@@ -254,7 +230,6 @@ let ``runWithCancellableTimeout cancelled unit releases its lock so the next uni
     | WorkTimedOut _ -> ()
     | WorkCompleted _ -> Assert.Fail "expected timeout for the stuck unit"
 
-    // B must be able to take the lock the cancelled A released.
     let acquiredByB = gate.Wait(TimeSpan.FromSeconds 5.0)
     Assert.True(acquiredByB, "lock was never released by the cancelled unit — daemon would stay wedged")
 
@@ -279,17 +254,14 @@ let ``runProcess registers the child while running and unregisters on exit`` () 
 
     Assert.True(isSucceeded (runProcess "echo" "hi" "." []))
 
-    // Post-exit, the registry has unregistered — exited PIDs the OS could later
-    // recycle must not linger.
+    // Exited PIDs the OS could later recycle must not linger in the registry.
     Assert.Empty(FsHotWatch.ProcessRegistry.snapshot ())
 
 [<Fact(Timeout = 5000)>]
 let ``isTimedOut is true only for TimedOut`` () =
-    // Deterministic coverage for the ProcessOutcome predicate. The live
-    // timeout-kill path that produces a real TimedOut value is exercised in
-    // FsHotWatch.IntegrationTests (kept out of the coverage suite because its
-    // OS-scheduling-dependent kill/drain branches jitter); this pins the pure
-    // discriminator in the unit suite.
+    // The live timeout-kill path that produces a real TimedOut lives in
+    // FsHotWatch.IntegrationTests — its OS-scheduling-dependent kill/drain branches jitter
+    // coverage — so the pure discriminator is pinned here instead.
     Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, ProcessOutput.Drained "tail", KillOutcome.Killed)))
     Assert.False(isTimedOut (Succeeded(ProcessOutput.Drained "ok")))
     Assert.False(isTimedOut (Failed(1, ProcessOutput.Drained "boom")))
@@ -329,12 +301,10 @@ let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
 let private echoEnv (var: string) =
     sprintf "-c \"printf %%s \\\"$%s\\\"\"" var
 
-// NOTE every assertion below expects the EMPTY string — these are the strip tests,
-// and an empty stdout is exactly what they are here to prove. They are therefore
-// the tests a starved drain could silently fake: pre-AUTOMATION-126 a reader that
-// never ran produced `""`, they all went green, and the strip contract they claim
-// to guard was never actually exercised. `expectStdout` now demands a MEASURED
-// empty output and rejects an unmeasured one.
+// The strip tests below expect the EMPTY string, which makes them the ones a starved drain
+// could silently fake: a reader that never ran also produced `""`, so they went green
+// without exercising the strip contract at all. `expectStdout` demands a MEASURED empty
+// output and rejects an unmeasured one.
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess inherits the parent process environment (no scrubbing)`` () =
@@ -369,20 +339,13 @@ let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () 
         runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [ "DOTNET_ROOT_ARM64", explicitValue ]
         |> expectStdout explicitValue)
 
-// Leaked-MSBuild-env contract — see the strip in
-// ProcessHelper.runProcessWithTimeout for the scenario that motivated it.
-// The daemon calls Ionide.ProjInfo.Init.init for in-process design-time
-// project evaluation, which writes MSBUILD_EXE_PATH / MSBuildExtensionsPath /
-// MSBuildSDKsPath into the daemon's OWN process environment, pinning them at a
-// specific SDK band's MSBuild. Process.Start inherits the full parent env, so
-// a spawned `dotnet build` then runs MSBuild from a possibly-different (or
-// incomplete) SDK band than the muxer resolves — the restore-graph sub-build
-// fails with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)").
-// Stripping these on every spawn lets the child re-resolve MSBuild from its
-// own SDK, matching a clean shell. Caller-supplied overrides still win.
-
-// Each leaked MSBuild discovery key is stripped to empty in the child env,
-// regardless of which one the parent leaked.
+// Leaked-MSBuild-env contract. `Ionide.ProjInfo.Init.init` writes MSBUILD_EXE_PATH /
+// MSBuildExtensionsPath / MSBuildSDKsPath into the daemon's OWN process environment, pinning
+// them at one SDK band's MSBuild. Process.Start inherits the full parent env, so a spawned
+// `dotnet build` then runs MSBuild from a possibly-different band than the muxer resolves —
+// the restore-graph sub-build fails with exit 1 and ZERO diagnostics ("Build FAILED /
+// 0 Error(s)"). Stripping these on every spawn lets the child re-resolve from its own SDK.
+// Caller-supplied overrides still win.
 [<Theory(Timeout = 20000)>]
 [<InlineData("MSBUILD_EXE_PATH")>]
 [<InlineData("MSBuildExtensionsPath")>]
@@ -398,20 +361,15 @@ let ``runProcess strip respects caller-supplied MSBUILD_EXE_PATH override`` () =
         runProcess "sh" (echoEnv "MSBUILD_EXE_PATH") "." [ "MSBUILD_EXE_PATH", explicitValue ]
         |> expectStdout explicitValue)
 
-// DOTNET_HOST_PATH realpath contract — see realpath block in
-// runProcessWithTimeout for the nix-wrapped-SDK scenario that motivated it.
-// The .NET muxer reads DOTNET_HOST_PATH literally and computes
-// DOTNET_ROOT_<arch> = dirname(DOTNET_HOST_PATH); on a wrapped-bin/ symlink
-// that dirname has no `shared/` sibling, so apphost dies. Resolving the
-// symlink before spawn lands dirname on the unwrapped runtime tree.
+// DOTNET_HOST_PATH realpath contract (the nix-wrapped-SDK case). The .NET muxer reads
+// DOTNET_HOST_PATH literally and computes DOTNET_ROOT_<arch> = dirname(DOTNET_HOST_PATH);
+// on a wrapped-bin/ symlink that dirname has no `shared/` sibling, so apphost dies.
+// Resolving the symlink before spawn lands dirname on the unwrapped runtime tree.
 //
-// These tests exercise the contract via the explicit-env arg (4th param of
-// runProcess) rather than mutating process env. Process-env mutation races
-// the parallel test runner: a concurrent DaemonTests subprocess inherits
-// the test's pointing-at-temp-dir DOTNET_HOST_PATH, the test cleans the
-// temp dir, and the daemon spawn fails with "Permission denied" / "No such
-// file" on `wrapped-dotnet`. ProcessHelper applies the realpath after the
-// explicit overlay so this contract holds for either entry point.
+// These use the explicit-env arg rather than mutating process env, which races the parallel
+// runner: a concurrent DaemonTests subprocess inherits the temp-dir DOTNET_HOST_PATH, the
+// test cleans the temp dir, and the daemon spawn dies on `wrapped-dotnet`. ProcessHelper
+// applies the realpath after the explicit overlay, so the contract holds for either entry.
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
@@ -458,11 +416,9 @@ let ``runProcess leaves DOTNET_HOST_PATH unchanged when path does not exist`` ()
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess does not set DOTNET_HOST_PATH when inherited env did not have it`` () =
-    // Setting to None temporarily unsets the variable. This is safe under
-    // parallel test load: a concurrent dotnet spawn missing DOTNET_HOST_PATH
-    // re-derives it from argv[0] and works fine. (Setting it to a temp path
-    // is what races — that's why the other tests in this group use the
-    // explicit-env arg instead of mutating process env.)
+    // Unsetting is safe under parallel load: a concurrent dotnet spawn missing
+    // DOTNET_HOST_PATH re-derives it from argv[0]. Setting it to a temp path is what races,
+    // which is why the rest of this group uses the explicit-env arg.
     withEnv "DOTNET_HOST_PATH" None (fun () -> runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout "")
 
 [<Fact(Timeout = 20000)>]
@@ -500,12 +456,10 @@ let ``runProcess overlays explicit env on top of inherited env`` () =
         runProcess "sh" args "." [ explicitKey, explicitValue ]
         |> expectStdout (inheritedValue + ":" + explicitValue))
 
-// The timeout-kill test that spawned `sleep 30` to force the kill-on-timeout
-// drain path lives in FsHotWatch.IntegrationTests/ProcessHelperTimeoutTests.fs.
-// Its OS-scheduling-dependent coverage of ProcessHelper.fs lines ~157-196 made
-// the unit-suite line coverage jitter, so it was moved to the integration suite
-// (no coverage package). The deterministic helpers below still pin the F17/F18
-// contracts in the unit suite.
+// The timeout-kill test that forces the kill-on-timeout drain path lives in
+// FsHotWatch.IntegrationTests/ProcessHelperTimeoutTests.fs — its OS-scheduling-dependent
+// coverage made the unit-suite line coverage jitter. The deterministic helpers below still
+// pin the F17/F18 contracts here.
 
 // --- F17/F18: isExpectedKillException / isExpectedDrainException helpers ---
 
@@ -525,21 +479,16 @@ let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
 // ---------------------------------------------------------------------------
 // AUTOMATION-149 — `killTree` used to be `try proc.Kill(...) with _ -> ()`.
 //
-// The catch-all laundered an exception into a verdict: a Win32 permission failure
-// and a clean kill left exactly the same trace (none), so "I could not kill the tree"
-// was spelled identically to "I killed the tree" — and the caller was handed a
-// `TimedOut` whose docstring PROMISED the tree was dead while it went on running.
-// Same disease as AUTOMATION-126's drain: a failure to DO the work, rendered
-// indistinguishable from the work succeeding.
+// A Win32 permission failure and a clean kill left exactly the same trace (none), so "I
+// could not kill the tree" was spelled identically to "I killed the tree" — and the caller
+// got a `TimedOut` whose docstring PROMISED the tree was dead while it went on running.
 //
-// `isExpectedKillException` (F17) had said since the 2026-05-02 audit which
-// exceptions are benign — and the call site that was supposed to consult it never
-// did. `classifyKill` is that policy, finally wired up, and pure so the FAILURE arm
-// is deterministic: live-firing it would need a process we are genuinely forbidden
-// to kill, which is not something a test can conjure reliably on every OS.
+// `classifyKill` is `isExpectedKillException`'s policy finally wired up, and it is pure so
+// the FAILURE arm is deterministic: live-firing it needs a process we are genuinely
+// forbidden to kill, which no test can conjure reliably on every OS.
 //
-// RED-BEFORE-GREEN: restore `with _ -> ()` (i.e. make `classifyKill` return
-// `KillOutcome.Killed` for every input) and the two `KillFailed` tests below fail.
+// RED-BEFORE-GREEN: make `classifyKill` return `Killed` for every input and the two
+// `KillFailed` tests below fail.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 5000)>]
@@ -548,23 +497,22 @@ let ``classifyKill: a kill that returned killed the tree (AUTOMATION-149)`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: the already-exited race is benign, not a failure (AUTOMATION-149)`` () =
-    // The child exited in the gap between the timeout firing and the kill landing.
-    // Nobody had to kill it; the tree is dead either way. This is the ONLY exception
-    // the old catch-all was entitled to swallow (F17).
+    // The child exited between the timeout firing and the kill landing: the tree is dead
+    // either way. The ONLY exception the old catch-all was entitled to swallow (F17).
     Assert.Equal(KillOutcome.AlreadyExited, classifyKill (Some(System.InvalidOperationException())))
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: a permission failure is a kill we did NOT perform (AUTOMATION-149)`` () =
-    // THE regression. Win32Exception = we were refused. The tree is still running, and
-    // the old `with _ -> ()` reported that as success.
+    // Win32Exception = we were refused. The tree is still running, and the old
+    // `with _ -> ()` reported that as success.
     match classifyKill (Some(System.ComponentModel.Win32Exception())) with
     | KillOutcome.KillFailed reason -> Assert.IsType<System.ComponentModel.Win32Exception>(reason) |> ignore
     | other -> Assert.Fail $"a refused kill must not be spelled like a successful one, got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: an unexpected exception is a kill we did NOT perform (AUTOMATION-149)`` () =
-    // Anything outside the F17 benign class is, by construction, a kill we cannot
-    // vouch for — it is NEVER quietly rounded down to "killed".
+    // Anything outside the F17 benign class is a kill we cannot vouch for, and is never
+    // rounded down to "killed".
     match classifyKill (Some(System.NullReferenceException())) with
     | KillOutcome.KillFailed reason -> Assert.IsType<System.NullReferenceException>(reason) |> ignore
     | other -> Assert.Fail $"an unexplained kill failure must not be spelled like a successful one, got %A{other}"
@@ -594,10 +542,8 @@ let ``renderKillBrief marks a leaked tree on a one-line status, and is silent ot
     Assert.Equal("", renderKillBrief KillOutcome.Killed)
     Assert.Equal("", renderKillBrief KillOutcome.AlreadyExited)
 
-// `killTreeWith` takes the kill as a parameter precisely so these three arms are
-// reachable without an unkillable process — the failure arm included. Coverage here is
-// EARNED, not excluded: the branch that used to be `with _ -> ()` is now executed by a
-// test that watches it produce a value the caller cannot ignore.
+// `killTreeWith` takes the kill as a parameter so these three arms — the failure arm
+// included — are reachable without an unkillable process.
 
 [<Fact(Timeout = 5000)>]
 let ``killTreeWith: a kill that returns reports Killed (AUTOMATION-149)`` () =
@@ -639,13 +585,12 @@ let ``isExpectedDrainException rejects NullReferenceException (F18)`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ProcessRegistry.Snapshot tolerates disposed processes (F19)`` () =
-    // F19: HasExited on a disposed Process throws InvalidOperationException.
-    // After narrowing from `with _` to :? InvalidOperationException + Win32,
-    // the Snapshot should still treat it as not-alive and skip it.
+    // F19: HasExited on a disposed Process throws InvalidOperationException. After narrowing
+    // from `with _` to :? InvalidOperationException + Win32, Snapshot must still treat it as
+    // not-alive and skip it.
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
 
-    // Spawn a fast process, wait for it to exit, then dispose so HasExited throws.
     let psi = System.Diagnostics.ProcessStartInfo("echo", "hi")
     psi.RedirectStandardOutput <- true
     psi.UseShellExecute <- false
@@ -654,7 +599,6 @@ let ``ProcessRegistry.Snapshot tolerates disposed processes (F19)`` () =
     proc.WaitForExit()
     proc.Dispose()
 
-    // Should not throw and should return empty (alive=false swallowed).
     let snap = registry.Snapshot()
     Assert.Empty(snap)
 
@@ -672,9 +616,8 @@ let ``isExpectedProcessException rejects NullReferenceException (F19/F20)`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
-    // F20: Kill on a process that already exited throws InvalidOperationException.
-    // After narrowing, KillAll must still complete cleanly when processes have
-    // exited normally before shutdown.
+    // F20: Kill on an already-exited process throws InvalidOperationException. After
+    // narrowing, KillAll must still complete cleanly when processes exited before shutdown.
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
 
@@ -685,22 +628,19 @@ let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
     registry.Track proc
     proc.WaitForExit()
 
-    // Should complete without throwing even though Kill would throw on an
-    // exited process if HasExited check raced.
     registry.KillAll()
 
 // --- Launch-liveness watchdog (AUTOMATION-65 QA finding: the launch gap) ---
-// The pure decision + the injectable loop are pinned deterministically here
-// (no real process, no OS scheduling) — mirroring how AUTOMATION-66 tested
-// `waitForDaemonReadyWith`. The real-process arms below are fast (sub-second)
-// and self-contained (no global state).
+// The pure decision and the injectable loop are pinned deterministically here — no real
+// process, no OS scheduling. The real-process arms below are sub-second and hold no global
+// state.
 
 // decideLaunchStep: (launchDeadlineReached, overallTimeoutReached, exited, sawOutput)
 
 [<Fact(Timeout = 5000)>]
 let ``decideLaunchStep: exited wins over everything`` () =
-    // Even racing the launch deadline with no output, a process that EXITED is a
-    // natural completion to classify — never a stall.
+    // Even racing the launch deadline with no output, a process that EXITED is a natural
+    // completion to classify, never a stall.
     Assert.Equal(LaunchStep.Exited, decideLaunchStep true false true false)
     Assert.Equal(LaunchStep.Exited, decideLaunchStep false false true true)
 
@@ -711,13 +651,11 @@ let ``decideLaunchStep: no life within the launch deadline is a stall`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``decideLaunchStep: a process that produced output is never launch-killed`` () =
-    // slow-but-alive: streaming output past the launch deadline → keep waiting,
-    // NOT Stalled. The launch deadline governs launch, not total duration.
+    // Slow-but-alive: the launch deadline governs launch, not total duration.
     Assert.Equal(LaunchStep.KeepWaiting, decideLaunchStep true false false true)
 
 [<Fact(Timeout = 5000)>]
 let ``decideLaunchStep: overall timeout ends even a progressing run`` () =
-    // A hard cap the caller asked for still fires while progressing.
     Assert.Equal(LaunchStep.TimedOut, decideLaunchStep false true false true)
     // ...but a natural exit still wins over the overall timeout.
     Assert.Equal(LaunchStep.Exited, decideLaunchStep false true true false)
@@ -744,9 +682,9 @@ let ``resolveLaunchDeadline: a positive integer override wins`` () =
 let ``resolveLaunchDeadline: junk / non-positive override falls back to the default`` (value: string) =
     Assert.Equal(DefaultLaunchDeadline, resolveLaunchDeadline (Some value))
 
-// launchWatchdogLoopWith: injected observe/clock/sleep — deterministic, no process.
-// The fake clock advances by the slept ms on each poll so the deadline is
-// reached after a bounded number of iterations.
+// launchWatchdogLoopWith: injected observe/clock/sleep — deterministic, no process. The
+// fake clock advances by the slept ms on each poll, so the deadline is reached after a
+// bounded number of iterations.
 
 let private fakeClock (start: DateTime) =
     let current = ref start
@@ -775,8 +713,8 @@ let ``launchWatchdogLoopWith: a child that never appears stalls at the launch de
 
 [<Fact(Timeout = 5000)>]
 let ``launchWatchdogLoopWith: a child that dies silently settles as Exited`` () =
-    // No output, then it's gone — the wrapper turns this into a launch-death
-    // (raise). The loop's job is just to observe the exit promptly.
+    // No output, then it's gone. The wrapper turns this into a launch-death (raise); the
+    // loop's job is only to observe the exit promptly.
     let now, advance = fakeClock DateTime.UtcNow
     let calls = ref 0
 
@@ -797,15 +735,15 @@ let ``launchWatchdogLoopWith: a child that dies silently settles as Exited`` () 
 
 [<Fact(Timeout = 5000)>]
 let ``launchWatchdogLoopWith: a slow-but-progressing run is NOT launch-killed`` () =
-    // Streams output for far longer than the launch deadline, then exits. The
-    // launch deadline must NOT trip — the result is Exited, never Stalled.
+    // Streams output for far longer than the launch deadline, then exits: the deadline must
+    // NOT trip.
     let now, advance = fakeClock DateTime.UtcNow
     let calls = ref 0
 
     let observe () =
         incr calls
-        // 20 polls of "alive, streaming output" (well past the 1 s launch
-        // deadline at 250 ms/poll = ~5 s), then a natural exit.
+        // 20 polls of "alive, streaming output" — ~5s at 250ms/poll, well past the 1s
+        // launch deadline — then a natural exit.
         if calls.Value >= 20 then true, true else false, true
 
     let step =
@@ -861,13 +799,11 @@ let ``runProcess streaming: a real failing test with output stays Failed`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess streaming: a nonzero exit with NO output is Failed, not a stall`` () =
-    // Critical distinction (the regression that motivated dropping a silent-death
-    // heuristic): a child that EXITS nonzero having produced nothing is a genuine
-    // failing / zero-match test — a runner filtered to no tests exits nonzero with
-    // no output — INDISTINGUISHABLE from a spawn-death at the process boundary. It
-    // must be classified normally, NOT force-aborted, so it never masks a real
-    // verdict. The machine-sleep case is covered by the poll observing the exit at
-    // all (closing the wedge), not by guessing a death here.
+    // Why there is no silent-death heuristic: a child that EXITS nonzero having produced
+    // nothing is a genuine failing / zero-match run (a runner filtered to no tests looks
+    // exactly like this), and is INDISTINGUISHABLE from a spawn-death at the process
+    // boundary. Classifying it normally rather than force-aborting keeps it from masking a
+    // real verdict; the machine-sleep case is closed by the poll observing the exit at all.
     match
         runProcessBounded
             "sh"
@@ -893,47 +829,37 @@ let ``runProcess streaming: a child producing no output within the launch deadli
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess streaming: a progressing run that overruns the overall timeout is TimedOut`` () =
-    // Progresses (emits "go") so the launch deadline never trips, but the overall
-    // per-config timeout is a hard cap that still kills the tree → TimedOut. Proves
-    // an alive run is bounded by the caller's timeout, never by the launch deadline.
+    // Progresses (emits "go") so the launch deadline never trips, but the per-config timeout
+    // is a hard cap that still kills the tree — an alive run is bounded by the caller's
+    // timeout, never by the launch deadline.
     match
         runProcessBounded
             "sh"
             "-c \"echo go; sleep 30\""
             (ProcessBounds.streaming (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 10.0))
     with
-    // The kill-path tail is EXPLICITLY a best-effort capture — the kill tears the
-    // pipes down under the pumps, so whether they end at EOF or die mid-read is an
-    // OS race. `ProcessOutput.text` is us SAYING SO: this is the one call site in
-    // the file that reads a capture without demanding it be complete, and it is a
-    // deliberate, greppable act rather than a `""` we mistook for an answer.
+    // The kill-path tail is EXPLICITLY best-effort: the kill tears the pipes down under the
+    // pumps, so whether they end at EOF or die mid-read is an OS race. `ProcessOutput.text`
+    // is the one call site here that reads a capture without demanding it be complete, and
+    // it is deliberate and greppable rather than a `""` mistaken for an answer.
     | TimedOut(_, tail, _) -> Assert.Contains("go", ProcessOutput.text tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-98 finding 2 — the UNBOUNDED POST-EXIT DRAIN, on the SUCCESS path.
 //
-// The regression this pins: `runProcessWithTimeout`'s success arm ended in a bare
-// `Task.WaitAll(stdoutTask, stderrTask)` with NO timeout. Those tasks complete at
-// stream EOF, and EOF never arrives while ANY process holds the write end of the
-// inherited stdout pipe — so a child that exits cleanly while a GRANDCHILD (an
-// MSBuild node, a Playwright driver, a backgrounded `sleep`) still holds the pipe
-// blocks that WaitAll FOREVER. The child is gone, the exit code is right there,
-// and the daemon waits anyway. That is the 16 h wedge, and every hook / build /
-// fileCommand spawn went through this path.
+// The success arm ended in a bare `Task.WaitAll(stdoutTask, stderrTask)` with NO timeout.
+// Those tasks complete at stream EOF, and EOF never arrives while ANY process holds the
+// write end of the inherited stdout pipe — so a child that exits cleanly while a GRANDCHILD
+// (an MSBuild node, a Playwright driver, a backgrounded `sleep`) still holds the pipe blocks
+// FOREVER. That is the 16h wedge, and every hook / build / fileCommand spawn took this path.
 //
-// `sh -c "( sleep 30 & ) ; echo done"` reproduces it exactly: `sh` exits at once
-// (leaving `done` on the pipe), and the orphaned `sleep 30` inherits the pipe and
-// holds it open for 30 s. Bounded drain → returns in ~PostExitDrainMs with the
-// output it did capture. Unbounded drain → 30 s, blowing this test's 15 s budget.
-//
-// RED-BEFORE-GREEN: restore `Task.WaitAll(stdoutTask, stderrTask)` (no timeout) on
-// the Exited arm and this test hangs until the xUnit timeout kills it.
+// RED-BEFORE-GREEN: restore the untimed `Task.WaitAll` on the Exited arm and this test hangs
+// until the xUnit timeout kills it.
 // ---------------------------------------------------------------------------
-/// A child that exits at once while an orphaned grandchild keeps the inherited
-/// stdout pipe open for 30 s. EOF therefore CANNOT arrive inside the 2 s drain
-/// window — this is a real, fully deterministic drain that cannot finish, and it is
-/// the fixture both tests below stand on.
+/// A child that exits at once while an orphaned grandchild keeps the inherited stdout pipe
+/// open for 30s, so EOF CANNOT arrive inside the 2s drain window — a fully deterministic
+/// drain that cannot finish, and the fixture both tests below stand on.
 let private spawnWithPipeHoldingGrandchild () =
     runProcessBounded "sh" "-c \"( sleep 30 & ) ; echo done\"" (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
 
@@ -943,10 +869,10 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
     let outcome = spawnWithPipeHoldingGrandchild ()
     sw.Stop()
 
-    // Classified by the child's EXIT CODE, not by stream EOF — a grandchild holding
-    // the pipe cannot turn a clean exit into a failure. But the capture is honestly
-    // marked: we bailed on a stream that never reached EOF, so what we have is what
-    // we caught, NOT a measurement of what the child said.
+    // Classified by the child's EXIT CODE, not by stream EOF — a grandchild holding the pipe
+    // cannot turn a clean exit into a failure. The capture is still marked honestly: we
+    // bailed on a stream that never reached EOF, so it is what we caught, not what the child
+    // said.
     match outcome with
     | Succeeded(ProcessOutput.DrainTimedOut(captured, window)) ->
         Assert.Contains("done", captured)
@@ -961,13 +887,11 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
     )
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-126, THE REGRESSION TEST: a drain that could not finish must FAIL an
-// output assertion, loudly and by its true name — never be silently compared
-// against as if it were the child's output.
+// AUTOMATION-126's regression test: a drain that could not finish must FAIL an output
+// assertion by its true name, never be compared against as if it were the child's output.
 //
-// RED-BEFORE-GREEN: revert `ProcessOutput` to a plain `string` and this test cannot
-// even be written — `expectStdout` would receive `"done"` (or, with a starved
-// reader, `""`) and assert against it, exactly as it did on 2026-07-14.
+// RED-BEFORE-GREEN: revert `ProcessOutput` to a plain `string` and this test cannot even be
+// written — `expectStdout` would receive `"done"` (or `""`) and assert against it.
 // ---------------------------------------------------------------------------
 [<Fact(Timeout = 15000)>]
 let ``a drain that could not finish FAILS an output assertion by its true name`` () =
@@ -975,23 +899,19 @@ let ``a drain that could not finish FAILS an output assertion by its true name``
 
     let failure = Assert.Throws<FailException>(fun () -> expectStdout "done" outcome)
 
-    // It is red for the RIGHT reason: it names the unfinished drain, and it does NOT
-    // pretend to have compared two strings. (Note the child really did print "done":
-    // even a capture that happens to hold what we wanted is not evidence we heard
-    // all of it, so it is refused all the same.)
+    // Red for the RIGHT reason: it names the unfinished drain and does not pretend to have
+    // compared two strings. The child really did print "done" — a capture that happens to
+    // hold what we wanted is still not evidence we heard all of it.
     Assert.Contains("THE DRAIN DID NOT FINISH", failure.Message)
     Assert.Contains("we failed to listen", failure.Message)
     Assert.DoesNotContain("Assert.Equal() Failure", failure.Message)
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-149: the failed kill must be LOUD, not merely representable.
+// AUTOMATION-149: the failed kill must be LOUD, not merely representable. The value on
+// `TimedOut` is what a CALLER cannot ignore; this is the other half — what an OPERATOR
+// reading nothing but the daemon's stderr is told when a runaway tree survives us.
 //
-// The value on `TimedOut` is what a CALLER cannot ignore. This is the other half:
-// what an OPERATOR — someone reading nothing but the daemon's stderr — is told when
-// a runaway tree survives us. `with _ -> ()` told them nothing at all.
-//
-// Touches Logging.logLevel + Console.Error → joins the LogGlobal serialized
-// collection (see TestHelpers).
+// Touches Logging.logLevel + Console.Error, hence the LogGlobal serialized collection.
 // ---------------------------------------------------------------------------
 [<Collection(LogGlobalCollectionName)>]
 type KillFailureIsLoudTests() =
@@ -1055,25 +975,21 @@ type KillFailureIsLoudTests() =
 // ---------------------------------------------------------------------------
 // AUTOMATION-279 — THE OUTPUT SINK, AND WHY IT MUST BE FED AS BYTES ARRIVE.
 //
-// TestPrune used to keep a test project's output only in memory and echo a
-// 40-line TAIL of it on failure. An integration suite then hit its 900s cap on
-// four consecutive runs, and all forty lines of that tail were identical repeated
-// startup logging from seven app instances. The cause — "test shard pool ... is
-// already in use by PID 18024" — had been printed in the first seconds, at the
-// HEAD. Five wrong hypotheses were chased before someone ran the suite by hand.
+// TestPrune used to keep a project's output only in memory and echo a 40-line TAIL of it on
+// failure. An integration suite hit its 900s cap four runs running, and all forty lines were
+// identical repeated startup logging; the cause ("test shard pool ... already in use by PID
+// 18024") had been printed at the HEAD, in the first seconds.
 //
-// The fix is a sink written through AS OUTPUT ARRIVES. "As it arrives" is not a
-// performance note, it is the entire contract: the case that most needs the
-// evidence is the child SIGKILLed at its timeout, which never reaches any
-// end-of-run writer and whose in-memory capture the kill itself truncates. A sink
-// fed from the final capture would be no sink at all — it would rebuild the bug.
+// "As output arrives" is the entire contract, not a performance note: the case that most
+// needs the evidence is the child SIGKILLed at its timeout, which never reaches any
+// end-of-run writer and whose in-memory capture the kill itself truncates. A sink fed from
+// the final capture would rebuild the bug.
 // ---------------------------------------------------------------------------
 
-/// A sink over a REAL FILE — the production shape (`RunLog.openFor`), not a
-/// StringBuilder. A StringBuilder sink would pass this file's kill test while an
-/// unflushed `StreamWriter` buffer silently lost the same bytes in production, so
-/// the test writes, flushes and reads back through the filesystem exactly as the
-/// daemon does.
+/// A sink over a REAL FILE — the production shape (`RunLog.openFor`), not a StringBuilder.
+/// A StringBuilder sink would pass the kill test below while an unflushed `StreamWriter`
+/// buffer silently lost the same bytes in production, so this writes, flushes and reads back
+/// through the filesystem exactly as the daemon does.
 let private withFileSink (dir: string) (body: (string -> unit) -> string -> unit) =
     let path = IO.Path.Combine(dir, "child.output.log")
 
@@ -1086,10 +1002,9 @@ let private withFileSink (dir: string) (body: (string -> unit) -> string -> unit
 
 [<Fact(Timeout = 20000)>]
 let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
-    // THE test for this change. The child announces its cause and then hangs
-    // forever; the timeout kills its tree. It never exits normally, so nothing
-    // downstream of the process ever runs — if the sink were fed at the end, this
-    // file would be empty, which is precisely the production bug.
+    // The child announces its cause and then hangs forever, so the timeout kills its tree
+    // and nothing downstream of the process ever runs. A sink fed at the end leaves this
+    // file empty — the production bug exactly.
     withTempDir "sink-kill" (fun dir ->
         withFileSink dir (fun sink path ->
             let outcome =
@@ -1105,16 +1020,14 @@ let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
             | TimedOut _ -> ()
             | other -> Assert.Fail $"expected TimedOut (the kill path is the whole point), got %A{other}"
 
-            // The partial log EXISTS and carries what the child managed to say.
             Assert.True(IO.File.Exists path, $"no log at %s{path} — a killed run left no evidence at all")
             Assert.Contains("SHARD-POOL-IN-USE-BY-PID-18024", IO.File.ReadAllText path)))
 
 [<Fact(Timeout = 20000)>]
 let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () =
-    // The incident, reduced. 60 lines of output: the cause is line 1, and the next
-    // 59 are the indistinguishable noise that a tail would show instead. The sink
-    // has the head; a tail of the same output does not. Without this the change
-    // could "pass" while surfacing only what the console already surfaced.
+    // The incident, reduced: the cause is line 1 and the next 59 are the indistinguishable
+    // noise a tail would show instead. Without this, the change could "pass" while surfacing
+    // only what the console already surfaced.
     withTempDir "sink-head" (fun dir ->
         withFileSink dir (fun sink path ->
             let script =
@@ -1128,10 +1041,9 @@ let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () 
 
             Assert.Contains("REAL-CAUSE-AT-HEAD", logged)
 
-            // Positive control for the assertion above: the last 40 non-blank lines
-            // — what the console shows — do NOT contain it. If this ever passes
-            // trivially (say the child's output shrank), the test above proved
-            // nothing, and this fails first and says so.
+            // Positive control: the last 40 non-blank lines — what the console shows — do
+            // NOT contain it. If the child's output ever shrank, the assertion above would
+            // be passing trivially, and this fails first and says so.
             let tail =
                 logged.Split('\n')
                 |> Array.filter (String.IsNullOrWhiteSpace >> not)
@@ -1142,18 +1054,17 @@ let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () 
 
 [<Fact(Timeout = 20000)>]
 let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
-    // THE discriminating test for "as it arrives". Everything else in this file
-    // passes just as happily against a `runProcessTo` that hands the sink the
-    // whole capture at the end — I checked, by writing that mutation and watching
-    // all of them stay green. The two things that DON'T survive it are here:
+    // The discriminating test for "as it arrives": every other sink test here passes just as
+    // happily against a `runProcessTo` that hands over the whole capture at exit. Two things
+    // do not survive that mutation:
     //
     //   * WHEN the first chunk reaches the sink (immediately, vs. at exit), and
-    //   * whether the bytes are READABLE BY ANOTHER READER while the child still
-    //     runs — which is the difference between `tail -f`-ing a wedged 900 s
-    //     suite and waiting fifteen minutes to learn nothing.
+    //   * whether the bytes are READABLE BY ANOTHER READER while the child still runs —
+    //     the difference between `tail -f`-ing a wedged 900s suite and waiting fifteen
+    //     minutes to learn nothing.
     //
-    // The second also pins `AutoFlush`: without it the same bytes sit in a
-    // StreamWriter buffer and the on-disk read below comes back empty.
+    // The second also pins `AutoFlush`: without it the bytes sit in a StreamWriter buffer
+    // and the on-disk read below comes back empty.
     withTempDir "sink-during" (fun dir ->
         withFileSink dir (fun sink path ->
             let sw = Diagnostics.Stopwatch.StartNew()
@@ -1166,8 +1077,8 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
 
                 if chunks = 0 then
                     firstChunkAt <- sw.Elapsed
-                    // Read back through the filesystem, on a SEPARATE handle, while
-                    // the child is still sleeping. FileShare.Read is what permits it.
+                    // A SEPARATE handle, read while the child is still sleeping —
+                    // FileShare.Read is what permits it.
                     onDiskAtFirstChunk <-
                         use fs =
                             new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
@@ -1189,9 +1100,8 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
 
             Assert.True(chunks > 0, "the sink was never called")
 
-            // Fixture control FIRST: if the child didn't actually live ~3 s, then
-            // "the chunk arrived early" would be a claim about nothing, and every
-            // assertion below it would be vacuous.
+            // Fixture control FIRST: if the child did not actually live ~3s, "the chunk
+            // arrived early" is a claim about nothing and everything below is vacuous.
             Assert.True(
                 elapsedAtEnd > TimeSpan.FromSeconds 2.5,
                 $"fixture broken: the child was meant to live ~3s, ran %.1f{elapsedAtEnd.TotalSeconds}s"
@@ -1209,9 +1119,9 @@ let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a throwing sink is disabled, never fatal, and never corrupts the capture`` () =
-    // A full disk may not fail a test run, and — subtler — a sink failure may not
-    // be laundered into the pump's own `failure` latch, which means "the STREAM
-    // died" and would downgrade a complete capture to `DrainTimedOut`.
+    // A full disk may not fail a test run, and — subtler — a sink failure may not land in
+    // the pump's own `failure` latch, which means "the STREAM died" and would downgrade a
+    // complete capture to `DrainTimedOut`.
     let mutable calls = 0
 
     let alwaysThrows _ =

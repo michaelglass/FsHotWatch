@@ -66,11 +66,8 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with no LastRun does not display 0ms timing`` () =
-    // When a plugin reports Completed but the activity ledger has no
-    // RunRecord (e.g. a cache-replay path that bypassed the Running phase
-    // and produced a synthetic 0-elapsed terminal record), the renderer
-    // must not display a misleading "(0ms)" timing — it should omit the
-    // timing portion instead.
+    // A Completed status with no RunRecord (a cache-replay path that bypassed the
+    // Running phase) must omit the timing rather than display a misleading "(0ms)".
     let parsed: ParsedPluginStatus =
         { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
@@ -87,10 +84,8 @@ let ``compact Completed with no LastRun does not display 0ms timing`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` () =
-    // Same defensive contract: a LastRun whose Elapsed is exactly zero is
-    // almost always the cache-replay synthetic record (real builds take
-    // milliseconds, not zero). Treat zero as "elapsed unknown" so the UI
-    // doesn't claim a 30-second build took 0ms.
+    // Same contract for an Elapsed of exactly zero: real builds take milliseconds,
+    // so zero means "unknown" (the cache-replay synthetic record), not 0ms.
     let parsed: ParsedPluginStatus =
         { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []
@@ -145,11 +140,9 @@ let ``compact Completed with only warnings respects warningsAreFailures flag`` (
           LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
           Diagnostics = { Errors = 0; Warnings = 3 } }
 
-    // warningsAreFailures = true -> ⚠
     let strict = renderPlugin Compact true now "Lint" parsed |> stripMany
     test <@ strict.[0].Contains "⚠" @>
 
-    // warningsAreFailures = false -> ✓ (warnings don't count)
     let lax = renderPlugin Compact false now "Lint" parsed |> stripMany
     test <@ lax.[0].Contains "✓" @>
     test <@ not (lax.[0].Contains "⚠") @>
@@ -217,7 +210,6 @@ let ``compact Failed shows truncated error first line`` () =
 
     let linesLong = renderPlugin Compact true now "Lint" parsedLong |> stripMany
     test <@ linesLong.Length = 1 @>
-    // The rendered line length (after stripping colors) should be bounded.
     test <@ linesLong.[0].Length < 200 @>
 
 [<Fact(Timeout = 15000)>]
@@ -280,11 +272,10 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verbose Running preserves leading whitespace in activity tail entries (queued re-run nesting)`` () =
-    // TestPrunePlugin emits "queued re-run (tests already running)" with a
-    // leading "  ↳ " so the renderer's per-line 8-space indent compounds to
-    // 10 spaces, visually nesting the entry under the in-flight test result
-    // lines rather than rendering as a sibling. Renderer must NOT strip or
-    // collapse the embedded leading whitespace.
+    // TestPrunePlugin emits "queued re-run (tests already running)" with a leading
+    // "  ↳ " so the renderer's 8-space indent compounds to 10, nesting the entry
+    // under the in-flight test-result lines. The renderer must not strip or
+    // collapse embedded leading whitespace.
     let parsed: ParsedPluginStatus =
         { Status = StatusView.Running(now - TimeSpan.FromSeconds 30.0)
           Subtasks = []
@@ -309,14 +300,13 @@ let ``verbose Running preserves leading whitespace in activity tail entries (que
             lines
             |> List.exists (fun l -> l = "        Intelligence.Tests.Database: passed")
         @>
-    // The queued-re-run line carries 2 extra leading spaces of caller-supplied
-    // indent → 10 spaces total → visually nests under the test-result lines.
+    // 2 extra caller-supplied spaces → 10 total.
     test
         <@
             lines
             |> List.exists (fun l -> l = "          ↳ queued re-run (tests already running)")
         @>
-    // Sanity: the nested arrow glyph appears in the joined output.
+
     test <@ joined.Contains "↳ queued re-run" @>
 
 [<Fact(Timeout = 15000)>]
@@ -553,15 +543,14 @@ let ``agent fail summary uses first non-empty line`` () =
     let err = "first line of error\nsecond line\nthird line"
     let lines = agentLine "lint" (failStatus err)
     test <@ lines.[0].Contains "first line of error" @>
-    // Newlines collapsed to spaces — "second line" may still appear but
-    // as part of a single-quoted summary. Ensure the line is not multi-line.
+    // Newlines collapse to spaces, so "second line" may appear — inside the one
+    // quoted summary. What matters is that the output stays a single line.
     test <@ not (lines.[0].Contains "\n") @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent fail summary truncated to roughly 80 chars`` () =
     let long = String.replicate 200 "x"
     let lines = agentLine "lint" (failStatus long)
-    // Extract the summary between the quotes.
     let line = lines.[0]
     let m = System.Text.RegularExpressions.Regex.Match(line, "summary=\"([^\"]*)\"")
     test <@ m.Success @>
@@ -592,7 +581,6 @@ let ``agent emits no ANSI escapes`` () =
 
     let lines = agentAll statuses
     let joined = String.concat "\n" lines
-    // No ESC char anywhere.
     test <@ not (joined.Contains "\x1b") @>
     test <@ stripAnsi joined = joined @>
 
@@ -693,7 +681,6 @@ let ``compact Running prefers primary subtask label over activity tail`` () =
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "running 3 selected tests" @>
-    // The primary label should win — activity-tail fallback is suppressed.
     test <@ not (line.Contains "processing bar.fs") @>
 
 [<Fact(Timeout = 15000)>]
@@ -767,9 +754,9 @@ let ``agent Failed with TimedOut outcome emits timed-out token`` () =
 
 // ---------------- Wedge + fail-closed rendering (AUTOMATION-147) ----------------
 //
-// A plugin that has not completed is NEVER rendered ✓, and a plugin Running
-// past the wedge bound is NAMED as wedged — in words, in every mode. The
-// operator must never have to detect a fault by noticing what isn't printed.
+// A plugin that has not completed is NEVER rendered ✓, and a plugin Running past
+// the wedge bound is NAMED as wedged, in words, in every mode — a fault must not
+// have to be detected by noticing what isn't printed.
 
 module private WedgeFixtures =
     /// Running long past the default wedge bound (verdict deadline 60m + 5m grace).
@@ -804,8 +791,8 @@ let ``compact Running past the wedge bound is named WEDGED, not merely running``
 
 [<Fact(Timeout = 15000)>]
 let ``compact Running under the bound is NOT declared wedged`` () =
-    // Guard against over-correction: a 12-minute run is "cannot tell yet",
-    // not a wedge — the daemon-side log escalations carry the uncertainty.
+    // A 12-minute run is "cannot tell yet", not a wedge — the daemon-side log
+    // escalations carry the uncertainty.
     let lines =
         renderPlugin Compact true now "test-prune" (running (now - TimeSpan.FromMinutes 12.0))
         |> stripMany
@@ -864,9 +851,9 @@ let ``agent Completed with no run record tokens as warn with the missing-record 
 
 [<Fact(Timeout = 15000)>]
 let ``verbose Completed with zero elapsed states it in words instead of omitting the line`` () =
-    // The operator's home-made wedge detector was grepping for a MISSING
-    // `elapsed:` line. The line is now always present: zero elapsed is stated
-    // as a replayed/synthetic record, never left to be inferred from absence.
+    // The `elapsed:` line is always present: zero elapsed is stated as a
+    // replayed/synthetic record, never left to be inferred from its absence
+    // (operators were grepping for the missing line).
     let parsed: ParsedPluginStatus =
         { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
           Subtasks = []

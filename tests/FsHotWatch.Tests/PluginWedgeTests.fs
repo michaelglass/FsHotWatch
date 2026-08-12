@@ -8,10 +8,9 @@ open FsHotWatch.IdleExit
 open FsHotWatch.PluginWedge
 open FsHotWatch.Tests.TestHelpers
 
-// AUTOMATION-147: plugin wedge detection. A plugin `started:` with no
-// completion past the bound is BY DEFINITION wedged; the daemon must say so
-// (periodically, in words) and recover — never serve a stale state forever,
-// and never require the user to diagnose the wedge from a missing field.
+// AUTOMATION-147: a plugin `started:` with no completion past the bound is BY
+// DEFINITION wedged. The daemon must say so periodically, in words, and recover —
+// never serve a stale state forever.
 
 let private now = DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc)
 
@@ -36,8 +35,8 @@ let ``resolveBound uses the explicit wedge override when positive`` () =
 let ``resolveBound falls back to verdict deadline plus grace`` () =
     let expected = TimeSpan.FromMinutes 60.0 + WedgeGrace
     test <@ resolveBound None None = expected @>
-    // Unparseable / non-positive overrides fall back too — there is no
-    // "disable the wedge detector" setting on purpose.
+    // Unparseable / non-positive overrides fall back too: there is deliberately no
+    // way to disable the detector.
     test <@ resolveBound (Some "nope") None = expected @>
     test <@ resolveBound (Some "0") None = expected @>
     test <@ resolveBound (Some "-5") None = expected @>
@@ -113,13 +112,12 @@ let ``decideTick logs one escalation per interval crossed, not one per tick`` ()
     let since = now - TimeSpan.FromMinutes 6.0
     let running = [ "test-prune", since ]
 
-    // First tick past the 5m mark: logs.
     let actions1, buckets1 =
         decideTick bound escalate (inputs running false now) Map.empty
 
     test <@ actions1 = [ TickAction.LogStillRunning("test-prune", TimeSpan.FromMinutes 6.0) ] @>
 
-    // Same interval on the next tick: silent (already logged this bucket).
+    // Same interval on the next tick: silent, the bucket is already logged.
     let actions2, _ = decideTick bound escalate (inputs running false now) buckets1
     test <@ List.isEmpty actions2 @>
 
@@ -136,8 +134,8 @@ let ``decideTick resets escalations for a NEW run of the same plugin`` () =
     let _, buckets =
         decideTick bound escalate (inputs [ "build", oldSince ] false now) Map.empty
 
-    // The plugin finished and started a NEW run 6 minutes ago: it escalates
-    // afresh — the old run's bucket must not suppress it.
+    // A NEW run 6 minutes ago escalates afresh — the old run's bucket must not
+    // suppress it.
     let newSince = now - TimeSpan.FromMinutes 6.0
 
     let actions, newBuckets =
@@ -202,7 +200,6 @@ let ``runTick fires OnWedged AT MOST ONCE across ticks`` () =
     let buckets = ref Map.empty
 
     test <@ runTick d latch buckets @>
-    // Second tick: the latch already fired — no second recovery.
     test <@ not (runTick d latch buckets) @>
     test <@ wedges.Count = 1 @>
     test <@ wedges.[0].Contains "wedged on 'analyzers'" @>
@@ -244,7 +241,6 @@ let ``writeBreadcrumb then consumeBreadcrumb returns the message once`` () =
         writeBreadcrumb tmpDir "daemon was wedged on 'analyzers' — restarted it"
 
         test <@ consumeBreadcrumb tmpDir = Some "daemon was wedged on 'analyzers' — restarted it" @>
-        // Consumed: printed once, never nags again.
         test <@ consumeBreadcrumb tmpDir = None @>
         test <@ not (File.Exists(breadcrumbPath tmpDir)) @>)
 
@@ -268,8 +264,7 @@ let ``formatElapsed renders seconds, minutes, and hours`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``escalationBucket is zero when the interval is non-positive`` () =
-    // Defensive: a zero/negative escalation interval must not divide by zero or
-    // log on every single tick.
+    // A zero/negative interval must not divide by zero or log on every tick.
     test <@ escalationBucket TimeSpan.Zero (TimeSpan.FromMinutes 30.0) = 0 @>
     test <@ escalationBucket (TimeSpan.FromMinutes -1.0) (TimeSpan.FromMinutes 30.0) = 0 @>
 
@@ -287,8 +282,7 @@ let ``ambientBound agrees with resolveBound over the live environment`` () =
 
     let expected = resolveBound (env WedgeBoundEnvVar) (env "FSHW_VERDICT_DEADLINE_SEC")
     test <@ ambientBound () = expected @>
-    // Whatever the environment says, the bound is always a real, positive window —
-    // there is no way to configure the detector off.
+    // Whatever the environment says, the bound is always a positive window.
     test <@ ambientBound () > TimeSpan.Zero @>
 
 [<Fact(Timeout = 15000)>]
@@ -316,15 +310,15 @@ let ``createMonitor fires the recovery on a wedged plugin and stops after dispos
     monitor.Dispose()
 
     let count = lock wedges (fun () -> wedges.Count)
-    // Fired — and, thanks to the atomic latch, exactly once despite many ticks.
+    // Exactly once despite many ticks: the latch is atomic.
     test <@ count = 1 @>
     test <@ (lock wedges (fun () -> wedges.[0])).Contains "wedged on 'analyzers'" @>
 
 [<Fact(Timeout = 15000)>]
 let ``createMonitor leaves a healthy daemon completely alone`` () =
-    // The over-correction guard, at the timer level: no Running plugin, nothing
-    // busy — the monitor must never fire, or every idle daemon would be restarted
-    // and its warm FCS cache thrown away.
+    // The over-correction guard: with nothing Running and nothing busy the monitor
+    // must never fire, or every idle daemon gets restarted and its warm FCS cache
+    // thrown away.
     let wedges = ResizeArray<string>()
     let logs = ResizeArray<string>()
 
@@ -346,7 +340,7 @@ let ``createMonitor leaves a healthy daemon completely alone`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``writeBreadcrumb never throws on an unwritable path`` () =
-    // The breadcrumb is a diagnostic. A failure to write it must never take down
-    // the shutdown it is describing.
+    // The breadcrumb is a diagnostic: failing to write it must never take down the
+    // shutdown it is describing.
     writeBreadcrumb "/nonexistent-root-dir/nope" "wedged on 'x' — restarted it"
     test <@ consumeBreadcrumb "/nonexistent-root-dir/nope" = None @>

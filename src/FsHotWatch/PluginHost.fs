@@ -50,19 +50,17 @@ type PluginHost
     let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
     let pluginGenerations = ConcurrentDictionary<string, int64>()
 
-    // Live "checked files" coverage set: the set of files that currently hold a
-    // valid FULL type-check result. Used as a request-time completeness signal
-    // (NOT the stale ScanComplete snapshot — incremental checks update it too).
+    // Live "checked files" coverage set: the files that currently hold a valid FULL
+    // type-check result. A request-time completeness signal, NOT the stale
+    // ScanComplete snapshot — incremental checks update it too.
     //
     // Both the cold scan and the incremental batch path flow through
-    // `EmitFileChecked`, so adding on a FULL check there covers both. A file
-    // change / invalidation flows through `EmitFileChanged`, so removing the
-    // changed files there means an edited-but-not-yet-rechecked file correctly
-    // counts as unchecked until its next successful FULL check re-adds it.
+    // `EmitFileChecked`, and invalidation flows through `EmitFileChanged`, so an
+    // edited-but-not-yet-rechecked file counts as unchecked until its next
+    // successful FULL check re-adds it.
     //
     // `unit`-valued so it acts as a thread-safe set; membership ops are O(1) —
-    // this is the hot check path. The daemon computes the unchecked count as
-    // `registered minus checked` via `IsFileChecked`.
+    // this is the hot check path.
     let checkedFiles = ConcurrentDictionary<AbsFilePath, unit>()
 
     let touchActivity () =
@@ -109,11 +107,8 @@ type PluginHost
             loop ())
 
     // Status tracking is owned by a MailboxProcessor: the loop's recursion holds
-    // (Statuses, RunStartedAt) and serializes mutations. statusChanged.Trigger
-    // fires OUTSIDE this agent's loop (handed to triggerAgent after the
-    // mutation is applied) so subscribers can safely call GetAllStatuses
-    // re-entrantly without deadlocking - this agent isn't blocked inside the
-    // trigger callback.
+    // the statuses and serializes mutations. statusChanged.Trigger fires OUTSIDE
+    // this loop, via `triggerAgent` — see its two invariants above.
     let statusAgent =
         MailboxProcessor<StatusMsg>.Start(fun inbox ->
             let rec loop (statuses: Map<string, PluginStatus>) =
@@ -127,9 +122,8 @@ type PluginHost
 
                         touchActivity ()
 
-                        // Every terminal status CARRIES its verdict — the run's own
-                        // sworn statement of what it did and how long it took — so
-                        // the run record derives startedAt from it and never guesses.
+                        // Every terminal status carries its verdict, so the run record
+                        // derives startedAt from it rather than guessing.
                         match status with
                         | Completed(at, verdict) ->
                             activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
@@ -154,12 +148,11 @@ type PluginHost
             loop Map.empty)
 
     let setStatus (name: string) status =
-        // Every terminal status CARRIES its summary (RunVerdict) — route it
-        // into the activity log here, at the one choke point every status
-        // flows through, so the run record's summary and the reported verdict
-        // can never disagree. Set BEFORE the status post: RecordTerminal
-        // (fired by the status agent when it applies the mutation) consumes
-        // the pending summary.
+        // Route the verdict's summary into the activity log here, at the one
+        // choke point every status flows through, so the run record's summary and
+        // the reported verdict can never disagree. Set BEFORE the status post:
+        // RecordTerminal (fired by the status agent when it applies the mutation)
+        // consumes the pending summary.
         match status with
         | Completed(_, verdict)
         | Failed(_, _, verdict) -> activity.SetSummary(name, verdict.Summary)
@@ -167,18 +160,14 @@ type PluginHost
         | Running _ -> ()
 
         // Non-blocking by design: setStatus is called from plugin
-        // MailboxProcessor agent threads (via ReportStatus inside handler
-        // Update bodies). The previous implementation posted a
-        // TaskCompletionSource and synchronously blocked on it
-        // (`tcs.Task.GetAwaiter().GetResult()`) until the status agent applied
-        // the mutation — pinning an agent (thread-pool) thread per concurrent
-        // caller, a latent thread-pool-starvation deadlock: enough simultaneous
-        // blocked reporters can starve the status agent of the very pool thread
-        // it needs to call SetResult. A plain Post keeps every agent thread
-        // free; ordering and visibility survive because (a) the status agent's
-        // mailbox is FIFO, so any GetStatus/GetAllStatuses posted after this
-        // SetStatus observes it, and (b) the statusChanged trigger is fired by
-        // the trigger agent only after the mutation is applied.
+        // MailboxProcessor agent threads (via ReportStatus inside handler Update
+        // bodies). Blocking on the status agent's reply would pin a pool thread
+        // per concurrent caller, and enough simultaneous blocked reporters starve
+        // the status agent of the very pool thread it needs to reply. A plain Post
+        // keeps every agent thread free; ordering and visibility survive because
+        // (a) the status agent's mailbox is FIFO, so any GetStatus/GetAllStatuses
+        // posted after this SetStatus observes it, and (b) the statusChanged
+        // trigger is fired by the trigger agent only after the mutation is applied.
         statusAgent.Post(SetStatus(name, status))
 
     let setPluginStatus (name: PluginFramework.PluginName) status =
@@ -197,10 +186,8 @@ type PluginHost
             p.Dispatch event
 
     /// Install the read-only project-graph accessor exposed to every plugin via
-    /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over
-    /// its live `ProjectGraph`, before registering plugins. Plugins registered
-    /// before or after both see the live accessor because `services.ProjectGraph`
-    /// reads through the mutable holder on every call.
+    /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over its
+    /// live `ProjectGraph`, before registering plugins.
     member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
 
     /// Register a declarative framework-managed plugin handler.
@@ -245,10 +232,8 @@ type PluginHost
               SetNextTerminalOutcome =
                 fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome)
               FcsSuppressedCodes = fcsSuppressedCodes
-              // Read through the mutable holder so a plugin registered before the
-              // daemon installed the live graph still sees it (the accessor record
-              // is captured at registration, but its three closures all re-read
-              // `projectGraphAccessor` each call below).
+              // Each closure re-reads the mutable holder per call, so a plugin
+              // registered before the daemon installed the live graph still sees it.
               ProjectGraph =
                 { GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
@@ -422,17 +407,11 @@ type PluginHost
         registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
 
     /// WHICH plugins report work in flight. Same predicate as `AnyPluginBusy`,
-    /// but naming the offenders. Kept separate rather than folded into one
+    /// but naming the offenders, so a `WaitForComplete` that times out on the busy
+    /// leg can say which plugin blocked it rather than lumping three unrelated
+    /// failures into one sentence. Kept separate rather than folded into one
     /// accessor because `AnyPluginBusy` is polled every 50ms and must not
     /// allocate a list to answer a boolean.
-    ///
-    /// This exists because a `WaitForComplete` that times out on the busy leg
-    /// could previously only say "all terminal but quiescence check failed" —
-    /// one sentence covering three unrelated failures (a plugin still busy, a
-    /// quiescence window that never closes, an unmet verdict guard), with no way
-    /// to tell them apart from the outside. A wait that hangs for an hour and
-    /// cannot say what it is waiting on is a diagnosis someone has to do by
-    /// reading the source, which is exactly what happened.
     member _.BusyPluginNames() : string list =
         registeredPlugins
         |> Seq.filter (fun p -> p.IsBusy())
@@ -450,8 +429,7 @@ type PluginHost
     ///
     /// Such a plugin reports busy forever — the in-flight count is incremented
     /// at post time and only the loop decrements it — so without this the wait
-    /// can only infer death from silence, and the cheapest correct inference
-    /// took an hour. Empty in every healthy daemon.
+    /// can only infer death from silence. Empty in every healthy daemon.
     member _.FaultedPlugins() : (string * exn) list =
         registeredPlugins
         |> Seq.choose (fun p -> p.Fault() |> Option.map (fun ex -> PluginFramework.PluginName.value p.Name, ex))
@@ -569,16 +547,15 @@ type PluginHost
             this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath pattern ])
             Result.Ok()
 
-    /// Create a new PluginHost.
     /// Tear down all plugins that have a Teardown function.
     member _.Teardown() =
         for p in registeredPlugins do
             match p.Teardown with
             | Some teardown ->
                 // Plugin Teardown is a third-party-extension boundary; the broad
-                // catch is what keeps one misbehaving plugin from preventing the
-                // rest from cleaning up. Log ex.ToString() so the type and stack
-                // trace are preserved for diagnosing the offending plugin.
+                // catch keeps one misbehaving plugin from preventing the rest from
+                // cleaning up. Logged as ex.ToString() so the type and stack trace
+                // survive for diagnosing the offending plugin.
                 try
                     teardown ()
                 with ex ->

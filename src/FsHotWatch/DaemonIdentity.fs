@@ -43,9 +43,8 @@ module BinaryIdentity =
                     { Version = t.Substring(0, i).TrimEnd()
                       ContentHash = t.Substring(i + 1) }
 
-/// Why a running daemon's identity is NOT this binary's. Kept as its own type
-/// (rather than a bare mismatch bool) so callers can say precisely what they
-/// found — the user is told what happened, never left to infer it.
+/// Why a running daemon's identity is NOT this binary's. Its own type rather than a
+/// bare mismatch bool so callers can report precisely what they found.
 [<RequireQualifiedAccess>]
 type StaleReason =
     /// The daemon recorded an identity and it differs from this binary's.
@@ -54,9 +53,8 @@ type StaleReason =
     /// handshake. Treated exactly like stale (fail closed).
     | NotRecorded
 
-/// The CLI's comparison of the running daemon's recorded identity against its
-/// own. Two-valued at the top so "not a match" cannot be ignored: any `Stale`
-/// must restart the daemon, and the reason says which words to use.
+/// The CLI's comparison of the running daemon's recorded identity against its own.
+/// Any `Stale` must restart the daemon; the reason says which words to use.
 [<RequireQualifiedAccess>]
 type IdentityVerdict =
     | Match
@@ -145,9 +143,8 @@ let internal versionOf (asm: System.Reflection.Assembly) : string option =
     |> Option.orElseWith (fun () -> asm.GetName().Version |> Option.ofObj |> Option.map string)
 
 /// The identity of a given entry assembly + process path. Split out of
-/// `currentIdentity` so the assembly-ABSENT case — a single-file or shim host
-/// where `GetEntryAssembly()` returns null — is a value a test can pass rather
-/// than a hosting condition a test would have to reproduce.
+/// `currentIdentity` so the assembly-ABSENT case (a single-file or shim host where
+/// `GetEntryAssembly()` returns null) is a value a test can pass.
 let internal identityOf (entry: System.Reflection.Assembly option) (processPath: string) : BinaryIdentity =
     let version = entry |> Option.bind versionOf
     let entryLocation = entry |> Option.map (fun a -> a.Location)

@@ -21,10 +21,9 @@ open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
-/// Above this many selected tests, an impact query stops looking like impact
-/// analysis and starts looking like a full run wearing its clothes — so the
-/// per-seed attribution below is worth paying for. Under it, the breakdown is
-/// noise and is never computed.
+/// Above this many selected tests the query is effectively a full run, so the per-seed
+/// attribution below is worth paying for. Under it the breakdown is noise and is never
+/// computed.
 [<Literal>]
 let WideSelectionTests = 500
 
@@ -37,13 +36,10 @@ let MaxSeedsToAttribute = 200
 /// AUTOMATION-275 — how many CONSECUTIVE flush cycles a symbol must sit in the
 /// needs-testing queue before its persistence is itself evidence of a problem.
 ///
-/// One cycle is ordinary: a symbol is queued and waits for the run that verifies it.
-/// Two is still explicable — an aborted run, or a red project mid-fix. By three the
-/// symbol has outlived several complete verify attempts while still dragging in a
-/// quarter of the suite, and "it is about to clear" has stopped being the likely
-/// story. Deliberately late: this fires on a human-visible warning, and one that
-/// cries wolf during an ordinary red-to-green cycle would be tuned out precisely
-/// when it finally mattered.
+/// One cycle is ordinary; two is explicable (an aborted run, a red project mid-fix); by
+/// three the symbol has outlived several complete verify attempts while still dragging in
+/// a quarter of the suite. Deliberately late — this drives a human-visible warning, and
+/// one that cries wolf during an ordinary red-to-green cycle gets tuned out.
 [<Literal>]
 let PoisonSeedRuns = 3
 
@@ -57,20 +53,16 @@ let PoisonSeedSharePercent = 25
 /// Is this queued symbol behaving like the poisoned seed of AUTOMATION-270 — pinned
 /// across runs AND selecting a large fraction of the suite every time?
 ///
-/// The pattern is what made that incident invisible for an unknown length of time. A
-/// symbol only leaves the queue when every runnable project covering it passes, so ONE
+/// A symbol only leaves the queue when every runnable project covering it passes, so ONE
 /// persistently-red project pins it forever, and while pinned it re-seeds its whole
-/// selection on every subsequent run. A single mis-qualified symbol (`name`, `kind`)
-/// plus one red project is therefore a permanent, silent, near-full suite that looks
-/// exactly like ordinary impact analysis from the outside.
+/// selection on every subsequent run. A single mis-qualified symbol (`name`, `kind`) plus
+/// one red project is therefore a permanent, silent, near-full suite that looks exactly
+/// like ordinary impact analysis from the outside.
 ///
-/// Neither half is sufficient alone, which is why this is a conjunction: a legitimately
-/// pinned symbol selecting three tests is just a slow fix, and a genuine graph hub
-/// selecting half the suite for one run is just an expensive edit. Only their product
-/// — wide, and *staying* — describes the failure.
-///
-/// Integer arithmetic is deliberate: `alone * 100 >= affected * share` avoids the
-/// rounding that would let a seed sit just under the line forever.
+/// A conjunction because neither half is sufficient: a pinned symbol selecting three
+/// tests is just a slow fix, and a genuine graph hub selecting half the suite for one run
+/// is just an expensive edit. Integer arithmetic is deliberate — `alone * 100 >= affected
+/// * share` avoids the rounding that would let a seed sit just under the line forever.
 let isPoisonSuspect (consecutiveRuns: int) (affectedCount: int) (aloneCount: int) : bool =
     consecutiveRuns >= PoisonSeedRuns
     && affectedCount > 0
@@ -134,8 +126,8 @@ let private OutputPlaceholder = "{output}"
 
 /// Substitute `{output}` in `paths.ArgsTemplate` with either Baseline or
 /// Partial depending on `wasFiltered`. Creates the output dir if missing.
-/// Raises with a clear message if the template is missing the placeholder —
-/// silent emission of broken args is the bug we just fixed.
+/// Raises if the template is missing the placeholder, rather than silently
+/// emitting args the runner will ignore.
 let buildCoverageArgs (paths: CoveragePaths) (wasFiltered: bool) : string =
     let target = if wasFiltered then paths.Partial else paths.Baseline
 
@@ -189,12 +181,10 @@ let internal ingestAndEmitCoverage
         let totalIngested = results |> List.sumBy (fun r -> r.Ingested)
         let totalSkipped = results |> List.sumBy (fun r -> r.Skipped)
 
-        // Cold-start guard. If most coverage lines found NO containing symbol, the symbol
-        // graph is still being indexed — e.g. the FIRST run after a schema bump recreated the
-        // TestPrune DB, before the daemon's scan reached the covered files. Emitting now would
-        // write a partial cobertura that DROPS every not-yet-indexed file's coverage, clobbering
-        // a prior good emission and failing the ratchet. So skip the emit; the DB persists and
-        // max-merges, so a later warm run emits in full.
+        // Cold-start guard: emitting while the graph is still indexing writes a partial
+        // cobertura that DROPS every not-yet-indexed file's coverage, clobbering a prior good
+        // emission and failing the ratchet. Skip — the DB persists and max-merges, so a later
+        // warm run emits in full.
         match existing, coverageOutput with
         | [], _
         | _, None -> ()
@@ -233,21 +223,16 @@ type ReportVerificationFormat =
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTOMATION-125 — a run may clear ONLY what it covered.
 //
-// The disease (same as AUTOMATION-95/99/112, arrived at by another road): "no
-// failures reported by THIS run" was being read as "no failures". A full run failed
-// project X; a queued impact-filtered re-run then executed a NARROWER selection,
-// passed, and — via `ClearAllErrors` + last-cycle-wins — superseded X's red. X never
-// re-ran and never passed, yet the check went green.
+// "No failures reported by THIS run" is not "no failures". A full run failed project X;
+// a queued impact-filtered re-run then executed a NARROWER selection, passed, and — via
+// `ClearAllErrors` + last-cycle-wins — superseded X's red. X never re-ran, yet the check
+// went green.
 //
-// The cure is structural, not a rule to remember: a run carries the SELECTION it was
-// launched against, a completed run's COVERAGE is derived from that selection
-// intersected with what actually executed, and clearing is a total function OVER that
-// coverage. "Clear everything" is not a thing a filtered run can express — there is
-// no wholesale clear left to reach for. A red therefore survives every run that did
-// not execute it, and dies the moment one that did executes it green.
-//
-// (Types here; the functions over them live below `verificationOf`, which
-// `RunCoverage.ofRun` and both run-level aggregators read.)
+// So: a run carries the SELECTION it was launched against, a completed run's COVERAGE is
+// that selection intersected with what actually executed, and clearing is a total
+// function over that coverage. A filtered run cannot express "clear everything". A red
+// survives every run that did not execute it, and dies the moment one that did executes
+// it green.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// What a run was LAUNCHED against, per test project — captured at dispatch
@@ -277,13 +262,10 @@ type ProjectCoverage =
 type RunCoverage = Map<string, ProjectCoverage>
 
 /// A file the symbol analyser could not read (AUTOMATION-113), retained until it
-/// analyses cleanly. Carries everything its ledger entry needs, because the entry has
-/// to be RE-REPORTED after every test run: the run's ledger rewrite clears this
-/// plugin's whole slice, and a warning erased by a cycle that never addressed it is
-/// the same defect as a red erased by a run that never executed it (AUTOMATION-125).
-/// Before this, the first test run after an analysis failure silently dropped the
-/// warning — the file kept forcing full-suite runs, but nothing told anyone, and
-/// AUTOMATION-113's "this must deny the check a green verdict" quietly stopped holding.
+/// analyses cleanly. Carries everything its ledger entry needs, because the entry has to
+/// be RE-REPORTED after every test run: the run's ledger rewrite clears this plugin's
+/// whole slice, and a warning erased by a cycle that never addressed it is the same
+/// defect as a red erased by a run that never executed it (AUTOMATION-125).
 type UnanalyzableFile =
     {
         /// Repo-relative path — what the diagnostic names.
@@ -300,8 +282,7 @@ type UnanalyzableFile =
 /// The shared `ErrorLedger` is a pure projection of the outstanding list — the
 /// `TestsFinished` handler rewrites it wholesale each cycle (`ClearAllErrors` +
 /// re-report the whole set) — so `fshw errors` shows exactly what is outstanding:
-/// never a superseded red (the AUTOMATION-95 "Issue 2" accumulation), and never a
-/// laundered one (AUTOMATION-125).
+/// never a superseded red (AUTOMATION-95), and never a laundered one (AUTOMATION-125).
 type OutstandingFailure =
     {
         /// The test project the red belongs to.
@@ -349,10 +330,8 @@ type TestPruneState =
         AffectedTests: AffectedTestsState
         ChangedSymbols: string list
         ChangedFiles: string list
-        /// Last completed test run's results, if any. Replaces the prior
-        /// `Lifecycle.value`-encoded last results — `ctx.IsRunning "tests"`
-        /// is the source of truth for "currently running", so we no longer
-        /// need a phantom-typed Idle/Running phase to wrap this value.
+        /// Last completed test run's results, if any. `ctx.IsRunning "tests"` is the
+        /// source of truth for "currently running", so this carries no phase.
         LastResults: TestResults option
         /// The id of the run that produced `LastResults` — i.e. the directory its
         /// CTRF reports live in (`.fshw/test-runs/<runId>/`). Reported to the CLI by
@@ -368,23 +347,16 @@ type TestPruneState =
         PendingRerun: bool
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
-        /// Item 3 (BuildCompleted-gated stamping). True after the plugin has
-        /// observed at least one `BuildCompleted BuildSucceeded` event in this
-        /// daemon session. The `FileChecked` handler uses this to decide
-        /// whether a clean FCS check is allowed to promote the freshness
-        /// sidecar to `fcsClean = true`.
+        /// True after the plugin has observed at least one `BuildCompleted
+        /// BuildSucceeded` in this daemon session. The `FileChecked` handler uses this
+        /// to decide whether a clean FCS check may promote the freshness sidecar to
+        /// `fcsClean = true`.
         ///
-        /// fshw's cold-scan pipeline guarantees BuildCompleted reaches the
-        /// TestPrune mailbox before any FileChecked (see Daemon.fs's
-        /// performScan: `BuildPlugin terminal awaited before FCS tier
-        /// checks`). So in normal operation this flag is set before any
-        /// FileChecked is processed; the gate is therefore effective on the
-        /// very first cold start of a fresh daemon, no two-session warm-up
-        /// required.
-        ///
-        /// Resets on plugin restart — that's by design. A daemon restart
-        /// clears the in-process "I've seen warm FCS this session"
-        /// assertion.
+        /// The cold-scan pipeline guarantees BuildCompleted reaches the TestPrune
+        /// mailbox before any FileChecked (Daemon.fs `performScan` awaits BuildPlugin
+        /// terminal before the FCS tier), so the gate is effective on the very first
+        /// cold start — no two-session warm-up. Resets on plugin restart by design: a
+        /// restart clears the in-process "I've seen warm FCS this session" assertion.
         BuildCompletedInThisSession: bool
         /// Per-test-project dependency fingerprint observed at the last
         /// `BuildCompleted`. A project whose fingerprint moves between builds had
@@ -397,17 +369,13 @@ type TestPruneState =
         /// The queued rerun consumes (and clears) this so a dependency change that
         /// arrives mid-run is not lost. Unioned with the rerun's own fanout.
         PendingForceRunProjects: Set<string>
-        /// True when the most recent `flushAndQueryAffected` had changed/queued
-        /// symbols but EVERY one proved to have NO covering test (all dropped as
-        /// uncovered), leaving an empty affected set. A definitive "nothing to
-        /// verify" green: there WAS pending work and none of it is testable, so a
-        /// run would verify nothing. Lets the zero-affected skip in
-        /// `runTestsWithImpact` complete green immediately — even on a cold daemon
-        /// with no session baseline — instead of pointlessly running (and, on a
-        /// memory-pressured box, potentially wedging in) the full suite. Distinct
-        /// from a genuine cold start with NO pending symbols, which must still run
-        /// the full-suite baseline to establish one (guarded by `hasCachedResults`).
-        /// Recomputed on every flush; only read right after one, by the run-trigger.
+        /// True when the most recent `flushAndQueryAffected` had changed/queued symbols
+        /// but EVERY one proved to have NO covering test, leaving an empty affected set.
+        /// A definitive "nothing to verify" green, so the zero-affected skip in
+        /// `runTestsWithImpact` completes immediately even on a cold daemon with no
+        /// session baseline. Distinct from a genuine cold start with NO pending symbols,
+        /// which must still run the full-suite baseline to establish one (guarded by
+        /// `hasCachedResults`). Recomputed on every flush; only read right after one.
         ChangedSymbolsAllUncovered: bool
         /// Repo-relative paths of files whose symbol analysis FAILED and has not
         /// since succeeded. These files contribute NO symbols, so they are invisible
@@ -418,12 +386,8 @@ type TestPruneState =
         /// cannot know what to select, and a superset is safe where a gap is not.
         ///
         /// A file leaves the map as soon as it analyses cleanly, so the fallback is
-        /// self-clearing and costs nothing on a healthy tree. NOT persisted: every
-        /// file is re-checked on a cold scan, which repopulates the map from scratch.
-        ///
-        /// Keyed by repo-relative path; the value carries what the ledger entry needs,
-        /// so every `TestsFinished` can RE-REPORT the diagnostic after clearing the
-        /// plugin's slice.
+        /// self-clearing. NOT persisted: a cold scan re-checks every file and
+        /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
         /// `run-tests` force-runs that arrived while another run held the
         /// "tests" slot. A force-run is OWED work — `test-rerun`
@@ -437,8 +401,7 @@ type TestPruneState =
         QueuedCommandRuns: (TestConfig list * string option * Tasks.TaskCompletionSource<string>) list
         /// The reds no COVERING run has passed since (AUTOMATION-125). Rewritten on
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
-        /// it passes. The shared error ledger is a projection of this list, so a
-        /// narrower run can no longer erase a failure it never ran.
+        /// it passes. The shared error ledger is a projection of this list.
         ///
         /// Session-scoped by design (not persisted). A daemon restart has no baseline
         /// (`LastResults = None`), so its first run is the FULL suite — which re-runs
@@ -447,34 +410,29 @@ type TestPruneState =
         /// no longer exists.
         OutstandingFailures: OutstandingFailure list
         /// What the last completed run actually COVERED — the receipt that goes with
-        /// `LastResults` (which says what it FOUND). The two are read together: a green
-        /// result means "nothing failed IN WHAT THIS COVERED", never "nothing failed".
+        /// `LastResults` (which says what it FOUND). Read together: a green result means
+        /// "nothing failed IN WHAT THIS COVERED", never "nothing failed".
         ///
-        /// Kept in state, not just in the `TestsFinished` closure, so a consumer OUTSIDE
-        /// the handler — an IPC command, a verdict writer — can ask what the last run
-        /// covered instead of inventing a parallel notion of scope that could drift from
-        /// the one the ledger clears by. Empty until the first run completes.
+        /// Kept in state rather than only in the `TestsFinished` closure so consumers
+        /// outside the handler (IPC commands, the verdict writer) ask this instead of
+        /// inventing a parallel notion of scope that could drift from the one the ledger
+        /// clears by. Empty until the first run completes.
         LastCoverage: RunCoverage
     }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
-/// The run is an `Async` handed to `RunExclusive`, and it lives for as long as the
-/// suite does: minutes, on a full run. Whatever that async closes over, it PINS for
-/// that whole time. Closing over the state RECORD pinned the entire generation —
-/// including `SymbolSnapshot` (the repo-wide symbol table) and `PendingAnalysis`,
-/// neither of which a run touches. Meanwhile the agent loop keeps folding incoming
-/// `FileChecked` events into NEW generations, and the pinned one holds down every
-/// node those newer generations replaced. The peak lands exactly when the suite is
-/// running and FCS is at its own peak — and FsHotWatch is ~85% native FCS memory.
+/// The run is an `Async` handed to `RunExclusive` and lives as long as the suite does:
+/// minutes, on a full run. Whatever it closes over it PINS for that whole time, so
+/// closing over the state RECORD pins the entire generation — including `SymbolSnapshot`
+/// (the repo-wide symbol table), which no run touches — while the agent loop keeps
+/// folding new `FileChecked` events into fresh generations. The peak lands exactly when
+/// the suite is running and FCS is at its own peak, and FsHotWatch is ~85% native FCS
+/// memory. Copying only what the run reads lets the rest of each generation die on
+/// schedule; the type is the enforcement.
 ///
-/// So the launch copies the four references the run actually reads, and the rest of
-/// each generation dies on schedule. The type is the enforcement: a run cannot reach
-/// a field that is not in here, because it does not have the state to reach it with.
-///
-/// (`LastResults` is NOT one of them. The run's interest in it is exactly one bit —
-/// "does a baseline exist" — which the caller computes and passes as
-/// `hasCachedResults`.)
+/// `LastResults` is deliberately absent: the run's interest in it is one bit — "does a
+/// baseline exist" — which the caller computes and passes as `hasCachedResults`.
 type TestRunInputs =
     {
         /// The impact selection: which test classes the changed symbols reach.
@@ -491,41 +449,35 @@ type TestRunInputs =
     }
 
 module TestRunInputs =
-    /// Project the state down to what a run reads, at LAUNCH time — the point of
-    /// the copy is that the state record itself is not carried into the run.
+    /// Project the state down to what a run reads, at LAUNCH time.
     let ofState (state: TestPruneState) : TestRunInputs =
         { AffectedTests = state.AffectedTests
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles }
 
-/// Custom message posted from the async test runner back to the synchronous
-/// Custom handler. Carries the lifecycle events (Started + Completed) so the
-/// handler can emit them inside the framework's per-event capture window —
-/// required for the §2a cache to record EmittedEvents on terminal status,
-/// which `tryReplayCache` re-fires to downstream subscribers (FileCommandPlugin
-/// keys off TestRunCompleted) when the cache hits.
+/// Custom message posted from the async test runner back to the synchronous Custom
+/// handler. Carries the lifecycle events (Started + Completed) so the handler can emit
+/// them inside the framework's per-event capture window — required for the cache to
+/// record EmittedEvents on terminal status, which `tryReplayCache` re-fires to
+/// downstream subscribers (FileCommandPlugin keys off TestRunCompleted) on a hit.
 ///
-/// Live `TestProgress` events still fire from the async (per-group, streaming)
-/// because they're not part of cache replay (cache replay skips per-group
-/// progress and goes straight from Started to Completed by design).
+/// Live `TestProgress` events still fire from the async because cache replay
+/// deliberately skips per-group progress and goes straight from Started to Completed.
 ///
-/// `launch` carries the set the run was LAUNCHED against — the queue snapshot
-/// (`Symbols`) and, per launched symbol, the set of test PROJECTS whose tests
-/// cover it (`CoveringProjectsBySymbol`) — both captured at dispatch time. The
-/// synchronous `Custom(TestsFinished)` handler uses this, NOT the live
-/// `state.AffectedTests`/`state.ChangedSymbols` (which mid-run `BatchChecked`
-/// flushes overwrite), to decide per-symbol green-commit: a symbol leaves the
-/// queue only when EVERY project covering it passed. A symbol with NO covering
-/// projects (empty set) is committed unconditionally at flush time — there's
-/// nothing to wait for. `Symbols` empty for the degenerate zero-affected skip.
+/// `launch` is what the run was LAUNCHED against, captured at dispatch: the queue
+/// snapshot (`Symbols`) and, per symbol, the test PROJECTS covering it
+/// (`CoveringProjectsBySymbol`). The `TestsFinished` handler decides per-symbol
+/// green-commit from THIS, not from live `state.AffectedTests`/`state.ChangedSymbols`,
+/// which mid-run `BatchChecked` flushes overwrite. A symbol leaves the queue only when
+/// EVERY project covering it passed; a symbol with no covering projects is committed
+/// unconditionally at flush time.
 ///
-/// `Selection` is the run's SCOPE (AUTOMATION-125): what it was launched against,
-/// per project. It is the input to `RunCoverage.ofRun`, and therefore decides what
-/// this run's green is allowed to CLEAR. A project absent from it was never
-/// launched — no matter what its result says (an impact-skip is recorded as a
-/// filtered PASS), it vindicates nothing. Empty for the zero-affected skip and the
-/// aborted-run lifecycle: they executed nothing, so they clear nothing.
+/// `Selection` is the run's SCOPE (AUTOMATION-125) and the input to `RunCoverage.ofRun`,
+/// so it decides what this run's green may CLEAR. A project absent from it was never
+/// launched and vindicates nothing, whatever its result says — an impact-skip is
+/// recorded as a filtered PASS. Empty for the zero-affected skip and the aborted-run
+/// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     { Symbols: Set<string>
       CoveringProjectsBySymbol: Map<string, Set<string>>
@@ -534,29 +486,24 @@ type TestRunLaunch =
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
-    /// A `run-tests` IPC command asking the MAILBOX to launch its force-run
-    /// under the `RunExclusive "tests"` slot (AUTOMATION-99). The command must
-    /// never execute tests on the IPC thread itself: a run outside the slot is
-    /// invisible to the daemon's whole runtime model — `IsRunning "tests"`
-    /// reads false (so a concurrent FileChecked stamps a terminal status over
-    /// it), the plugin never reports Running, and `AnyPluginBusy()` reads
-    /// false, letting a concurrent `fshw check` resolve its verdict wait and
-    /// exit 0 while the test process is literally alive. Routing the launch
-    /// through the mailbox serialises it with every other launch site and
-    /// makes the run held-and-visible for its whole duration. `reply` carries
-    /// the results JSON back to the awaiting IPC command; every completion
-    /// path must resolve it.
+    /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
+    /// `RunExclusive "tests"` slot (AUTOMATION-99). The command must never execute tests
+    /// on the IPC thread itself: a run outside the slot is invisible to the daemon's
+    /// runtime model — `IsRunning "tests"` reads false (so a concurrent FileChecked
+    /// stamps a terminal status over it), the plugin never reports Running, and
+    /// `AnyPluginBusy()` reads false, letting a concurrent `fshw check` resolve its
+    /// verdict wait and exit 0 while the test process is still alive. `reply` carries
+    /// the results JSON back to the awaiting command; every completion path must
+    /// resolve it.
     | RunTestsRequested of configs: TestConfig list * filter: string option * reply: Tasks.TaskCompletionSource<string>
 
-/// Build the degenerate Started→Aborted lifecycle a faulted run posts back so
-/// the synchronous `TestsFinished` handler drives the plugin to a NON-green
-/// terminal status. A `beforeRun` throw / `executeTests` fault means the suite
-/// it guards NEVER RAN — that must surface as a failure, never a stale prior
-/// green (AUTOMATION-68). Both the impact path (`runTestsWithImpact`) and the
-/// manual `run-tests` command build this identically, so it lives here to keep
-/// the two in lockstep. `Results = Map.empty` ⇒ the handler commits nothing from
-/// the pending queue; `reason` carries the hook's failure output so `fshw check`
-/// / `fshw errors` shows WHY the preflight failed.
+/// Build the degenerate Started→Aborted lifecycle a faulted run posts back so the
+/// synchronous `TestsFinished` handler drives the plugin to a NON-green terminal status.
+/// A `beforeRun` throw / `executeTests` fault means the suite it guards NEVER RAN — that
+/// must surface as a failure, never a stale prior green (AUTOMATION-68). Shared by the
+/// impact path and the manual `run-tests` command so the two stay in lockstep.
+/// `Results = Map.empty` ⇒ the handler commits nothing from the pending queue; `reason`
+/// carries the hook's failure output so `fshw check` / `fshw errors` shows WHY.
 let private abortedRunLifecycle (reason: string) : TestRunStarted * TestRunCompleted =
     let runId = Guid.NewGuid()
 
@@ -722,47 +669,19 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
-/// True when this result is a zero-match-under-filter result (the runner found no
-/// test matching the active `--filter-*`).
-///
-/// Now a one-line delegation to `TestResult.isNoMatch`: since AUTOMATION-272 the fact
-/// is a CASE, so this is a pattern match rather than a `StartsWith` against a magic
-/// output prefix. Kept as a named function because three call sites read better for it
-/// and because it is the run-level question's building block.
 /// What a run actually VERIFIED.
 ///
-/// This replaces a boolean that could not express the difference between "no
-/// project was selected" and "every selected project matched nothing". The bool
-/// was `false` for an empty result set — defensible in isolation ("no project"
-/// is not the claim "every project matched nothing") and wrong in effect: an
-/// empty run became indistinguishable from one that executed tests, so it fell
-/// through to `Tests passed` and exit 0. A run that verified nothing wore the
-/// same clothes as a run that verified everything.
+/// Three cases rather than one case with a flag, because they carry different EVIDENCE.
+/// `AllZeroMatch` knows a filter ran against discovered tests and how many projects it
+/// was applied to, so remediation can be specific. `NoProjectsSelected` has no
+/// discovered names at all — nothing ran to discover them — so the only honest report is
+/// that the scope was empty.
 ///
-/// Three cases rather than one case with a flag, because they carry different
-/// EVIDENCE. `AllZeroMatch` knows a filter ran against discovered tests and how
-/// many projects it was applied to, so remediation can be specific.
-/// `NoProjectsSelected` has no discovered names at all — nothing ran to discover
-/// them — so the only honest report is that the scope was empty. Offering a
-/// "did you mean…" there would be guessing dressed as diagnosis.
-///
-/// The TYPE and its wire tokens now live in core (`FsHotWatch.Events`), because
-/// both ends of the wire need them. While the tokens lived only here the CLI
-/// hand-wrote the string literals to compare against, so a rename on this side was
-/// silent on that one — and its fall-through mapped every unrecognized token to
-/// `Tests passed`, exit 0. Only `verificationOf` is TestPrune's business.
-///
-/// Takes the RESULT MAP, not `TestResults`. Typed as `TestResults -> _` it could not be
-/// called from the cache key, which holds a `TestRunCompleted` — whose `Results` field
-/// is the identical `Map<string, TestResult>` — so that site open-coded the fold
-/// instead, and so did `recordRunOutcome`. Three copies of the run-level question in one
-/// file, one of them documented as THE run-level question, purely because of a parameter
-/// type.
-///
-/// The derivation itself moved to core in AUTOMATION-282 (`RunVerification.ofResults`),
-/// once scope became part of the answer: the plugins and the cache all need it, and a
-/// second copy is how the two ends drift. This alias stays because the name reads
-/// better at TestPrune's call sites and is what the analyzer allow-list names.
+/// Takes the RESULT MAP, not `TestResults`, so the cache key (which holds a
+/// `TestRunCompleted`) can call it instead of open-coding the fold. The derivation lives
+/// in core (`RunVerification.ofResults`) because the CLI needs the same tokens and a
+/// second copy is how the two ends drift; this alias just reads better at TestPrune's
+/// call sites and is what the analyzer allow-list names.
 let internal verificationOf (results: Map<string, TestResult>) : RunVerification = RunVerification.ofResults results
 
 /// "Projects ran, and every one of them matched nothing." The predicate the aggregators
@@ -776,8 +695,7 @@ let internal allZeroMatchOf (results: Map<string, TestResult>) : bool =
     | Ran _ -> false
 
 /// Retained for the existing wire field, which older CLIs still read. Prefer
-/// `verificationOf`: this cannot distinguish an empty run from a real one, which
-/// is precisely the defect it caused.
+/// `verificationOf`: this cannot distinguish an empty run from a real one.
 let internal allZeroMatch (results: TestResults) : bool = allZeroMatchOf results.Results
 
 let private formatTestResultsJson (results: TestResults) =
@@ -787,12 +705,10 @@ let private formatTestResultsJson (results: TestResults) =
         |> List.map (fun (name, result) ->
             let (status, output) =
                 match result with
-                // A zero-match-under-filter result gets a DISTINCT status so a
-                // consumer can tell "ran, all green" from "matched nothing". The
-                // wire string is UNCHANGED by AUTOMATION-272 — only the way it is
-                // recognised moved from a magic output prefix to a case. The CLI's
-                // `coverage` fallback for older daemons parses these per-project
-                // statuses, so renaming this would break it.
+                // A zero-match-under-filter result gets a DISTINCT status so a consumer
+                // can tell "ran, all green" from "matched nothing". The CLI's `coverage`
+                // fallback for older daemons parses these per-project statuses, so
+                // renaming any of these wire strings breaks it.
                 | TestsNoMatch(o, _) -> ("no-tests-matched", o)
                 | TestsPassed(o, _, _) -> ("passed", o)
                 | TestsFailed(o, _, _) -> ("failed", o)
@@ -805,10 +721,6 @@ let private formatTestResultsJson (results: TestResults) =
                output = truncateOutput 200 output
                elapsedMs = (TestResult.elapsed result).TotalMilliseconds |})
 
-    // Computed ONCE. It was previously evaluated twice in this literal, and a
-    // third field (`verifiedNothing`) was emitted carrying a value derivable from
-    // this one — three derivations of one fact, free to disagree. That field is
-    // gone: nothing parsed it, and it was added this release so it never shipped.
     let verification = verificationOf results.Results
 
     JsonSerializer.Serialize(
@@ -865,22 +777,16 @@ let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
 
 /// The coarse fallback for files the symbol analyser could not read.
 ///
-/// A file whose analysis FAILED contributes no symbols. The impact graph therefore
-/// cannot see it, the symbol diff finds nothing changed in it, and the selection it
-/// deserves is EMPTY — so an edit to such a file would select zero tests and the
-/// check would go green having run nothing relevant. That is silent UNDER-selection: "the
-/// one failure mode a test-impact tool must not have" (`TestPrune.EdgeEmission`).
+/// A file whose analysis FAILED contributes no symbols, so the symbol diff finds nothing
+/// changed in it and the selection it earns is EMPTY — an edit to it would select zero
+/// tests and the check would go green having run nothing relevant. An unanalysable file
+/// means "I cannot tell you what is affected", not "nothing is affected", so the answer
+/// is to run EVERY test project: a superset is safe where a gap is not. Same rule
+/// `EdgeEmission.resolveTargets` follows for an unresolvable seed.
 ///
-/// The honest reading of an unanalysable file is not "nothing is affected" — it is
-/// "I cannot tell you what is affected". The only sound answer to that is the coarse
-/// one: run EVERY test project, because any of them could cover the file. A superset
-/// is safe where a gap is not — exactly the rule `EdgeEmission.resolveTargets` follows
-/// when a seed names a symbol it can no longer resolve.
-///
-/// Returned as force-run projects, which `runTestsWithImpact` already knows how to
-/// honour: a project present with an empty class list runs IN FULL (unfiltered), and a
-/// non-empty force-run set also disables the zero-affected skip gate — so an
-/// unanalysable file can never reach the "0 affected, green, 0 ran" verdict either.
+/// Returned as force-run projects: a project present with an empty class list runs IN
+/// FULL, and a non-empty force-run set also disables the zero-affected skip gate, so an
+/// unanalysable file cannot reach the "0 affected, green, 0 ran" verdict either.
 let internal coarseFallbackProjects
     (configs: TestConfig list)
     (unanalyzableFiles: Set<string>)
@@ -892,10 +798,8 @@ let internal coarseFallbackProjects
         Set.union fanout (fullSuiteProjects configs)
 
 
-/// The single answer to "what did this run actually cover?" — PUBLIC because it is
-/// load-bearing outside this handler too: a verdict writer must be able to ask it, per
-/// project and per suite, what a run executed, rather than maintain a parallel notion
-/// of scope that can drift from the one the ledger clears by.
+/// The single answer to "what did this run actually cover?", per project and per suite.
+/// Public so the verdict writer asks it rather than keeping a parallel notion of scope.
 module RunCoverage =
 
     /// Nothing was executed, so nothing may be cleared. The verdict of an aborted
@@ -951,15 +855,11 @@ module RunCoverage =
     ///     an arbitrary filter string whose reach the LAUNCH REQUEST cannot express
     ///     (every project goes down as `ProjectInFull`). Ask the run's own evidence
     ///     instead — the classes its CTRF report shows actually RAN AND PASSED
-    ///     (AUTOMATION-225). Without that the request claimed nothing, so
-    ///     `test-rerun --filter-class X` could re-run X, pass, and STILL leave X's red
-    ///     standing forever — an environmental failure became permanently sticky.
-    ///     Evidence is a RECEIPT, not a guess: it names only classes this run executed
-    ///     and saw pass. Fail-closed everywhere it is absent, unreadable or incomplete
-    ///     (`passedClassesOfReport`), which degrades to the old "claims nothing".
-    ///   * a TIMED-OUT project is excluded from the evidence path: a project killed
-    ///     for being stuck is a fact about the PROJECT, and a report flushed by a
-    ///     process we shot is not a receipt for anything.
+    ///     (AUTOMATION-225). Otherwise `test-rerun --filter-class X` could re-run X,
+    ///     pass, and still leave X's red standing forever. Fail-closed wherever the
+    ///     report is absent, unreadable or incomplete (`passedClassesOfReport`).
+    ///   * a TIMED-OUT project is excluded from the evidence path: a report flushed by
+    ///     a process we killed is not a receipt for anything.
     let ofRun
         (selection: Map<string, ProjectSelection>)
         (results: Map<string, TestResult>)
@@ -968,10 +868,9 @@ module RunCoverage =
         results
         |> Map.toList
         |> List.choose (fun (project, result) ->
-            // Exhaustive by construction — see `TestResult.executedTests`. This was a
-            // wildcard, and was right about `TestsNoMatch` only because
-            // `TestResult.isNoMatch` happened to be updated; the next case would have
-            // fallen through and been counted as having run.
+            // Exhaustive by construction — see `TestResult.executedTests`. Do not
+            // reintroduce a wildcard here: a new non-executing case would fall through
+            // and be counted as having run.
             let ran = TestResult.executedTests result
 
             let fromEvidence () =
@@ -994,14 +893,11 @@ module RunCoverage =
                 | Some ProjectInFull -> fromEvidence ())
         |> Map.ofList
 
-/// The SCOPE `fshw confirm` reads, as a pure PROJECTION of `RunCoverage`.
+/// The SCOPE `fshw confirm` reads, as a pure PROJECTION of `RunCoverage` (AUTOMATION-129).
 ///
-/// It is deliberately not an independent derivation. Until AUTOMATION-129 the caller's
-/// scope came from `classifyRunScope` (over `LastResults`) while the ledger decided
-/// what a run could CLEAR from `RunCoverage` — two answers to one question, with
-/// nothing making them agree. `confirm` could therefore go green on a scope the ledger
-/// would never have granted. There is one source of truth now, and this is a view of
-/// it.
+/// Deliberately not an independent derivation: a second answer to "what did this run
+/// cover?" can disagree with the one the ledger clears by, and `confirm` would then go
+/// green on a scope the ledger never granted.
 type internal ScopeReport =
     /// Every configured project executed, each in FULL. The only scope a whole-suite
     /// claim can be made from.
@@ -1072,13 +968,10 @@ module internal OutstandingFailure =
         |> List.sort
         |> String.concat ", "
 
-/// The ledger diagnostic for a file the symbol analyser could not read. LOUD by
-/// construction: it is a WARNING (so it surfaces in `fshw check` output and, under
-/// the default warn-fail policy, denies the check a green verdict) keyed to the file
-/// itself, naming the file and the reason. The previous behaviour reported nothing a
-/// consumer could see — the plugin logged, set a status that the very next file's
-/// `Completed` overwrote, and dropped the file. Nothing in the system would ever have
-/// told anyone.
+/// The ledger diagnostic for a file the symbol analyser could not read. A WARNING keyed
+/// to the file itself, so it surfaces in `fshw check` output and — under the default
+/// warn-fail policy — denies the check a green verdict. A log line would not: the
+/// plugin's status is overwritten by the very next file's `Completed`.
 let internal unanalyzableFileDiagnostic (relPath: string) (reason: string) : ErrorLedger.ErrorEntry =
     ErrorLedger.ErrorEntry.warningWithDetail
         $"%s{relPath}: symbol analysis failed — %s{reason}"
@@ -1154,11 +1047,9 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 /// forty lines of tail are forty lines of noise. `runLog` is the answer to that —
 /// the full, head-included, streamed capture — and this message NAMES it.
 ///
-/// It names it from a `RunLog.Ref`, never from a formatted guess, because the
-/// defect being fixed here was this very line telling its reader the failure was
-/// visible "without the saved log" while no code in the plugin ever saved one. A
-/// path is printed only when something opened it; otherwise the REASON there is
-/// no file is printed in its place.
+/// The path comes from a `RunLog.Ref`, never a formatted guess: a path is printed only
+/// when something actually opened it, and otherwise the REASON there is no file takes
+/// its place. A message that points at a log nobody wrote is worse than none.
 let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (output: string) : string list =
     let lines = output.Split('\n')
 
@@ -1211,13 +1102,12 @@ type ReportEvidence =
     /// the host aborted before flushing, or wrote a truncated report.
     | ReportRequested of report: Flakiness.TestReport option
 
-/// Decide a single project's verdict. The structured test report (when present
-/// and parseable) is AUTHORITATIVE for pass/fail; the process exit code is only
-/// a tie-break when there is no usable report. This inverts the prior logic
-/// (exit-code-only), which produced false REDs: a test host that exits non-zero
-/// during a dirty shutdown (e.g. the Microsoft.Testing.Platform exit-7 flake)
-/// after flushing a clean report was reported as "Tests failed" with zero named
-/// tests, while `test-rerun` came back green.
+/// Decide a single project's verdict. The structured test report (when present and
+/// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
+/// when there is no usable report. Exit-code-only produced false REDs: a test host that
+/// exits non-zero during a dirty shutdown (the Microsoft.Testing.Platform exit-7 flake)
+/// after flushing a clean report reported "Tests failed" with zero named tests, while
+/// `test-rerun` came back green.
 ///
 /// Precedence (apphost-missing / zero-match-under-filter are handled by the
 /// caller BEFORE this — they are not test outcomes):
@@ -1229,18 +1119,15 @@ type ReportEvidence =
 ///          aborted before writing results; nothing was verified. Never green,
 ///          never the misleading "tests failed".
 ///        - report NOT requested (unknown runner) → exit code is the only signal
-///          we have → `TestsFailed` (unchanged behaviour, no regression).
+///          we have → `TestsFailed`.
 ///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
 ///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
 ///   run (the filtered case was handled upstream) — a real misconfiguration, so
 ///   it falls to the exit-code tie-break rather than going green.
 ///
-/// TODO(approach C, deferred): once the set of benign shutdown exit codes is
-/// confirmed per runner/version, outcome 2 could additionally require the exit
-/// code to be 0 or a whitelisted shutdown code (e.g. MTP's 7), treating other
-/// non-zero exits with a clean report as errored. Left out for now — the exact
-/// benign code is runner/version-specific and a report that positively shows
-/// zero failures is stronger evidence than the exit number.
+/// Outcome 2 deliberately does NOT also require a whitelisted shutdown exit code: the
+/// benign codes are runner/version-specific, and a report positively showing zero
+/// failures is stronger evidence than the exit number.
 let internal classifyTestOutcome
     (evidence: ReportEvidence)
     (wasFiltered: bool)
@@ -1249,8 +1136,8 @@ let internal classifyTestOutcome
     : TestResult =
     match outcome with
     | ProcessOutcome.TimedOut(after, output, kill) ->
-        // A timeout KILL is a real "stuck" signal; a partial report it may have
-        // flushed must not override it. Keep it distinct (unchanged).
+        // A timeout KILL is a real "stuck" signal; a partial report it may have flushed
+        // must not override it.
         //
         // This arm renders the tail itself rather than going through `outputOf`, so it
         // must append `renderKill` explicitly — otherwise a test-runner tree we FAILED
@@ -1263,31 +1150,27 @@ let internal classifyTestOutcome
 
         match evidence with
         | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
-            // Outcome 1: the report names failing/errored tests — authoritative red.
+            // Outcome 1.
             TestsFailed(output, wasFiltered, elapsed)
         | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
-            // Outcome 2: report parsed, zero non-pass results, ≥1 test ran →
-            // GREEN even if the process exited non-zero (the dirty-shutdown flake).
+            // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
             TestsPassed(output, wasFiltered, elapsed)
         | ReportRequested(Some _) ->
-            // Report parsed but Total == 0 — an unfiltered zero-test run. Real
-            // problem; defer to the exit code (preserves "empty suite is red").
+            // Total == 0: an unfiltered zero-test run. Defer to the exit code so an
+            // empty suite stays red.
             if succeeded then
                 TestsPassed(output, wasFiltered, elapsed)
             else
                 TestsFailed(output, wasFiltered, elapsed)
         | _ when succeeded ->
-            // Outcome 4: clean exit and no usable report (none requested, or
-            // requested-but-absent) → trust the pass.
+            // Outcome 4.
             TestsPassed(output, wasFiltered, elapsed)
         | ReportRequested None ->
-            // Outcome 3: we asked a capable runner for a report, the process
-            // exited non-zero, and none is parseable → the host aborted before
-            // writing results. Errored — never green, never "tests failed".
+            // Outcome 3 — the host aborted before writing results, so nothing was
+            // verified. Never green, never the misleading "tests failed".
             TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
         | NoReportRequested ->
-            // Unknown runner we never asked for a report: exit code is the only
-            // signal. Preserve today's behaviour (no false-errored regression).
+            // Unknown runner we never asked for a report: the exit code is all there is.
             TestsFailed(output, wasFiltered, elapsed)
 
 /// Split runner args on whitespace into tokens (empty entries removed).
@@ -1356,22 +1239,17 @@ let internal deriveProjectBin (args: string) (repoRoot: string) : ArtifactFreshn
           ArtifactFreshness.AssemblyName = assemblyName
           ArtifactFreshness.BinDir = Path.Combine(projDir, "bin", "Debug") })
 
-/// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
-/// `dotnet run --project <proj> --no-build` can be launched before the build
-/// plugin produced that project's apphost binary; `dotnet run` then fails to
-/// spawn it and exits non-zero. That is an ORDERING bug, never a test failure.
+/// STRUCTURAL apphost-missing detection. On a cold daemon a `dotnet run --project
+/// <proj> --no-build` can be launched before the build plugin produced that project's
+/// apphost binary; `dotnet run` then fails to spawn it and exits non-zero. That is an
+/// ORDERING bug, never a test failure.
 ///
-/// Rather than sniff localized OS error text out of the runner output (fragile
-/// to locale and SDK phrasing — see `looksLikeApphostMissing`, kept only as a
-/// defensive fallback), we derive the apphost binary path from the runner's
-/// `--project` arg and check `File.Exists` BEFORE/around the launch. The
-/// apphost is the extension-less sibling of the canonical
-/// `<projDir>/bin/Debug/<tfm>/<assemblyName>.dll` (`.exe` on Windows). We don't
-/// know the TFM without the project graph here, so we glob every
-/// `bin/Debug/*/` TFM dir for the assembly. If NO apphost is found for a
-/// derivable project, that absence IS the "apphost not yet produced" signal.
-/// Presence only — `ArtifactFreshness.stale` is the freshness complement (a
-/// PRESENT but out-of-date artifact).
+/// Derived from the runner's `--project` arg and a `File.Exists`, rather than sniffing
+/// localized OS error text out of the runner output — that is fragile to locale and SDK
+/// phrasing (`looksLikeApphostMissing` keeps it only as a fallback). The apphost is the
+/// extension-less sibling of `<projDir>/bin/Debug/<tfm>/<assemblyName>.dll` (`.exe` on
+/// Windows); the TFM is unknown without the project graph, so every `bin/Debug/*/` dir
+/// is globbed. Presence only — `ArtifactFreshness.stale` is the freshness complement.
 ///
 /// Returns:
 ///   Some true  — project derivable AND apphost present
@@ -1445,21 +1323,15 @@ let internal detectCtrfCapable (args: string) (repoRoot: string) : bool option =
         with _ ->
             None)
 
-/// Issue 1/2 — defensive fallback apphost-missing classifier, used ONLY when
-/// `tryApphostPresent` can't derive a project from the runner args (custom,
-/// non-`dotnet run` commands). On a cold daemon a `dotnet run --project <proj>
-/// --no-build` launched before the build plugin produced the apphost fails to
-/// spawn it and surfaces the .NET host's start-process error, exiting non-zero.
-/// That non-zero exit is an ORDERING bug, never a test failure.
+/// Fallback apphost-missing classifier, used ONLY when `tryApphostPresent` cannot derive
+/// a project from the runner args (custom, non-`dotnet run` commands).
 ///
-/// This classifier distinguishes that launch failure from a genuine non-zero
-/// test exit. A real xUnit/MTP failure carries `failed <name>` lines and a
-/// `failed:`/`Test run summary` block; the apphost-launch failure carries the
-/// host's "An error occurred trying to start process …" / "No such file or
-/// directory" signature and NO test-summary block. The match is deliberately
-/// conservative: when in doubt we treat output as a real failure (never
-/// silence a red). Pure + internal so both branches are unit-testable without
-/// a live daemon.
+/// Distinguishes an apphost launch failure from a genuine non-zero test exit: a real
+/// xUnit/MTP failure carries `failed <name>` lines and a `failed:`/`Test run summary`
+/// block, while the launch failure carries the host's "An error occurred trying to start
+/// process …" / "No such file or directory" signature and NO test-summary block.
+/// Deliberately conservative — in doubt, treat the output as a real failure and never
+/// silence a red.
 let internal looksLikeApphostMissing (output: string) : bool =
     if String.IsNullOrWhiteSpace output then
         false
@@ -1671,17 +1543,12 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
 /// Rewrite this plugin's whole slice of the error ledger to be exactly what is still
 /// OUTSTANDING (AUTOMATION-125).
 ///
-/// `ClearAllErrors` (== `ClearPlugin "test-prune"`) is still how the slate is wiped —
-/// but it is now always paired with a re-report of EVERYTHING the plugin still owes:
-///
-///   * every outstanding red, including the ones carried from earlier runs that this
-///     one did not cover. The previous code cleared the slate and re-reported only
-///     THIS run's failures, so a narrower run that passed erased reds it had never
-///     executed;
-///   * every unanalysable-file warning (AUTOMATION-113). The clear wiped those too, so
-///     the first test run after an analysis failure silently dropped the warning that
-///     is supposed to deny the check its green verdict — the same defect, on a
-///     different diagnostic.
+/// `ClearAllErrors` (== `ClearPlugin "test-prune"`) wipes the slate, and MUST always be
+/// paired with a re-report of everything the plugin still owes: every outstanding red,
+/// including ones carried from earlier runs this one did not cover, and every
+/// unanalysable-file warning (AUTOMATION-113). Re-reporting only THIS run's findings
+/// lets a narrower run erase reds it never executed, and drops the warning that is
+/// supposed to deny the check its green verdict.
 ///
 /// Clearing-and-re-reporting is the ONLY path to the ledger, so an entry can disappear
 /// only by leaving the outstanding set: a red needs a run that COVERED it, a warning
@@ -1704,9 +1571,12 @@ let private reportOutstanding
     |> List.groupBy fst
     |> List.iter (fun (file, entries) -> ctx.ReportErrors file (entries |> List.map snd))
 
-/// Execute test configs with optional affected classes for filtering.
-/// Handles beforeRun, coveragePaths, process execution, result storage.
-/// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
+let private flakinessHistoryPath (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+
+/// Execute test configs with optional affected classes for filtering. Handles beforeRun,
+/// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
+/// string (from the run-tests command) that bypasses the template.
 ///
 /// Emission contract (when `ctx` is Some):
 ///   1. `TestRunStarted` once, before any group begins.
@@ -1715,13 +1585,10 @@ let private reportOutstanding
 ///   3. `TestRunCompleted` once, after all groups finish, carrying the full
 ///      cumulative Results plus an Outcome.
 /// All three share a single RunId generated at the start of the run.
-/// When `ctx` is None (e.g. invoked from a one-off command), no lifecycle
-/// events fire; the caller just gets back the final TestResults. ctx=None
-/// also disables the skip-on-stale shortcut so manual runs aren't deadlocked
-/// by a stuck dirty bit — see the staleness branch below.
-let private flakinessHistoryPath (repoRoot: string) =
-    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
-
+///
+/// `ctx = None` (a one-off command) fires no lifecycle events — the caller just gets the
+/// final TestResults — and also disables the skip-on-stale shortcut, so a manual run is
+/// never deadlocked by a stuck dirty bit. See the staleness branch below.
 let private executeTests
     (db: Database)
     (ctx: PluginCtx<'msg> option)
@@ -1771,9 +1638,9 @@ let private executeTests
         let startedAt = DateTime.UtcNow
 
         ctx |> Option.iter (fun c -> c.StartSubtask PrimarySubtaskKey primaryLabel)
-        // EmitTestRunStarted moved to caller (so the synchronous Custom
-        // TestsFinished handler can emit it inside the cache-write capture
-        // window). Caller receives `started` in the returned tuple.
+        // `TestRunStarted` is emitted by the CALLER (which receives `started` in the
+        // returned tuple), so the synchronous `TestsFinished` handler can fire it inside
+        // the cache-write capture window.
         let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
 
         match beforeRun with
@@ -1852,11 +1719,10 @@ let private executeTests
                         // ADR-008). Would `--no-build` execute bits that don't match the sources?
                         // Judged over THIS project's own transitive closure — its sources, its
                         // dependencies' assemblies, and the content/fixture items copied into its
-                        // output dir. Its predecessor compared against the newest source ANYWHERE
-                        // in the repo, so any edit to any leaf project condemned every project
-                        // outside that edit's closure — and no plain build could clear it, because
-                        // MSBuild correctly declines to relink an unaffected project. Every finding
-                        // here names a file pair a plain `dotnet build` will re-emit.
+                        // output dir. Never against the newest source anywhere in the repo: that
+                        // condemns every project outside the edit's closure, and no plain build
+                        // clears it because MSBuild correctly declines to relink an unaffected
+                        // project. Every finding here names a file pair `dotnet build` will re-emit.
                         let staleInput =
                             if skipProject then
                                 None // not running it anyway — don't pay for the walk
@@ -1874,15 +1740,12 @@ let private executeTests
                             results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
                         | false, Some stale ->
                             // `dotnet run --no-build` would execute STALE bits and report a verdict
-                            // (pass OR fail) that doesn't match the sources — the false-green this
-                            // exists to prevent. Runs PRE-launch, independent of exit code: the old
-                            // apphost check only fired on a FAILED launch (`detectApphostMissing`
-                            // short-circuits on a clean exit), so a stale apphost that exited 0
-                            // sailed through as `TestsPassed`. DEFER without launching — exactly the
-                            // "waiting on build" signal a MISSING apphost yields — so a stale
-                            // artifact can never produce a passing verdict. (A MISSING apphost stays
-                            // on the launch+retry+defer path below: a build in flight may still land
-                            // it; a stale one won't refresh without a real build.)
+                            // (pass OR fail) that doesn't match the sources. Checked PRE-launch and
+                            // independent of exit code — an exit-code-gated check cannot see a
+                            // stale apphost that exits 0. DEFER without launching, the same
+                            // "waiting on build" signal a MISSING apphost yields. (A MISSING
+                            // apphost stays on the launch+retry+defer path below: a build in flight
+                            // may still land it; a stale one won't refresh without a real build.)
                             let reason = ArtifactFreshness.describe stale
 
                             Logging.warn
@@ -1944,18 +1807,13 @@ let private executeTests
                                     | Some capable -> capable
                                     | None -> isDotnetCommand config.Command
 
-                            // ONE DIRECTORY PER RUN (AUTOMATION-129). The reports of a run
-                            // live in `.fshw/test-runs/<runId>/`, and NOTHING ELSE does — so
-                            // membership is a fact about where a file IS, not an inference
-                            // from when it was written. A shared pile with no manifest is
-                            // unreadable in BOTH directions: you cannot tell which files are
-                            // yours (presence), and an empty listing could mean "nothing ran"
-                            // or "cleaned up" or "wrong glob" (absence). Two capable readers
-                            // misread this directory within an hour of each other.
+                            // ONE DIRECTORY PER RUN (AUTOMATION-129). A run's reports live in
+                            // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
+                            // a fact about where a file IS, never an inference from its mtime.
                             //
                             // The run-dir is created whether or not any project reports, so an
                             // executed run that produced nothing leaves an EMPTY DIRECTORY —
-                            // a stated fact — rather than a silence to be decoded.
+                            // distinguishable from a run that never happened.
                             let ctrfPath =
                                 if shouldRequestCtrf then
                                     Directory.CreateDirectory(runDir) |> ignore
@@ -1989,18 +1847,13 @@ let private executeTests
 
                             let projectSw = Stopwatch.StartNew()
 
-                            // THE RUN LOG (AUTOMATION-279). Opened for EVERY project, on
-                            // every run, before the spawn — not on failure, and not for one
-                            // suite anyone currently suspects. A passing-but-slow suite is
-                            // worth reading too, and which project will need explaining is
-                            // not knowable in advance; the artifact costs a file handle.
+                            // THE RUN LOG (AUTOMATION-279). Opened for EVERY project on every
+                            // run, before the spawn — which project will need explaining is not
+                            // knowable in advance and the artifact costs a file handle.
                             //
-                            // It sits in this run's directory beside `<Project>.ctrf.json`,
-                            // so the run's evidence is in ONE place, and it is STREAMED
-                            // (see `RunLog`): the failure that needs it most is the suite
-                            // SIGKILLed at its timeout, which reaches no writer at all and
-                            // whose in-memory capture the kill truncates. Buffering here and
-                            // flushing at the end would rebuild exactly the bug this fixes.
+                            // STREAMED, not buffered (see `RunLog`): the failure that needs it
+                            // most is the suite SIGKILLed at its timeout, which reaches no
+                            // writer at all and whose in-memory capture the kill truncates.
                             let runLog = RunLog.openFor runDir config.Project
 
                             match runLog.Ref with
@@ -2033,13 +1886,8 @@ let private executeTests
                                             (ProcessBounds.streaming timeoutSpan launchDeadline)
                                 }
 
-                            // Issue 2: STRUCTURAL apphost-missing detection. Prefer
-                            // a `File.Exists` check on the derived apphost binary
-                            // over sniffing localized OS error text. When the
-                            // project isn't derivable from the runner args (custom,
-                            // non-`dotnet run` command), fall back to the output
-                            // sniff. `outcome` is the process result whose output
-                            // the fallback inspects.
+                            // See `tryApphostPresent`; `looksLikeApphostMissing` is the
+                            // fallback for a command with no derivable project.
                             let detectApphostMissing (outcome: ProcessOutcome) : bool =
                                 // A clean exit means the apphost ran — never a
                                 // launch-ordering problem, regardless of artifacts.
@@ -2055,15 +1903,11 @@ let private executeTests
                                             looksLikeApphostMissing (ProcessOutput.text out)
                                         | _ -> false
 
-                            // Issue 1/2: cold-start apphost-missing retry. The
-                            // BuildCompleted→TestPrune ordering already gates the
-                            // launch on a successful build, but a narrow race can
-                            // still fire `--no-build` before the apphost lands. If
-                            // the FIRST run looks like an apphost-missing launch
-                            // (structural check, or text sniff fallback), wait
-                            // briefly for the build to settle and retry ONCE. A
-                            // still-missing apphost after the retry is surfaced as
-                            // DEFERRED ("waiting on build"), never FAILED.
+                            // Cold-start apphost-missing retry. The BuildCompleted→TestPrune
+                            // ordering already gates the launch on a successful build, but a
+                            // narrow race can still fire `--no-build` before the apphost
+                            // lands. Retry ONCE after a short wait; a still-missing apphost
+                            // is DEFERRED ("waiting on build"), never FAILED.
                             let runTestWithRetry =
                                 async {
                                     let! first = runOnce
@@ -2104,19 +1948,16 @@ let private executeTests
                                                         runTestWithRetry
                                                 | None -> runTestWithRetry
                                         with LaunchStalledException reason ->
-                                            // AUTOMATION-65 QA finding — the launch gap. The
-                                            // watchdog killed a child that never showed a sign
-                                            // of life within the launch deadline (an overloaded
-                                            // spawn that went nowhere). Re-raise NAMING the
-                                            // config and elapsed so the run's Aborted lifecycle
-                                            // (built by the caller's `with ex ->`) carries a
-                                            // legible diagnostic; a launch stall means this
-                                            // project NEVER RAN, so the whole run must abort →
-                                            // PluginStatus.Failed → `check` exits non-green
-                                            // rather than wedging at Running. (A child that
-                                            // EXITS — even a sleep-killed one — is NOT a stall:
-                                            // the poll observes its exit and it's classified
-                                            // normally, non-green, without wedging.)
+                                            // The watchdog killed a child that never showed a
+                                            // sign of life within the launch deadline. Re-raise
+                                            // NAMING the config and elapsed so the run's Aborted
+                                            // lifecycle (built by the caller's `with ex ->`)
+                                            // carries a legible diagnostic. A launch stall means
+                                            // this project NEVER RAN, so the whole run must
+                                            // abort → PluginStatus.Failed → `check` exits
+                                            // non-green rather than wedging at Running. A child
+                                            // that EXITS is not a stall — the poll observes the
+                                            // exit and classifies it normally.
                                             return
                                                 raise (
                                                     LaunchStalledException
@@ -2132,9 +1973,6 @@ let private executeTests
                             projectSw.Stop()
                             let projectElapsed = projectSw.Elapsed
 
-                            // Issue 1/2: distinguish a still-missing apphost (an
-                            // ordering bug) from a genuine non-zero test exit,
-                            // via the same structural-with-fallback check.
                             let apphostMissing = detectApphostMissing processResult
 
                             // A filtered run that matched zero tests in this project is
@@ -2175,21 +2013,13 @@ let private executeTests
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
                                 elif zeroTestsUnderFilter then
-                                    // A filtered run matched no tests here. Its OWN
-                                    // case (AUTOMATION-272), so downstream folds can
-                                    // ask the question structurally instead of by
-                                    // string prefix. Still not a failure — per project
-                                    // a filter selecting nothing is not that project's
-                                    // fault, and `TestResult.isPassed` stays true for
-                                    // it. What changed is that a RUN can now tell the
-                                    // difference; see `verificationOf`.
+                                    // Not a failure — per project, a filter selecting
+                                    // nothing is not that project's fault, and
+                                    // `TestResult.isPassed` stays true. Its own case so
+                                    // the RUN-level fold can still tell the difference;
+                                    // see `verificationOf`.
                                     TestsNoMatch(output, projectElapsed)
                                 else
-                                    // Report-authoritative verdict (exit code only a
-                                    // tie-break). Fixes the false-RED: a dirty-shutdown
-                                    // non-zero exit with a clean report is GREEN; a
-                                    // non-zero exit with NO parseable report is ERRORED
-                                    // (never a misleading "tests failed").
                                     classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
 
                             // Log driven off the AUTHORITATIVE verdict (not the raw
@@ -2234,14 +2064,11 @@ let private executeTests
                                     Logging.error "test-prune" line
                             | _ -> ()
 
-                            // Post-test coverage step: collect this project's raw
-                            // runner cobertura for SERIAL ingest after Async.Parallel
-                            // (a parallel DB write + shared-file write would race).
-                            // Issue 3: a run that never executed (apphost missing)
-                            // contributes NO input — a partial/empty file must not
-                            // lower coverage. An empty/aborted raw cobertura that IS
-                            // collected ingests nothing (parse → [] → no-op), so it
-                            // also can't clobber the emitted file.
+                            // Collect this project's raw runner cobertura for SERIAL
+                            // ingest after Async.Parallel (a parallel DB write +
+                            // shared-file write would race). A run that never executed
+                            // (apphost missing) contributes NO input, so a partial file
+                            // cannot lower coverage.
                             match projectCoveragePaths with
                             | Some paths when not apphostMissing ->
                                 let rawPath = if wasFiltered then paths.Partial else paths.Baseline
@@ -2337,20 +2164,17 @@ let private executeTests
             { Results = finalResults
               Elapsed = sw.Elapsed }
 
-        // Outcome = Normal means the run completed naturally. Per-project
-        // pass/fail lives in Results; Aborted is reserved for cancellation,
-        // timeouts, or crashes (none wired through this path today).
         ctx |> Option.iter (fun c -> c.EndSubtask PrimarySubtaskKey)
 
-        // EmitTestRunCompleted moved to caller (synchronous Custom handler)
-        // so it's captured in EmittedEvents for cache replay. Returned as part
-        // of the tuple instead.
+        // `TestRunCompleted` is emitted by the CALLER (the synchronous Custom handler) so
+        // it lands in EmittedEvents for cache replay; returned in the tuple instead.
+        // `Outcome = Normal` means the run completed naturally — per-project pass/fail
+        // lives in Results, and Aborted is reserved for cancellation/timeout/crash.
         let completed: TestRunCompleted =
             { RunId = runId
               TotalElapsed = sw.Elapsed
               Outcome = Normal
               Results = finalResults
-              // The real run: whatever the results establish, derived once, in core.
               Verification = verificationOf finalResults }
 
         match afterRun with
@@ -2364,23 +2188,20 @@ let private executeTests
         return testResults, started, completed
     }
 
-/// FCS cache-poisoning gate. A `FileChecked` whose underlying FCS result
-/// reports any Error-severity diagnostic is treated as untrustworthy: cold-
-/// start FCS sometimes returns "expected type X but here has type X" for
-/// files that compile cleanly once warm, and flushing those poisoned
-/// symbols would overwrite the prior good DB snapshot. Gating by severity
-/// (not message text) handles both the cold-start race and the user-broke-
-/// their-code case identically: in both, we hold the prior DB row instead
-/// of replacing it. `ParseOnly` (check aborted) is treated as "no observable
-/// errors" so the existing fall-through behaviour is preserved.
+/// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
+/// Error-severity diagnostic is untrustworthy: cold-start FCS sometimes returns
+/// "expected type X but here has type X" for files that compile cleanly once warm, and
+/// flushing those poisoned symbols overwrites the prior good DB snapshot. Gated by
+/// SEVERITY, not message text, so the cold-start race and the user-broke-their-code case
+/// are handled identically — both hold the prior DB row. `ParseOnly` (check aborted)
+/// counts as "no observable errors".
 ///
-/// `suppressedCodes` (caller-configured) is merged with per-file `#nowarn`
-/// directives via `FcsDiagnosticFilter.allSuppressedCodes` so the gate sees
-/// the same filter the user-visible error stream applies in
-/// `Daemon.reportFcsDiagnostics`. Without this symmetry the gate trips on
-/// codes the user has already silenced (e.g. FS1182 promoted to Error by
-/// `<TreatWarningsAsErrors>` but suppressed via `#nowarn "1182"`), killing
-/// cache-replay across daemon restarts on every cold scan.
+/// `suppressedCodes` is merged with per-file `#nowarn` directives via
+/// `FcsDiagnosticFilter.allSuppressedCodes` so the gate applies the same filter as the
+/// user-visible error stream in `Daemon.reportFcsDiagnostics`. Without that symmetry the
+/// gate trips on codes the user has already silenced (e.g. FS1182 promoted to Error by
+/// `<TreatWarningsAsErrors>` but suppressed via `#nowarn "1182"`), killing cache-replay
+/// across daemon restarts on every cold scan.
 let internal hasFcsErrors (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : bool =
     match state with
     | FullCheck cr ->
@@ -2465,10 +2286,9 @@ let internal looksLikeSchemaDrift (ex: exn) =
     let msg = ex.Message.ToLowerInvariant()
     msg.Contains("no such column") || msg.Contains("no column named")
 
-/// If `ex` looks like schema drift, delete the cache DB at `dbPath` so the
-/// next run rebuilds from scratch. The cache is derivative and safe to
-/// regenerate; requiring a user to know which file to delete was the trap
-/// this routine exists to close.
+/// If `ex` looks like schema drift, delete the cache DB at `dbPath` so the next run
+/// rebuilds from scratch. The cache is derivative and safe to regenerate, and a user
+/// should never have to know which file to delete.
 let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
     if looksLikeSchemaDrift ex && File.Exists dbPath then
         try
@@ -2510,17 +2330,15 @@ let internal clearFcsCheckCache (repoRoot: string) : int =
 
 /// Build the TestPrune task-cache key for one event, from its three state inputs.
 ///
-/// Every input is a THUNK, and that is load-bearing rather than stylistic.
-/// `FileChecked` is the per-FILE, highest-frequency probe — ONE EVENT PER FILE on
-/// every scan — and it splices NONE of the three. Taking them by value is exactly
-/// how the `dependsOn` hash (a full-repo `SafeWalk` plus a SHA256 of every matched
-/// file) came to be computed once per checked file for a value that arm then threw
-/// away (AUTOMATION-98; the comment defending it claimed "cacheKey runs once per
-/// event, not per file", which is true of BuildCompleted and false of FileChecked).
+/// Every input is a THUNK, and that is load-bearing. `FileChecked` is the per-FILE,
+/// highest-frequency probe — one event per file on every scan — and it uses NONE of the
+/// three. By value, the `dependsOn` hash (a full-repo `SafeWalk` plus a SHA256 of every
+/// matched file) is computed once per checked file for a value that arm discards
+/// (AUTOMATION-98). "cacheKey runs once per event, not per file" is true of
+/// BuildCompleted and false of FileChecked.
 ///
-/// Lifted out of the `create` closure so the property is STRUCTURAL: an arm cannot
-/// pay for an input it does not name, and a test can prove it by counting calls
-/// rather than by reading the code and trusting it.
+/// Lifted out of the `create` closure so the property is STRUCTURAL: an arm cannot pay
+/// for an input it does not name, and a test can prove it by counting calls.
 ///
 /// `pendingQueueHash`/`dependsOnHash` return `None` for "nothing to contribute",
 /// which keeps the corresponding merkle entry OMITTED — the empty-queue,
@@ -2530,19 +2348,13 @@ let internal cacheKeyFor
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
-    // AUTOMATION-112. `Some "full"` while the caller has asked for the whole
-    // suite; `None` for the impact-filtered inner loop.
+    // AUTOMATION-112. `Some "full"` while the caller has asked for the whole suite;
+    // `None` for the impact-filtered inner loop. Without it, `confirm` on an unchanged
+    // tree HITS the entry written by an earlier impact-filtered run and replays a
+    // filtered green as a merge verdict, with no test process ever starting.
     //
-    // Load-bearing: without it, the FIRST thing `confirm` does on an unchanged tree is
-    // HIT the cache entry written by an earlier impact-filtered run and replay its
-    // verdict — a filtered green, laundered into a merge verdict, with no test
-    // process ever starting. That is the whole bug, arrived at by a different road.
-    //
-    // Keeping it `None` (rather than "impact") for the inner loop leaves the ordinary
-    // key byte-identical to the pre-feature one, so existing on-disk caches keep
-    // hitting; only a full-suite request's key differs. A second such run over the same
-    // tree still hits its OWN entry and replays a run that genuinely was full-suite —
-    // sound and fast.
+    // `None` rather than "impact" for the inner loop keeps the ordinary key
+    // byte-identical to the pre-feature one, so existing on-disk caches keep hitting.
     (fullSuiteScopeHash: unit -> string option)
     // AUTOMATION-125. True while a failure no covering run has passed is outstanding.
     // While it is, this plugin does not participate in the task cache AT ALL:
@@ -2557,35 +2369,27 @@ let internal cacheKeyFor
     // empty post-run set, so a genuinely green run is still cacheable, and a run that
     // CLEARS a red merely forgoes one cache write.
     (hasOutstandingFailures: unit -> bool)
-    // AUTOMATION-161. Has a run in THIS PROCESS produced test evidence — i.e. is there
-    // any project this session's `RunCoverage` actually covers?
+    // AUTOMATION-161. Has a run in THIS PROCESS produced test evidence — i.e. does this
+    // session's `RunCoverage` cover any project at all?
     //
-    // A cached BuildCompleted entry ASSERTS a test result. Serving it skips the handler,
-    // so no run happens and no `TestsFinished` lands — which leaves `LastCoverage` empty.
-    // The plugin then answers every consumer that reads its STATE (`test-scope`, and
-    // through it the verdict file) with "NO TESTS RAN", while its status line
-    // simultaneously reports "1 passed (cached)". One run, two surfaces, opposite
-    // answers — and both `check` and `confirm` exit 3 on a tree they were just told is
-    // green.
+    // Serving a cached BuildCompleted skips the handler, so no run happens, no
+    // `TestsFinished` lands, and `LastCoverage` stays empty. Every consumer reading the
+    // plugin's STATE (`test-scope`, and through it the verdict file) then hears "NO TESTS
+    // RAN" while the status line reports "1 passed (cached)" — one run, two surfaces,
+    // opposite answers, and both `check` and `confirm` exit 3.
     //
-    // The key cannot rescue this, because the key does not pin the TREE. On a cold scan
+    // The key cannot rescue this because it does not pin the TREE: on a cold scan
     // `BuildCompleted` is dispatched BEFORE the FCS pass, so `changed-symbols` is empty
-    // whatever the tree contains; two different trees that both build clean with an empty
-    // queue compute the SAME key. What makes the cache sound in a warm daemon is not the
-    // key but the symbol-diff pipeline that runs AFTER it — the entry is a status stamp
-    // that a real run supersedes. Across a PROCESS boundary there is no such run to
-    // supersede it, and minting a full-suite receipt from a key that cannot see the tree
-    // would manufacture merge-grade evidence for a tree nobody tested: the vacuous green,
-    // rebuilt inside the fix for it.
+    // whatever the tree contains, and two different clean-building trees compute the SAME
+    // key. What makes the cache sound in a warm daemon is the symbol-diff pipeline that
+    // runs after it and supersedes the entry; across a process boundary there is no such
+    // run.
     //
-    // So fail closed — no replay AND no write — exactly as a non-empty pending queue and
-    // an outstanding failure already do. This also RESTORES an invariant the plugin
-    // already believed and the cache was quietly defeating: `hasCachedResults` says a
-    // cold start with no session baseline must run the full suite to establish one. A
-    // cache hit skipped the handler that rule lives in, so the baseline was never run.
-    //
-    // The warm-daemon inner loop is untouched: once this session's first run lands, there
-    // IS coverage, and every later BuildCompleted replays as before.
+    // So fail closed — no replay AND no write — as a non-empty pending queue and an
+    // outstanding failure already do. This also restores `hasCachedResults`: a cold start
+    // with no session baseline must run the full suite, and a cache hit skipped the
+    // handler that rule lives in. The warm inner loop is untouched — once this session's
+    // first run lands there IS coverage, and later BuildCompleteds replay as before.
     (sessionHasTestEvidence: unit -> bool)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
@@ -2600,10 +2404,9 @@ let internal cacheKeyFor
     // fires after BuildSucceeded (BuildFailed short-circuits earlier), so
     // outcome="succeeded" is correct for the Custom path.
     //
-    // AUTOMATION-5: salt bumped v1→v2 so any entry written by the prior code (which
-    // cached FAILED test verdicts and could replay them on a now-green tree) can
-    // never match a key computed here. Orphans legacy poison on disk without needing
-    // a manual cache wipe.
+    // The `-v2` salt orphans entries written before AUTOMATION-5, which cached FAILED
+    // verdicts and could replay them on a now-green tree. Bump it again for any change
+    // that makes an old entry unsound, rather than asking users to wipe the cache.
     let outcomeKey (buildOutcome: string) =
         FsHotWatch.TaskCache.merkleCacheKey (
             [ "plugin-version", "test-prune-merkle-v2"
@@ -2617,56 +2420,35 @@ let internal cacheKeyFor
 
     match event with
     | BuildCompleted BuildSucceeded ->
-        // AUTOMATION-95/99. A cache HIT makes the framework replay the cached
-        // terminal status and SKIP the handler entirely (PluginFramework
-        // `tryReplayCache`) — but this handler is a drain trigger for the
-        // pending-verification queue. Replaying a cached verdict while symbols are
-        // still unverified is precisely the "verdict nobody earned" bug: observed
-        // live as `[task-cache] plugin=test-prune hit=true` on a BuildCompleted, no
-        // test run, and `check` green with symbols pending.
+        // A cache HIT replays the cached terminal status and SKIPS the handler
+        // (`PluginFramework.tryReplayCache`) — but this handler is the drain trigger for
+        // the pending-verification queue (AUTOMATION-95/99). The key folds in a queue
+        // hash, but that is read at DISPATCH time and on a scan the queue is mutated
+        // afterwards by the FCS pass, so the key cannot be trusted to notice outstanding
+        // work. `None` refuses the cache entirely — no replay AND no write — so the
+        // handler always runs and always gets its chance to drain.
         //
-        // The key already folds in a queue hash, but that is read at DISPATCH time —
-        // and on a scan the queue is mutated afterwards, by the FCS pass that runs
-        // after the build. So the key cannot be trusted to notice outstanding work.
-        // Refuse to participate in the cache at all while the queue is non-empty:
-        // `None` means no replay AND no write, so the handler always runs and always
-        // gets its chance to drain.
-        //
-        // The empty-queue green fast-path (the case the cache exists for) is untouched.
-        //
-        // An outstanding failure (AUTOMATION-125) refuses participation for the same
-        // reason: replaying a cached green while a failing test has never re-passed IS
-        // the laundered verdict, arrived at through the cache instead of through a
-        // filtered run.
-        //
-        // And a process with NO test evidence of its own (AUTOMATION-161) refuses for the
-        // sharpest version of the same reason: a replay here would have this process
-        // ASSERT a test result while its own state records no run — which is precisely
-        // the split-brain that made `confirm` (and `check`) exit 3 on a warm tree.
+        // The three refusals below are the same rule from three directions; see the
+        // parameter docs. The empty-queue green fast-path is untouched.
         match pendingQueueHash (), hasOutstandingFailures (), sessionHasTestEvidence () with
         | Some _, _, _
         | _, true, _
         | _, _, false -> None
         | None, false, true -> Some(outcomeKey "succeeded")
     | Custom(TestsFinished(_, completed, _)) ->
-        // A FAILED test outcome must never be served from cache as a current
-        // verdict. Unlike BuildPlugin — whose result is a pure
-        // function of its content-merkle inputs, so replaying a cached failure on an
-        // identical tree is correct — a test outcome is NOT pinned by the
-        // changed-symbols merkle: the same key recurs after the tree is fixed (or for
-        // a flaky test), and a cached `Failed` would then replay as a stale red on a
-        // green tree ("green tree read as red"). Field evidence: an 08:35 failure
-        // replayed at 10:19/10:49 and through four deploy-preflights on a `failed: 0`
-        // tree. Returning None here makes a non-passing run UNCACHEABLE, so
-        // `runAndCache` skips the write and the next matching BuildCompleted finds no
-        // poisoned entry and re-runs. A fully-passing run still caches (key matches
-        // BuildSucceeded) and replays cleanly — the desired green fast-path.
+        // A FAILED test outcome must never be served from cache as a current verdict.
+        // Unlike BuildPlugin — whose result is a pure function of its content-merkle
+        // inputs — a test outcome is NOT pinned by the changed-symbols merkle: the same
+        // key recurs after the tree is fixed (or for a flaky test), so a cached `Failed`
+        // replays as a stale red on a green tree. Observed: an 08:35 failure replayed at
+        // 10:19 and 10:49 and through four deploy-preflights on a `failed: 0` tree.
+        // `None` makes a non-passing run UNCACHEABLE, so `runAndCache` skips the write
+        // and the next matching BuildCompleted re-runs.
         //
-        // §3d also requires the queue to be EMPTY for a green to be cacheable: a green
-        // that left symbols queued is not a sound "safe to skip" verdict, so it must
-        // re-run rather than replay. The Aborted-outcome / abort short-circuit is
-        // covered because an aborted run has empty Results that the all-passed check
-        // treats as trivially passing — so we ALSO gate on a non-Aborted outcome here.
+        // A green must ALSO leave the queue empty to be cacheable — a green with symbols
+        // still queued is not a "safe to skip" verdict. And the outcome must be
+        // non-Aborted: an aborted run has empty Results, which the all-passed fold treats
+        // as trivially passing.
         let allPassed = completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r)
 
         let notAborted =
@@ -2675,31 +2457,25 @@ let internal cacheKeyFor
             | Normal -> true
 
         // AUTOMATION-272 — a run that matched NO tests must not mint a cacheable green.
+        // A zero-match project is `TestsNoMatch`, for which `isPassed` is deliberately
+        // TRUE, so the all-passed fold cannot see it and the entry it writes is
+        // replayable: a later BuildCompleted on the same tree hits a green produced by
+        // executing zero tests.
         //
-        // Same blind spot as `allPassed` above, with a longer half-life: a zero-match
-        // project is `TestsNoMatch`, for which `isPassed` is deliberately TRUE, so the
-        // all-passed fold cannot see it, and the entry it writes is REPLAYABLE — a later `BuildCompleted` on the
-        // same tree hits a cached green produced by executing zero tests. The `notAborted`
-        // gate beside this exists for exactly this family (empty results trivially
-        // satisfying an all-passed fold); zero-match is the case it does not cover.
-        //
-        // Deliberately NOT extended to an empty result set: that is the "nothing to
-        // verify" skip, whose cacheability is a separate decision on a separate path.
-        // This changes one thing only — a run where projects ran and matched nothing.
+        // Deliberately NOT extended to an empty result set — that is the "nothing to
+        // verify" skip, decided separately. This covers only a run where projects ran and
+        // matched nothing.
         let allZeroMatchRun = allZeroMatchOf completed.Results
 
-        // AUTOMATION-125 adds the third condition: a run that passed everything IT ran
-        // while an earlier, uncovered failure is still outstanding is NOT green (its
-        // terminal status is a Failed carrying the carried-over red), so it is not a
-        // "safe to skip" verdict and must never be replayed as one.
+        // Third condition (AUTOMATION-125): a run that passed everything IT ran while an
+        // earlier, uncovered failure is outstanding is NOT green — its terminal status is
+        // a Failed carrying the carried-over red.
         //
-        // AUTOMATION-161: this arm is deliberately NOT gated on `sessionHasTestEvidence`.
-        // It is the WRITE — the only thing that mints the entry the next `BuildCompleted`
-        // hits — and it is read at DISPATCH time, when the run this message carries has
-        // not yet been folded into state and there is therefore no evidence to see. The
-        // key it returns is never used for a LOOKUP: the framework does not replay over a
-        // `Custom` message at all (a Custom's payload is not in its key, so a hit there is
-        // a collision, not a proof — see `PluginFramework`'s dispatch loop).
+        // Deliberately NOT gated on `sessionHasTestEvidence`. This arm is the WRITE, read
+        // at DISPATCH time, when the run this message carries has not yet been folded
+        // into state and there is no evidence to see. Its key is never used for a LOOKUP:
+        // the framework does not replay over a `Custom` message at all, since a Custom's
+        // payload is not in its key.
         if
             allPassed
             && notAborted
@@ -2711,16 +2487,15 @@ let internal cacheKeyFor
         else
             None
     | BuildCompleted(BuildFailed errs) ->
-        // Salt bumped v1→v2 in lockstep with the BuildSucceeded key so the two never
-        // split across versions; the pending-queue and dependsOn salts mirror it too
-        // (the same external-input invalidation applies to a failed build).
+        // Shares `outcomeKey` with the BuildSucceeded arm so the salt and the
+        // pending-queue/dependsOn entries can never split across the two.
         Some(outcomeKey ("failed:" + String.concat "|" (List.sort errs)))
     | FileChecked r ->
-        // §1: fcs-signature captures cross-file FCS state so symbol changes upstream
+        // `fcs-signature` captures cross-file FCS state so upstream symbol changes
         // invalidate this file's cached symbol-diff.
         //
         // Note what this arm does NOT read: not the changed symbols, not the pending
-        // queue, not the dependsOn globs. It is a pure function of THIS file. That is
+        // queue, not the dependsOn globs. It is a pure function of THIS file — which is
         // why all three are thunks.
         let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
 
@@ -2756,10 +2531,8 @@ let create
     =
     let db = Database.create dbPath
 
-    // The symbol DB was just recreated (schema bump deleted the old one). The FCS check
-    // cache is now stale: cache-hit files would skip re-checking and never re-flush their
-    // symbols into the empty DB, leaving the graph (and coverage/impact analysis) partial.
-    // Clear it so the next scan re-checks — and re-indexes — every file.
+    // A recreated DB (schema bump) leaves the FCS check cache stale — see
+    // `clearFcsCheckCache`.
     if db.WasRecreated then
         try
             let cleared = clearFcsCheckCache repoRoot
@@ -2823,19 +2596,16 @@ let create
     /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
     /// (see `isPoisonSuspect`).
     ///
-    /// In-memory and per-session on purpose. Persisting it would mean either a second
-    /// sidecar or changing `pending-verification.json`'s shape — and that file's reader
-    /// treats ANY unparseable content as an unknown debt that widens every run to the
-    /// full suite until a green (AUTOMATION-150), so a format change would hand every
-    /// existing checkout one gratuitous full-suite recovery. A diagnostic is not worth
-    /// that. The cost of forgetting on restart is a warning that takes three more cycles
-    /// to re-arm; the incident this guards against ran for days.
+    /// In-memory and per-session on purpose. Persisting it needs either a second sidecar
+    /// or a shape change to `pending-verification.json` — and that file's reader treats
+    /// ANY unparseable content as unknown debt that widens every run to the full suite
+    /// (AUTOMATION-150), so a format change hands every existing checkout one gratuitous
+    /// full-suite recovery. Forgetting on restart costs three cycles of re-arming.
     ///
     /// Same closure-local + `Volatile` shape as `pendingQueueRef`, for the same reason.
     let mutable pendingAgeRef: Map<string, int> = Map.empty
 
-    // Say it out loud. A silent recovery here is how this stayed invisible: the old
-    // code swallowed the corrupt file and reported a green.
+    // Say it out loud — a silent recovery here reads as a green.
     match ledgerUnreadableReason with
     | Some reason ->
         Logging.warn
@@ -2918,52 +2688,38 @@ let create
             Volatile.Write(&pendingQueueRef, updated)
             persistQueue " after commit"
 
-    /// The reds no covering run has passed since (AUTOMATION-125), mirrored out of
-    /// the mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on
-    /// another thread, and so cannot read the state. Same closure-local + `Volatile`
-    /// shape as `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
+    /// The reds no covering run has passed since (AUTOMATION-125), mirrored out of the
+    /// mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on another
+    /// thread, and so cannot read the state. Same closure-local + `Volatile` shape as
+    /// `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
     ///
-    /// While it is non-empty the plugin does not participate in the task cache AT ALL
-    /// (no replay, no write — see `cacheKeyFor`): a cached green must never be served
-    /// while a failing test is outstanding, and a red carried on a status must never be
-    /// written to disk where a later, genuinely-fixed tree could replay it
-    /// (AUTOMATION-5's stale-red-on-a-green-tree, in reverse).
+    /// Non-empty ⇒ no cache participation at all; see `cacheKeyFor`.
     let mutable outstandingFailuresRef: OutstandingFailure list = []
 
     /// What the runs in THIS PROCESS have actually covered (AUTOMATION-161), mirrored out
     /// of the mailbox state for the CACHE-KEY intercept — same closure-local + `Volatile`
-    /// shape as `outstandingFailuresRef`, and for the same reason: the key is computed
-    /// before `Update`, on another thread, so it cannot read the state.
+    /// shape as `outstandingFailuresRef`, and for the same reason.
     ///
-    /// EMPTY means this process holds NO test evidence, and while that is so the plugin
-    /// does not participate in the task cache on `BuildCompleted` at all (no replay, no
-    /// write — see `cacheKeyFor`). A replay would have this process assert a test result
-    /// that its own state has no record of, and every consumer that reads the state —
-    /// `test-scope`, and through it `.fshw/verdict.json` — would go on correctly
-    /// reporting that nothing ran.
-    ///
-    /// An ABORTED run leaves it empty (its launch selection is empty, so it covers
-    /// nothing), which is right: a run that never executed establishes nothing.
+    /// EMPTY ⇒ this process holds NO test evidence, and no cache participation on
+    /// `BuildCompleted`; see `cacheKeyFor`. An ABORTED run leaves it empty (its launch
+    /// selection is empty), which is right: a run that never executed establishes nothing.
     let mutable sessionCoverageRef: RunCoverage = RunCoverage.none
 
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
     /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
-    /// analyzed, which is not the same set as the projects fshw is configured to run.
-    /// A symbol covered ONLY by an unconfigured project (e.g. FsHotWatch's own
-    /// IntegrationTests, which the daemon never runs) can never be proven green: its
-    /// covering project never executes, so it never appears in a run's results, so the
-    /// symbol never commits — and it sits in the pending queue FOREVER, re-selecting
-    /// tests that pass while the verdict stays red. That is a permanently stuck red.
-    ///
-    /// Observed live: two full suites ran and PASSED back-to-back, yet the queue kept
-    /// 2 symbols and `check` exited 1 — because those symbols were covered by
+    /// analyzed, which is not the same set as the projects fshw is configured to run. A
+    /// symbol covered ONLY by an unconfigured project can never be proven green — its
+    /// covering project never executes, so it never appears in a run's results and never
+    /// commits, sitting in the pending queue forever while the verdict stays red.
+    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
+    /// `check` exited 1, because those symbols were covered by
     /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
     ///
-    /// So "covered" must mean "covered by a test we can actually run". A symbol whose
-    /// only covering tests are unrunnable is, for this daemon, indistinguishable from a
-    /// symbol with no covering test at all — and is dropped by the same rule.
+    /// So "covered" means "covered by a test we can actually run". A symbol whose only
+    /// covering tests are unrunnable is dropped by the same rule as one with no covering
+    /// test at all.
     let runnableProjects: Set<string> =
         match testConfigs with
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
@@ -3083,45 +2839,39 @@ let create
 
                 // AUTOMATION-275 — the poisoned-seed guard.
                 //
-                // The per-seed attribution below answers "is one seed dominating THIS
-                // run?", which is a question about a moment. The failure that actually
-                // happened was a question about TIME: `name` and `kind` dominated every
-                // run, for an unknown number of days, and each individual run looked
-                // like a legitimately expensive edit. Width alone could not tell them
-                // apart; only width that PERSISTS can.
+                // The per-seed attribution below asks "is one seed dominating THIS run?",
+                // a question about a moment. The failure that happened was about TIME:
+                // `name` and `kind` dominated every run for days, and each run looked
+                // like a legitimately expensive edit. Only width that PERSISTS separates
+                // them.
                 //
-                // This only READS the ages; they advance once per test RUN, at the
-                // launch point (see `pendingAgeRef`). The first version bumped them
-                // here, which was wrong in a way worth recording: this function is
-                // called 2-3 times per edit-save cycle (BatchChecked, BuildSucceeded,
-                // and the rerun path), so the counter measured FLUSHES while both the
-                // constant and the warning text said "runs". Editing one function twice
-                // on a fully green repo reached the threshold — so a guard whose whole
-                // design note was "fire late, because a warning that cries wolf during
-                // an ordinary red-to-green cycle gets tuned out" would have cried wolf
-                // during ordinary green development, and paid a graph query per seed to
-                // do it. Note this is independent of `WideSelectionTests` — a seed
-                // pinning 200 tests of a 400-test suite is the same disease as one
-                // pinning 3,000, and gating on absolute width would miss every smaller
-                // repo.
+                // This only READS the ages — they advance once per test RUN, at the
+                // launch point (see `pendingAgeRef`). Do not bump them here: this
+                // function runs 2-3 times per edit-save cycle, so the counter would
+                // measure flushes, and two edits to one function on a green repo would
+                // trip a guard designed to fire late.
+                //
+                // Independent of `WideSelectionTests`: a seed pinning 200 tests of a
+                // 400-test suite is the same disease as one pinning 3,000, and gating on
+                // absolute width would miss every smaller repo.
                 let ages = Volatile.Read(&pendingAgeRef)
 
                 let ageOf s =
                     ages |> Map.tryFind s |> Option.defaultValue 0
 
-                // Each check below is a full recursive reverse-walk, so both the number
-                // of them and the reason to run at all are gated:
+                // Each check below is a full recursive reverse-walk, so both the count and
+                // the decision to run at all are gated:
                 //
                 //  * an EMPTY selection can never yield a suspect (`isPoisonSuspect`
-                //    requires `affectedCount > 0`), so the whole loop is skipped — free,
-                //    and it is the common case on a no-op cycle;
-                //  * the same `MaxSeedsToAttribute` budget the attribution loop below
-                //    uses. `agedSeeds` grows precisely when the queue is wedged, which is
-                //    the situation this guard exists to REPORT — so an unbudgeted loop
-                //    would pay N graph walks per build exactly when the daemon is already
-                //    struggling. A suspect must account for >=25% of the selection, so at
-                //    most four seeds can ever qualify; a large aged list is waste by
-                //    construction. As next door, the cap is never silent.
+                //    requires `affectedCount > 0`), so the loop is skipped — the common
+                //    case on a no-op cycle;
+                //  * the same `MaxSeedsToAttribute` budget the attribution loop uses.
+                //    `agedSeeds` grows precisely when the queue is wedged — the situation
+                //    this guard exists to report — so an unbudgeted loop would pay N graph
+                //    walks per build exactly when the daemon is already struggling. A
+                //    suspect must account for >=25% of the selection, so at most four
+                //    seeds can qualify and a large aged list is waste by construction.
+                //    The cap is never silent.
                 let agedSeeds = sortedSeeds |> List.filter (fun s -> ageOf s >= PoisonSeedRuns)
 
                 if not affected.IsEmpty && agedSeeds.Length > MaxSeedsToAttribute then
@@ -3143,11 +2893,9 @@ let create
                     if isPoisonSuspect runs affected.Length alone then
                         let pct = alone * 100 / (max 1 affected.Length)
 
-                        // Named, counted, and told what to do about it. This is
-                        // deliberately a WARNING and not a quarantine: dropping the
-                        // symbol would be under-testing on a guess, and the honest
-                        // failure here is that nobody could SEE the pattern, not that
-                        // nothing could be done about it once seen.
+                        // Deliberately a WARNING and not a quarantine: dropping the
+                        // symbol would be under-testing on a guess. The failure this
+                        // addresses is that nobody could SEE the pattern.
                         Logging.warn
                             "test-prune"
                             $"POSSIBLE POISONED SEED: '%s{seed}' has been queued for verification across \
@@ -3172,11 +2920,9 @@ let create
                             $"%d{affected.Length} tests selected, but %d{sortedSeeds.Length} seeds exceeds the \
                               %d{MaxSeedsToAttribute}-seed attribution budget — per-seed breakdown SKIPPED"
                     else
-                        // Derived from the same constant `isPoisonSuspect` uses, not a
-                        // second spelling of it. As `/ 4` beside a `25` kept in step by
-                        // comment they had already drifted: at 1000 affected and 250
-                        // alone the poison check fired (`>=`) and this one did not
-                        // (`>`), which the constant's own doc says cannot happen.
+                        // Derived from the same constant `isPoisonSuspect` uses, never a
+                        // second spelling of it: a `/ 4` here beside a `25` there drifts,
+                        // and the two diagnostics then disagree about "dominant".
                         let dominantShare = affected.Length * PoisonSeedSharePercent / 100
 
                         for seed in sortedSeeds do
@@ -3219,67 +2965,33 @@ let create
             flushedState.ChangedSymbols
             |> List.filter (fun s -> not (Set.contains s uncovered))
 
-        // There WERE symbols to consider this cycle, yet the affected set is
-        // empty — so every one of them was just dropped as uncovered (a union
-        // query returning zero tests means every per-symbol query did too). That
-        // is a definitive "nothing to verify" green: nothing that changed is
-        // testable, so a run would prove nothing. The run-trigger reads this to
-        // complete green immediately instead of running the full suite (see
-        // runTestsWithImpact's zero-affected skip). An EMPTY `symbols` (genuine
-        // cold start, nothing pending) leaves this false so the baseline still runs.
+        // There WERE symbols to consider this cycle, yet the affected set is empty — so
+        // every one of them was just dropped as uncovered (a union query returning zero
+        // tests means every per-symbol query did too). That is a definitive "nothing to
+        // verify" green, which the run-trigger reads to complete immediately instead of
+        // running the full suite. An EMPTY `symbols` (genuine cold start, nothing
+        // pending) leaves this false so the baseline still runs.
         //
-        // AUTOMATION-275 — `not db.WasRecreated` is the third conjunct, and it is
-        // about what an empty query result is ALLOWED TO MEAN.
+        // AUTOMATION-275. The flag buys a green that executes NOTHING, so it must rest
+        // on proof — and an empty `QueryAffectedTests` proves "no test covers this" only
+        // for a symbol the index KNOWS. For a name it has never heard of, the identical
+        // empty result means "I cannot answer". So ask the index what it KNOWS
+        // (`unknownToIndex`), never how it came to be in that state.
         //
-        // This flag buys a green that executes NOTHING, so it must rest on proof.
-        // `QueryAffectedTests` returning empty proves "no test covers this symbol"
-        // only for a symbol the index KNOWS. For a name the index has never heard
-        // of, the identical empty result means "I cannot answer" — and the two are
-        // indistinguishable at the call site.
+        // The two files drift apart in practice: a `SchemaVersion` bump deletes and
+        // recreates `test-impact.db`, but the pending-verification sidecar beside it
+        // carries no version and SURVIVES. Every name in the queue then resolves to
+        // nothing, is dropped just above as "no runnable covering test", and the cycle
+        // completes GREEN with ZERO tests run — the debt discharged by the schema bump
+        // rather than by a test. A stale queue entry naming a since-renamed symbol takes
+        // the same route with no recreate involved.
         //
-        // A `SchemaVersion` bump makes that difference load-bearing. TestPrune
-        // deletes and recreates `test-impact.db` on schema drift (`TestPrune.Database`:
-        // "A mismatch causes the database file to be deleted and recreated"), but
-        // the pending-verification sidecar beside it carries no version and SURVIVES.
-        // Every name in that queue then resolves to nothing, is dropped just above as
-        // "no runnable covering test", and this flag went true — completing the cycle
-        // GREEN with ZERO tests run. The debt was discharged by the schema bump, not
-        // by a test. Observed end-to-end: a symbol indexed WITH a covering test, queued
-        // unverified, then orphaned by a recreate, produced
-        // "Every changed symbol has no covering test — nothing to verify (green, 0 ran)".
+        // The symbols are still dropped from the queue above, so a permanently-absent
+        // name cannot wedge it; the run happens once and discharges the debt.
         //
-        // A recreated index cannot vouch for anything the queue names, so it may not
-        // license the shortcut. The symbols are still dropped from the queue above —
-        // that is what stops a permanently-absent symbol wedging it — but the run now
-        // actually happens, and it is the run that discharges the debt. Erring toward
-        // running is the only direction `PendingVerification`'s header permits.
-        //
-        // Ask the index the question directly, rather than the proxy this first used.
-        //
-        // The proxy was `db.WasRecreated` — "was the index rebuilt this session?" — and
-        // it was wrong in both directions. Over-inclusive: it stays true for the whole
-        // session, so the shortcut remained disabled long after a re-index had made the
-        // index perfectly able to answer. Under-inclusive, and this is the one that
-        // matters: a symbol unknown to a NOT-recreated index — a stale queue entry
-        // naming a symbol since deleted or renamed — took exactly the vacuous-green
-        // route the recreate case was fixed to close. Same bug, different door.
-        //
-        // What licenses the shortcut is not how the index came to be in this state, but
-        // whether it KNOWS the names being asked about. For a known symbol, an empty
-        // `QueryAffectedTests` is proof: nothing covers it. For an unknown one the same
-        // empty result means "I have never heard of this", which proves nothing and may
-        // be concealing real debt.
-        //
-        // Cost is paid only where it can change the answer: `GetAllSymbolNames` is a
-        // full read of the `symbols` table, so it is behind `noCoveringTest`, which is
-        // already the rare branch (queued symbols AND a zero-length selection). On the
-        // ordinary path — anything affected — the index is never consulted.
-        //
-        // This subsumes the recreate case rather than sitting beside it: a recreated
-        // index is empty, so every queued name is unknown and the shortcut is refused
-        // exactly as before. The symbols are still dropped from the queue above, so a
-        // permanently-absent name cannot wedge it; the run happens once and discharges
-        // the debt.
+        // `GetAllSymbolNames` is a full read of the `symbols` table, so it sits behind
+        // `noCoveringTest` — already the rare branch (queued symbols AND a zero-length
+        // selection). On the ordinary path the index is never consulted.
         let noCoveringTest = not symbols.IsEmpty && List.isEmpty affectedTests
 
         let unknownToIndex =
@@ -3311,15 +3023,13 @@ let create
     // before Update) sees the symbols accumulated from prior FileChecked events.
     let mutable changedSymbolsRef: string list = []
 
-    // Per-file FCS freshness sidecar (Path D in the 0.10 fix-forward design).
-    // Loaded once at plugin construction from `.fshw/test-prune/file-freshness.json`
-    // and updated incrementally on each FileChecked. Survives daemon restarts
-    // so cross-restart Phase B replay can decide which files' stored symbols
-    // are trustworthy enough to run detectChanges against.
+    // Per-file FCS freshness sidecar, loaded once at plugin construction from
+    // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
+    // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
+    // files' stored symbols are trustworthy enough to run detectChanges against.
     //
-    // Held in a closure-local mutable cell + Volatile for the same reason
-    // changedSymbolsRef is — the plugin Update handler reads/writes from
-    // multiple threads (mailbox + cache intercept).
+    // Closure-local mutable cell + Volatile for the same reason `changedSymbolsRef` is:
+    // the Update handler and the cache intercept read/write it from different threads.
     let mutable freshnessRef: FileFreshness.Store = FileFreshness.load repoRoot
 
     let updateFreshness (newStore: FileFreshness.Store) =
@@ -3335,12 +3045,10 @@ let create
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
-    // Seed the in-memory hot view from the durable queue so a restart with a
-    // non-empty queue re-flags those symbols: the first flushAndQueryAffected
-    // (on cold-scan BatchChecked) then queries them and the next run re-tests
-    // anything not yet proven green. Without this, a restart would diff current
-    // symbols against the already-advanced analysis snapshot → "nothing changed"
-    // → zero tests run → false green (hole #3).
+    // Seed the in-memory hot view from the durable queue so a restart with a non-empty
+    // queue re-flags those symbols. Without this, a restart diffs current symbols against
+    // the already-advanced analysis snapshot → "nothing changed" → zero tests run → false
+    // green.
     let initialState =
         { PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
@@ -3364,13 +3072,12 @@ let create
     // very first event (the cache intercept runs before any Update handler).
     Volatile.Write(&changedSymbolsRef, initialState.ChangedSymbols)
 
-    /// Returns the `TestsFinished` message that the framework's RunExclusive
-    /// will post back to the agent. The synchronous `Custom(TestsFinished)`
-    /// handler emits the `TestRunStarted`/`TestRunCompleted` events inside
-    /// the §2a cache-write capture window. Catches its own exceptions to
-    /// produce an `Aborted` lifecycle rather than letting RunExclusive eat
-    /// the message (which would leave the slot freed but no completion
-    /// posted, stranding `LastResults`/`PendingRerun` in a Schrödinger state).
+    /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
+    /// agent; the synchronous `Custom(TestsFinished)` handler emits the
+    /// `TestRunStarted`/`TestRunCompleted` events inside the cache-write capture window.
+    /// Catches its own exceptions to produce an `Aborted` lifecycle — letting RunExclusive
+    /// eat the message would free the slot with no completion posted, stranding
+    /// `LastResults`/`PendingRerun`.
     let runTestsWithImpact
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
@@ -3447,13 +3154,9 @@ let create
             // these symbols and leaves mid-run arrivals queued for the rerun.
             let launchedSymbols = Set.union pendingQueueRef (Set.ofList inputs.ChangedSymbols)
 
-            // AUTOMATION-275 — advance the poisoned-seed counters HERE, not in
-            // `flushAndQueryAffected`. This is the point at which a test RUN is
-            // launched, and `launchedSymbols` is exactly the set that run is meant to
-            // verify — so a count taken here means what `PoisonSeedRuns` and the
-            // warning text both claim: consecutive RUNS a symbol has survived without
-            // being verified. Counting per flush instead measured 2-3 ticks per
-            // edit-save cycle and reached the threshold during ordinary green work.
+            // AUTOMATION-275 — advance the poisoned-seed counters HERE, at the launch of
+            // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
+            // claim. `flushAndQueryAffected` runs several times per edit-save cycle.
             Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) (Set.toList launchedSymbols))
 
             try
@@ -3540,43 +3243,30 @@ let create
                 // also checks `forceRunProjects` is empty.
                 let totalClasses = symbolAffectedByProject |> Map.values |> Seq.sumBy List.length
 
-                // Two independent routes to the degenerate zero-affected skip —
-                // BOTH terminate as a clean green (0 ran) via the same lifecycle,
-                // distinguishable from "tests exist and all passed" only in that
-                // zero ran:
+                // Two independent routes to the degenerate zero-affected skip. Both
+                // terminate as a clean green via the same lifecycle, differing from
+                // "tests exist and all passed" only in that zero ran:
                 //
-                //  (1) Baseline-equivalent (§3c). PERSISTED queue empty AND a
-                //      session baseline exists (`hasCachedResults`). Empty queue =
-                //      "test-equivalent to the last green run", so "0 affected
-                //      tests" is a sound green. The queue-empty check is
-                //      load-bearing: a NON-empty queue with 0 affected classes
-                //      (covered symbols whose tests aren't indexed yet, etc.) must
-                //      run the suite rather than silent-green. `hasCachedResults`
-                //      is the cold-start guard: the very first run of a session
-                //      (no baseline yet, e.g. a genuine cold check with nothing
-                //      pending) must run the full suite to ESTABLISH the green
-                //      baseline the empty queue is then equivalent to.
+                //  (1) Baseline-equivalent. Queue PROVABLY empty AND a session baseline
+                //      exists. An empty queue means "test-equivalent to the last green
+                //      run", so "0 affected tests" is a sound green. Both halves are
+                //      load-bearing: a NON-empty queue with 0 affected classes (covered
+                //      symbols whose tests aren't indexed yet) must run the suite rather
+                //      than silent-green, and the first run of a session has no baseline
+                //      to be equivalent TO, so it must run the full suite to establish
+                //      one. Reads `nothingOwed`, not `Set.isEmpty` — an unreadable ledger
+                //      owes an unknown debt and can never be baseline-equivalent
+                //      (AUTOMATION-150).
                 //
-                //  (2) Nothing-to-verify (AUTOMATION-65 QA). This cycle HAD
-                //      changed/queued symbols and EVERY one proved to have no
-                //      covering test (`ChangedSymbolsAllUncovered`, set by
-                //      flushAndQueryAffected as it dropped them). No test covers
-                //      any of them, so a run — even the cold-start full suite —
-                //      would verify nothing about them: the honest outcome is a
-                //      "nothing to verify" green NOW. This is sound WITHOUT a
-                //      session baseline (unlike route 1) precisely because it is
-                //      gated on symbols having existed and provably lacking any
-                //      test, not on an absent-pending inference. It rescues the
-                //      wedge where an all-uncovered cold run would otherwise fall
-                //      through to the full suite and hang, never resolving
-                //      WaitForComplete. A genuine cold start with NO pending
-                //      symbols leaves the flag false, so the baseline still runs.
-                //      AUTOMATION-150: "empty queue" must mean PROVABLY empty, so this
-                //      reads `nothingOwed` rather than `Set.isEmpty` — an unreadable
-                //      ledger owes an unknown debt and can never be baseline-equivalent.
-                //      (The `nothingToVerify` route cannot fire under an unreadable
-                //      ledger either: it requires `Set.isEmpty forceRunProjects`, and
-                //      the widening above has just forced every configured project.)
+                //  (2) Nothing-to-verify. This cycle HAD changed/queued symbols and every
+                //      one proved to have no covering test (`ChangedSymbolsAllUncovered`,
+                //      set by `flushAndQueryAffected` as it dropped them), so even a
+                //      cold-start full suite would verify nothing about them. Sound
+                //      WITHOUT a session baseline, unlike route 1, because it is gated on
+                //      symbols having existed and provably lacking any test. Without it
+                //      an all-uncovered cold run falls through to the full suite and
+                //      hangs, never resolving WaitForComplete. A genuine cold start with
+                //      NO pending symbols leaves the flag false, so the baseline runs.
                 let baselineEquivalent = nothingOwed () && hasCachedResults
 
                 let nothingToVerify = inputs.ChangedSymbolsAllUncovered
@@ -3611,11 +3301,9 @@ let create
                           Outcome = Normal
                           Results = Map.empty
                           // Impact analysis selected no project, so none was invoked
-                          // — the same honest statement the aborted lifecycle makes,
-                          // and it now IS a statement rather than the less harmful of
-                          // two lies (AUTOMATION-282). This one is `Normal`, so it
-                          // reaches every consumer that filters on `Outcome`, which
-                          // is why it was the more exposed of the two.
+                          // (AUTOMATION-282). Stated rather than inferred, and the
+                          // outcome is `Normal`, so it reaches consumers that filter
+                          // on `Outcome`.
                           Verification = NoProjectsSelected }
 
                     // The skip EXECUTES NOTHING, so it covers nothing and may clear
@@ -3629,15 +3317,11 @@ let create
                         Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
-                            // Two defects, one line. (1) BREADTH is the measurement
-                            // this line exists to provide, and `%A` capped it at 100 —
-                            // a 1,500-class blowout read identically to a 100-class
-                            // one. `describeMany` leads with the exact count.
-                            // (2) An EMPTY list here does not mean "nothing selected";
-                            // it means the project runs UNFILTERED — every class,
-                            // force-run. Printing that as `[]` said the precise
-                            // opposite of what it means, so the widest possible run
-                            // rendered as the narrowest. Say it in words instead.
+                            // Never `%A` here: it caps the list at 100, so a
+                            // 1,500-class blowout reads like a 100-class one, and it
+                            // renders an EMPTY list as `[]` — which here means the
+                            // project runs UNFILTERED, the exact opposite of "nothing
+                            // selected". `describeMany` leads with the exact count.
                             let rendered =
                                 if List.isEmpty classes then
                                     "ALL (unfiltered — force-run)"
@@ -3646,12 +3330,9 @@ let create
 
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %s{rendered}"
 
-                    // Run-level selectivity, in ONE line. The per-project lines above
-                    // can be scrolled past, interleaved, or truncated by whatever is
-                    // reading the log; this is the single line that answers "did
-                    // impact analysis actually narrow anything this run?" — and it
-                    // separates the two ways a run can be wide: many classes named,
-                    // versus projects running unfiltered.
+                    // Run-level selectivity in ONE line, since the per-project lines
+                    // above can be interleaved or truncated. Separates the two ways a
+                    // run can be wide: many classes named, versus projects unfiltered.
                     let unfilteredProjects =
                         affectedByProject |> Map.filter (fun _ cs -> List.isEmpty cs) |> Map.count
 
@@ -3673,9 +3354,9 @@ let create
                             affectedByProject
                             None
 
-                    // executeTests still emits per-group TestProgress live; the
-                    // synchronous handler emits Started + Completed for the
-                    // §2a cache-write capture window.
+                    // `executeTests` still emits per-group TestProgress live; the
+                    // synchronous handler emits Started + Completed inside the
+                    // cache-write capture window.
                     ignore results
                     return TestsFinished(started, completed, launch)
             with ex ->
@@ -3883,11 +3564,11 @@ let create
                         // requested: `set-scope full` is a request, this is the receipt.
                         // A run still in flight reports `running`, which `confirm` treats
                         // as "no verdict yet" rather than as a scope.
-                        // The reply carries the RUN ID as well as the scope, so the CLI
-                        // can DECLARE which CTRF reports belong to this run
-                        // (`.fshw/test-runs/<runId>/`) rather than inferring membership
-                        // from mtimes. A pile you have to date-sort is a pile you have to
-                        // do forensics on.
+                        //
+                        // The reply carries the RUN ID as well, so the CLI can DECLARE
+                        // which CTRF reports belong to this run
+                        // (`.fshw/test-runs/<runId>/`) instead of inferring membership
+                        // from mtimes.
                         let runId =
                             match state.LastRunId with
                             | Some id -> box (id.ToString("N"))
@@ -3932,23 +3613,14 @@ let create
                 fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
                         // FORCE semantics: `test-rerun` is the explicit "prove it
-                        // ran" verb. The run NEVER executes here (AUTOMATION-99):
-                        // executing on the IPC thread bypassed the `RunExclusive
-                        // "tests"` slot entirely, so for the whole duration of a
-                        // force-run the daemon model read "at rest" — no Running
-                        // status, `IsRunning "tests"` false (a concurrent
-                        // FileChecked stamped a terminal over the live run),
-                        // `AnyPluginBusy()` false — and a concurrent `fshw check`
-                        // exited 0 while the test process was literally alive.
-                        // `CommandCtx` has since made that unwritable: a command
-                        // can only `Post`. The mailbox handler claims the slot
-                        // (the framework reports Running at the claim) or QUEUES
-                        // the run behind the one in flight — a force-run is owed
-                        // work, never refused. The only thing bounded here is the
-                        // WAIT: `waitSec` (CLI `--wait-sec`) caps queue time plus
-                        // run time, and on expiry the command reports a DISTINCT
-                        // `busy` status — the CLI exits non-zero, never a verdict
-                        // the run didn't produce (AUTOMATION-98: bound every seam).
+                        // ran" verb. The run NEVER executes here — it is posted to
+                        // the mailbox, which claims the `RunExclusive "tests"` slot
+                        // or QUEUES behind the run in flight (see
+                        // `RunTestsRequested`). A force-run is owed work, never
+                        // refused. The only thing bounded here is the WAIT:
+                        // `waitSec` caps queue time plus run time, and on expiry
+                        // this reports a DISTINCT `busy` status so the CLI exits
+                        // non-zero rather than reporting a verdict no run produced.
                         try
                             let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
                             let waitForResultMs = parseRunTestsWaitMs argStr DefaultRunTestsWaitMs
@@ -4099,28 +3771,24 @@ let create
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
-                    // AUTOMATION-113: the ONE treatment for a file whose symbol
-                    // analysis failed (an `analyzeSource` Error and a handler
-                    // fault are the same condition arrived at differently). The
-                    // file is REMEMBERED as unanalysable — three consequences,
-                    // none silent:
-                    //   1. a WARNING lands in the error ledger, keyed to the
-                    //      file, so `fshw check` prints it and (under the
-                    //      default warn-fail policy) refuses a green verdict;
-                    //   2. `runTestsWithImpact` falls back to EVERY test project
-                    //      in full while the set is non-empty — safe
-                    //      over-selection instead of a selection made without
-                    //      the file;
-                    //   3. the non-empty force-run set also disables the
-                    //      zero-affected skip gate, so this can never terminate
-                    //      as "0 affected — green, 0 ran".
+                    // AUTOMATION-113: the ONE treatment for a file whose symbol analysis
+                    // failed (an `analyzeSource` Error and a handler fault are the same
+                    // condition). The file is REMEMBERED as unanalysable, with three
+                    // consequences, none silent:
+                    //   1. a WARNING lands in the error ledger, keyed to the file, so
+                    //      `fshw check` prints it and — under the default warn-fail
+                    //      policy — refuses a green verdict;
+                    //   2. `runTestsWithImpact` falls back to EVERY test project in full
+                    //      while the set is non-empty;
+                    //   3. the non-empty force-run set disables the zero-affected skip
+                    //      gate, so this can never end as "0 affected — green, 0 ran".
                     // The file leaves the set the moment it analyses cleanly.
-                    // The Failed stamp needs no idle guard here: the framework's
-                    // ReportStatus funnel drops any terminal stamped while an
-                    // exclusive run is in flight (the run owns the status), so a
-                    // mid-run analysis failure can never manufacture a terminal
-                    // — the ledger entry and the force-full-suite consequence
-                    // persist either way.
+                    //
+                    // The Failed stamp needs no idle guard: the framework's ReportStatus
+                    // funnel drops any terminal stamped while an exclusive run is in
+                    // flight (the run owns the status), so a mid-run analysis failure
+                    // cannot manufacture a terminal. The ledger entry and the
+                    // force-full-suite consequence persist either way.
                     let markUnanalysable (reason: string) (detail: string) (logDetail: string) : TestPruneState =
                         Logging.error
                             "test-prune"
@@ -4159,15 +3827,12 @@ let create
                             else
                                 raw
 
-                        // Path D — fshw-owned per-file freshness sidecar gates the
-                        // detectChanges call site. The F38 "withhold the symbol-DB
-                        // write entirely" branch is gone: dirty FCS results no
-                        // longer block persistence (cold-scan rows still go in).
-                        // Instead the sidecar records `fcsClean = false` for the
-                        // file so cross-restart Phase B replay treats those rows
-                        // as untrusted-for-diff. The next clean recheck will both
-                        // overwrite the rows with good extractions and flip the
-                        // sidecar back to clean.
+                        // The per-file freshness sidecar gates the `detectChanges` call
+                        // site, not the symbol-DB write: dirty FCS results are still
+                        // persisted (cold-scan rows must go in), and the sidecar records
+                        // `fcsClean = false` so a cross-restart replay treats those rows
+                        // as untrusted-for-diff. The next clean recheck overwrites the
+                        // rows and flips the sidecar back.
                         let currentClean =
                             not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
 
@@ -4224,36 +3889,30 @@ let create
                                 state.PendingAnalysis
                                 |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
 
-                            // Path D gate: decide whether the stored rows can be
-                            // diffed against. Requires the CURRENT extraction to be
-                            // FCS-clean (a dirty current result means the
-                            // just-extracted symbols are themselves suspect). Given
-                            // that, the STORED side is trusted per FileFreshness.classify:
+                            // Can the stored rows be diffed against? The CURRENT
+                            // extraction must be FCS-clean (a dirty current result means
+                            // the just-extracted symbols are themselves suspect); given
+                            // that, the STORED side is trusted per
+                            // `FileFreshness.classify`:
                             //
                             //   Clean   — explicit clean stamp → diff.
-                            //   Unknown — NO sidecar record. Over a NON-EMPTY stored
-                            //             row set this is a seeded test-impact.db
-                            //             (ADR-010) whose freshness sidecar didn't
-                            //             travel into this fresh workspace. ADR-010
-                            //             guarantees a seeded DB over-indexes but
-                            //             never serves a stale verdict, so DIFF the
-                            //             seeded rows: unchanged files find no
-                            //             changes, edited files find the real delta
-                            //             and select their covering tests. Bypassing
-                            //             here (the pre-AUTOMATION-67 behaviour)
-                            //             silently UNDER-selected — a real edit in a
-                            //             seeded workspace ran zero tests → vacuous
-                            //             green. Gated on stored rows existing: an
-                            //             EMPTY stored set is a genuine cold scan
-                            //             (empty DB) with no baseline to diff, which
-                            //             stays no-diff so it doesn't select the
-                            //             whole suite.
-                            //   Dirty   — explicit `fcsClean = false` stamp: the
-                            //             stored rows were written during an FCS-error
-                            //             extraction and may be PARTIAL. Diffing
-                            //             against them yields a phantom "all symbols
-                            //             changed" delta (the 4921-affected-tests
-                            //             Phase B regression). Bypass.
+                            //   Unknown — NO sidecar record. Over a NON-EMPTY stored row
+                            //             set this is a seeded test-impact.db (ADR-010)
+                            //             whose sidecar did not travel into this fresh
+                            //             workspace. ADR-010 guarantees a seeded DB
+                            //             over-indexes but never serves a stale verdict,
+                            //             so DIFF the seeded rows — bypassing here
+                            //             silently UNDER-selects, and a real edit in a
+                            //             seeded workspace then runs zero tests. Gated on
+                            //             stored rows existing: an EMPTY stored set is a
+                            //             genuine cold scan with no baseline to diff, and
+                            //             stays no-diff so it doesn't select the whole
+                            //             suite.
+                            //   Dirty   — explicit `fcsClean = false`: the stored rows
+                            //             were written during an FCS-error extraction and
+                            //             may be PARTIAL. Diffing against them yields a
+                            //             phantom "all symbols changed" delta (measured
+                            //             once at 4,921 affected tests). Bypass.
                             let storedTrustedForDiff =
                                 match storedFreshness with
                                 | FileFreshness.Clean -> true
@@ -4281,13 +3940,10 @@ let create
 
                             let newChangedSymbols =
                                 if not changedNames.IsEmpty then
-                                    // These are the symbols fed straight into
-                                    // `enqueuePending`, so this line is the primary
-                                    // evidence when diagnosing over- or
-                                    // under-selection (see the phantom
-                                    // all-symbols-changed regression noted above).
-                                    // It previously carried NO count at all and
-                                    // capped the list at 100.
+                                    // These feed straight into `enqueuePending`, so this
+                                    // line is the primary evidence when diagnosing over-
+                                    // or under-selection. `describeMany`, not `%A` —
+                                    // the count must be exact and uncapped.
                                     Logging.info "test-prune" $"Changed symbols: %s{describeMany changedNames}"
 
                                     // Write-through to the durable needs-testing queue at the
@@ -4317,11 +3973,10 @@ let create
                                 fileAnalysis.TestMethods
                                 |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
 
-                            // AffectedTests is no longer eagerly populated here. The
-                            // `affected-tests` IPC command computes it on demand from
-                            // state.ChangedSymbols against the current DB. AffectedTests
-                            // is set exclusively by flushAndQueryAffected on BuildCompleted
-                            // and consumed by runTestsWithImpact.
+                            // `AffectedTests` is set exclusively by `flushAndQueryAffected`
+                            // on BuildCompleted and consumed by `runTestsWithImpact`; the
+                            // `affected-tests` IPC command computes its own answer on
+                            // demand from `ChangedSymbols` against the current DB.
                             let newState =
                                 { state with
                                     ChangedFiles = newChangedFiles
@@ -4342,19 +3997,12 @@ let create
                             Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
 
                             // Stamp the freshness sidecar with the result of THIS check.
-                            // Done after analysis (rather than at the very top) so a
-                            // failed `analyzeSource` doesn't lock in a clean stamp for
-                            // a file we have no symbols for.
-                            //
-                            // Item 3 gate: only `markClean` if we've observed a
-                            // BuildCompleted in this session AND the current FCS
-                            // result is clean. fshw's pipeline guarantees
-                            // BuildCompleted reaches the mailbox before any
-                            // FileChecked on a cold scan, so post-build clean
-                            // stamps fire on the very first session — no
-                            // two-session warm-up required. Otherwise
-                            // `markUnverified` (won't downgrade a previously-clean
-                            // entry to dirty — see FileFreshness.markUnverified).
+                            // After analysis, not at the top, so a failed `analyzeSource`
+                            // cannot lock in a clean stamp for a file we have no symbols
+                            // for. `markClean` only with a BuildCompleted this session
+                            // (see `BuildCompletedInThisSession`) AND a clean FCS result;
+                            // otherwise `markUnverified`, which will not downgrade a
+                            // previously-clean entry to dirty.
                             let now = DateTime.UtcNow
 
                             let updatedFreshness =
@@ -4367,11 +4015,7 @@ let create
 
                             updateFreshness updatedFreshness
 
-                            // AUTOMATION-99: no per-plugin idle guard — the framework's
-                            // ReportStatus funnel drops any terminal stamped while an
-                            // exclusive run is in flight (the run OWNS the status;
-                            // TestsFinished delivers the earned verdict). Universal
-                            // property, not a convention this handler must remember.
+                            // No per-plugin idle guard needed; see `markUnanalysable`.
                             let analysisFinished = DateTime.UtcNow
 
                             ctx.ReportStatus(
@@ -4394,34 +4038,24 @@ let create
                             return markUnanalysable "Analysis failed" msg msg
 
                     with ex ->
-                        // F10 ∩ AUTOMATION-99/113: a fault ANYWHERE in this handler
-                        // (not just an `analyzeSource` Error) leaves the file
-                        // unanalysed — the SAME condition as an analysis failure,
-                        // so it gets the SAME treatment (`markUnanalysable`).
+                        // A fault ANYWHERE in this handler — not just an `analyzeSource`
+                        // Error — leaves the file unanalysed, the same condition and so
+                        // the same treatment.
                         return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
 
                 | PluginEvent.BatchChecked _ ->
-                    // Cohort-complete flush. Per-file accumulation already
-                    // happened in the FileChecked handler; by the time we get
-                    // here every FileChecked from this cohort has been folded
-                    // into state.ChangedSymbols / state.PendingAnalysis
-                    // (mailbox is FIFO and the daemon emits BatchChecked
-                    // strictly after the last FileChecked).
+                    // Cohort-complete flush. The mailbox is FIFO and the daemon emits
+                    // BatchChecked strictly after the last FileChecked, so every
+                    // FileChecked from this cohort is already folded into
+                    // `ChangedSymbols`/`PendingAnalysis` by now.
                     //
-                    // We persist PendingAnalysis to the DB here — this is the
-                    // canonical persistence point, NOT BuildCompleted. On a
-                    // cold scan, performScan awaits BuildPlugin terminal
-                    // BEFORE running FCS tier checks (Daemon.fs:1195) so
-                    // BuildCompleted reaches the TestPrune mailbox BEFORE any
-                    // FileChecked. If the flush only ran on BuildCompleted, it
-                    // would always fire against an empty PendingAnalysis on
-                    // cold scans, leaving the symbol DB permanently empty.
-                    // BatchChecked owning the flush makes the persistence
-                    // independent of event ordering.
-                    //
-                    // BuildCompleted's flush is retained as an idempotent
-                    // re-run (PendingAnalysis is already empty by then,
-                    // RebuildProjects is skipped) plus the test-trigger.
+                    // This is the canonical DB persistence point, NOT BuildCompleted. On a
+                    // cold scan `Daemon.performScan` awaits BuildPlugin terminal BEFORE
+                    // the FCS tier checks, so BuildCompleted reaches this mailbox before
+                    // any FileChecked — a BuildCompleted-only flush would always fire
+                    // against an empty `PendingAnalysis` and leave the symbol DB
+                    // permanently empty. BuildCompleted's flush stays as an idempotent
+                    // re-run plus the test-trigger.
                     let flushed =
                         try
                             Ok(flushAndQueryAffected state)
@@ -4437,54 +4071,41 @@ let create
                         Volatile.Write(&changedSymbolsRef, flushedState.ChangedSymbols)
 
                         // ── AUTOMATION-95/99: DRAIN THE PENDING QUEUE ────────────────
-                        // The cohort seal is the first moment the symbols this scan
-                        // discovered are known. Before this, `BuildCompleted` was the
-                        // ONLY trigger that ran tests — and on a scan it fires BEFORE
-                        // the FCS pass (Daemon.fs `performScan` awaits the build, then
-                        // dispatches FCS tiers), so scan-discovered symbols could never
-                        // be verified by the run that BuildCompleted launched. They
-                        // silently accumulated in the queue while `check` reported the
-                        // plugin's stale terminal status — green (95) or red (99).
+                        // The cohort seal is the first moment this scan's symbols are
+                        // known. `BuildCompleted` cannot be the only test trigger: on a
+                        // scan it fires BEFORE the FCS pass, so scan-discovered symbols
+                        // would never be verified by the run it launched and would
+                        // accumulate silently while `check` reported a stale terminal
+                        // status. If symbols remain unverified here, RUN the tests that
+                        // verify them — a verdict is only ever earned by a run.
                         //
-                        // Now: if symbols remain unverified here, we RUN the tests that
-                        // verify them. Convergence, not reporting. A verdict is only
-                        // ever earned by a run.
-                        //
-                        // The skip asks whether anything is owed, so it must ask
-                        // `nothingOwed`, not `Set.isEmpty`. An UNREADABLE ledger leaves
-                        // the in-memory queue empty (we cannot name what it held) — and
-                        // reading that empty set as "nothing to drain" would let a
+                        // The skip asks `nothingOwed`, not `Set.isEmpty`: an UNREADABLE
+                        // ledger leaves the in-memory queue empty because we cannot name
+                        // what it held, and reading that as "nothing to drain" lets a
                         // corrupt sidecar run ZERO tests and still go green.
                         if nothingOwed () then
                             return flushedState
                         else
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
-                                // Drain UNCONDITIONALLY when the slot is free. An earlier
-                                // revision of this fix tried to be clever and defer to "the
-                                // BuildCompleted that is surely coming" whenever a build
-                                // looked to be in flight. That is unsound: several
-                                // `FileChanged` shapes never produce a BuildCompleted at all
+                                // Drain UNCONDITIONALLY when the slot is free. Never defer
+                                // to "the BuildCompleted that is surely coming": several
+                                // `FileChanged` shapes never produce one at all
                                 // (BuildPlugin ignores `SolutionChanged`, and DROPS a
-                                // FileChanged that arrives while a build is already
-                                // running), so the deferral could wait forever. Caught by CI
-                                // on this very branch: the gate deferred 3 symbols to a
-                                // BuildCompleted that never came, ran ZERO tests, and still
-                                // exited 0 — the exact false green this fix exists to kill.
-                                // Never predict a future event as a reason to skip work you
-                                // already owe.
+                                // FileChanged arriving while a build is running), so the
+                                // deferral can wait forever. CI caught exactly that — 3
+                                // symbols deferred to a BuildCompleted that never came,
+                                // zero tests run, exit 0.
                                 //
-                                // Draining here is safe even on a half-built tree: the
-                                // apphost-freshness gate in `executeTests` already refuses
-                                // to run `--no-build` against a compiled artifact older
-                                // than its sources. It defers that project as an honest
-                                // "waiting on build" WITHOUT spawning a test process, so
-                                // the stale case costs a status flip, not a run — and the
-                                // BuildCompleted that follows re-runs it for real.
+                                // Draining on a half-built tree is safe: the
+                                // apphost-freshness gate in `executeTests` refuses
+                                // `--no-build` against an artifact older than its sources
+                                // and defers that project WITHOUT spawning a test process,
+                                // so the stale case costs a status flip, not a run.
                                 //
                                 // The claim is ATTEMPTED, not pre-checked: `RunExclusive`
-                                // returns the claim outcome, so there is no TOCTOU between
-                                // an `IsRunning` read and the launch.
+                                // returns the outcome, so there is no TOCTOU between an
+                                // `IsRunning` read and the launch.
                                 let hasCachedResults = flushedState.LastResults.IsSome
                                 let forceRunProjects = flushedState.PendingForceRunProjects
 
@@ -4526,13 +4147,11 @@ let create
                 | PluginEvent.BuildCompleted buildResult ->
                     match buildResult with
                     | BuildSucceeded ->
-                        // Item 3: record that BuildCompleted has fired this
-                        // session. Subsequent FileChecked events are now
-                        // allowed to promote the freshness sidecar to clean.
-                        // Set unconditionally for both the queued-rerun and
-                        // run-now branches — the gate is about "has the build
-                        // process realized the reference graph yet", not
-                        // about whether tests are queued.
+                        // Record that BuildCompleted has fired this session, so subsequent
+                        // FileChecked events may promote the freshness sidecar to clean.
+                        // Set unconditionally across both the queued-rerun and run-now
+                        // branches: the gate asks whether the build has realized the
+                        // reference graph, not whether tests are queued.
                         let state =
                             { state with
                                 BuildCompletedInThisSession = true }
@@ -4574,16 +4193,13 @@ let create
                                   dependency-fingerprint change — force-running: \
                                   %s{describeAll (Set.toList fanoutNow)}"
                         else
-                            // Say that NOTHING fanned out, and say what was examined to
-                            // reach that conclusion. Silence here is ambiguous in the
-                            // worst possible way: "no dependency changed" and
-                            // "fingerprinting never ran at all" produce byte-identical
-                            // logs, so an inert `computeProjectFingerprint` — which
-                            // would mean the safety net against binary-only dependency
-                            // changes is quietly OFF, an under-selection risk — is
-                            // indistinguishable from a healthy quiet run. The two
-                            // counts below settle it: zero fingerprints computed, or
-                            // zero graph projects, means inert rather than clean.
+                            // Say that nothing fanned out, and say what was examined to
+                            // reach that conclusion. "No dependency changed" and
+                            // "fingerprinting never ran" otherwise produce identical
+                            // logs, so an inert `computeProjectFingerprint` — the safety
+                            // net against binary-only changes silently OFF — reads as a
+                            // healthy quiet run. Zero fingerprints computed, or zero
+                            // graph projects, means inert rather than clean.
                             Logging.info
                                 "test-prune"
                                 $"Dependency fanout: none — \
@@ -4598,12 +4214,10 @@ let create
                                 PriorProjectFingerprints = currentFingerprints }
 
                         if ctx.IsRunning "tests" then
-                            // Leading "  ↳ " (↳) indents this entry one
-                            // level beyond test-result lines in the activity-fold
-                            // `recent:` view. The renderer adds 8 spaces to every
-                            // tail entry; we add 2 more here so it visually nests
-                            // under the in-flight test run rather than reading as
-                            // a sibling of the test-result lines.
+                            // The leading two spaces nest this under the in-flight test
+                            // run in the activity-fold `recent:` view (the renderer
+                            // already indents every tail entry by 8), so it does not read
+                            // as a sibling of the test-result lines.
                             ctx.Log "  ↳ queued re-run (tests already running)"
 
                             Logging.info
@@ -4683,11 +4297,10 @@ let create
                     | BuildFailed _ -> return state
 
                 | Custom(TestsFinished(started, completed, launch)) ->
-                    // §2a: emit lifecycle events synchronously here (inside the framework's
-                    // per-event capture window) so they're recorded in the cached
-                    // EmittedEvents and re-fired on cache replay. Live per-group
-                    // TestProgress already fired from the async; subscribers that key off
-                    // TestRunCompleted (e.g. FileCommandPlugin) must see it on cache hit.
+                    // Emit the lifecycle events synchronously here, inside the framework's
+                    // per-event capture window, so they land in the cached EmittedEvents
+                    // and re-fire on cache replay — subscribers that key off
+                    // TestRunCompleted (FileCommandPlugin) must see it on a hit.
                     ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
 
@@ -4699,26 +4312,20 @@ let create
 
                     // AUTOMATION-125 — a run may clear ONLY what it COVERED.
                     //
-                    // Issue 2 (AUTOMATION-95) established that the ledger must be
-                    // REWRITTEN each cycle rather than appended to, so a superseded red
-                    // can't linger. It rewrote it from THIS run's failures alone — which
-                    // meant a narrower run's green erased reds it had never executed
-                    // (observed live: full run fails project X → queued impact-filtered
-                    // re-run passes 2 symbols → X's red gone, X never re-ran).
+                    // Two properties must hold together: the ledger is REWRITTEN each
+                    // cycle (so a superseded red cannot linger, AUTOMATION-95), and it is
+                    // rewritten from the OUTSTANDING set — what this run found PLUS every
+                    // earlier red it did not cover. Rewriting from this run's failures
+                    // alone lets a narrower run's green erase reds it never executed.
+                    // Coverage comes from the run's own launch selection, so a red dies
+                    // only to evidence that executed it, and dies the moment that evidence
+                    // exists (no stuck-red).
                     //
-                    // Both properties hold once the rewrite is from the OUTSTANDING set:
-                    // what this run found, PLUS every earlier red it did not cover. The
-                    // coverage is derived from the run's own launch selection — so a red
-                    // dies only to evidence that actually executed it, and dies the
-                    // moment such evidence exists (no stuck-red: cf. AUTOMATION-99).
-                    //
-                    // AUTOMATION-225: the launch selection cannot express the reach of a
-                    // raw `--filter` passthrough (it records every project as
-                    // `ProjectInFull`), so `test-rerun --filter-class X` used to re-run X,
-                    // pass, and leave X's red standing — for good. The run's OWN report
-                    // knows what it executed, so hand `ofRun` the classes it shows passing.
-                    // Read from THIS run's directory only, and empty whenever the report is
-                    // missing or incomplete.
+                    // The launch selection cannot express the reach of a raw `--filter`
+                    // passthrough — it records every project as `ProjectInFull` — so hand
+                    // `ofRun` the classes the run's OWN report shows passing
+                    // (AUTOMATION-225). Read from THIS run's directory only, and empty
+                    // whenever the report is missing or incomplete.
                     let coverage =
                         RunCoverage.ofRun
                             launch.Selection
@@ -4814,13 +4421,11 @@ let create
                     //    be PRESENT in the results AND green, so a project that never ran
                     //    cannot be counted.
                     //  * `Ran FullSuite` — the run EXECUTED and none of it was
-                    //    impact-FILTERED. Until AUTOMATION-282 this read `completed.RanFullSuite`,
-                    //    a bool that was vacuously true for an empty Results map, and the
-                    //    emptiness had to be ruled out separately for it to mean anything.
-                    //    The case now carries that: scope is unreachable unless something ran.
+                    //    impact-FILTERED. A case, not a bool: scope is unreachable unless
+                    //    something ran, so emptiness needs no separate check.
                     //  * a non-empty `runnableProjects` — an analysis-only daemon runs no
-                    //    tests, so it can never prove anything and must not discharge. Kept
-                    //    because it asks about the SELECTION, not the results.
+                    //    tests, so it can never prove anything and must not discharge. It
+                    //    asks about the SELECTION, not the results.
                     //
                     // Only now may the ledger be rewritten: `persistQueue` has deliberately
                     // left the corrupt file untouched until this moment, so that a crash
@@ -4867,15 +4472,13 @@ let create
                             else
                                 $" (+%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures})"
 
-                        // §3a — verdict hardening: consult completed.Outcome FIRST.
-                        // An Aborted run (beforeRun threw, runner crashed, run
-                        // cancelled) MUST be non-green regardless of result counts —
-                        // empty results trivially satisfy "failed = 0 && deferred = 0"
-                        // and would otherwise false-green. Surface the abort message.
-                        // §3b — a run that executed ZERO projects while the pending
-                        // queue still holds symbols verified nothing: reuse the honest
-                        // "waiting on build (tests did not run)" deferred path rather
-                        // than reporting a green that tested nothing.
+                        // Consult `completed.Outcome` FIRST. An Aborted run (beforeRun
+                        // threw, runner crashed, run cancelled) must be non-green
+                        // regardless of result counts — empty results trivially satisfy
+                        // "failed = 0 && deferred = 0" and would otherwise false-green.
+                        // Likewise a run that executed ZERO projects while the pending
+                        // queue still holds symbols verified nothing, so it takes the
+                        // honest "waiting on build (tests did not run)" path.
                         let abortMessage =
                             match completed.Outcome with
                             | Aborted reason -> Some reason
@@ -4899,27 +4502,20 @@ let create
                                     $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
                                     results.Elapsed
                             )
-                        // AUTOMATION-272 — §3c. Projects RAN, and every one of them
-                        // matched zero tests. Nothing executed, so nothing was verified,
-                        // and this may not be a green.
+                        // AUTOMATION-272. Projects RAN and every one matched zero tests, so
+                        // nothing executed and nothing was verified — not a green. The
+                        // ladder below counts `TestResult.isPassed`, which is deliberately
+                        // TRUE for `TestsNoMatch`, so without this check the green branch
+                        // fires and reports "N passed, 0 failed in N projects" about N
+                        // projects that ran no test at all.
                         //
-                        // The ladder below counts `TestResult.isPassed`, and a zero-match
-                        // project is recorded as `TestsNoMatch` (see `executeTests`), for
-                        // which `isPassed` is deliberately TRUE, so `failed = 0
-                        // && deferred = 0` holds, and the green branch fired. It reported
-                        // "N passed, 0 failed in N projects" about N projects that ran no
-                        // test at all. `isPassed` cannot exclude this the way it excludes
-                        // `Deferred`/`Errored`, because zero-match is not a case — it is a
-                        // string prefix on a pass — so the check has to be made here.
-                        //
-                        // Scoped to ALL projects deliberately. A zero match in ONE project
-                        // is a correct pass for that project: an impact selection naming
-                        // no class in the Integration project must not fail it. Only the
+                        // Scoped to ALL projects deliberately: a zero match in ONE project
+                        // is a correct pass for it (an impact selection naming no class in
+                        // the Integration project must not fail that project). Only the
                         // run-level verdict changes, and only when nothing matched
-                        // anywhere — which is a mis-aimed filter or operator error, never
-                        // a verified pass. `total > 0` keeps the empty-results run (the
-                        // deliberate "nothing to verify" skip) on its existing path, since
-                        // `Map.forall` is vacuously true for an empty map.
+                        // anywhere — a mis-aimed filter, never a verified pass. An
+                        // empty-results run stays on its existing "nothing to verify" path
+                        // because `Map.forall` is vacuously true for an empty map.
                         | None when allZeroMatchOf results.Results ->
                             ctx.ReportStatus(
                                 PluginStatus.failedNow
@@ -4946,17 +4542,11 @@ let create
                             let failed = failedList.Length
                             let deferred = deferredList.Length
 
-                            // Zero-match projects are counted OUT of `passed`, not into
-                            // it. `passed` is derived by exclusion, and `isPassed` is
-                            // deliberately true for `TestsNoMatch` — so a project that
-                            // executed no test was being reported as one that passed.
-                            // On a mixed run the status line read "2 passed, 0 failed in
-                            // 2 projects" while the CLI, which counts them separately,
-                            // said "2 project(s): 1 passed, 1 matched nothing": two
-                            // surfaces describing one run differently, and the daemon's
-                            // was the one claiming a pass nothing earned. Exactly the
-                            // language AUTOMATION-272 removed from the verdict, still
-                            // present in the sentence next to it.
+                            // Zero-match projects are counted OUT of `passed`. `passed` is
+                            // derived by exclusion and `isPassed` is deliberately true for
+                            // `TestsNoMatch`, so without this a project that executed no
+                            // test is reported as one that passed — and the status line
+                            // then disagrees with the CLI, which counts them separately.
                             let noMatch =
                                 results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
 
@@ -5056,20 +4646,14 @@ let create
                                     let names = deferredList |> List.map fst |> String.concat ", "
 
                                     if carriedCount = 0 then
-                                        // PURE defer: no red at all this run OR carried.
-                                        // Report a NON-failing terminal so the verdict
-                                        // reads the `Deferred`-severity ledger entry (from
-                                        // `failuresOf`) and routes it to
-                                        // `Incomplete`/exit 2 ("waiting on build"), NOT the
-                                        // exit 1 a red earns. The status is not "failed" —
-                                        // the run did what it could; a build-ordering race
-                                        // left one project unrun. The deferred projects
-                                        // stay in the pending-verification queue
-                                        // (`isPassed`=false, so their symbols never commit),
-                                        // so the next build re-runs them, and the result is
-                                        // UNCACHEABLE (`isPassed`=false), so no green is ever
-                                        // pinned. The `OutstandingFailure` list still carries
-                                        // the defer, so cache participation stays refused.
+                                        // PURE defer: no red this run or carried. A
+                                        // NON-failing terminal, so the verdict reads the
+                                        // `Deferred`-severity ledger entry and routes it to
+                                        // `Incomplete`/exit 2, not the exit 1 a red earns —
+                                        // a build-ordering race left one project unrun.
+                                        // `isPassed` is false for a defer, so its symbols
+                                        // never commit (the next build re-runs them) and
+                                        // the result is uncacheable.
                                         ctx.ReportStatus(
                                             PluginStatus.completedNow
                                                 $"%s{runSummary} — %d{deferred} waiting on build (tests did not run): %s{names}"
@@ -5239,20 +4823,15 @@ let create
                                 AffectedTests = Analyzed [] }
 
                 | Custom(RunTestsRequested(configs, filter, reply)) ->
-                    // AUTOMATION-99: the `run-tests` force-run, launched from the
-                    // mailbox so it is serialised with every other launch site and
-                    // holds the `RunExclusive "tests"` slot for its whole duration —
-                    // visible to `IsRunning`, to `AnyPluginBusy()`, and (via the
-                    // framework's Running report at the claim) to `fshw status`.
+                    // Launched from the mailbox so it is serialised with every other
+                    // launch site and holds the `RunExclusive "tests"` slot for its whole
+                    // duration — see the `RunTestsRequested` case for why that matters.
                     match ctx.RunExclusive "tests" (commandForceRun configs filter reply) with
                     | Claimed -> return state
                     | SlotBusy ->
-                        // FORCE semantics: a busy slot QUEUES the run, never refuses
-                        // it — `test-rerun` is the explicit "prove it ran" verb, and
-                        // a refusal that reads as success is the vacuous green this
-                        // ticket exists to kill. TestsFinished drains the queue FIFO.
-                        // The IPC command bounds its wait on `reply`, so queueing can
-                        // never hang the caller.
+                        // A busy slot QUEUES the run, never refuses it: a refusal that
+                        // reads as success is a vacuous green. TestsFinished drains FIFO,
+                        // and the IPC command bounds its own wait on `reply`.
                         ctx.Log "  ↳ queued run-tests force-run (tests already running)"
 
                         return
@@ -5264,29 +4843,22 @@ let create
       Commands = allCommands
       Subscriptions =
         Set.ofList (
-            // FileChecked: per-file analysis fold into PendingAnalysis /
-            // changedSymbolsRef (unchanged from the pre-BatchChecked design).
-            // BatchChecked: cohort-complete flush signal — fires after the
-            // last FileChecked of a batch, before any subsequent BuildCompleted
-            // racing the same change. By the time the agent processes
-            // BatchChecked, every FileChecked update has been folded in, so
-            // changedSymbolsRef is consistent with state.ChangedSymbols and
-            // any cache key derived from it is well-formed.
-            // BuildCompleted is subscribed unconditionally so the
-            // Item 3 freshness-stamp gate works even when the plugin is
-            // configured analysis-only (no testConfigs). When testConfigs is
-            // None / empty, the BuildCompleted handler still runs
-            // `flushAndQueryAffected` (idempotent on empty PendingAnalysis)
-            // and skips the test-run path — see the
-            // `match testConfigs with | Some configs when not configs.IsEmpty`
-            // branch in the handler.
+            // BatchChecked is the cohort-complete flush signal: it fires after the last
+            // FileChecked of a batch and before any subsequent BuildCompleted racing the
+            // same change, so by the time the agent processes it every FileChecked update
+            // has been folded in and `changedSymbolsRef` agrees with `state.ChangedSymbols`.
+            //
+            // BuildCompleted is subscribed UNCONDITIONALLY so the freshness-stamp gate
+            // works even when the plugin is analysis-only: with no testConfigs the handler
+            // still runs `flushAndQueryAffected` (idempotent on empty PendingAnalysis) and
+            // skips the test-run path.
             [ SubscribeFileChecked; SubscribeBatchChecked; SubscribeBuildCompleted ]
         )
       CacheKey =
-        // §2a: pure-content cache key, built by the lifted `cacheKeyFor` so the
-        // per-arm input dependencies are structural rather than a convention. The
-        // three thunks are this closure's live state; `cacheKeyFor` decides which
-        // arm forces which — and `FileChecked`, the per-file probe, forces none.
+        // Pure-content cache key, built by the lifted `cacheKeyFor` so the per-arm input
+        // dependencies are structural rather than a convention. The thunks are this
+        // closure's live state; `cacheKeyFor` decides which arm forces which — and
+        // `FileChecked`, the per-file probe, forces none.
         let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
             let changedSymbolsHash () =
                 Volatile.Read(&changedSymbolsRef)
@@ -5295,21 +4867,18 @@ let create
                 |> String.concat "|"
                 |> FsHotWatch.CheckCache.sha256Hex
 
-            // §3d — the persisted needs-testing queue. `None` = empty, which both
-            // omits the merkle entry (keeping the empty-queue green fast-path key
-            // byte-stable) and, on BuildCompleted, is what makes the event cacheable
-            // at all: a green that left symbols queued must re-run, never replay.
+            // The persisted needs-testing queue. `None` = empty, which both omits the
+            // merkle entry (keeping the empty-queue green fast-path key byte-stable) and,
+            // on BuildCompleted, is what makes the event cacheable at all: a green that
+            // left symbols queued must re-run, never replay.
             let pendingQueueHash () =
                 if Volatile.Read(&ledgerRecoveryOutstandingRef) then
                     // AUTOMATION-150. An unreadable ledger is outstanding debt whose
-                    // membership is unknown. `None` here would assert "provably nothing
-                    // owed" and make BuildCompleted cacheable — so a cached green,
-                    // written by an earlier run over this very same content merkle, would
-                    // REPLAY: handler skipped, drain skipped, no test process, green. The
-                    // hole, re-opened through the cache door. A `Some` refuses cache
-                    // participation outright (no replay, no write), exactly as a non-empty
-                    // queue does. The value is a constant, not a hash: there is nothing to
-                    // hash — that is the whole point.
+                    // membership is unknown. `None` would assert "provably nothing owed"
+                    // and make BuildCompleted cacheable, so a cached green written over
+                    // this same content merkle would replay with no test process running.
+                    // `Some` refuses cache participation outright, as a non-empty queue
+                    // does. A constant rather than a hash — there is nothing to hash.
                     Some "unreadable-ledger"
                 elif Set.isEmpty pendingQueueRef then
                     None
@@ -5342,15 +4911,12 @@ let create
                 not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
 
             // AUTOMATION-161: no cache participation on BuildCompleted until a run in
-            // THIS process has covered something. A cached result is an assertion about
-            // tests, and a process may not make one it has no record of earning.
+            // THIS process has covered something.
             //
-            // ANALYSIS-ONLY IS EXEMPT, and the exemption is the rule seen from the other
-            // side. With no runnable test projects this plugin makes no test CLAIM at all
-            // — its terminal status is a symbol-analysis summary, and `runnableProjects`
-            // is empty precisely because "that mode produces no test verdict". There is
-            // no verdict to launder, so there is nothing to fail closed about; gating it
-            // would delete a working cache to guard against an assertion it never makes.
+            // ANALYSIS-ONLY IS EXEMPT. With no runnable test projects this plugin makes no
+            // test claim at all — its terminal status is a symbol-analysis summary — so
+            // there is no verdict to launder, and gating it would throw away a working
+            // cache to guard an assertion it never makes.
             let sessionHasTestEvidence () =
                 Set.isEmpty runnableProjects
                 || not (Set.isEmpty (RunCoverage.coveredProjects (Volatile.Read(&sessionCoverageRef))))

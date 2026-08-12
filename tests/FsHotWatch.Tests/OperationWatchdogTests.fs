@@ -36,7 +36,7 @@ let ``overrunLogRecord names op + threshold + elapsed in a stable shape`` () =
           StartedAt = t0 }
 
     let record = overrunLogRecord (t0.AddSeconds 200.0) threshold op
-    // Stable, greppable shape: "operation exceeded Ns: <op> running Ms"
+    // The shape is greppable; other tests below match on the "operation exceeded" prefix.
     test <@ record = "operation exceeded 120s: RunCommand:run-tests running 200s" @>
 
 [<Fact(Timeout = 5000)>]
@@ -116,7 +116,6 @@ let ``oldestOverrun picks the longest-running WEDGED op, ignoring young ones`` (
     | Some op -> test <@ op.Name = "oldest-wedged" @>
     | None -> Assert.Fail "expected an overrun"
 
-    // Nothing has overrun yet at t0+10s.
     test <@ oldestOverrun (t0.AddSeconds 10.0) threshold ops = None @>
 
 // --- Live Watchdog: Begin/End state tracking ---
@@ -158,9 +157,7 @@ let ``Watchdog WedgeReport fires once the injected clock crosses threshold`` () 
         )
 
     w.Begin "stuck-op" |> ignore
-    // Not yet wedged.
     test <@ w.WedgeReport() = None @>
-    // Advance the injected clock past the threshold.
     clock.Value <- t0.AddSeconds 130.0
 
     match w.WedgeReport() with
@@ -171,11 +168,8 @@ let ``Watchdog WedgeReport fires once the injected clock crosses threshold`` () 
 
 [<Fact(Timeout = 10000)>]
 let ``Watchdog timer emits the structured overrun record exactly once for a stuck op`` () =
-    // An injected stuck op (Begin then never End): once the injected clock
-    // advances past the threshold, the watchdog timer must emit the "operation
-    // exceeded Ns" record — and only once per overrun episode, not on every tick.
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
-    // Clock at t0 when the op begins; the op's StartedAt is captured here.
+    // The op's StartedAt is captured from this clock at Begin.
     let clock = ref t0
 
     use w =
@@ -194,9 +188,9 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
     let overrunsSoFar () =
         logged |> Seq.filter (fun l -> l.StartsWith("operation exceeded")) |> Seq.toList
 
-    // Poll until the timer fires the overrun record (load-robust; the 20ms tick
-    // can be delayed under parallel-suite CPU pressure). Once seen, let a few
-    // more ticks pass and assert it stays at exactly one — once per episode.
+    // Poll rather than sleep a fixed time: the 20ms tick can be delayed under
+    // parallel-suite CPU pressure. Once seen, let a few more ticks pass and assert
+    // it stays at exactly one — once per episode, not once per tick.
     waitUntil (fun () -> not (overrunsSoFar ()).IsEmpty) 5000
     Thread.Sleep(200)
 
@@ -207,10 +201,8 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
 [<Fact(Timeout = 10000)>]
 let ``Watchdog re-arms the overrun record for a new op after End`` () =
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
-    // Clock far enough ahead of any op's StartedAt that each op reads as wedged
-    // the moment a tick observes it (StartedAt is captured at Begin = clock at
-    // that instant; we hold the clock fixed well past the 1s threshold relative
-    // to the t0-based ops we begin here).
+    // StartedAt is captured from this clock at Begin, and we then jump it well past
+    // the 1s threshold, so each op reads as wedged the moment a tick observes it.
     let clock = ref t0
 
     use w =
@@ -228,8 +220,8 @@ let ``Watchdog re-arms the overrun record for a new op after End`` () =
 
     let first = w.Begin "first-op" // StartedAt = t0
     clock.Value <- t0.AddSeconds 100.0 // now wedged
-    // Wait for the timer to record the first op's overrun before ending it, so
-    // the episode-boundary is observed deterministically (no fixed-sleep race).
+    // Wait for the first op's overrun before ending it, so the episode boundary is
+    // observed deterministically instead of racing a fixed sleep.
     waitUntil (fun () -> logcontains "first-op") 5000
     w.End first
     clock.Value <- t0.AddSeconds 200.0
@@ -265,16 +257,12 @@ let ``Watchdog does not emit overrun for an op that ends before threshold`` () =
 // AUTOMATION-98 finding 4 — CONCURRENT ops must not corrupt each other.
 // ---------------------------------------------------------------------------
 //
-// The regression this pins: the watchdog held ONE `InFlightOp`. `Begin`
-// overwrote it and `End()` cleared it unconditionally. The IPC server runs THREE
-// acceptors concurrently by design, and two parallel `fshw check` clients on one
-// box are routine — so op B's `Begin` erased op A's record, and A's `End` then
-// erased B's. A genuinely wedged op consequently heartbeat as `idle` and
-// `WedgeReport()` returned `None`: the diagnostic built for wedges went blind
-// exactly under the concurrency it was built for.
-//
-// RED-BEFORE-GREEN: with the old single-slot `InFlightOp option`, the wedged op's
-// record is gone by the time we look and `WedgeReport()` is `None`.
+// Pins the regression where the watchdog held ONE `InFlightOp`: `Begin` overwrote
+// it and `End()` cleared it unconditionally. The IPC server runs three acceptors
+// concurrently and two parallel `fshw check` clients are routine, so op B's `Begin`
+// erased op A's record and A's `End` erased B's. A genuinely wedged op then
+// heartbeat as `idle` and `WedgeReport()` returned `None` — the wedge diagnostic
+// went blind under exactly the concurrency it was built for.
 
 [<Fact(Timeout = 5000)>]
 let ``a wedged op stays visible when a concurrent op begins and ends over it`` () =
@@ -294,12 +282,11 @@ let ``a wedged op stays visible when a concurrent op begins and ends over it`` (
     clock.Value <- t0.AddSeconds 300.0
     test <@ (w.WedgeReport() |> Option.isSome) @>
 
-    // B is a SECOND client's short op that lands on a free acceptor and completes.
-    // Under the old single-slot watchdog, this pair of calls silently erased A.
+    // B is a SECOND client's short op on a free acceptor. Under the old single-slot
+    // watchdog, this pair of calls silently erased A.
     let b = w.Begin "GetDiagnostics"
     w.End b
 
-    // A is still wedged, and the watchdog still says so.
     match w.WedgeReport() with
     | Some msg -> test <@ msg.Contains("WaitForComplete") @>
     | None -> Assert.Fail "the wedged op vanished when a concurrent op ended — the watchdog is blind"

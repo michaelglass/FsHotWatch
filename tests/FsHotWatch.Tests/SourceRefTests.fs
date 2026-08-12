@@ -1,9 +1,9 @@
 module FsHotWatch.Tests.SourceRefTests
 
 // AUTOMATION-123 — `fshw --version` must report the source ref the binary was
-// built from. SourceRef.parse reads it out of the assembly informational
-// version (RefStamp `-ref.` stamp, SourceLink `+sha` metadata, or honestly
-// Unknown); SourceRef.describe renders the one human line.
+// built from. `parse` reads it out of the assembly informational version
+// (RefStamp `-ref.` stamp, SourceLink `+sha` metadata, or Unknown); `describe`
+// renders the one human line.
 
 open Xunit
 open Swensen.Unquote
@@ -51,8 +51,7 @@ let ``parse prefers the ref stamp over commit metadata when both are present`` (
 
 [<Fact(Timeout = 15000)>]
 let ``parse counts a leading dirty segment as dirty`` () =
-    // Defensive: no stamper emits this shape today, but a dirty marker is a
-    // dirty marker wherever it sits in the body.
+    // No stamper emits this shape today; a dirty marker anywhere in the body counts.
     test <@ parse "1.2.3-ref.dirty.gddddeeeeffff" = SourceRef.RefStamped("dirty.gddddeeeeffff", true) @>
 
 [<Fact(Timeout = 15000)>]

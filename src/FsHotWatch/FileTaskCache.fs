@@ -61,10 +61,9 @@ let private serializeStatus (status: CachedStatus) =
 
     obj
 
-/// Verdict fields are REQUIRED on both run-entry shapes: an entry with an
-/// empty summary (`RunVerdict.create` throws) has no evidence to replay, so it
-/// must read as a cache MISS (the throw is caught by `tryGet` and counted as a
-/// parse failure), never as a verdict-free terminal.
+/// Verdict fields are REQUIRED on both run-entry shapes: an entry with an empty
+/// summary (`RunVerdict.create` throws) has no evidence to replay, so it must read as
+/// a cache MISS, never as a verdict-free terminal.
 let private deserializeVerdict (obj: JsonObject) : RunVerdict =
     RunVerdict.create
         (obj["summary"].GetValue<string>())
@@ -109,21 +108,18 @@ let private serializeTestResult (key: string) (result: TestResult) =
         // read finds it without a special case.
         obj["output"] <- reason
     | TestsErrored reason ->
-        // In practice an errored result is never written: it is non-passing, so
-        // the cacheKey gate (`allPassed`) returns None and `runAndCache` skips
-        // the write — an "I don't know" verdict must never be replayed as a
-        // verdict. Serialized here only for match exhaustiveness / robustness.
+        // Never written in practice: it is non-passing, so the cacheKey gate
+        // (`allPassed`) returns None and `runAndCache` skips the write. Serialized
+        // only for exhaustiveness.
         obj["result"] <- "errored"
         obj["output"] <- reason
     | TestsNoMatch(output, elapsed) ->
         // Its own stored tag, so a replayed entry comes back as the case it was
-        // written as. Before AUTOMATION-272 this round-tripped as "passed" with the
-        // marker still embedded in `output` — which is what the legacy read in
-        // `deserializeTestResult` has to reconstruct.
+        // written as. Entries predating this tag are reconstructed by the legacy read
+        // in `deserializeTestResult`.
         //
-        // Like `TestsErrored`, this is rarely written in practice: an all-zero-match
-        // run is not cacheable (the cacheKey gate refuses it), so only a MIXED run —
-        // some project matched nothing, another really ran — reaches the write.
+        // Also rare: an all-zero-match run is not cacheable, so only a MIXED run — one
+        // project matched nothing, another really ran — reaches the write.
         obj["result"] <- "no-match"
         obj["output"] <- output
         obj["elapsedSeconds"] <- elapsed.TotalSeconds
@@ -135,21 +131,16 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
 
     let output = obj["output"].GetValue<string>()
 
-    // `wasFiltered` is REQUIRED, and read inline below rather than here — only the
-    // shapes whose WRITER emits it may demand it. `TestsPassed` / `TestsFailed` /
-    // `TestsTimedOut` carry the flag in the DU and always serialize it;
-    // `TestsNoMatch` / `TestsDeferred` / `TestsErrored` do not carry it at all, so
-    // its absence THERE is not a missing answer and must stay readable.
+    // `wasFiltered` is read inline below, not here: only the shapes whose WRITER emits
+    // it may demand it. `TestsPassed`/`TestsFailed`/`TestsTimedOut` carry the flag and
+    // always serialize it; `TestsNoMatch`/`TestsDeferred`/`TestsErrored` do not carry
+    // it at all, so its absence THERE must stay readable.
     //
-    // On the shapes that do carry it, absence is a defect and not a default:
-    // `false` reads as "not filtered", and FileCommandPlugin DERIVES the run scope
-    // from these results on the progress path, so an absent flag would launder a
-    // filtered run into a full suite. `.GetValue<bool>()` on the absent (or
-    // explicitly null) node throws, `tryGet` catches it and counts a parse failure,
-    // and the entry reads as a cache MISS — the same throw-to-miss contract every
-    // other required field here relies on (`project`, `output`, `result`, `runId`,
-    // `outcome`, `elapsedMs`, `name`). No bespoke message: `tryGet` discards the
-    // exception unbound, so one would never be observable.
+    // On the shapes that do carry it, absence must not default to `false`:
+    // FileCommandPlugin derives the run scope from these results on the progress path,
+    // so that would launder a filtered run into a full suite. `.GetValue<bool>()` on an
+    // absent or null node throws, `tryGet` catches it, and the entry reads as a cache
+    // MISS — the throw-to-miss contract every required field here relies on.
 
     // elapsedSeconds is optional for back-compat with caches written before
     // the field existed; default to TimeSpan.Zero (no recorded duration).
@@ -166,12 +157,11 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
 
     let result =
         match obj["result"].GetValue<string>() with
-        // AUTOMATION-272 back-compat, and it must come BEFORE the plain "passed" read.
-        // Entries written before `TestsNoMatch` existed stored a zero match as
-        // `"passed"` with the marker embedded in `output`. Reading one back as a plain
-        // pass would replay a run that executed no test as a genuine green — the bug
-        // itself, resurrected from a warm cache on disk. Reconstruct the case, and
-        // strip the marker so the surfaced output matches what a fresh run produces.
+        // Back-compat, and it must come BEFORE the plain "passed" read. Entries written
+        // before `TestsNoMatch` existed stored a zero match as `"passed"` with the
+        // marker embedded in `output`; reading one back as a plain pass would replay a
+        // run that executed no test as a genuine green. Reconstruct the case and strip
+        // the marker so the surfaced output matches a fresh run.
         | "passed" when output.StartsWith(TestResult.LegacyZeroMatchMarker, StringComparison.Ordinal) ->
             TestsNoMatch(output.Substring(TestResult.LegacyZeroMatchMarker.Length), elapsed)
         | "passed" -> TestsPassed(output, obj["wasFiltered"].GetValue<bool>(), elapsed)
@@ -237,9 +227,8 @@ let private serializeCachedEvent (evt: CachedEvent) =
             resultsArr.Add(serializeTestResult kvp.Key kvp.Value)
 
         obj["results"] <- resultsArr
-        // The verification token, not a bool (AUTOMATION-282). `RunVerification.token`
-        // is the single place these strings are written, and `tryParse` the only place
-        // they are read — so an entry whose token this build cannot interpret reads as
+        // A token, not a bool. `RunVerification.token` is the only writer and `tryParse`
+        // the only reader, so an entry whose token this build cannot interpret reads as
         // a MISS rather than as some default verdict.
         obj["verification"] <- RunVerification.token completed.Verification
     | CachedCommandCompleted result ->
@@ -297,14 +286,10 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
             |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
             |> Map.ofSeq
 
-        // REQUIRED on read, and parsed rather than defaulted. An entry that never
-        // recorded what it verified has no claim to replay: there is no value here
-        // that is an honest reading of "unknown", which is exactly why the field is
-        // a token and not a bool. An absent field throws on `.GetValue<string>()`;
-        // an unrecognised one — a token written by a NEWER build — yields `None`.
-        // Both read as a cache MISS (caught by `tryGet`, counted as a parse failure)
-        // and the run is simply redone. Failing closed on a token from the future is
-        // the designed direction.
+        // Required on read, and parsed rather than defaulted: no value here is an honest
+        // reading of "unknown". An absent field throws on `.GetValue<string>()`; a token
+        // written by a NEWER build yields `None`. Both read as a cache MISS and the run
+        // is redone — failing closed on a token from the future is deliberate.
         let verification =
             match RunVerification.tryParse (obj["verification"].GetValue<string>()) with
             | Some v -> v
@@ -329,18 +314,12 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         CachedCommandCompleted { Name = name; Outcome = outcome }
     | t -> failwith $"Unknown cached event type: %s{t}"
 
-/// On-disk entry format version (currently 2): per-file entries store no status
-/// summary or timestamp (`CachedStatus` replaced the cached `PluginStatus`). The
-/// version is REQUIRED on read —
-/// entries written by any other format (including pre-versioned ones, where
-/// the field is absent) deterministically read as a cache MISS (the throw is
-/// caught by `tryGet` and counted as a parse failure), never as a half-parsed
-/// result carrying a claim the new scope rule forbids.
-/// 3 since AUTOMATION-282: `testRunCompleted` carries a `verification` TOKEN where
-/// it carried a `ranFullSuite` bool. A format-2 entry would otherwise be rejected
-/// one layer deeper, by the token read throwing, which is correct but reports every
-/// stale entry as a parse FAILURE. Bumping states the schema change where the schema
-/// records it, and costs only a one-time re-run of whatever was cached.
+/// On-disk entry format version. Required on read: an entry written by any other
+/// format (including pre-versioned ones, where the field is absent) reads as a cache
+/// MISS, never as a half-parsed result carrying a claim the current scope rule
+/// forbids. Bump this whenever the entry schema changes — otherwise a stale entry is
+/// rejected one layer deeper by a field read throwing, which reports every stale
+/// entry as a parse FAILURE. The cost of a bump is a one-time re-run.
 [<Literal>]
 let private EntryFormatVersion = 3
 
@@ -418,7 +397,7 @@ let private compositeKeyToString (key: CompositeKey) =
     | Some file -> $"%s{key.Plugin}--%s{file}"
     | None -> key.Plugin
 
-/// Snapshot of on-disk cache size for §2c telemetry.
+/// Snapshot of on-disk cache size.
 [<Struct>]
 type CacheStats = { EntryCount: int; SizeBytes: int64 }
 
@@ -440,26 +419,21 @@ let private entryKeyOfFileName (fileName: string) =
 /// every edit to a file permanently adds a dead, unreachable sibling, and that bloat
 /// degrades `Stats`/`clearFile`/`clearPlugin`, which each full-scan the directory.
 ///
-/// No LRU is needed, and an LRU would be the wrong tool: it would retain entries
-/// that are not merely cold but UNREACHABLE. Only the newest content-hash entry for
-/// a plugin+file is ever useful, so on write we collect the rest.
+/// An LRU would be the wrong tool: it would retain entries that are not merely cold
+/// but UNREACHABLE. Only the newest content-hash entry per plugin+file is useful.
 ///
-/// The paths are HANDED to it. The first cut of this found them by re-listing the
-/// cache directory on every `set`, and `EnumerateFiles(dir, pattern)` is not a
-/// prefix-optimised syscall — it readdirs the WHOLE directory and pattern-matches in
-/// managed code. A cold scan writes ~3 entries per file (Lint, Analyzers,
-/// FormatCheck each carry a per-`FileChecked` cache key) into a directory that grows
-/// to ~3 entries per file, each write scanning the lot: quadratic, and measured at
-/// ~2.2 ms per scan against a 4,500-entry directory — roughly TEN SECONDS of pure
-/// directory scanning added to a cold scan of a 1500-file repo, on exactly the paths
-/// (cold scan, `--run-once`, `confirm`) that were already timing out. The
-/// writer already knows the path it just wrote and the cache remembers the one it
-/// wrote last, so no scan is needed to name the superseded siblings.
+/// The paths must be HANDED to it, never rediscovered by listing the cache directory:
+/// `EnumerateFiles(dir, pattern)` is not prefix-optimised, it readdirs the whole
+/// directory and pattern-matches in managed code. A cold scan writes ~3 entries per
+/// file into a directory that grows to ~3 entries per file, so a scan per write is
+/// quadratic — measured at ~2.2 ms per scan against a 4,500-entry directory, roughly
+/// ten seconds added to a cold scan of a 1,500-file repo. The writer knows the path it
+/// just wrote and the cache remembers the one it wrote last, so no scan is needed.
 ///
-/// Never propagates, and each delete is independently guarded: a cache-hygiene
-/// failure must not fail the task whose result we just successfully wrote, nor stop
-/// us collecting the siblings it did not trip over. Whatever this call fails to
-/// collect, the next write to the same key will.
+/// Never propagates, and each delete is independently guarded: a cache-hygiene failure
+/// must not fail the task whose result was just written, nor stop the remaining
+/// siblings being collected. Whatever this call misses, the next write to the same key
+/// collects.
 let internal pruneSupersededSiblings (superseded: string list) (keepPath: string) : unit =
     for f in superseded do
         if not (String.Equals(f, keepPath, StringComparison.Ordinal)) then
@@ -475,9 +449,8 @@ type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
 
     // Counts FULL-DIRECTORY enumerations performed by this instance. The write path
-    // must perform ZERO of them (see `pruneSupersededSiblings`); the constructor's
-    // two sweeps and the explicit `Clear*`/`Stats` operations are the only legitimate
-    // ones. Asserted on directly by a test — a `set` that scans is the quadratic bug.
+    // must perform ZERO of them (see `pruneSupersededSiblings`); the constructor's two
+    // sweeps and the explicit `Clear*`/`Stats` operations are the only legitimate ones.
     let mutable directoryScanCount = 0
 
     let enumerateEntries (pattern: string) =
@@ -495,11 +468,9 @@ type FileTaskCache(cacheDir: string) =
     /// The entry path each key was last written to, so a write can name its own
     /// superseded siblings without asking the filesystem.
     ///
-    /// Seeded — ONCE, at construction, in the same shape as the `*.tmp` sweep above —
-    /// from whatever previous processes left on disk, so their leftovers are still
-    /// collected by the first write to the key that owns them. A remembered path that
-    /// something else has already deleted costs nothing: `File.Delete` on a missing
-    /// file is a no-op, so the memo is allowed to be stale, never wrong.
+    /// Seeded once at construction from whatever previous processes left on disk, so
+    /// their leftovers are still collected by the first write to the key that owns them.
+    /// `File.Delete` on a missing file is a no-op, so the memo may be stale.
     let livePathsLock = obj ()
     let livePaths = System.Collections.Generic.Dictionary<string, string list>()
 
@@ -507,9 +478,8 @@ type FileTaskCache(cacheDir: string) =
         enumerateEntries "*.json"
         |> Seq.iter (fun f ->
             match entryKeyOfFileName (Path.GetFileName f) with
-            // Not an entry of ours — a stray `.json` with no `@{hash}` suffix. It is
-            // not reachable through any key, so it is not ours to remember, and not
-            // ours to collect either.
+            // A stray `.json` with no `@{hash}` suffix: not reachable through any key,
+            // so not ours to remember or to collect.
             | None -> ()
             | Some key ->
                 livePaths[key] <-
@@ -543,8 +513,8 @@ type FileTaskCache(cacheDir: string) =
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
-    // Counts read attempts that found a file but failed to parse it (corrupt or stale-format).
-    // Telemetry for §2b measurement A: confirms the rate of corruption-style failures.
+    // Counts read attempts that found a file but failed to parse it (corrupt or
+    // stale-format). Telemetry for the corruption-failure rate.
     let mutable parseFailureCount = 0
 
     let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
@@ -606,8 +576,8 @@ type FileTaskCache(cacheDir: string) =
             if name.StartsWith(prefix) then
                 File.Delete(f)
 
-    /// Total entry count and byte size of cache files in `cacheDir`. §2c
-    /// telemetry: log on daemon startup to set future LRU thresholds from data.
+    /// Total entry count and byte size of cache files in `cacheDir`. Logged on daemon
+    /// startup so future LRU thresholds can be set from data.
     member _.Stats =
         let mutable count = 0
         let mutable bytes = 0L
@@ -619,15 +589,12 @@ type FileTaskCache(cacheDir: string) =
         { EntryCount = count
           SizeBytes = bytes }
 
-    /// Number of read attempts that found a file but couldn't deserialise it.
-    /// §2b measurement A: a non-zero value indicates corruption (e.g. crash mid-write
-    /// before the atomic-rename change shipped) or a stale on-disk format.
+    /// Number of read attempts that found a file but couldn't deserialise it. A
+    /// non-zero value indicates corruption or a stale on-disk format.
     member _.ParseFailureCount = parseFailureCount
 
-    /// How many times this cache has enumerated its whole directory. The write path
-    /// must never do it: a `set` that scans the directory turns a cold scan into a
-    /// quadratic one (see `pruneSupersededSiblings`). Internal — this is a probe for
-    /// the test that holds that line, not part of the cache's contract.
+    /// How many times this cache has enumerated its whole directory. A probe for the
+    /// test holding the "a `set` never scans" line, not part of the cache's contract.
     member internal _.DirectoryScanCount = directoryScanCount
 
     /// Try to retrieve a cached result.

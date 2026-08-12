@@ -18,13 +18,9 @@ let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
 
 /// Format the full errors response.
 ///
-/// In Verbose/Compact modes: per-plugin progress block followed by the colored
-/// by-file error block (via `RunOnceOutput.formatErrors`).
-///
-/// In Agent mode: banner + per-plugin lines from `renderStatuses` (which ends
-/// with `next: ...`) are split so plain diagnostic lines slot in *before* the
-/// trailing `next:` hint. Agents can read the output line by line without
-/// stripping ANSI.
+/// Verbose/Compact: per-plugin progress block, then the colored by-file error block.
+/// Agent: the banner + per-plugin lines are split so plain diagnostic lines slot in
+/// *before* the trailing `next:` hint, giving line-by-line output with no ANSI.
 let formatDiagnosticsResponse
     (mode: ProgressRenderer.RenderMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
@@ -74,8 +70,7 @@ let formatDiagnosticsResponse
 
 /// The failing entries in a DiagnosticsResponse's ledger (warnings respecting
 /// `noWarnFail`). HALF of "did check find real problems" — the other half is
-/// `CheckInputs.anyPluginFailed`, and a caller that folds in only this one is the bug
-/// this release exists to eliminate. Never used alone; see `checkInputs`.
+/// `CheckInputs.anyPluginFailed`. Never used alone; see `checkInputs`.
 let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     let isFailure (e: DiagnosticEntry) =
         match e.Severity with
@@ -103,10 +98,9 @@ let private waitingOnBuild (resp: DiagnosticsResponse) : bool =
 
 /// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
 ///
-/// This is the daemon's HALF of the "one verdict, two transports" contract; the
-/// in-process half is `RunOnceCheck.checkInputs`. Neither computes a verdict; both hand
-/// over the same record, and `CheckVerdict` decides. Adding a term to `CheckInputs`
-/// breaks BOTH here and there — which is the point of it being a record.
+/// This is the daemon's half of "one verdict, two transports"; the in-process half is
+/// `RunOnceCheck.reread`. Neither computes a verdict; both hand over the same record,
+/// and `CheckVerdict` decides. Adding a term to `CheckInputs` breaks both.
 let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: DiagnosticsResponse) : CheckVerdict.CheckInputs =
     { PluginStatuses = resp.Statuses
       FailingDiagnostics = failingDiagnosticCount noWarnFail resp
@@ -230,9 +224,8 @@ let renderIpcResult
                         // `allZeroMatch` is deliberately false for an empty result set
                         // (no project is not the same claim as every project matched
                         // nothing), so without this branch an empty `projects` array
-                        // fell through to "Tests passed" — a green for a run that
-                        // executed nothing. That is the worst case wearing the best
-                        // outcome's clothes, and it is why this branch exists.
+                        // reads as "Tests passed" — a green for a run that executed
+                        // nothing.
                         let projectCount = projects.EnumerateArray() |> Seq.length
 
                         // The producer STATES what the run verified instead of leaving
@@ -240,13 +233,9 @@ let renderIpcResult
                         //
                         // PARSED, not string-compared. The tokens are written in exactly
                         // one place (`RunVerification.token`, core) and read back through
-                        // `tryParse`, so a rename cannot drift between the two ends. The
-                        // previous form compared literals here and fell through to
-                        // `Tests passed`, exit 0, for ANY token this build did not know —
-                        // a newer daemon, a typo, a future case. That is the one outcome
-                        // this whole area exists to prevent, and it was reachable by an
-                        // `else`. `IpcParsing.fs`'s `ScopeUnreadable` gets the same
-                        // decision right; this now matches it.
+                        // `tryParse`, so a rename cannot drift between the two ends —
+                        // and, unlike a literal comparison with an `else`, a token this
+                        // build does not know cannot fall through to exit 0.
                         //
                         // `None` means BOTH "absent" and "unreadable", and both are
                         // handled below as no-verdict. Absent is the older-daemon case:
@@ -268,15 +257,11 @@ let renderIpcResult
                                 else
                                     RanPerCounts
 
-                        // AUTOMATION-272 — say what the run actually did, on every
-                        // outcome including the green.
-                        //
-                        // These counts existed only in `daemon.log`, so telling a real
-                        // pass from a vacuous one meant going and reading a log. The
-                        // missing summary line IS the tell: "1 project: 1 matched
-                        // nothing" and "1 project: 12 passed" are the same `✓` without
-                        // it. Printed before the verdict so it is present whichever
-                        // branch below fires.
+                        // Say what the run actually did, on every outcome including the
+                        // green: "1 project: 1 matched nothing" and "1 project: 12
+                        // passed" are the same `✓` without this line, and the counts are
+                        // otherwise only in `daemon.log`. Printed before the verdict so
+                        // it is present whichever branch below fires.
                         let statusCounts =
                             projects.EnumerateArray()
                             |> Seq.map (fun p ->
@@ -338,14 +323,12 @@ let renderIpcResult
                                 $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
 
                             // Two causes, and the ordering matters. The filter is fanned
-                            // out across EVERY configured project, so a class that
-                            // really exists still reports "matched nothing" in each
-                            // project that does not contain it — and if the one that
-                            // does was not among those invoked, the run says the same
-                            // thing as a typo does. Naming only the typo sent the last
-                            // investigation after a class that was never misspelled
-                            // (AUTOMATION-272), so aim is offered first when the run was
-                            // narrow enough for it to be the likely story.
+                            // out across EVERY configured project, so a class that really
+                            // exists still reports "matched nothing" in each project that
+                            // does not contain it — indistinguishable from a typo. Naming
+                            // only the typo has already sent one investigation after a
+                            // class that was never misspelled, so aim is offered first
+                            // when the run was narrow enough for it to be the likely story.
                             if projectCount = 1 then
                                 UI.info
                                     "  Either the class lives in a DIFFERENT project than the one that ran, or the pattern is a typo / renamed class."
@@ -430,18 +413,17 @@ let MaxConvergeAttempts = 3
 /// reached its authoritative verdict. Pure of the scan trigger — the caller
 /// decides whether/when to wait for a scan first.
 ///
-/// SOUNDNESS: the loop termination is `isSettled`, NOT a status-map predicate
-/// like `isAllTerminal`. `isAllTerminal` treats `Idle` as quiescent and never
-/// consults the host's inflight/busy state, so it concludes "settled" while a
-/// downstream plugin (test-prune) still has a `BuildCompleted` event queued in
-/// its mailbox (status observably `Idle`, handler not yet run) or while it is
-/// mid-run with a non-empty pending-verification queue. That produced false
-/// greens: `check` exited 0 having computed N affected tests BEFORE the
-/// test-prune run's verdict was captured. The authoritative settle is the
-/// daemon's `WaitForComplete` RPC (`waitForVerdict` → `requireVerdict=true`,
-/// which gates on `AnyPluginBusy` + generation advancement + quiescence), so
-/// `isSettled` is wired to that RPC's completion. The status reads here are for
-/// RENDERING ONLY and never decide the verdict.
+/// SOUNDNESS: the loop termination is `isSettled`, NOT a status-map predicate like
+/// `isAllTerminal`. `isAllTerminal` treats `Idle` as quiescent and never consults the
+/// host's inflight/busy state, so it concludes "settled" while a downstream plugin
+/// (test-prune) still has a `BuildCompleted` event queued in its mailbox (status
+/// observably `Idle`, handler not yet run) or while it is mid-run with a non-empty
+/// pending-verification queue — which exits 0 having computed N affected tests BEFORE
+/// the test-prune run's verdict was captured. The authoritative settle is the daemon's
+/// `WaitForComplete` RPC (`waitForVerdict` → `requireVerdict=true`, gating on
+/// `AnyPluginBusy` + generation advancement + quiescence), so `isSettled` is wired to
+/// that RPC's completion. The status reads here are for RENDERING ONLY and never
+/// decide the verdict.
 let private pollUntilSettled
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (getStatus: unit -> string)
@@ -456,8 +438,7 @@ let private pollUntilSettled
 
         // RENDERING ONLY (see the soundness note above): an unreadable status payload
         // renders as nothing here and decides nothing. The verdict is settled by
-        // `isSettled` and graded from `getErrors`, both of which fail closed on their
-        // own — this loop is a progress display and must not become a second opinion.
+        // `isSettled` and graded from `getErrors`, both of which fail closed on their own.
         let parsed = parsePluginStatuses statusJson |> Result.defaultValue Map.empty
 
         if UI.isInteractive then
@@ -484,17 +465,15 @@ let private pollUntilSettled
         for _ in 1..prevLineCount do
             Console.Error.Write("\x1b[A\x1b[2K")
 
-/// True when `ex` (walking its inner-exception chain) indicates the daemon shut
-/// down or the IPC pipe dropped WHILE a `WaitForComplete` verdict wait was in
-/// flight — as opposed to a genuine plugin verdict (which comes back as a normal
-/// status payload, never a fault). Matches three shapes: StreamJsonRpc's
-/// connection-loss exception (by type-name substring, so no compile-time
-/// dependency on the transport assembly is needed here), a raw pipe teardown
-/// (`IOException`/`ObjectDisposedException`/`EndOfStreamException`), and the
-/// daemon's own graceful-shutdown sentinel message propagated back as a remote
-/// invocation error. Used to turn a mid-wait teardown into a diagnostic exit-2
-/// ("no verdict was produced") instead of an opaque crash — the waiting client
-/// must never see a silent connection drop.
+/// True when `ex` (walking its inner-exception chain) indicates the daemon shut down or
+/// the IPC pipe dropped WHILE a `WaitForComplete` verdict wait was in flight — as opposed
+/// to a genuine plugin verdict, which comes back as a normal status payload, never a
+/// fault. Matches StreamJsonRpc's connection-loss exception (by type-name substring, so
+/// no compile-time dependency on the transport assembly), a raw pipe teardown, and the
+/// daemon's graceful-shutdown sentinel propagated back as a remote invocation error.
+///
+/// Used to turn a mid-wait teardown into a diagnostic exit 2 ("no verdict was produced")
+/// instead of an opaque crash: the waiting client must never see a silent drop.
 let rec isDaemonShutdownDuringWait (ex: exn) : bool =
     match ex with
     | null -> false
@@ -526,19 +505,15 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
          && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
 
-/// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is
-/// reading (stdout not a TTY) — print the steering block that names it.
-///
-/// The verdict written here and the exit code returned to the shell are two
-/// renderings of ONE `CheckOutcome`. There is no second computation, so there is
-/// no way for the file to say green while the process says red.
+/// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
+/// (stdout not a TTY) — print the steering block that names it. The file and the exit
+/// code are two renderings of ONE `CheckOutcome`, never a second computation.
 ///
 /// TREE HASH: taken TWICE — once after the daemon has settled (that is the tree
 /// it just finished verifying) and once again immediately before the write. If
 /// the two differ, the working tree moved underneath the verdict while it was
 /// being produced, and the honest answer is `incomplete`, not a green over a tree
-/// nobody checked. The failure direction is the safe one: it is a refusal, never
-/// a claim.
+/// nobody checked.
 ///
 /// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
 /// its exit code. The verdict is an additional surface, never a new way to fail.
@@ -567,9 +542,8 @@ let internal publishVerdict
 
         // `create` REFUSES a green carrying a failing plugin. It cannot fire from here —
         // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
-        // `pluginVerdicts` renders, so a failing plugin has already made it red — and
-        // that is exactly the property worth having a guard for: the day the two drift
-        // apart again, fshw stops rather than stamping the contradiction on disk.
+        // `pluginVerdicts` renders — but if the two ever drift apart, fshw stops rather
+        // than stamping the contradiction on disk.
         let v =
             Verdict.create
                 (Verdict.Command.ofCheckMode checkMode)
@@ -601,9 +575,8 @@ let internal publishVerdict
 /// the convergence path (incomplete coverage, no failures).
 ///
 /// Every terminal path — clean, red, incomplete, wedged plugin, daemon teardown —
-/// publishes a verdict file. The moments a consumer is MOST tempted to start
-/// grepping are the failures, so those are exactly the moments the machine-readable
-/// answer must exist and be pointed at.
+/// publishes a verdict file, so the machine-readable answer exists on the failures
+/// too, not only the greens.
 let pollAndRender
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
@@ -617,12 +590,9 @@ let pollAndRender
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
     // Run EVERY configured test project, now, and don't come back until it is done
-    // (`run-tests` with no filter). This is `confirm`'s teeth: `set-scope full` only
-    // makes the next run unfiltered, and on a warm daemon whose impact DB says nothing
-    // changed there IS no next run — so `confirm` would refuse for want of evidence it
-    // was never willing to go and get. Invoked ONLY in `Confirmation`, and only when the
-    // settled scope is not already full-suite, so the common case (a cold daemon whose
-    // scan already provoked the unfiltered run) pays for exactly one suite.
+    // (`run-tests` with no filter). Invoked ONLY in `Confirmation`, and only when the
+    // settled scope is not already full-suite — see the "CONFIRM EARNS ITS EVIDENCE"
+    // block below.
     (forceFullRun: unit -> unit)
     (triggerScan: unit -> string)
     : int =
@@ -637,11 +607,9 @@ let pollAndRender
             fn ()
 
     // Settle the host through its AUTHORITATIVE verdict (`WaitForComplete` →
-    // `waitForVerdict`), rendering live status while it blocks. `WaitForComplete`
-    // runs on a background task; the render loop terminates only when THAT task
-    // finishes — never on the Idle-tolerant `isAllTerminal` status predicate
-    // that let `check` exit green while test-prune still had a build event queued
-    // or a run in flight. See `pollUntilSettled`.
+    // `waitForVerdict`), rendering live status while it blocks. `WaitForComplete` runs on
+    // a background task; the render loop terminates only when THAT task finishes, never
+    // on the Idle-tolerant `isAllTerminal` predicate — see `pollUntilSettled`.
     let settle () : unit =
         let completeTask =
             System.Threading.Tasks.Task.Run(fun () -> waitForComplete () |> ignore)
@@ -651,15 +619,10 @@ let pollAndRender
         // behind a vacuous clean — re-raises the original RPC exception.
         completeTask.GetAwaiter().GetResult()
 
-    // A mid-wait daemon teardown (an explicit `fshw stop`, or any crash while a
-    // settle is in flight) surfaces the RPC as a transport fault, NOT a verdict.
-    // Translate it into a loud diagnostic + exit 2 ("completeness unachievable")
-    // so the waiting client always gets an actionable verdict rather than an
-    // opaque connection-drop stack trace. See `isDaemonShutdownDuringWait`.
-    // The LAST state the verdict was computed from. Captured at every read (the
-    // first one and each convergence re-read) so the file records what the final
-    // verdict was actually based on — never an earlier snapshot, and never a
-    // second query that could see a different daemon.
+    // The LAST state the verdict was computed from. Captured at every read (the first
+    // one and each convergence re-read) so the file records what the final verdict was
+    // actually based on — never an earlier snapshot, and never a second query that could
+    // see a different daemon.
     let finalStatuses = ref Map.empty
 
     // The placeholder before anything has been ASKED. It reaches `publishVerdict` only
@@ -714,8 +677,7 @@ let pollAndRender
         // scope reads `FullSuite` here and nothing more is run. But a WARM daemon whose
         // impact DB says nothing changed provokes NO run at all, and the scope we just
         // read is the last (filtered) run's. Refusing there is correct — there is no
-        // whole-suite evidence — but refusing and STOPPING makes `confirm` unsatisfiable,
-        // and an unsatisfiable check is one people route around with a shell script.
+        // whole-suite evidence — but refusing and STOPPING makes `confirm` unsatisfiable.
         //
         // So: no full-suite evidence ⇒ go and produce some. Then re-settle and re-read,
         // because a forced run can fail, and its failures are the answer.
@@ -779,11 +741,10 @@ let pollAndRender
         CheckVerdict.exitCode outcome
     with
     | ex when isVerdictWaitTimeout ex ->
-        // The daemon's hard verdict deadline fired: a plugin overran the bound
-        // and is most likely wedged. The remote message names the plugin and
-        // its elapsed time (e.g. "still running: test-prune (1h 0m)"). Surface
-        // it verbatim plus the recovery path — bounded and legible, never the
-        // old heartbeat-forever silence.
+        // The daemon's hard verdict deadline fired: a plugin overran the bound and is
+        // most likely wedged. The remote message names the plugin and its elapsed time
+        // (e.g. "still running: test-prune (1h 0m)"), so it is surfaced verbatim plus
+        // the recovery path.
         publishVerdict
             repoRoot
             excludePatterns

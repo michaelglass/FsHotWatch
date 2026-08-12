@@ -34,8 +34,7 @@ let classifyProject (relativePath: string) : ProjectKind =
 /// Rooted at the REPO ROOT, so it is one hop from `.devenv/profile` — a naive
 /// recursive walk would follow that symlink into a cycle and hang. `SafeWalk` owns
 /// the recursion: no symlinked-dir descent, depth-capped, tooling dirs excluded by
-/// name. The seam no longer carries a `SearchOption` — recursion is always safe AND
-/// always recursive, so there is nothing left to choose.
+/// name.
 let discoverProjects (repoRoot: string) (enumerateFiles: (string -> string -> seq<string>) option) : string list =
     let enumerate =
         defaultArg enumerateFiles (fun dir pattern ->

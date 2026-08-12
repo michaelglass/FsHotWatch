@@ -87,15 +87,13 @@ type CheckPipeline
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
     /// `clearCheckCache` (default `true`) controls whether the check-result cache is
-    /// also dropped. The project→options maps are *always* rebuilt — they're
-    /// cheap and membership may have changed. The check-result cache is keyed
-    /// by `(file content hash, project-options hash)`, so retaining it across a
-    /// scoped re-discovery is safe: a project whose options changed gets a new
-    /// key (cache miss → recompute), and a project whose options are unchanged
-    /// keeps its warm entry. Pass `false` from the scoped project-change path
-    /// (which separately invalidates the affected project + its dependents) so
-    /// unrelated projects stay hot; leave `true` for full/repo-wide
-    /// re-discovery where reasoning about per-project staleness isn't possible.
+    /// also dropped. The project→options maps are always rebuilt — they're cheap and
+    /// membership may have changed. Retaining the check-result cache is safe because it
+    /// is keyed by `(file content hash, project-options hash)`: changed options get a
+    /// new key (miss → recompute), unchanged ones keep their warm entry. Pass `false`
+    /// from the scoped project-change path (which separately invalidates the affected
+    /// project + its dependents); leave `true` for repo-wide re-discovery, where
+    /// per-project staleness cannot be reasoned about.
     member _.PrepareForRediscovery(?clearCheckCache: bool) =
         let clearCheckCache = defaultArg clearCheckCache true
 
@@ -178,13 +176,11 @@ type CheckPipeline
     /// If a caller token is provided, the returned CTS is linked to it so that daemon-level
     /// cancellation also cancels the per-file check.
     ///
-    /// Load-bearing for correctness, NOT a hot-path optimization: scanMailbox and
-    /// changeAgent in Daemon.fs (the `performScan` and `processBatch` paths) can
-    /// issue concurrent CheckFile calls for the same file. Without cancellation a
-    /// slow scan-side check can emit a stale FileChecked AFTER the batch-side
-    /// check has already emitted the fresh one — plugins (FCS error ledger, Lint,
-    /// Analyzers) would observe newer-then-older ordering and re-publish stale
-    /// errors.
+    /// Required for correctness, not a hot-path optimization: scanMailbox and
+    /// changeAgent in Daemon.fs can issue concurrent CheckFile calls for the same file.
+    /// Without cancellation a slow scan-side check can emit a stale FileChecked AFTER
+    /// the batch-side check emitted the fresh one, and plugins would observe
+    /// newer-then-older ordering and re-publish stale errors.
     member _.CancelPreviousCheck(filePath: AbsFilePath, ?ct: CancellationToken) : CancellationTokenSource =
         let ct = defaultArg ct CancellationToken.None
 

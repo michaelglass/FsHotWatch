@@ -47,12 +47,10 @@ let ``parseCtrfTests recognises skipped status`` () =
     let records = parseCtrfTests json
     test <@ records.[0].Outcome = TestOutcome.Skipped @>
 
-// A captured real Microsoft.Testing.Platform / xUnit.v3 CTRF report: tests and
-// summary are nested under `results`, and a test that threw a RAW (non-assertion)
-// exception is OMITTED from `results.tests` while still counted in the summary
-// (`tests:3` but only 2 entries; the throw shows as `failed:2` + `other:1`). This
-// is captured output, not hand-authored — it is the shape the verdict logic must
-// handle (see the comment on `parseCtrfTests`/`tryParseReport`).
+// CAPTURED (not hand-authored) Microsoft.Testing.Platform / xUnit.v3 output: tests
+// and summary nest under `results`, and a test that threw a RAW (non-assertion)
+// exception is OMITTED from `results.tests` while still counted in the summary —
+// `tests:3` with only 2 entries, the throw showing as `failed:2` + `other:1`.
 let private realCtrf =
     """{"reportFormat":"CTRF","specVersion":"0.0.0",
         "results":{
@@ -85,8 +83,8 @@ let ``parseCtrfTests reads the real nested results.tests shape`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``tryParseReport reads summary counts, not the per-test array length`` () =
-    // The summary says 3 tests but the array holds only 2 (the raw-throw is
-    // omitted). The report's totals must come from the summary, never the array.
+    // The summary says 3 tests, the array holds 2 (the raw-throw is omitted): the
+    // totals must come from the summary, never the array.
     match tryParseReport realCtrf with
     | None -> failwith "expected Some report"
     | Some r ->
@@ -109,7 +107,6 @@ let ``tryParseReport reports allClear for a clean run`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``tryParseReport treats an other-only run as not allClear`` () =
-    // A test that errored individually (CTRF `other`) is NOT a clean pass.
     let json =
         """{"results":{"summary":{"tests":1,"passed":0,"failed":0,"pending":0,"skipped":0,"other":1,"suites":1}}}"""
 
@@ -198,7 +195,6 @@ let ``appendRecords trims per-test history to the last N`` () =
               DurationMs = i
               RunStartedAt = t0.AddSeconds(float i) }
 
-        // Write 30 records one at a time, retain last 5
         for i in 1..30 do
             appendRecords path 5 [ mkRecord i ]
 
@@ -244,7 +240,7 @@ let ``topFlaky returns tests sorted by flakiness descending`` () =
         let history = loadHistory path
         let top = topFlaky 10 history
 
-        // FlakyA should be first (score 1.0); StableB excluded (score 0.0).
+        // StableB scores 0.0 and is excluded entirely, so only FlakyA is listed.
         test <@ top.Length = 1 @>
         test <@ (fst top.[0]) = "Mod.FlakyA" @>
         test <@ (snd top.[0]) = 1.0 @>)
@@ -254,17 +250,12 @@ let ``topFlaky returns tests sorted by flakiness descending`` () =
 // could lose records.
 // ---------------------------------------------------------------------------
 //
-// `keepN` bounded each test's record LIST, but nothing bounded the set of test
-// NAMES: a renamed / deleted / one-off-parameterised test kept its entry for
-// good. The live file reached 5.5 MB, and `appendRecords` — a full parse plus a
-// full rewrite of ALL of it — was called once per test CONFIG from inside
-// `executeTests`, so 6 projects meant 6 sequential parse+rewrite cycles per run.
-//
-// And because those configs run under `Async.Parallel`, that per-config
-// read-modify-write raced ITSELF: two projects finishing together each loaded the
-// same `existing` history, and the second writer silently dropped the first's
-// records. Collecting every project's records and writing ONCE per run fixes the
-// cost and the race together — the same shape `coverageRawPaths` already used.
+// `keepN` bounds each test's record LIST; nothing bounded the set of test NAMES, so
+// a renamed or deleted test kept its entry for good and the live file reached
+// 5.5 MB. `appendRecords` parses and rewrites ALL of it, and was called once per
+// test CONFIG — under `Async.Parallel`, so the read-modify-write also raced itself
+// and the second writer dropped the first's records. Collecting every project's
+// records and writing ONCE per run fixes the cost and the race together.
 
 let private t0 = DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc)
 
@@ -317,8 +308,8 @@ let ``mergeRecords keeps the N most-recent per test and expires the rest`` () =
 [<Fact(Timeout = 15000)>]
 let ``appendRecords records EVERY project's tests in one write (no lost update)`` () =
     // The shape of the race the per-config call created: several projects' records
-    // arriving "together". One call with all of them must retain all of them —
-    // whereas N calls that each re-load-and-rewrite could drop each other's.
+    // arriving together. One call with all of them retains all of them, where N
+    // load-and-rewrite calls could drop each other's.
     withTempDir "fshw-flake-multi" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
         let now = DateTime.UtcNow

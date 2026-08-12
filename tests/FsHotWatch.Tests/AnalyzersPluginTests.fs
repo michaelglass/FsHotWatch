@@ -11,9 +11,8 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
-// Analyzer tests use Unchecked.defaultof for ParseResults to verify the plugin
-// guards against null inputs from FCS aborts. Override the shared helper rather
-// than reinvent the record literal at every site.
+// `Unchecked.defaultof` for ParseResults is deliberate: it stands in for the null FCS
+// hands back on an abort, which the plugin must guard against.
 let private fakeResult file =
     { fakeFileCheckResult file with
         Source = "let x = 1"
@@ -54,8 +53,8 @@ let ``analyzer error path does not crash`` () =
     with _ ->
         ()
 
-    // With framework handler, status may be Idle (event not yet processed),
-    // Running, or Completed — the key thing is the plugin doesn't crash
+    // Any of Idle / Running / Completed is acceptable — the event may not have been
+    // picked up yet. Only a crash is a failure.
     let status = host.GetStatus("analyzers")
     test <@ status.IsSome @>
 
@@ -67,7 +66,6 @@ let ``analyzer error path does not crash`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``analyzer with non-existent path skips loading`` () =
-    // Exercise the Directory.Exists false branch
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
@@ -75,14 +73,12 @@ let ``analyzer with non-existent path skips loading`` () =
 
     host.RegisterHandler(handler)
 
-    // No analyzers should be loaded — diagnostics command shows 0 analyzers
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"analyzers\":0") @>
 
 [<Fact(Timeout = 20000)>]
 let ``analyzer with mix of valid and invalid paths`` () =
-    // Create a real empty dir that exists, paired with one that does not
     let emptyDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-empty-{System.Guid.NewGuid():N}")
 
@@ -110,11 +106,10 @@ let ``analyzer with mix of valid and invalid paths`` () =
         with _ ->
             ()
 
-// Fail-loud guard inputs: a CONFIGURED analyzer path that loads zero analyzers
-// must produce LoadedCount = 0, which is what DaemonConfig.analyzersLoadFailure
-// turns into a RED gate. Two sub-cases the guard must catch:
-//   (a) the path does not exist (the actual CI bug — bin built in wrong config)
-//   (b) the path exists but contains no analyzer DLLs
+// Guard inputs: a configured analyzer path that loads zero must produce LoadedCount = 0,
+// which DaemonConfig.analyzersLoadFailure turns into a RED gate. The two shapes that hit
+// it are a missing path (the actual CI bug — bin built in the wrong config) and an
+// existing path with no analyzer DLLs.
 
 [<Fact(Timeout = 15000)>]
 let ``configured non-existent analyzer path loads zero (guard input)`` () =
@@ -122,8 +117,7 @@ let ``configured non-existent analyzer path loads zero (guard input)`` () =
     let handler = create None [ path ] None DiagnosticSeverity.Hint
 
     test <@ handler.Init.LoadedCount = 0 @>
-    // Per-path: a non-existent path is recorded with a 0 count so the per-path
-    // guard can name it as the offender.
+    // Recorded per-path, so the guard can name the offender rather than just the total.
     test <@ handler.Init.LoadedByPath = [ path, 0 ] @>
 
 [<Fact(Timeout = 15000)>]
@@ -136,7 +130,6 @@ let ``configured empty analyzer dir loads zero (guard input)`` () =
     try
         let handler = create None [ emptyDir ] None DiagnosticSeverity.Hint
         test <@ handler.Init.LoadedCount = 0 @>
-        // Per-path: an existing-but-empty dir is recorded with a 0 count.
         test <@ handler.Init.LoadedByPath = [ emptyDir, 0 ] @>
     finally
         try
@@ -168,7 +161,6 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let parseOnlyKey = cacheKeyFn (FileChecked parseOnlyResult)
     let fullCheckKey = cacheKeyFn (FileChecked fullCheckResult)
 
-    // ParseOnly should have a different cache key than FullCheck
     test <@ parseOnlyKey.IsSome @>
     test <@ fullCheckKey.IsSome @>
     test <@ parseOnlyKey <> fullCheckKey @>
@@ -190,13 +182,10 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 
     host.EmitFileChecked(fakeResult)
 
-    // Wait for the plugin to finish processing (status reaches Completed/Failed)
     waitForTerminalStatus host "analyzers" 12000
 
-    // ParseOnly should dispatch to the async worker (not skip synchronously).
-    // With Unchecked.defaultof ParseResults, the analyzer will crash — but it
-    // should crash via the AnalysisFailed path (proving the worker ran),
-    // not silently complete via the old skip path.
+    // The crash IS the evidence: with a null ParseResults the analyzer must fail via
+    // AnalysisFailed, proving the worker ran rather than skipping synchronously.
     let errors = host.GetErrorsByPlugin("analyzers")
 
     let hasAnalyzerCrash =
@@ -232,10 +221,8 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
 
     test <@ hasAnalyzerCrash @>
 
-// §2a: getCommitId is no longer consulted by Analyzers; the plugin always
-// provides a CacheKey and the key depends only on the FileChecked content.
-// Earlier "cache key when getCommitId is None" tests are obsolete under the
-// new contract — replaced below by content-based behavior.
+// getCommitId is not consulted here: the plugin always provides a CacheKey and the key
+// depends only on the FileChecked content.
 
 [<Fact(Timeout = 15000)>]
 let ``cache key is provided regardless of getCommitId`` () =
@@ -248,7 +235,6 @@ let ``cache key is provided regardless of getCommitId`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``cache key reflects file content when getCommitId is unavailable`` () =
-    // §2a: even with no jj commit, identical source bytes produce identical keys.
     let handler = create None [] None DiagnosticSeverity.Hint
     let cacheKeyFn = handler.CacheKey.Value
 
@@ -272,16 +258,13 @@ let ``cache key reflects file content when getCommitId is unavailable`` () =
     test <@ k1 <> k3 @>
 
 // ---------------------------------------------------------------------------
-// Cache correctness (2026-06-17): a rebuilt analyzer DLL must invalidate cached
-// per-file verdicts even when the configured analyzer PATHS are byte-identical.
-// Before this fix the cache key hashed the path STRINGS only, so a long-lived
-// daemon replayed stale-green for unchanged source after an analyzer rule
-// changed / a new analyzer was added (same path, new DLL content). These tests
-// use throwaway *.dll byte files so the keying is exercised deterministically
-// without a real SDK analyzer load.
+// A rebuilt analyzer DLL must invalidate cached per-file verdicts even when the
+// configured PATHS are byte-identical. The key used to hash the path strings only, so a
+// long-lived daemon replayed stale-green for unchanged source after a rule changed. The
+// throwaway *.dll byte files below exercise the keying deterministically, with no real
+// SDK analyzer load.
 // ---------------------------------------------------------------------------
 
-/// Write `bytes` to a fresh `name`.dll inside a unique temp dir; return the dir.
 let private analyzerBinWith (name: string) (bytes: byte array) =
     let dir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-id-{System.Guid.NewGuid():N}")
@@ -297,9 +280,8 @@ let ``analyzerAssemblyIdentity changes when an analyzer DLL's content changes`` 
     try
         let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
 
-        // Simulate a rebuild: same path, same DLL filename, new bytes (rule
-        // changed). The identity MUST differ — this is what invalidates the
-        // stale per-file cache entry.
+        // A rebuild: same path, same DLL filename, new bytes. The identity shift is what
+        // invalidates the stale per-file cache entry.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "MyAnalyzer.dll"), [| 9uy; 8uy; 7uy; 6uy |])
         let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
 
@@ -344,13 +326,11 @@ let ``analyzerAssemblyIdentity is stable for identical content (cache hits survi
 
 [<Fact(Timeout = 15000)>]
 let ``analyzerAssemblyIdentity ignores known-non-analyzer (bundled dep) DLLs`` () =
-    // A bundled BCL/FCS dep churning (e.g. FSharp.Core refresh) must NOT change
-    // the analyzer identity — only the analyzer assemblies themselves count.
+    // Otherwise an FSharp.Core refresh would invalidate every cached verdict.
     let dir = analyzerBinWith "RealAnalyzer" [| 1uy |]
 
     try
         let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
-        // FSharp.Core matches a known-non-analyzer prefix ⇒ excluded from identity.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "FSharp.Core.dll"), [| 42uy; 43uy |])
         let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
         test <@ before = after @>
@@ -374,11 +354,9 @@ let ``analyzerAssemblyIdentity does not throw on a missing path`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =
-    // The end-to-end Bug A repro at the CacheKey level: two handlers configured
-    // with the SAME analyzer path, but the DLL content differs between them
-    // (a rebuild). The per-file cache key for identical source MUST differ, so a
-    // daemon that cached "clean" under the old DLL cannot replay it after the
-    // rebuild. Before the fix (path-string-only key) these keys were identical.
+    // Two handlers on the SAME analyzer path with different DLL content. Under the old
+    // path-string-only key these keys were identical, so a daemon that cached "clean"
+    // under the old DLL replayed it after the rebuild.
     let dir = analyzerBinWith "RuleChanged" [| 0uy; 1uy; 2uy |]
 
     try
@@ -386,7 +364,7 @@ let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
         let key1 = (h1.CacheKey.Value) event
 
-        // Rebuild the analyzer (rule changed) — same path, new content.
+        // The rebuild: same path, new content.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "RuleChanged.dll"), [| 9uy; 9uy; 9uy; 9uy |])
 
         let h2 = create None [ dir ] None DiagnosticSeverity.Hint
@@ -394,7 +372,6 @@ let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)
 
         test <@ key1.IsSome @>
         test <@ key2.IsSome @>
-        // Same source, same path — but different analyzer DLL ⇒ different key.
         test <@ key1 <> key2 @>
     finally
         try
@@ -412,8 +389,6 @@ let ``cache key for Custom event returns None`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``cache key for non-FileChecked event returns None`` () =
-    // §2a: only FileChecked produces a cache key; other events aren't
-    // cached at all (the plugin only subscribes to SubscribeFileChecked anyway).
     let handler = create None [] None DiagnosticSeverity.Hint
     let cacheKeyFn = handler.CacheKey.Value
 
@@ -422,13 +397,8 @@ let ``cache key for non-FileChecked event returns None`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``regression: FileChecked replays from cache on second emission with same content`` () =
-    // Two FileChecked events with the same File+Source. The first runs the
-    // analyzer (terminal-status writes to cache); the second should replay
-    // from cache without re-running.
-    //
-    // With Async.Start (pre-fix), the first never wrote to cache, so the
-    // second always re-ran. With awaited execution, the first writes and the
-    // second hits.
+    // Pins the Async.Start regression: fire-and-forget execution meant the first run
+    // never wrote to cache, so every subsequent identical event re-ran the analyzer.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -436,11 +406,10 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
-    // First run — cold cache, analyzer crashes (terminal Failed), cache write.
+    // Cold cache: the analyzer crashes (terminal Failed), which still writes the entry.
     host.EmitFileChecked(fakeResult "/tmp/test/Replay.fs")
     waitForTerminalStatus host "analyzers" 15000
 
-    // Verify cache populated.
     let key: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
           File = Some "/tmp/test/Replay.fs" }
@@ -448,48 +417,30 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let cacheKeyFn = handler.CacheKey.Value
     let event = FileChecked(fakeResult "/tmp/test/Replay.fs")
     let computedKey = cacheKeyFn event
-    // The framework writes the cache entry in `runAndCache` AFTER the plugin
-    // reports terminal status (ReportStatus → GetStatus is what
-    // waitForTerminalStatus observes, then `cache.Set` runs). So terminal
-    // status happens-before the cache write only by a small window; poll the
-    // cache itself (the real postcondition) rather than reading once and racing
-    // that window.
+    // `runAndCache` writes the entry AFTER the plugin reports terminal status, so what
+    // waitForTerminalStatus observes precedes the cache write by a small window. Poll the
+    // cache itself rather than reading once and racing it.
     waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 15000
     test <@ (cacheIface.TryGet key computedKey.Value).IsSome @>
 
-    // Verify hit count by computing keys again (should be the same).
     let event2 = FileChecked(fakeResult "/tmp/test/Replay.fs")
     let computedKey2 = cacheKeyFn event2
     test <@ computedKey = computedKey2 @>
 
 [<Fact(Timeout = 15000)>]
 let ``regression AUTOMATION-186: cache replay must not resurrect a stale global findings summary`` () =
-    // Field incident (2026-07-21, fshotwatch.cli 0.14.0-alpha.6): `fshw confirm`
-    // rendered "✓ analyzers — analyzed 1044 files, 5 findings (5 errors,
-    // 0 warnings) (cached)" while `fshw status analyzers` had ZERO accumulated
-    // diagnostics and the verdict was green. The 5 findings had been found AND
-    // fixed earlier in the same daemon session.
+    // The mechanism (AUTOMATION-186): a per-FileChecked cache entry used to store a
+    // terminal status whose summary snapshotted GLOBAL state (all of DiagnosticsByFile +
+    // RunAnalyzed) while being keyed on per-file content. Fixing findings in file A
+    // rewrote A's entry, but every OTHER file's entry still carried the old global count,
+    // and the framework replayed that string verbatim — so `confirm` rendered "5
+    // findings" over a ledger that held none. The fix makes the shape unrepresentable:
+    // a per-file entry is a `CachedFileCompleted` with only its duration, and the summary
+    // is derived from the live ledger at report time.
     //
-    // Mechanism: the plugin's per-FileChecked cache entry stores a terminal
-    // status whose summary is a snapshot of GLOBAL state (the whole
-    // DiagnosticsByFile map + RunAnalyzed) at write time, keyed only by
-    // per-file content. Fixing findings in file A rewrites A's entry, but every
-    // OTHER file's entry still carries the old global count — and the framework
-    // replays that stored string verbatim (PluginFramework.tryReplayCache),
-    // while the error replay for the clean file correctly leaves the ledger
-    // empty. Summary and ledger diverge; the verdict gates on the ledger.
-    //
-    // The fix (AUTOMATION-186) makes the stale shape UNREPRESENTABLE: a per-file
-    // entry (`File = Some`) is a `CachedFileCompleted` carrying only its measured
-    // duration — no summary field exists to snapshot global state into. The
-    // replay DERIVES the summary from the live ledger at report time, so it
-    // cannot re-assert a count the ledger no longer holds.
-    //
-    // This test distills the incident timeline: pre-populate the cache with the
-    // exact per-file entry the plugin's capture window writes for a clean file
-    // (its own error replay is a clear), re-check that file (cache hit → replay),
-    // and demand any findings count the rendered summary asserts agrees with the
-    // currently-valid (empty) diagnostics set.
+    // The cache is pre-populated by hand because the divergence only appears when an
+    // entry minted while OTHER files had findings is replayed after those were fixed —
+    // a sequence a single-file test cannot produce.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -503,11 +454,9 @@ let ``regression AUTOMATION-186: cache replay must not resurrect a stale global 
 
     let cleanEntry: FsHotWatch.TaskCache.TaskCacheResult =
         { CacheKey = cacheKey
-          // The clean file's own error replay is a clear — correct, and the
-          // reason the ledger (and thus the verdict) stays green. In the
-          // incident session, findings in OTHER files were live when this entry
-          // was minted; under the old shape its summary snapshotted the global
-          // "5 findings" count, which then replayed verbatim over this clear.
+          // An empty entry is a clear, which is what keeps the ledger green. Under the
+          // old shape this entry's summary would also have carried the global findings
+          // count live at mint time, replayed verbatim over that clear.
           Errors = [ cleanFile, [] ]
           Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 11.0)
           EmittedEvents = [] }
@@ -552,11 +501,9 @@ let ``regression AUTOMATION-186: cache replay must not resurrect a stale global 
 
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-186: per-file replay WITH findings derives EXACTLY those findings, not a hardcoded zero`` () =
-    // The inverse of the clean-file case. A per-file entry that replays REAL
-    // findings must derive a summary reporting EXACTLY those findings — proving
-    // the derivation reads the live ledger (populated by the entry's own error
-    // replay) rather than emitting a constant. A summary hardcoded to
-    // "0 findings" would pass the clean-file regression above yet lie here.
+    // The inverse of the clean-file case, and the reason it is needed: a summary
+    // hardcoded to "0 findings" passes that regression and lies here. Demanding the
+    // exact count proves the derivation reads the live ledger.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -611,12 +558,9 @@ let ``AUTOMATION-186: per-file replay WITH findings derives EXACTLY those findin
 
 [<Fact(Timeout = 15000)>]
 let ``regression: FileChecked with TaskCache writes a cache entry on terminal status`` () =
-    // Before this fix, AnalyzersPlugin used Async.Start to dispatch its work,
-    // which returned `state` synchronously while the analysis ran in the
-    // background. The framework's per-event cache-write window only saw the
-    // "Running" status (not terminal), so it never wrote to the TaskCache.
-    // After: FileChecked awaits the inner async, so by the time the event
-    // handler returns, capturedStatus is Completed/Failed and the cache writes.
+    // Pins the Async.Start regression: dispatching the work fire-and-forget returned
+    // `state` while the analysis still ran, so the framework's cache-write window only
+    // ever saw "Running" and nothing was written. FileChecked must await the inner async.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -624,13 +568,11 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
-    // Use a fake result; analyzer will crash (Unchecked.defaultof ParseResults),
-    // which exercises the Choice3Of3 path. Crash status is also terminal, so
-    // the cache write must still happen.
+    // The analyzer crashes on the null ParseResults. A crash is still terminal, so the
+    // cache write must happen anyway.
     host.EmitFileChecked(fakeResult "/tmp/test/CacheRegression.fs")
     waitForTerminalStatus host "analyzers" 15000
 
-    // The cache should now contain an entry for (analyzers, that-file).
     let key: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
           File = Some "/tmp/test/CacheRegression.fs" }
@@ -640,9 +582,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let computedKey = cacheKeyFn event
 
     test <@ computedKey.IsSome @>
-    // Cache write lags terminal status (see the Replay test): the framework's
-    // `cache.Set` runs after the plugin's ReportStatus that waitForTerminalStatus
-    // observed. Poll the cache (the real postcondition) instead of reading once.
+    // Cache write lags terminal status — poll it rather than reading once.
     waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 15000
     let result = cacheIface.TryGet key computedKey.Value
     test <@ result.IsSome @>
@@ -682,15 +622,14 @@ let ``teardown cancels CTS and disposes resources`` () =
         ()
 
 // ---------------------------------------------------------------------------
-// Pure-function unit tests for reflection helpers.
-// These deterministically cover branches that the live-FCS integration tests
-// hit nondeterministically depending on which SDK version is loaded.
+// Pure-function tests for the reflection helpers. They cover deterministically what the
+// live-FCS integration tests hit only nondeterministically, depending on the loaded SDK.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 20000)>]
 let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    // slowHook sleeps longer than the 1s timeout, forcing a TimedOut outcome
+    // Sleeps well past the 1s timeout, forcing a TimedOut outcome.
     let slowHook () = System.Threading.Thread.Sleep 3000
 
     let handler =
@@ -722,31 +661,24 @@ let ``analyzers skip compile items outside the repo (AUTOMATION-49)`` () =
 
     host.RegisterHandler(handler)
 
-    // Out-of-repo NuGet-injected compile item (xunit.v3's _content under
-    // ~/.nuget): must be skipped before analysis — running FSharpLint over it
-    // crashed the analyzer host (AUTOMATION-49). Emitted FIRST.
+    // An out-of-repo NuGet-injected compile item: running FSharpLint over one of these
+    // crashed the analyzer host, so it must be skipped before analysis.
     host.EmitFileChecked(
         fakeResult "/home/dev/.nuget/packages/xunit.v3.core.mtp-v1/3.2.2/_content/DefaultRunnerReporters.fs"
     )
-    // Repo-owned file emitted SECOND — it IS analyzed, and its terminal status is
-    // the deterministic sync point (no sleeps): per-plugin events are serialized
-    // by the MailboxProcessor, so once this file's analysis completes the skipped
-    // one has already been dequeued and returned without analyzing.
+    // The repo-owned file is emitted second and IS analyzed, which makes its terminal
+    // status a sleep-free sync point: per-plugin events are serialized by the
+    // MailboxProcessor, so by the time this one completes the skipped one has already
+    // been dequeued and returned.
     host.EmitFileChecked(fakeResult "/my/repo/src/File.fs")
     waitForTerminalStatus host "analyzers" 15000
 
-    // Exactly one analysis ran — the repo-owned file; the out-of-repo one was
-    // skipped (proves the guard fires AND doesn't kill analysis of real files).
+    // Exactly one — proves the guard fires AND doesn't kill analysis of real files.
     test <@ analyzedCount = 1 @>
 
-// These pure synchronous micro-tests (prefix matching, reflection ctor probes)
-// complete in microseconds; the Fact(Timeout) is only a backstop against a
-// hypothetical hang. The former 1000ms cap was tight enough that on a slow /
-// loaded CI runner JIT + parallel-class contention could push a single test
-// past 1s and CANCEL it (observed: `default knownNonAnalyzerPrefixes does not
-// match real analyzer packages` canceled at 1s 973ms). Raised to the suite's
-// standard 15000ms — still bounds a true infinite loop, no longer flakes under
-// load.
+// The micro-tests below run in microseconds; their Fact(Timeout) is only a backstop
+// against a hang, which is why it is the suite's standard 15s rather than something
+// tight. At 1s, JIT plus parallel-class contention was enough to cancel one outright.
 [<Fact(Timeout = 15000)>]
 let ``isKnownNonAnalyzerPrefix returns true when name has matching prefix`` () =
     test <@ isKnownNonAnalyzerPrefix [| "System."; "Microsoft." |] "System.Text.Json" @>
@@ -791,9 +723,8 @@ type private FailingCtorTarget(_v: int) = class end
 
 [<Fact(Timeout = 15000)>]
 let ``buildAnalyzerProjectOptions returns null when ctor invocation throws`` () =
-    // A constructor whose signature doesn't match the 7-arg shape we invoke
-    // with will throw at Invoke time; the helper must swallow the exception
-    // and return null rather than crash the plugin.
+    // A ctor that doesn't match the 7-arg shape throws at Invoke time; the helper must
+    // swallow it and return null rather than take the plugin down.
     let ctor = typeof<FailingCtorTarget>.GetConstructors().[0]
     let result = buildAnalyzerProjectOptions (Some ctor) (FakeProjectOptions() :> obj)
     test <@ isNull result @>
@@ -864,9 +795,9 @@ let ``promoteIfFailing leaves warning untouched when threshold is error`` () =
     test <@ result.Message = "a warning" @>
 
 // ---------------------------------------------------------------------------
-// Verdict reliability (2026-06-02 Issue A): the analyzer summary count must be
-// derived from the current cycle's live diagnostic map — the SAME set that
-// gates the verdict — never a monotonic accumulator carried across cycles.
+// The analyzer summary count must be derived from the current cycle's live diagnostic
+// map — the SAME set that gates the verdict — never a monotonic accumulator carried
+// across cycles.
 // ---------------------------------------------------------------------------
 
 [<Fact>]
@@ -900,18 +831,14 @@ let ``summarize reads 0 findings when every file's entry is empty`` () =
 
     test <@ summarize 2 map = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
 
-/// Recording PluginCtx that captures the run summaries (from the verdict each
-/// terminal status carries) and the per-file report/clear calls (the gated
-/// ledger set, modelled as a Map).
+/// Recording PluginCtx: captures the run summaries carried by each terminal status, and
+/// the per-file report/clear calls as a stand-in for the gated ledger.
 let private makeAnalyzerRecordingCtx () =
     let summaries = System.Collections.Generic.List<string>()
     let ledger = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
 
     let ctx: FsHotWatch.PluginFramework.PluginCtx<AnalyzersMsg> =
         { ReportStatus =
-            // The run summary arrives as the Completed status's verdict now —
-            // capture it where the old CompleteWithSummary hook captured the
-            // side-channel value.
             fun status ->
                 match status with
                 | Completed(_, verdict) -> summaries.Add verdict.Summary
@@ -939,7 +866,6 @@ let private makeAnalyzerRecordingCtx () =
 
     ctx, summaries, ledger
 
-/// Minimal CommandCtx for invoking a handler's IPC commands directly in tests.
 let private nullCommandCtx: FsHotWatch.PluginFramework.CommandCtx<AnalyzersMsg> =
     { RepoRoot = ""
       Log = fun _ -> ()
@@ -966,7 +892,6 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
             Column = 1
             Detail = None } ]
 
-    // Cycle 1: 2 errors on the file.
     let state1 =
         handler.Update ctx handler.Init (Custom(AnalysisComplete(file, findings)))
         |> Async.RunSynchronously
@@ -974,22 +899,18 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
     test <@ summaries |> Seq.last = "analyzed 1 files, 2 findings (2 errors, 0 warnings)" @>
     test <@ ledger.ContainsKey file && ledger.[file].Length = 2 @>
 
-    // Cycle 2: same file re-checks clean (0 findings).
+    // The same file re-checks clean.
     handler.Update ctx state1 (Custom(AnalysisComplete(file, [])))
     |> Async.RunSynchronously
     |> ignore
 
-    // The summary must reflect the CURRENT cycle's gated set: 0 findings — not
-    // the stale 2 from cycle 1. And the file's ledger entry must be cleared.
+    // 0, not the stale 2 from the first cycle — and the ledger entry is cleared too.
     test <@ summaries |> Seq.last = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
     test <@ not (ledger.ContainsKey file) @>
 
-// The `diagnostics` command sums `entries.Length` across every file in the live
-// map. The empty-state path is covered elsewhere ("diagnostics command returns
-// zeroes when no files checked"); this covers the NON-empty fold — a state with
-// real diagnostics — so the summing lambda is exercised deterministically (no
-// SDK analyzer load). Populates state via a Custom(AnalysisComplete …) update,
-// then invokes the command function directly on the resulting state.
+// Covers the NON-empty fold; the empty-state path is covered by "diagnostics command
+// returns zeroes when no files checked". State is populated through a
+// Custom(AnalysisComplete …) update so the summing lambda runs without an SDK load.
 [<Fact(Timeout = 15000)>]
 let ``diagnostics command sums findings across files in a populated state`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
@@ -1016,6 +937,5 @@ let ``diagnostics command sums findings across files in a populated state`` () =
 
     let json = diagnosticsCmd nullCommandCtx populated [||] |> Async.RunSynchronously
 
-    // The fold over the live map must report both findings on the one file.
     test <@ json.Contains("\"diagnostics\":2") @>
     test <@ json.Contains("\"files\":1") @>

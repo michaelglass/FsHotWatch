@@ -15,12 +15,11 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 /// Cache backend for the FCS check pipeline.
 ///
 /// There is no file backend: FCS check results are not serializable (a deserialized
-/// entry always reconstructs as `ParseOnly`, which
-/// `CheckPipeline.tryGetCachedFullCheck` treats as a MISS), so it could never hit. A
-/// config value that selects the removed `"cache": "file"` / `"jj"` backend is a
-/// hard `ConfigError` — dead config fails the load rather than warning and
-/// carrying on, because a warning inside a long gate is indistinguishable from
-/// noise and lets the dead key survive indefinitely.
+/// entry always reconstructs as `ParseOnly`, which `CheckPipeline.tryGetCachedFullCheck`
+/// treats as a MISS), so it could never hit. A config value selecting the removed
+/// `"cache": "file"` / `"jj"` backend is a hard `ConfigError` — dead config fails the
+/// load rather than warning and carrying on, because a warning inside a long gate is
+/// indistinguishable from noise and lets the dead key survive indefinitely.
 type CacheBackendConfig =
     /// No check-result cache. This is the DEFAULT.
     | NoCache
@@ -39,16 +38,15 @@ let createCacheComponents
         (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
          Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
 
-/// Resolves which paths from `paths` exist, retrying with short backoff to
-/// handle the case where the daemon starts immediately after `jj workspace
-/// add`: workspace population is async and `dirExists` can transiently return
-/// false for newly-materialised directories even though they're about to
-/// appear. ~300 ms total wait in the worst case (3 retries × 100 ms) is
-/// invisible in normal operation but prevents a silent "0 paths resolved →
-/// plugin doesn't register" failure when starting in a fresh workspace.
+/// Resolves which paths from `paths` exist, retrying with short backoff for the case
+/// where the daemon starts immediately after `jj workspace add`: workspace population
+/// is async, so `dirExists` can transiently return false for directories that are
+/// about to appear. ~300 ms worst case (3 × 100 ms) is invisible in normal operation
+/// but prevents a silent "0 paths resolved → plugin doesn't register" failure in a
+/// fresh workspace.
 ///
-/// Injectable `dirExists` and `sleep` for unit testing without timing or
-/// disk dependencies.
+/// Injectable `dirExists` and `sleep` for unit testing without timing or disk
+/// dependencies.
 let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> unit) (paths: string list) : string list =
     let resolveAttempt () = paths |> List.filter dirExists
     let mutable resolved = resolveAttempt ()
@@ -64,16 +62,15 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
 /// Fail-loud guard: analyzers are treated like test failures — EVERY configured
 /// `analyzers.paths` entry must contribute ≥1 analyzer, else the check goes RED.
 ///
-/// This closes a "silent green" class — PER PATH, not just in aggregate: a
-/// `.fshw.json` with several analyzer paths where ONE points at a bin dir that
-/// doesn't exist in CI (e.g. built in the wrong configuration) or is empty would
-/// load 0 from that path yet stay green because the OTHER paths loaded. Both
-/// failure modes per path collapse to a count of 0: (a) the path didn't resolve
-/// / doesn't exist, and (b) it exists but holds no analyzer DLLs.
+/// PER PATH, not just in aggregate: a `.fshw.json` with several analyzer paths where ONE
+/// points at a bin dir that doesn't exist in CI (built in the wrong configuration) or is
+/// empty loads 0 from that path yet would stay green because the OTHERS loaded. Both
+/// per-path failure modes collapse to a count of 0: the path didn't resolve, or it
+/// resolved but holds no analyzer DLLs.
 ///
-/// Input is the per-ORIGINAL-configured-path (absolute path, contributed count)
-/// list. Returns `Some message` naming each zero-loading path when any exists,
-/// `None` otherwise — unconfigured (empty list), or every path loaded ≥1.
+/// Input is the per-ORIGINAL-configured-path (absolute path, contributed count) list.
+/// Returns `Some message` naming each zero-loading path when any exists, `None`
+/// otherwise — unconfigured (empty list), or every path loaded ≥1.
 let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
     let zeroPaths =
         loadedByPath |> List.filter (fun (_, count) -> count = 0) |> List.map fst
@@ -92,17 +89,16 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
 /// per-entry `timeoutSec` nor the global `.fshw.json` `timeoutSec` is set.
 ///
 /// This bounds process-spawning plugins (build / tests / fileCommands): without a
-/// default they could fall back to `Timeout.InfiniteTimeSpan`, so an op that hung
-/// (a deadlocked `dotnet build`, a test runner stuck on a socket) would hang the
-/// daemon with no recovery short of `fshw stop` + cold restart. With a non-`None`
-/// default, an unbounded op becomes `TimedOut` — the process tree is killed and the
-/// daemon stays responsive.
+/// default they fall back to `Timeout.InfiniteTimeSpan`, so an op that hung (a
+/// deadlocked `dotnet build`, a test runner stuck on a socket) would hang the daemon
+/// with no recovery short of `fshw stop` + cold restart. With a non-`None` default an
+/// unbounded op becomes `TimedOut`: the process tree is killed and the daemon stays
+/// responsive.
 ///
-/// 600s (10 min) is deliberately generous: large builds and full test suites
-/// legitimately run for minutes, so the default must never falsely kill real
-/// work — it only ever fires on a genuine hang. Tighten it per repo via the
-/// `.fshw.json` `timeoutSec` key (global) or a per-entry `timeoutSec`
-/// (build/tests.projects/fileCommands), which still take precedence.
+/// 600s (10 min) is deliberately generous — large builds and full test suites
+/// legitimately run for minutes, so it only ever fires on a genuine hang. Tighten per
+/// repo via the global `timeoutSec` key or a per-entry `timeoutSec`, which take
+/// precedence.
 [<Literal>]
 let DefaultGlobalTimeoutSec = 600
 
@@ -164,11 +160,9 @@ type RunHookCommand =
     | Check
     | Confirm
 
-/// Default for `runHookCommands`: BOTH verbs — exactly the behaviour from before
-/// the key existed. Absent, wrongly-typed, or wholly-unrecognised values all
-/// resolve here, so upgrading fshw can never silently stop bracketing a run that
-/// used to be bracketed. Un-gating must always be something a config asked for
-/// out loud; a typo must never cause it.
+/// Default for `runHookCommands`: BOTH verbs. Absent, wrongly-typed, and wholly
+/// unrecognised values all resolve here, so un-gating is always something a config asked
+/// for out loud — a typo must never cause it.
 let DefaultRunHookCommands: Set<RunHookCommand> =
     Set.ofList [ RunHookCommand.Check; RunHookCommand.Confirm ]
 
@@ -261,9 +255,7 @@ type DaemonConfiguration =
         /// mirroring the global `timeoutSec` tristate.
         RunHookTimeoutSec: int option
         /// Which verbs the run-level hooks bracket, from the top-level
-        /// `runHookCommands` key (e.g. `["confirm"]`). Absent → BOTH verbs, i.e.
-        /// exactly the pre-existing behaviour, so the key is a PURE ADDITION: no
-        /// existing config changes meaning on upgrade.
+        /// `runHookCommands` key (e.g. `["confirm"]`). Absent → BOTH verbs.
         ///
         /// A verb not in this set runs completely unwrapped — no latch, no signal
         /// handlers, no shell-out — the same straight `action ()` taken when no
@@ -382,15 +374,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             | "none"
             | "false" -> NoCache
             | ("file" | "jj") as removed ->
-                // FAIL, don't warn. `"cache": "file"` promised an on-disk FCS check
-                // cache that could never hit (see CacheBackendConfig) — FCS results
-                // aren't serializable, so every lookup returned ParseOnly, which the
-                // check pipeline treats as a miss, and the only thing it ever produced
-                // was dead JSON. A warning did not carry: it scrolls past inside a
-                // 10-minute gate, so the key survived in a real repo's .fshw.json for
-                // weeks with every run announcing it. Dead config is a defect in the
-                // config, and a defect must stop the run — that is the whole point of
-                // a gate. The fix is one line and both forms are named below.
+                // FAIL, don't warn — see `CacheBackendConfig` for why the backend is
+                // gone. A warning here scrolled past inside a 10-minute gate, so the
+                // dead key survived in a real repo's `.fshw.json` for weeks.
                 raise (
                     ConfigError(
                         $"cache: '%s{removed}' has been REMOVED — the on-disk FCS check cache could never "
@@ -793,11 +779,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             IdleExit.PressureFloorConfig.Disabled
             defaults.PressureIdleFloorMin
 
-    // Run-level hooks: a `beforeRun`/`afterRun` pair that
-    // brackets the WHOLE `check`/`confirm` run — deliberately TOP-LEVEL keys,
-    // kept separate from `tests.beforeRun` (a different scope/cadence: inside
-    // the daemon, per test run). Both are shell-command STRINGS; a present `false`
-    // or an absent key → None, so a repo can opt a hook out without deleting it.
+    // Run-level hooks: deliberately TOP-LEVEL keys, kept separate from
+    // `tests.beforeRun` (a different scope/cadence: inside the daemon, per test run).
+    // Both are shell-command STRINGS; a present `false` or an absent key → None, so a
+    // repo can opt a hook out without deleting it.
     let parseRunHook (key: string) : string option =
         match root.TryGetProperty(key) with
         | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
@@ -817,13 +802,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             if n > 0 then Some n else None
         | _ -> None
 
-    // `runHookCommands`: which verbs the run-level hooks bracket. A PURE ADDITION —
-    // absent resolves to BOTH verbs, so no existing config changes behaviour on
-    // upgrade. Every failure mode leans the same way the hooks themselves do:
-    // when the value cannot be understood we keep bracketing rather than quietly
-    // stop, because an UN-gated heavy run is far worse than a redundantly-gated
-    // one. Only an explicitly empty array can disable bracketing, and even that
-    // is announced.
+    // `runHookCommands`: which verbs the run-level hooks bracket. Every failure mode
+    // leans towards KEEPING the bracket rather than quietly stopping — an un-gated heavy
+    // run is far worse than a redundantly-gated one. Only an explicitly empty array can
+    // disable bracketing, and even that is announced.
     let runHookCommands =
         let parseVerb (s: string) =
             match s.Trim().ToLowerInvariant() with
@@ -905,12 +887,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
 ///
-/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec`/`RunHookCommands`
-/// settings are DELIBERATELY preserved (they pass through `{ config with ... }`
-/// untouched): `--run-once` is exactly the transport CI uses, so the box-wide
-/// gate-lock those hooks bracket must fire on the run-once path too, not only over
-/// the daemon — and it must bracket the SAME verbs there, or the verb policy would
-/// silently mean something different in CI than it does locally.
+/// The run-level `BeforeRun`/`AfterRun`/`RunHookTimeoutSec`/`RunHookCommands` settings
+/// are DELIBERATELY preserved: `--run-once` is the transport CI uses, so the box-wide
+/// gate-lock those hooks bracket must fire there too, and must bracket the SAME verbs,
+/// or the verb policy would mean something different in CI than locally.
 let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
     { config with
         Build = Some []
@@ -959,16 +939,13 @@ let countPlugins (config: DaemonConfiguration) : int =
     buildCount + lintCount + analyzerCount + testsCount + fcCount
 
 /// Invoke `onChange reason`; if it throws, surface the failure via `logError`.
-/// Extracted (rather than inlined into `watchConfigFile`) so the boundary's
-/// behaviour is unit-testable without depending on a process-global
-/// `Console.SetError` capture (which races across parallel tests).
+/// Extracted (rather than inlined into `watchConfigFile`) so the boundary's behaviour is
+/// unit-testable without a process-global `Console.SetError` capture, which races across
+/// parallel tests.
 ///
-/// Per error-handling audit F3: the daemon-stop callback's only signal back
-/// to the daemon is `onChange` itself; reraising from a FileSystemWatcher
-/// threadpool callback would crash the process via unhandled-threadpool-
-/// exception, so we surface visibly via the error log and continue. The
-/// user sees the failure in stderr/log instead of the daemon mysteriously
-/// ignoring config edits.
+/// Reraising from a FileSystemWatcher threadpool callback would crash the process via
+/// unhandled-threadpool-exception, so the failure goes to the error log and execution
+/// continues — the user sees it instead of the daemon mysteriously ignoring config edits.
 let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (reason: string) : unit =
     try
         onChange reason
@@ -1074,8 +1051,6 @@ let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposa
             member _.Dispose() = () }
 
 
-/// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
-/// Returns (success, output).
 /// Split the (command, args) pair a shell hook should actually invoke.
 /// Runs the user's command string through `/bin/sh -c` so shell features
 /// (`&&`, pipes, globs, env-var interpolation) work as written in
@@ -1089,14 +1064,13 @@ let shellInvocation (cmd: string) : string * string =
 
 /// Wrap a shell command string into a callback that runs it as a bounded child.
 ///
-/// This runs INSIDE the `RunExclusive "tests"` slot, so a hook that hangs — a
-/// `dotnet restore` stuck on the network, or a hook that EXITS while a grandchild
-/// MSBuild node still holds the inherited stdout pipe — would hold the tests slot
-/// for good (the plugin stays `Running`, every later `check` burns its full
-/// deadline). So it is a `ProcessBounds.silent` child (`dotnet restore --verbosity
-/// quiet` prints nothing, so output cannot prove liveness) bounded by `timeoutSec`,
-/// which carries the same `DefaultGlobalTimeoutSec` default as every other spawn. A
-/// hung hook TIMES OUT into `Failed`/`Aborted` with a legible diagnostic.
+/// This runs INSIDE the `RunExclusive "tests"` slot, so a hook that hangs — a `dotnet
+/// restore` stuck on the network, or one that EXITS while a grandchild MSBuild node
+/// still holds the inherited stdout pipe — would hold the tests slot for good (the
+/// plugin stays `Running`, every later `check` burns its full deadline). Hence a
+/// `ProcessBounds.silent` child (`dotnet restore --verbosity quiet` prints nothing, so
+/// output cannot prove liveness) bounded by `timeoutSec`: a hung hook TIMES OUT into
+/// `Failed`/`Aborted` with a legible diagnostic.
 let internal makeShellHookWithResult
     (label: string)
     (timeoutSec: int option)
@@ -1152,8 +1126,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     | Auto ->
         Logging.info "config" "Registering FormatPreprocessor"
 
-        // Same `timeoutSec` the read-only twin below already honoured. A
-        // preprocessor runs inside the change agent AND inside the scan, so an
+        // A preprocessor runs inside the change agent AND inside the scan, so an
         // unbounded one is the worse of the two to leave uncapped.
         daemon.RegisterPreprocessor(
             match config.TimeoutSec with
@@ -1225,15 +1198,12 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             absolutePaths
             |> List.map (fun p -> p, (Map.tryFind p countByResolvedPath |> Option.defaultValue 0))
 
-        // Fail-loud: any configured path that loads nothing must turn the check
-        // RED (treated like a test failure), never silently pass — even when other
-        // configured paths loaded fine.
+        // Fail-loud — see `analyzerPathFailures`.
         match analyzerPathFailures loadedByOriginalPath with
         | Some message -> raise (ConfigError message)
         | None ->
-            // Every configured path loaded ≥1 here (the guard only passes when no
-            // path contributed 0, or when no paths were configured — and we are
-            // inside `Some a` so paths were given).
+            // Every configured path loaded ≥1 here: we are inside `Some a`, so paths
+            // were given, and the guard above only passes when none contributed 0.
             let loadedCount = handler.Init.LoadedCount
 
             Logging.info
@@ -1352,11 +1322,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             | [] -> None
             | exts ->
                 Some(fun (db: TestPrune.Database.Database) ->
-                    // TestPrune.Core 6.0.0 dropped the route concept: routes are not a
-                    // core idea, so the route table and its store moved to the Falco
-                    // extension that actually owns them. Core now exposes only the
+                    // Routes are not a core concept: TestPrune.Core exposes only the
                     // generic `PluginStore` seam (a connection to its cache DB), and
-                    // Falco's RouteStore creates/owns `route_handlers` on top of it.
+                    // Falco's RouteStore creates and owns `route_handlers` on top of it.
                     let routeStore = TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
 
                     exts

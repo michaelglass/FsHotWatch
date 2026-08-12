@@ -29,10 +29,9 @@ let DbRelativePath = ".fshw/test-impact.db"
 /// opening and refuse to touch an incompatible DB. Forward-compatible (newer or
 /// equal) versions, and the pre-versioning `0` marker, are tolerated.
 ///
-/// Sourced from TestPrune.Core (public since 4.2.1) rather than hardcoded, so the
-/// probe moves in lockstep with the bundled Core: a stale local copy would silently
-/// invert the protection on a schema bump (an old DB passes the stale probe, then
-/// the newer open path recreates it — exactly what the probe exists to prevent).
+/// Sourced from TestPrune.Core rather than hardcoded, so the probe moves in lockstep
+/// with the bundled Core: a stale local copy would invert the protection on a schema
+/// bump — an old DB passes the stale probe, then the newer open path recreates it.
 [<Literal>]
 let ExpectedSchemaVersion = TestPrune.Database.SchemaVersion
 

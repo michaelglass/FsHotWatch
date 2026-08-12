@@ -26,26 +26,21 @@ let truncateOutput (maxLines: int) (output: string) =
 [<Literal>]
 let DefaultLogSample = 100
 
-/// Render a collection for a diagnostic log WITHOUT lying about its size.
+/// Render a collection for a diagnostic log without lying about its size.
 ///
-/// `%A` silently truncates a sequence at 100 elements (FOUR for a bare `seq`)
-/// and hard-wraps at 80 columns. So a log line built with `%A` renders a
-/// 1,500-element list and a 101-element one identically — the size, which is
-/// usually the entire point of logging the collection, is exactly what gets
-/// truncated away — and the wrapping smears one log record across many lines,
-/// breaking the `[tag] ts msg` framing every other line obeys.
+/// `%A` silently truncates a sequence at 100 elements (FOUR for a bare `seq`) and
+/// hard-wraps at 80 columns, so it renders a 1,500-element list and a 101-element one
+/// identically, and the wrapping smears one log record across many lines, breaking the
+/// `[tag] ts msg` framing.
 ///
-/// This always leads with the EXACT count and follows with a bounded,
-/// single-line sample:
+/// This leads with the EXACT count and follows with a bounded, single-line sample:
 ///     `0 []`
 ///     `3 [a; b; c]`
 ///     `1500 [a; b; …; +1400 more]`
 ///
-/// The count is the measurement; the sample is only identification. Empty
-/// renders as `0 []` rather than being omitted — an empty collection is often
-/// load-bearing (TestPrune reads "project present, no affected classes" as
-/// "run this project in full", which must stay distinguishable from "project
-/// absent").
+/// Empty renders as `0 []` rather than being omitted — an empty collection is often
+/// meaningful (TestPrune reads "project present, no affected classes" as "run this
+/// project in full", which must stay distinguishable from "project absent").
 let describeManyWith (maxSample: int) (items: string seq) : string =
     let all = items |> Seq.toArray
     let separator = "; "
@@ -60,11 +55,8 @@ let describeManyWith (maxSample: int) (items: string seq) : string =
 /// `describeManyWith` at the default sample size.
 let describeMany (items: string seq) : string = describeManyWith DefaultLogSample items
 
-/// Like `describeMany`, but NEVER truncates.
-///
-/// For the diagnostics whose whole point is the FULL membership rather than a
-/// flavour of it — an impact query's seed set, say, where a single bad entry is
-/// precisely the thing being hunted and a sample that happens to exclude it is
-/// worse than useless.
+/// Like `describeMany`, but never truncates — for diagnostics whose point is the FULL
+/// membership, e.g. an impact query's seed set, where the entry being hunted is
+/// exactly the one a sample might exclude.
 let describeAll (items: string seq) : string =
     describeManyWith System.Int32.MaxValue items

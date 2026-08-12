@@ -21,9 +21,9 @@ let internal isProjectAssetsJson (path: string) =
     Path.GetFileName(path).Equals("project.assets.json", StringComparison.OrdinalIgnoreCase)
 
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
-/// `project.assets.json` is the documented exception: it lives in obj/ but is
-/// the canonical post-`dotnet restore` signal that a project's package graph
-/// changed (FR docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25).
+/// `project.assets.json` is the documented exception: it lives in obj/ but is the
+/// canonical post-`dotnet restore` signal that a project's package graph changed.
+/// See docs/fr-auto-refresh-fsproj-changes.md.
 let internal isRelevantFile (path: string) =
     if isProjectAssetsJson path then
         true
@@ -54,13 +54,11 @@ module FilePattern =
     /// Parse a pattern string. A leading `*` denotes a wildcard suffix;
     /// anything else is treated as a literal filename.
     ///
-    /// Patterns with an embedded (non-leading) `*` are REJECTED with
-    /// ArgumentException: the raw pattern string doubles as the
-    /// `FileSystemWatcher.Filter` glob (which would happily glob
+    /// Patterns with an embedded (non-leading) `*` are REJECTED: the raw pattern
+    /// doubles as the `FileSystemWatcher.Filter` glob (which would happily glob
     /// `schema.*.sql`), while the in-process `matches` treats it as a literal
-    /// suffix/basename that never matches the same files — the OS event would
-    /// fire and then be silently dropped. Rejecting at parse (config-load)
-    /// time turns that silent never-runs into a loud, actionable error.
+    /// suffix/basename that never matches the same files — so the OS event would fire
+    /// and then be silently dropped. Rejecting at config-load time makes that loud.
     let parse (pattern: string) : FilePattern =
         if String.IsNullOrEmpty(pattern) then
             invalidArg (nameof pattern) "File pattern must not be empty."

@@ -17,11 +17,11 @@ module PluginName =
     let value (PluginName n) = n
 
 /// The outcome of claiming an exclusive run slot (`PluginCtx.RunExclusive`).
-/// BOTH cases must be handled — silently dropping a refused claim is how
-/// AUTOMATION-99 hung an IPC caller forever and let `test-rerun` exit 0 having
-/// run nothing. `TreatWarningsAsErrors` + FS0020 make an unhandled result a
-/// compile error; discarding one deliberately requires a greppable `ignore`
-/// (which the FSHW-CLAIM-001 analyzer flags).
+/// BOTH cases must be handled — silently dropping a refused claim hangs an IPC
+/// caller forever and lets `test-rerun` exit 0 having run nothing (AUTOMATION-99).
+/// `TreatWarningsAsErrors` + FS0020 make an unhandled result a compile error;
+/// discarding one deliberately requires a greppable `ignore` (which the
+/// FSHW-CLAIM-001 analyzer flags).
 type RunClaim =
     /// The slot was claimed and the work is running; its completion message
     /// will be posted back to the plugin's mailbox.
@@ -78,9 +78,9 @@ type PluginCtx<'Msg> =
         CompleteWithTimeout: string -> unit
         /// Try to run `work` exclusively under `key`, returning whether the
         /// slot was `Claimed` or is held by a prior run (`SlotBusy`). On a
-        /// claim the framework itself reports `Running` — a run nobody can
-        /// see as Running is unrepresentable — and on completion posts the
-        /// returned `'Msg` back to the agent's mailbox as a `Custom` event.
+        /// claim the framework itself reports `Running`, and on completion
+        /// posts the returned `'Msg` back to the agent's mailbox as a `Custom`
+        /// event.
         ///
         /// If `work` throws, the exception is logged, no completion message is
         /// posted (the slot is freed), and the framework forces a terminal
@@ -88,8 +88,8 @@ type PluginCtx<'Msg> =
         /// need failure to flow back to Update should `try/with` inside `work`
         /// and return a sentinel `'Msg`.
         ///
-        /// The result must be handled: a dropped `SlotBusy` is dropped WORK
-        /// (AUTOMATION-99). Match it and either skip-with-reason or queue.
+        /// The result must be handled: a dropped `SlotBusy` is dropped WORK.
+        /// Match it and either skip-with-reason or queue.
         RunExclusive: string -> Async<'Msg> -> RunClaim
         /// Whether `key` is currently running under `RunExclusive`. Plugins
         /// use this for IPC-facing status without maintaining their own
@@ -140,13 +140,11 @@ module ProjectGraphAccessor =
 
 /// The DELIBERATELY narrow context handed to IPC command handlers
 /// (`PluginHandler.Commands`). Commands run on the IPC thread, outside the
-/// plugin's mailbox and outside its inflight accounting — so a command that
-/// could do work there would be invisible to `IsRunning`/`AnyPluginBusy`/the
-/// status model. That capability is exactly how AUTOMATION-99 happened (the
-/// old `run-tests` executed tests on the IPC thread), so it is not offered:
-/// no `ReportStatus`, no `RunExclusive`, no `Emit*`. `Post` is the ONLY way a
-/// command can cause work — the work then runs on the mailbox, accounted like
-/// every other launch.
+/// plugin's mailbox and outside its inflight accounting — so work started there
+/// would be invisible to `IsRunning`/`AnyPluginBusy`/the status model
+/// (AUTOMATION-99). Hence no `ReportStatus`, no `RunExclusive`, no `Emit*`:
+/// `Post` is the ONLY way a command can cause work, and the work then runs on
+/// the mailbox, accounted like every other launch.
 [<NoComparison; NoEquality>]
 type CommandCtx<'Msg> =
     {
@@ -239,24 +237,19 @@ type RegisteredPlugin =
         /// Monotonic, incremented in the same `finally` that releases the
         /// in-flight count.
         ///
-        /// This is the difference between "busy" and "making progress", and
-        /// they are not the same question. A plugin draining a long
-        /// `FileChecked` backlog is busy continuously, with nothing `Running`,
-        /// for as long as the drain takes — a state indistinguishable from a
-        /// stuck one if you only look at `IsBusy`, or at WHICH plugins are busy
-        /// (that set does not change while one plugin drains). Watching this
-        /// counter instead means a draining plugin can never be called stuck,
-        /// and a stopped one always is.
+        /// The difference between "busy" and "making progress". A plugin draining
+        /// a long `FileChecked` backlog is busy continuously, with nothing
+        /// `Running`, for as long as the drain takes — and the set of busy plugins
+        /// does not change either. Only this counter tells that apart from a stuck
+        /// plugin.
         CompletedDispatches: unit -> int64
         /// The fault that killed this plugin's message loop, if one did.
         ///
         /// A dead agent is otherwise INDISTINGUISHABLE from a busy one: the
         /// in-flight count is incremented when an event is posted and only
         /// decremented by the loop, so once the loop stops the count can only
-        /// rise. `WaitForComplete` would then wait forever on a plugin that can
-        /// never make progress. Liveness is a state, not a quantity — one
-        /// integer cannot say "0 and alive" apart from "n and dead" — so it is
-        /// published separately rather than inferred from silence.
+        /// rise and `WaitForComplete` waits forever. One integer cannot say "0 and
+        /// alive" apart from "n and dead", so the fault is published separately.
         Fault: unit -> exn option
     }
 
@@ -272,8 +265,8 @@ type PluginHostServices =
         ClearPlugin: PluginName -> unit
         /// Read this plugin's CURRENT ledger set (file -> entries) — the same
         /// set `fshw status` lists and the verdict gates on. The cache-replay
-        /// path derives per-file entries' summaries from it (AUTOMATION-186):
-        /// a per-file cache entry carries no summary of its own.
+        /// path derives per-file entries' summaries from it, since a per-file
+        /// cache entry carries no summary of its own (AUTOMATION-186).
         GetPluginDiagnostics: PluginName -> Map<string, ErrorEntry list>
         EmitBuildCompleted: BuildResult -> unit
         EmitTestRunStarted: TestRunStarted -> unit
@@ -300,13 +293,12 @@ type PluginHostServices =
         ProjectGraph: ProjectGraphAccessor
     }
 
-/// The replay summary for a per-file cache entry (AUTOMATION-186), derived
-/// from the plugin's LIVE ledger set — the same findings the verdict is
-/// computed from, read AFTER the entry's own error replay has landed. Never
-/// taken from the stored entry: a per-file key cannot testify to a
-/// whole-session claim (the scope rule on `TaskCache.CachedStatus`).
-/// Non-empty by construction (counts always render), so `RunVerdict.create`
-/// can never throw on it.
+/// The replay summary for a per-file cache entry, derived from the plugin's LIVE
+/// ledger set — the same findings the verdict is computed from, read AFTER the
+/// entry's own error replay has landed. Never taken from the stored entry: a
+/// per-file key cannot testify to a whole-session claim (the scope rule on
+/// `TaskCache.CachedStatus`). Non-empty by construction (counts always render), so
+/// `RunVerdict.create` can never throw on it.
 let internal ledgerSummary (diagnosticsByFile: Map<string, ErrorEntry list>) : string =
     let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
     let counts = DiagnosticCounts.ofEntries allEntries
@@ -335,29 +327,22 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
 
     /// Serialises "decide whether a live run owns the status" + "publish it"
-    /// against "claim a run slot" + "publish the `Running` that claim earns".
+    /// against "claim a run slot" + "publish the `Running` that claim earns", so the
+    /// ownership DECISION and the REPORT are ONE critical section. Without it the
+    /// guard is a check-then-act, and a claim landing between the read and the
+    /// report lets a stale terminal land ON TOP of the live run (the "✓ while tests
+    /// are still running" signature: `started:` with no `elapsed:`). `PluginCtx` is
+    /// a record of closures, so a plugin may legally claim a slot from a `work`
+    /// async or a spawned task and reach this concurrently.
     ///
-    /// Without this, the ownership guard is a check-then-act: it reads the run slots
-    /// under `runSlotsLock`, then reports the status AFTER releasing it. A claim
-    /// landing in that window publishes `Running`, and the stale terminal then lands
-    /// ON TOP of the live run — the "content-free ✓ while tests are still running"
-    /// signature (`started:` with no `elapsed:`). `PluginCtx` is a record of closures
-    /// nothing in the type system confines to the mailbox, so a plugin claiming a slot
-    /// from a `work` async or a spawned task — a legal use of the API — can reach it.
-    ///
-    /// With `statusLock` the ownership DECISION and the REPORT are ONE critical
-    /// section, so a terminal either wins the race (published while genuinely no
-    /// run is live, before the claim) or loses it (the claim is already visible
-    /// and the terminal is suppressed). Never both.
-    ///
-    /// Lock ordering, proven sound: `statusLock` is ALWAYS acquired before
-    /// `runSlotsLock`, and NEVER from inside it. `runSlotsLock` is otherwise only
-    /// ever taken alone (`isRunning`, `anyRunSlotBusy`, `runOne`'s release), so no
-    /// cycle exists. Nothing reachable from `services.ReportStatus` re-enters this
-    /// framework: the host's implementation (`PluginHost.setStatus`) is a
-    /// dictionary write plus a deliberately NON-BLOCKING `MailboxProcessor.Post`.
-    /// And `runSlotsLock` is released before the report at both call sites below,
-    /// so a host callback that reads `IsRunning` cannot self-deadlock either.
+    /// Lock ordering: `statusLock` is ALWAYS acquired before `runSlotsLock` and
+    /// NEVER from inside it; `runSlotsLock` is otherwise only ever taken alone
+    /// (`isRunning`, `anyRunSlotBusy`, `runOne`'s release), so no cycle exists.
+    /// Nothing reachable from `services.ReportStatus` re-enters this framework —
+    /// `PluginHost.setStatus` is a dictionary write plus a NON-BLOCKING
+    /// `MailboxProcessor.Post` — and `runSlotsLock` is released before the report at
+    /// both call sites below, so a host callback reading `IsRunning` cannot
+    /// self-deadlock.
     let statusLock = obj ()
 
     /// Publish `s` unless a live exclusive run owns this plugin's status; returns
@@ -366,11 +351,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     /// While an exclusive run is in flight the run OWNS this plugin's status: it
     /// was reported `Running` at the claim and its completion path is guaranteed
     /// to deliver the earned terminal (the completion handler on success,
-    /// `runOne`'s forced `Failed` on a faulted work async) — so any OTHER terminal
+    /// `runOne`'s forced `Failed` on a faulted work async), so any OTHER terminal
     /// stamped mid-run is a verdict nobody earned. Applied at the ONE funnel every
     /// plugin-originated status passes through, plus the cache-replay and
-    /// `safeUpdate` crash-net paths: the property is universal, not a per-plugin
-    /// convention.
+    /// `safeUpdate` crash-net paths.
     let reportUnlessRunOwns (onSuppressed: unit -> unit) (s: PluginStatus) : bool =
         lock statusLock (fun () ->
             if PluginStatus.isTerminal s && anyRunSlotBusy () then
@@ -381,15 +365,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 true)
 
     /// A replayed terminal whose summary is DERIVED from the live ledger (a
-    /// per-file cache entry, AUTOMATION-186) must build that summary at the same
-    /// instant the report decision is made: if an exclusive run owns the plugin
-    /// the replay is suppressed and the ledger is never read; otherwise the
-    /// summary reflects exactly the ledger snapshot this report lands on. Unlike
-    /// `reportUnlessRunOwns`, the ownership gate runs FIRST and `mkTerminal` is
-    /// evaluated only on the report path — the derive-and-report is one atomic
-    /// step under `statusLock`, so summary and verdict cannot diverge across the
-    /// read. `mkTerminal` is TERMINAL by construction (the replay only ever
-    /// builds `Completed`/`Failed`), so no `isTerminal` re-check is needed.
+    /// per-file cache entry) must build that summary at the same instant the report
+    /// decision is made. Unlike `reportUnlessRunOwns`, the ownership gate runs FIRST
+    /// and `mkTerminal` is evaluated only on the report path, so the derive and the
+    /// report are one atomic step under `statusLock` and summary and verdict cannot
+    /// diverge across the read. `mkTerminal` is TERMINAL by construction (the replay
+    /// only ever builds `Completed`/`Failed`), so no `isTerminal` re-check is needed.
     let reportDerivedTerminalUnlessRunOwns (onSuppressed: unit -> unit) (mkTerminal: unit -> PluginStatus) : bool =
         lock statusLock (fun () ->
             if anyRunSlotBusy () then
@@ -422,15 +403,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     // message has been posted back (see `runOne`'s finally). `WaitForComplete`
     // consults this via `RegisteredPlugin.IsBusy`.
     //
-    // ONE counter on purpose (AUTOMATION-99). The previous shape —
-    // `inflightCount > 0 || anyRunSlotBusy()` — was a composite of two
-    // atomics read at different instants, and the hand-off between them had a
-    // gap: `runOne` released the slot BEFORE posting the completion message,
-    // so a reader could observe "slot free" AND "mailbox empty" while the
-    // run's verdict was still in flight between the two. Because the work
-    // token is not released until after the completion post, the counter
-    // never dips to zero anywhere between "run claimed" and "completion
-    // handled".
+    // ONE counter on purpose (AUTOMATION-99): a composite of two atomics
+    // (`inflightCount > 0 || anyRunSlotBusy()`) is read at two instants, and the
+    // hand-off between them has a gap where a reader sees "slot free" AND "mailbox
+    // empty" while the run's verdict is still in flight. Holding the work token
+    // until after the completion post means the counter never dips to zero between
+    // "run claimed" and "completion handled".
     let inflightCount = ref 0
 
     // Monotonic count of dispatched events this plugin has finished handling.
@@ -453,15 +431,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             let mutable completion: 'Msg voption = ValueNone
 
             // The work async is plugin-supplied — a third-party-extension
-            // boundary that may raise anything. The broad catch is what
-            // guarantees the surrounding `finally` runs (releasing the runSlots
-            // entry); without it, an unhandled exception would skip the `with`
-            // and still hit the `finally` via async-exception propagation, but
-            // the `completion` post
-            // path ahead of `finally` would never receive a value, leaving
-            // the agent hanging waiting for the result. We log ex.ToString()
-            // so the type and stack trace are preserved for diagnosing the
-            // offending plugin.
+            // boundary that may raise anything. The broad catch keeps the
+            // `completion` value assignable: without it the `finally` still runs
+            // (releasing the runSlots entry) but `completion` stays unset and the
+            // agent waits forever for a result. Logged as ex.ToString() so the
+            // type and stack trace survive for diagnosing the offending plugin.
             try
                 try
                     let! msg = w
@@ -470,18 +444,14 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
 
                     // A faulted exclusive run must never STRAND the plugin in a
-                    // non-terminal status. The completion message that would drive
-                    // the plugin to a terminal state through its own handler is NOT
-                    // posted on this path (`completion` stays ValueNone below), and
-                    // `runExclusive` reported Running at the claim. Without a forced
-                    // terminal here the plugin sits Running forever while
-                    // `IsBusy`/`AnyPluginBusy` report false — precisely the
-                    // fresh-workspace wedge: the check's `WaitForComplete` blocks on
-                    // a Running plugin that will never complete, and idle-exit later
-                    // fires mid-wait. Forcing Failed surfaces the fault as a prompt,
-                    // loud verdict instead. The framework KNOWS when this run started
-                    // (it claimed the slot), so the verdict carries a measured
-                    // elapsed — never a fabricated zero-length run.
+                    // non-terminal status. No completion message is posted on this
+                    // path (`completion` stays ValueNone below) and `runExclusive`
+                    // reported Running at the claim, so without a forced terminal
+                    // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
+                    // report false — `WaitForComplete` then blocks on a plugin that
+                    // will never complete, and idle-exit fires mid-wait. The
+                    // framework knows when this run started (it claimed the slot),
+                    // so the verdict carries a measured elapsed.
                     reportBypassingGuard (
                         PluginStatus.Failed(
                             $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
@@ -492,7 +462,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         )
                     )
             finally
-                // Release order matters (AUTOMATION-99):
+                // Release order matters:
                 //   1. free the slot — the completion handler may itself launch
                 //      the next run (`PendingRerun`), so the slot must be free
                 //      by the time the completion message is PROCESSED;
@@ -503,7 +473,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 // observer can catch the plugin "at rest" between the run
                 // finishing and its verdict being handled. On the faulted path
                 // (no completion) the forced `Failed` above was reported while
-                // the token was still held — the status is terminal before the
+                // the token was still held, so the status is terminal before the
                 // plugin ever reads as not-busy.
                 lock runSlotsLock (fun () -> runSlots.[key] <- false)
 
@@ -517,10 +487,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
     let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
         // The claim and the `Running` it publishes are ONE critical section under
-        // `statusLock` (AUTOMATION-118), so no terminal can slip between "no run
-        // is live" and "a run is live" and land on top of the run. `runSlotsLock`
-        // is released before the report; `Async.Start` happens after the lock so
-        // no plugin work ever runs under it.
+        // `statusLock`, so no terminal can slip between "no run is live" and "a run
+        // is live" and land on top of the run. `runSlotsLock` is released before the
+        // report; `Async.Start` happens after the lock so no plugin work ever runs
+        // under it.
         let claimedAt =
             lock statusLock (fun () ->
                 let shouldStart =
@@ -533,12 +503,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                 if shouldStart then
                     // The framework — not the plugin — reports Running at the claim
-                    // instant. A launched run nobody can see as Running is thereby
-                    // unrepresentable: CoveragePlugin shipped exactly that gap (no
-                    // Running before its claim), which (a) rendered ✓ while it ran and
-                    // (b) starved `bumpGenerationIfStarting`, so the host's
-                    // generation-based terminal wait could NEVER be satisfied while
-                    // coverage was registered (AUTOMATION-99 review, finding 4).
+                    // instant, so a launched run is never invisible. A plugin that
+                    // reports it itself can miss: CoveragePlugin did, which rendered
+                    // ✓ while it ran and starved `bumpGenerationIfStarting`, so the
+                    // host's generation-based terminal wait could never be satisfied
+                    // while coverage was registered.
                     let startedAt = DateTime.UtcNow
                     services.ReportStatus handler.Name (Running(since = startedAt))
 
@@ -555,10 +524,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             Async.Start(runOne key startedAt work)
             Claimed
         | ValueNone ->
-            // AUTOMATION-15 (item 5): exclusion-slot contention. The run is NOT
-            // started; the caller receives `SlotBusy` and MUST decide (skip or
-            // queue). The debug line keeps "why didn't my edit re-run this
-            // plugin?" answerable from the log.
+            // Exclusion-slot contention: the run is NOT started and the caller must
+            // decide (skip or queue). The debug line keeps "why didn't my edit
+            // re-run this plugin?" answerable from the log.
             debug
                 (PluginName.value handler.Name)
                 $"exclusion-slot busy: '%s{key}' run not started (a previous run is still in flight)"
@@ -607,9 +575,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }
 
-    // The narrow context handed to IPC command handlers. Commands run on the
-    // IPC thread, so nothing here can report status, claim a run slot, or emit
-    // events — `Post` is the only path to work (AUTOMATION-99).
+    // The narrow context handed to IPC command handlers — see `CommandCtx`.
     let commandCtx: CommandCtx<'Msg> =
         { RepoRoot = services.RepoRoot
           Log = fun msg -> services.Log handler.Name msg
@@ -633,30 +599,19 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         | _ -> { Plugin = nameStr; File = None }
 
                     /// Try to replay a cached result. Returns true if cache hit.
-                    /// The pre-BatchChecked design used a `RequireWarmStart`
-                    /// gate here to suppress replay until the plugin reached a
-                    /// terminal state once per session — needed because the
-                    /// per-`FileChecked` accumulation that fed plugin cache
-                    /// keys (TestPrune's `changedSymbolsRef`, BuildPlugin's
-                    /// `BuildInputsHasher`) wasn't fully populated when the
-                    /// very first dispatch hit. Now that cohort completion is
-                    /// signalled by `BatchChecked`, every subsequent
-                    /// cacheable event (`BuildCompleted`, etc.) sees a fully
-                    /// populated key and the gate is gone.
+                    ///
                     /// `cacheKeyOpt` is the key for this event, computed ONCE by
                     /// the dispatch loop and threaded here so the lookup and the
                     /// later store share the exact same value (computing a
                     /// BuildPlugin key is a full content-hash of the project
-                    /// graph — recomputing per call doubled that cost per
-                    /// trigger). Threading the single value is also strictly
-                    /// safer than recomputing: lookup key ≡ store key by
-                    /// construction.
+                    /// graph — recomputing per call doubles that cost per
+                    /// trigger). Threading one value also makes lookup key ≡
+                    /// store key by construction.
                     let tryReplayCache (event: PluginEvent<'Msg>) (cacheKeyOpt: ContentHash option) =
                         match services.TaskCache, cacheKeyOpt with
                         | Some cache, Some cacheKey ->
                             let compKey = compositeKey event
                             let lookupResult = cache.TryGet compKey cacheKey
-                            // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
                             let pluginName = PluginName.value handler.Name
 
                             FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
@@ -698,26 +653,23 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     else
                                         RunVerdict.create (v.Summary + cachedSuffix) v.Elapsed
 
-                                // AUTOMATION-186 — what the replayed verdict may say
-                                // is bounded by the entry's scope:
+                                // What the replayed verdict may say is bounded by the
+                                // entry's scope (AUTOMATION-186):
                                 //
                                 // • Whole-run entries (`CachedRun*`) store a verdict
-                                //   that is a pure function of the key — the ORIGINAL
-                                //   run's evidence (summary + true duration) replays
+                                //   that is a pure function of the key, so the
+                                //   ORIGINAL run's summary + true duration replay
                                 //   verbatim.
                                 // • Per-file entries (`CachedFile*`) carry no summary
-                                //   BY CONSTRUCTION. Their summary is derived from the
-                                //   plugin's live ledger set — the same findings the
-                                //   verdict gates on — AFTER the error replay above has
-                                //   landed this entry's findings in the ledger. The
+                                //   BY CONSTRUCTION. Theirs is derived from the
+                                //   plugin's live ledger set AFTER the error replay
+                                //   above has landed this entry's findings. The
                                 //   derivation runs INSIDE the ownership guard below
                                 //   (never here), so the ledger snapshot the summary
-                                //   reflects is exactly the one the report lands on and
-                                //   summary and verdict cannot diverge across the read.
-                                //   (Field evidence: "analyzed 1044 files, 5 findings
-                                //   (cached)" rendered over an empty ledger and a green
-                                //   verdict — the 5 were found and fixed earlier in the
-                                //   same session.)
+                                //   reflects is exactly the one the report lands on.
+                                //   Otherwise: "analyzed 1044 files, 5 findings
+                                //   (cached)" over an empty ledger and a green
+                                //   verdict.
                                 let derivedVerdict elapsed =
                                     RunVerdict.create
                                         (ledgerSummary (services.GetPluginDiagnostics handler.Name))
@@ -736,26 +688,17 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | TaskCache.CachedFileFailed(err, elapsed) ->
                                         Failed(err, nowAt, markCached (derivedVerdict elapsed))
 
-                                // AUTOMATION-95/99: a cached TERMINAL status must never
-                                // claim the plugin is at rest while it is mid-exclusive-run.
+                                // A cached TERMINAL status must never claim the plugin is
+                                // at rest while it is mid-exclusive-run. On a warm scan
+                                // every `FileChecked` is a cache hit, and each hit
+                                // re-reporting the cached `Completed` stomps the `Running`
+                                // an in-flight test run set: `allPluginsAtRest` then sees
+                                // "no plugin Running" and `WaitForComplete` resolves while
+                                // the run is still executing (AUTOMATION-95/99).
                                 //
-                                // Field evidence: on a warm scan every `FileChecked` is a
-                                // cache hit, and each hit re-reported the cached `Completed`
-                                // — stomping the `Running` that the in-flight test run had
-                                // just set. The host's `allPluginsAtRest` then saw "no plugin
-                                // Running" and `WaitForComplete` resolved WHILE the test run
-                                // was still executing (observed: run launched 11:30:17, still
-                                // running at 11:30:34, yet the daemon logged "all plugins
-                                // already terminal" and `check` exited 0). That is a verdict
-                                // nobody earned — the exact false-green of AUTOMATION-95, and
-                                // the "check ends before the queued re-run drains" step of
-                                // AUTOMATION-99.
-                                //
-                                // The live run owns this plugin's status: it was set `Running`
-                                // at the claim and it will report the real terminal status
-                                // when it finishes. A replay of stale per-file work has
-                                // nothing to say about it. Errors and emitted events still
-                                // replay — only the status claim is suppressed. Same
+                                // The live run owns this plugin's status and reports the
+                                // real terminal when it finishes. Errors and emitted events
+                                // still replay — only the status claim is suppressed. Same
                                 // ownership rule as `reportStatusGuarded`, kept explicit
                                 // here for the replay-specific diagnostic.
                                 reportDerivedTerminalUnlessRunOwns
@@ -788,32 +731,20 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             | None -> false
                         | _ -> false
 
-                    /// Invariant: a handler that throws out of `Update` must never leave the
-                    /// plugin stuck in whatever transient status it reported before the throw
-                    /// (classic case: plugin reports Running, hits a DB error, never reports
-                    /// terminal status, UI shows "running" forever). We surface the exception
-                    /// as PluginStatus.Failed *after* catching so the observable status always
-                    /// reaches a terminal state, regardless of what the handler did beforehand.
-                    ///
-                    /// EXCEPT while an exclusive run is in flight (AUTOMATION-99): the same
-                    /// ownership rule as the cache-replay suppression applies — the live run
-                    /// owns this plugin's status. It reported Running at launch and its
-                    /// completion path is GUARANTEED to deliver a terminal status (the
-                    /// completion handler on success, `runOne`'s forced Failed on a faulted
-                    /// work async), so the stuck-forever hazard this net exists for cannot
-                    /// occur. Stomping Failed over the live Running is precisely how a
-                    /// crashing per-file handler manufactured a terminal status mid-test-run
-                    /// (the observed "terminal with started: but no elapsed:" signature).
-                    /// The crash is still logged loudly either way.
                     /// Force a terminal `Failed` for a fault the plugin could not report
-                    /// itself, subject to the ownership rule above: a live exclusive run
-                    /// already published `Running` and its completion path delivers a
-                    /// terminal, so a forced status there would stomp a run still executing.
+                    /// itself, so a handler that throws out of `Update` cannot leave the
+                    /// plugin stuck in whatever transient status it last reported (reports
+                    /// Running, hits an error, never reports terminal, UI shows "running"
+                    /// forever).
+                    ///
+                    /// Subject to the ownership rule: while an exclusive run is in flight
+                    /// it already published `Running` and its completion path delivers a
+                    /// terminal, so a forced status there would stomp a run still
+                    /// executing. The crash is logged either way.
                     ///
                     /// `what` names the layer that faulted ("handler", "dispatch"), and
-                    /// `startedAt` is when that layer began — so the verdict carries a
-                    /// MEASURED elapsed. `runOne` states the rule this obeys: never a
-                    /// fabricated zero-length run.
+                    /// `startedAt` is when that layer began, so the verdict carries a
+                    /// MEASURED elapsed rather than a fabricated zero-length run.
                     let reportForcedFailure (what: string) (startedAt: DateTime) (ex: exn) =
                         error (PluginName.value handler.Name) $"%s{what} failed: %s{ex.ToString()}"
 
@@ -935,13 +866,13 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // Only cache when the status reached a terminal state AND
                                 // the handler did not launch a new run in the same window
                                 // (see `launchedRunInWindow`).
-                                // The mint site is where the scope rule is enforced
-                                // (AUTOMATION-186): a per-file entry (`File = Some`)
-                                // may not store the status summary — it is a
-                                // whole-session claim a per-file key cannot back —
-                                // nor the timestamp (replay re-stamps `now`). Only a
-                                // whole-run entry keeps its verdict, which IS a pure
-                                // function of its key.
+                                //
+                                // The mint site enforces the scope rule: a per-file entry
+                                // (`File = Some`) may not store the status summary — a
+                                // whole-session claim a per-file key cannot back — nor the
+                                // timestamp (replay re-stamps `now`). Only a whole-run
+                                // entry keeps its verdict, which IS a pure function of its
+                                // key.
                                 let compKey = compositeKey event
 
                                 let cachedStatus =
@@ -977,51 +908,37 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 ch.Reply(state)
                                 return! loop state
                             | Choice1Of2 event ->
-                                // EVERYTHING this event does runs inside the
-                                // decrement's `finally` and under a `with`. Both
-                                // matter, and neither used to hold:
+                                // EVERYTHING this event does must run inside the
+                                // decrement's `finally` and under a `with`.
                                 //
-                                //   * the cache-key computation below sat OUTSIDE
-                                //     the `finally`, so a throw there leaked the
-                                //     increment `post` had already taken;
-                                //   * a throw anywhere here escaped `loop`, which
-                                //     STOPS the MailboxProcessor. Nothing
-                                //     subscribed to `agent.Error`, so it stopped
-                                //     SILENTLY, and every later post incremented
-                                //     into a mailbox nobody was reading.
-                                //
-                                // `IsBusy` is `inflightCount > 0`, so that left a
-                                // dead agent indistinguishable from a busy one,
-                                // permanently: both satisfaction paths in
-                                // `waitForAllTerminalCore` require
+                                // A throw outside the `finally` leaks the increment
+                                // `post` already took. A throw that escapes `loop`
+                                // STOPS the MailboxProcessor — silently, so every
+                                // later post increments into a mailbox nobody is
+                                // reading. `IsBusy` is `inflightCount > 0`, so
+                                // either leaves a dead agent indistinguishable from
+                                // a busy one, permanently: both satisfaction paths
+                                // in `waitForAllTerminalCore` require
                                 // `not (AnyPluginBusy())`, so `check`/`confirm`
-                                // could never resolve. Three deploys in
-                                // thellma-intelligence sat on that for an hour
-                                // each. The key arms are not exotic code:
-                                // TestPrune's `dependsOnHash` hashes every file
-                                // matched by the `dependsOn` globs, and the
+                                // can never resolve. The throwing arms are ordinary
+                                // code — TestPrune's `dependsOnHash` hashes every
+                                // file matched by the `dependsOn` globs, and the
                                 // per-file arm calls `fcsCheckSignature` over raw
-                                // FCS results. Both are I/O and third-party data
-                                // shapes, on the dispatch thread.
+                                // FCS results: I/O and third-party data shapes, on
+                                // the dispatch thread.
                                 //
-                                // So a fault is now ACCOUNTED FOR (the finally
+                                // So a fault here is ACCOUNTED FOR (the finally
                                 // still decrements), VISIBLE (forced Failed, same
-                                // rule as `safeUpdate`: a live exclusive run owns
-                                // the status and delivers its own terminal), and
-                                // SURVIVABLE (the loop continues, so the plugin
-                                // keeps serving later events).
+                                // ownership rule as `safeUpdate`), and SURVIVABLE
+                                // (the loop continues, so the plugin keeps serving
+                                // later events).
                                 let dispatchStarted = DateTime.UtcNow
 
                                 let! nextState =
                                     async {
                                         try
                                             try
-                                                // Compute the cache key ONCE per dispatched event and thread the
-                                                // single value to both the lookup (tryReplayCache) and the store
-                                                // (runAndCache). Computing it twice would pay two SHA-256 passes
-                                                // per trigger for BuildPlugin (whose key is a full content-hash of
-                                                // the project graph); threading one value also guarantees the
-                                                // lookup key equals the store key by construction.
+                                                // Computed ONCE per dispatched event — see `tryReplayCache`.
                                                 let cacheKeyOpt =
                                                     match handler.CacheKey with
                                                     | Some cacheKeyFn -> cacheKeyFn event
@@ -1029,23 +946,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                                                 // A `Custom` message is a cache WRITER, never a cache READER.
                                                 //
-                                                // Every other event here is an OBSERVATION of the world, and its
-                                                // payload is what the key is computed FROM: same key ⇒ same input ⇒
-                                                // the cached result IS the result. A `Custom` message is neither.
-                                                // It is the plugin's own post — the DELIVERY of work already done,
-                                                // at real cost — and its payload is NOT in the key. TestPrune's
-                                                // `cacheKeyFor` reads the `TestRunCompleted` it carries only far
-                                                // enough to decide whether the result is CACHEABLE (did everything
-                                                // pass? did it abort?), never far enough to IDENTIFY it. Two
-                                                // different runs — different run ids, different results, both
-                                                // green — collide on one key.
-                                                //
-                                                // So a hit here is not a proof of equivalence; it is a COLLISION.
-                                                // And serving it skips the handler, which is the only thing that
-                                                // folds the finished run into the plugin's state — a cache that can
-                                                // DESTROY evidence (replaying a cached terminal over the
-                                                // `TestsFinished` carrying a real completed run) is worse than no
-                                                // cache.
+                                                // Every other event is an OBSERVATION whose payload is what the
+                                                // key is computed FROM, so same key ⇒ same input ⇒ the cached
+                                                // result IS the result. A `Custom` message is the plugin's own
+                                                // post — the delivery of work already done — and its payload is
+                                                // NOT in the key: TestPrune's `cacheKeyFor` reads the
+                                                // `TestRunCompleted` it carries only far enough to decide whether
+                                                // the result is CACHEABLE, never far enough to IDENTIFY it, so two
+                                                // different runs collide on one key. A hit here is a collision,
+                                                // and serving it skips the handler — the only thing that folds the
+                                                // finished run into the plugin's state.
                                                 //
                                                 // The WRITE below keeps the real key: a Custom window is how the
                                                 // entry the next `BuildCompleted` hits gets minted at all.
@@ -1094,13 +1004,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
     // Last resort, matching `ErrorLedger` and the scan-signal agent. The loop
     // body handles its own faults and keeps going, so this should never fire;
-    // if it ever does the agent has STOPPED, which is the worst failure this
-    // framework has — `inflightCount` can only rise from then on.
+    // if it ever does the agent has STOPPED and `inflightCount` can only rise
+    // from then on.
     //
-    // Recording the exception is the point, not just logging it. Silence is what
-    // cost three hour-long deploy stalls: the waiter had no way to tell a dead
-    // agent from a busy one and could only infer it, slowly, from a plugin that
-    // never spoke again. Publishing the fault makes that inference unnecessary.
+    // RECORDING the exception is the point, not just logging it: a waiter cannot
+    // otherwise tell a dead agent from a busy one, and can only infer it from a
+    // plugin that never speaks again.
     agent.Error.Add(fun ex ->
         agentFault <- Some ex
 
@@ -1143,16 +1052,15 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     { Name = handler.Name
       Dispatch = dispatch
       Teardown = handler.Teardown
-      // "Busy" must mean "this plugin has work in flight", full stop: events
-      // queued or being handled, AND any exclusive run from its claim until its
-      // completion message has been handled — all counted in the ONE
-      // `inflightCount` (see its doc comment for why a single counter, not a
-      // composite of counter-plus-slots, is load-bearing). Without the run leg
-      // the host could conclude a plugin was at rest while its test run was
-      // still executing, and `WaitForComplete` would hand `check` a verdict the
-      // run had not yet produced (AUTOMATION-95/99). Run tokens are released in
-      // a `finally`, so this stays bounded — and the verdict deadline
-      // (Ipc.resolveVerdictDeadline) still bounds a genuinely wedged run.
+      // "Busy" means "this plugin has work in flight": events queued or being
+      // handled, AND any exclusive run from its claim until its completion
+      // message has been handled — all counted in the ONE `inflightCount` (see
+      // its comment for why a single counter, not counter-plus-slots). Without
+      // the run leg the host could conclude a plugin was at rest while its test
+      // run was still executing, and `WaitForComplete` would hand `check` a
+      // verdict the run had not yet produced. Run tokens are released in a
+      // `finally`, and the verdict deadline (Ipc.resolveVerdictDeadline) still
+      // bounds a genuinely wedged run.
       IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0
       CompletedDispatches = fun () -> System.Threading.Volatile.Read(&completedDispatches.contents)
       Fault = fun () -> agentFault }

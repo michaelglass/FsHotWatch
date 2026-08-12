@@ -310,19 +310,14 @@ let ``build plugin triggers on ProjectChanged`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``test-file-only change runs a real build (re-emits the DLL) — does not trust BatchChecked as freshness`` () =
-    // REGRESSION (stale-binary false-green): a test-file-only edit MUST run the
-    // real build so MSBuild re-emits the executable test assembly on disk before
-    // test-prune launches it with `dotnet run --no-build`. FCS's in-memory
-    // BatchChecked only proves the .fs type-checks; it does NOT emit the runnable
-    // DLL for an xUnit v3 standalone-exe project. The old "skip build, wait for
-    // BatchChecked, emit BuildSucceeded" path skipped MSBuild, so `--no-build`
-    // executed the STALE DLL → false green.
+    // Stale-binary false green: FCS's in-memory BatchChecked proves the .fs type-checks but
+    // does NOT emit the runnable DLL for an xUnit v3 standalone-exe project. The old "skip
+    // build, wait for BatchChecked, emit BuildSucceeded" path skipped MSBuild, so
+    // `dotnet run --no-build` executed the STALE DLL.
     //
-    // Pinned via a build command that FAILS (`false`): if the test-file change is
-    // (correctly) built, the failing command runs → BuildFailed. If the build is
-    // (wrongly) skipped, the command never runs and BuildSucceeded fires off the
-    // BatchChecked signal alone — the exact bug. So BuildFailed here proves the
-    // build was NOT skipped for a test-file-only change.
+    // Pinned via a build command that FAILS (`false`): a built test-file change runs it and
+    // reports BuildFailed, whereas a skipped build never invokes it and reports
+    // BuildSucceeded off the BatchChecked signal alone.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -340,14 +335,12 @@ let ``test-file-only change runs a real build (re-emits the DLL) — does not tr
 
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
 
-    // The real build (`false`) terminates in ms; bound the wait well under the
-    // Fact timeout so the assertion runs (under the bug the plugin parks in the
-    // skip-wait and never reaches a terminal status — the assert must still fire).
+    // `false` terminates in ms; the wait is bounded well under the Fact timeout so that
+    // under the bug — where the plugin parks in the skip-wait forever — the assertion below
+    // still fires.
     waitForTerminalStatus host "build" 8000
     waitUntil (fun () -> (getBuild ()).IsSome) 4000
 
-    // The build command ran (and failed) → the build was NOT skipped. A skipped
-    // build would have emitted BuildSucceeded without ever invoking `false`.
     test
         <@
             match getBuild () with
@@ -357,12 +350,9 @@ let ``test-file-only change runs a real build (re-emits the DLL) — does not tr
 
 [<Fact(Timeout = 15000)>]
 let ``test-file-only change builds and succeeds without waiting on BatchChecked`` () =
-    // Corrected invariant (was "build is skipped when only test files change"):
-    // a test-file change runs the real build like any other source change and
-    // succeeds when the build command succeeds — no BatchChecked is emitted, yet
-    // BuildSucceeded still fires because the build is no longer parked waiting on
-    // the FCS cohort signal. This re-emits the on-disk test DLL before test-prune
-    // runs it `--no-build` (see ADR-012).
+    // No BatchChecked is emitted, yet BuildSucceeded still fires: the build is no longer
+    // parked waiting on the FCS cohort signal, so the on-disk test DLL is re-emitted before
+    // test-prune runs it `--no-build` (see ADR-012).
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -382,8 +372,6 @@ let ``test-file-only change builds and succeeds without waiting on BatchChecked`
 
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
 
-    // No BatchChecked is emitted — under the old skip path this would hang at None
-    // forever; now the real build runs and completes on its own.
     waitForTerminalStatus host "build" 8000
     waitUntil (fun () -> (getBuild ()).IsSome) 4000
     test <@ getBuild () = Some BuildSucceeded @>
@@ -610,7 +598,7 @@ let ``build with multiple dependsOn waits for all`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-// --- §2a: BuildPlugin cache key behaviour ---
+// --- BuildPlugin cache key behaviour ---
 
 [<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
@@ -621,12 +609,10 @@ let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`` () =
-    // Before this fix, BuildPlugin's applyBuildOutcome called EmitBuildCompleted
-    // and ReportErrors from inside the fire-and-forget async, so the framework's
-    // per-event cache-write window for FileChanged saw only "Running" and the
-    // Custom BuildDone window had nothing to capture (events emitted earlier).
-    // After: the captured operations move into the Custom BuildDone handler,
-    // which runs synchronously and IS captured.
+    // `applyBuildOutcome` used to emit from inside the fire-and-forget async, so the
+    // framework's per-event cache-write window for FileChanged saw only "Running" and the
+    // Custom BuildDone window had nothing left to capture. The captured operations now live
+    // in the Custom BuildDone handler, which runs synchronously.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -639,32 +625,25 @@ let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     waitForTerminalStatus host "build" 5000
 
-    // After terminal status, the cache should contain an entry for build.
     let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "build"; File = None }
 
     let cacheKeyFn = handler.CacheKey.Value
-    // The cache lookup happens at FileChanged time in production; the entry
-    // is stored with the same merkle key (whether emitted from FileChanged
-    // or Custom BuildDone — they share the input set).
+    // The lookup happens at FileChanged time in production, and the entry is stored under
+    // the same merkle key from either site — they share the input set.
     let computedKey = cacheKeyFn (FileChanged(SourceChanged [ "src/Lib.fs" ]))
     test <@ computedKey.IsSome @>
 
-    // The framework writes the cache entry (`cache.Set`) AFTER the handler's
-    // Update fully returns, whereas `waitForTerminalStatus` observes the
-    // terminal status reported *inside* that Update — so the entry can lag the
-    // status by a scheduling quantum under load. Poll-until-deadline for the
-    // entry instead of reading once (deterministic write, just not yet visible
-    // the instant the status flips).
+    // `cache.Set` runs AFTER the handler's Update returns, whereas `waitForTerminalStatus`
+    // observes the status reported *inside* it, so the entry can lag the status by a
+    // scheduling quantum under load. Poll rather than read once.
     waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 5000
     let result = cacheIface.TryGet key computedKey.Value
     test <@ result.IsSome @>
-    // EmittedEvents should include the BuildCompleted that the synchronous
-    // handler emitted — this is what cache replay will re-fire to downstream
-    // plugins (TestPrune, Coverage).
+    // The captured BuildCompleted is what cache replay re-fires to TestPrune and Coverage.
     test <@ not result.Value.EmittedEvents.IsEmpty @>
 
-// Drive a real build through the host so the plugin's cold-start guard flips
-// before we inspect the cache key. Returns the (warmed) handler.
+// Drive a real build through the host so the plugin's cold-start guard flips before the
+// cache key is inspected.
 let private warmedHandler (command: string) (args: string) (dependsOn: string list) =
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
 
@@ -678,9 +657,8 @@ let private warmedHandler (command: string) (args: string) (dependsOn: string li
 
 [<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` () =
-    // The cache stores a result on the synchronous Custom BuildDone handler;
-    // future FileChanged events look up by the same merkle key. Both must
-    // compute identical keys for the cache to hit.
+    // The result is stored from the synchronous Custom BuildDone handler and looked up from
+    // a later FileChanged, so both must compute identical keys for the cache to hit.
     let handler = warmedHandler "echo" "ok" []
 
     let cacheKeyFn = handler.CacheKey.Value
@@ -695,17 +673,15 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
 
 [<Fact(Timeout = 15000)>]
 let ``BuildPlugin does not subscribe to BatchChecked`` () =
-    // The build plugin no longer reacts to BatchChecked: every source change
-    // (test files included) drives a real build, so there is no test-only-skip
-    // phase that waited on the FCS cohort signal. TestPrune still owns its
-    // BatchChecked subscription (the AffectedTests seal); the build plugin must
-    // not, or a test-only edit could be sealed without re-emitting the DLL.
+    // Every source change (test files included) drives a real build, so there is no
+    // test-only-skip phase waiting on the FCS cohort signal. TestPrune still owns its
+    // BatchChecked subscription (the AffectedTests seal); the build plugin must not, or a
+    // test-only edit could be sealed without re-emitting the DLL.
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     test <@ not (handler.Subscriptions.Contains(SubscribeBatchChecked)) @>
 
 [<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key reflects build command`` () =
-    // §2a: changing the build command/args should invalidate the cache.
     // Tests the pure merkle directly, bypassing the cold-start guard.
     let inputs = "stub-inputs-hash"
     let k1 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [] inputs
@@ -721,7 +697,7 @@ let ``BuildPlugin cache key reflects dependsOn ordering and content`` () =
     test <@ k1 = k2 @> // sorted internally
     test <@ k1 <> k3 @>
 
-// --- §2a: BuildInputsHasher (extracted via internal visibility for testability) ---
+// --- BuildInputsHasher (extracted via internal visibility for testability) ---
 
 let private stubGraph (sources: string list) (projects: string list) =
     { new IProjectGraphReader with
@@ -784,9 +760,8 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
         let missing = System.IO.Path.Combine(tmpDir, "MissingNeverWritten.fs")
         System.IO.File.WriteAllText(exists, "let a = 1")
 
-        // Missing file is hashed via the explicit "missing" sentinel; no exception,
-        // and the merkle distinguishes a file-set with a missing entry from one
-        // without it (the old read-error swallow could collapse keys to (path,0L)).
+        // No exception, and the merkle distinguishes a file-set with a missing entry from
+        // one without it — the old read-error swallow collapsed keys to (path, 0L).
         let withMissing = BuildInputsHasher(stubGraph [ exists; missing ] []).Compute()
         let onlyExists = BuildInputsHasher(stubGraph [ exists ] []).Compute()
         test <@ not (System.String.IsNullOrEmpty(withMissing)) @>
@@ -794,9 +769,8 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
-    // Belt-and-suspenders: the "missing" sentinel must still be combined with
-    // the path (else two different missing files would collapse to one merkle
-    // entry — exactly the silent under-build the old (path,0L) swallow caused).
+    // The "missing" sentinel must still be combined with the path, or two different missing
+    // files collapse to one merkle entry — the silent under-build the old swallow caused.
     withTempDir "binhasher-missing-distinct" (fun tmpDir ->
         let m1 = System.IO.Path.Combine(tmpDir, "M1.fs")
         let m2 = System.IO.Path.Combine(tmpDir, "M2.fs")
@@ -806,9 +780,8 @@ let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher propagates IOException from unreadable file`` () =
-    // Simulate IO failure: chmod 000 a real file. ReadAllText throws
-    // UnauthorizedAccessException, which now propagates instead of being
-    // swallowed as a "read-error" cache entry that would poison the merkle.
+    // chmod 000 makes ReadAllText throw UnauthorizedAccessException, which must propagate
+    // rather than be swallowed as a "read-error" cache entry that poisons the merkle.
     withTempDir "binhasher-unreadable" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "Locked.fs")
         System.IO.File.WriteAllText(f, "let a = 1")
@@ -850,17 +823,10 @@ let ``BuildInputsHasher propagates IOException from unreadable file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher merkle is stable across repeat computes when content is unchanged`` () =
-    // UPDATED (Bug 1): this test previously asserted that mutating content while
-    // preserving mtime returns the SAME merkle ("caches by (path, mtime):
-    // repeated computes hash once", `first = second` after a content rewrite).
-    // That enshrined the very bug that produced the FS1178 phantom — the merkle
-    // is supposed to track on-disk CONTENT, and (path, mtime) is not a safe
-    // proxy for it. The mtime-preserved content rewrite is now covered by
-    // `... hash differs when content changes but mtime is preserved (rsync -a)`.
-    //
-    // The legitimate invariant the merkle must satisfy is idempotence: hashing
-    // the SAME on-disk content repeatedly yields the SAME merkle (so an
-    // unchanged tree produces a stable cache key). That is what this asserts.
+    // The trap: this once asserted that mutating content while PRESERVING mtime returns the
+    // same merkle, which enshrined the FS1178 phantom below. The invariant is idempotence —
+    // hashing the same on-disk CONTENT repeatedly yields the same merkle — never that mtime
+    // is a proxy for content.
     withTempDir "binhasher-stable" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "A.fs")
         System.IO.File.WriteAllText(f, "let a = 1")
@@ -869,40 +835,26 @@ let ``BuildInputsHasher merkle is stable across repeat computes when content is 
         let h = BuildInputsHasher(stubGraph [ f ] [])
         let first = h.Compute()
 
-        // Content is NOT changed; mtime is left as-is. Repeat computes must agree.
         let second = h.Compute()
         System.IO.File.SetLastWriteTimeUtc(f, mtime)
         let third = h.Compute()
 
-        // Stable merkle for unchanged content — the correctness-preserving
-        // property (not "mtime hides content changes").
         test <@ first = second @>
         test <@ second = third @>)
 
-// --- REGRESSION (Bug 1): stale FCS phantom from mtime-preserved content rewrite ---
+// --- REGRESSION: stale FCS phantom from an mtime-preserved content rewrite ---
 //
-// Production incident (thellma/intelligence, 3rd recurrence, ~30 min to
-// diagnose): vendored F# source under a gitignored `paket-files/.../sqlhydra/`
-// dir is compiled as part of the build graph. After the vendored files were
-// rewritten on disk by `rsync` (which with `-a`/`--times` PRESERVES the source
-// mtime), the build plugin kept compiling a CACHED OLD VERSION — reporting
-// `FS1178: type 'Provider' is not structurally comparable` for a type that does
-// not exist anywhere in the on-disk source (verified by grep; `diff -r` against
-// a known-good checkout was byte-identical). ~1700 cascading errors across 392
-// files. `fshw scan` did NOT clear it; only `fshw stop` + cold rebuild did.
+// `BuildInputsHasher.hashFile` used to cache `(path, mtimeTicks) -> contentHash`. When
+// content changes but mtime does NOT (`rsync -a`, `cp -p`, `tar` extraction, a git checkout
+// restoring an old mtime), the cache returns the STALE hash, the build merkle is unchanged,
+// and the task cache replays a stale `BuildDone` forever. In the incident this pins, the
+// affected files were also gitignored — outside the watch set — so no FileChanged ever
+// fired to invalidate them either, and the daemon reported `FS1178` for a type that did not
+// exist anywhere on disk until a full `fshw stop` + cold rebuild.
 //
-// Root cause: `BuildInputsHasher.hashFile` caches `(path, mtimeTicks) ->
-// contentHash`. When content changes but mtime does NOT (mtime-preserving
-// rsync, `cp -p`, `tar` extraction, git checkout that restores an old mtime),
-// the cache returns the STALE hash, the build merkle key is unchanged, and the
-// build-plugin task cache replays a stale `BuildDone` forever. The gitignored
-// path is also outside the watch set, so no FileChanged event ever fires to
-// invalidate it either — hence "stale forever".
-//
-// Fix: the input merkle reflects on-disk CONTENT, not (path, mtime). mtime is
-// never trusted to prove content equality (size + mtime, or content re-hash on
-// size/mtime ambiguity, would all still be fooled by a same-size mtime-preserved
-// rewrite — only a content hash is safe).
+// So the merkle reflects on-disk CONTENT. mtime is never trusted to prove content equality:
+// size + mtime, or a re-hash on size/mtime ambiguity, are all still fooled by a same-size
+// mtime-preserved rewrite.
 
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher hash differs when content changes but mtime is preserved (rsync -a)`` () =
@@ -914,17 +866,13 @@ let ``BuildInputsHasher hash differs when content changes but mtime is preserved
         let h = BuildInputsHasher(stubGraph [ f ] [])
         let before = h.Compute()
 
-        // Simulate `rsync -a` over the vendored file: content is rewritten to a
-        // genuinely different definition, but the mtime is restored to the
-        // source's (preserved) value — exactly what bit downstream.
+        // `rsync -a` over the vendored file: a genuinely different definition, with the
+        // mtime restored to the source's preserved value.
         System.IO.File.WriteAllText(f, "type SomethingElse = { Y: string }")
         System.IO.File.SetLastWriteTimeUtc(f, originalMtime)
 
         let after = h.Compute()
 
-        // The merkle MUST reflect the new on-disk content. If it does not, the
-        // build cache key is stable across a real content change and a stale
-        // BuildDone replays forever (the FS1178 phantom).
         test <@ before <> after @>)
 
 [<Fact(Timeout = 15000)>]
@@ -952,10 +900,9 @@ let ``BuildInputsHasher includes project files in the merkle`` () =
 
 // --- Post-build artifact verification (the BuildSucceeded contract) ---
 
-/// Build a single-project fixture (`MyLib.fsproj` + `Lib.fs` + a fake DLL at
-/// the canonical path) and run the plugin against it. The caller controls the
-/// relative source/DLL mtimes via `srcOffset`/`dllOffset` (offsets from "now").
-/// Returns the recorded `getBuild` so the test can assert the final outcome.
+/// Build a single-project fixture (`MyLib.fsproj` + `Lib.fs` + a fake DLL at the canonical
+/// path) and run the plugin against it. The caller controls the relative source/DLL mtimes
+/// via `srcOffset`/`dllOffset` (offsets from "now").
 let private runVerifyHarness
     (label: string)
     (srcOffset: TimeSpan)
@@ -984,8 +931,8 @@ let private runVerifyHarness
         let graph = ProjectGraph()
         graph.RegisterFromFsproj(projPath) |> ignore
 
-        // `true` succeeds with empty output — the "MSBuild silently skipped"
-        // condition that mtime verification has to disambiguate.
+        // `true` succeeds with empty output — the "MSBuild silently skipped" condition that
+        // mtime verification has to disambiguate.
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
         host.RegisterHandler(recorder)
         host.RegisterHandler(handler)
@@ -1020,9 +967,7 @@ let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`
 
 [<Fact(Timeout = 30000)>]
 let ``template build with failing command emits BuildFailed and reports Failed status`` () =
-    // Drives the Failed-result arm of startTemplateBuild: the rendered template
-    // exits non-zero, so failures accumulates, applyBuildOutcome takes the
-    // BuildOutputFailed arm, and Custom(BuildDone) reports Failed status.
+    // Drives the Failed-result arm of `startTemplateBuild`.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1062,8 +1007,7 @@ let ``template build with failing command emits BuildFailed and reports Failed s
 
 [<Fact(Timeout = 15000)>]
 let ``template build honors timeoutSec and surfaces TimedOut`` () =
-    // Drives the TimedOut arm of startTemplateBuild (lines 380-384): the rendered
-    // template runs `sleep 10` against a 1-second timeout.
+    // Drives the TimedOut arm of `startTemplateBuild`: `sleep 10` against a 1s timeout.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1096,10 +1040,9 @@ let ``template build honors timeoutSec and surfaces TimedOut`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``ProjectChanged after a test-file change runs a real build`` () =
-    // Previously a test-file change parked the plugin in WaitingForBatchPhase and
-    // a ProjectChanged had to interrupt that wait. Now the test-file change builds
-    // immediately; a following ProjectChanged builds again. Both reach
-    // BuildSucceeded — neither is silently dropped.
+    // A test-file change used to park the plugin in WaitingForBatchPhase, needing a
+    // ProjectChanged to interrupt the wait. Both builds must now reach BuildSucceeded on
+    // their own, with neither silently dropped.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1117,13 +1060,11 @@ let ``ProjectChanged after a test-file change runs a real build`` () =
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // Test-file change → real build (no wait on BatchChecked).
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
     waitForTerminalStatus host "build" 20000
     waitUntil (fun () -> (getBuild ()).IsSome) 8000
     test <@ getBuild () = Some BuildSucceeded @>
 
-    // ProjectChanged → another real build.
     host.EmitFileChanged(ProjectChanged [ "/tmp/tests/MyTests/MyTests.fsproj" ])
     waitForTerminalStatus host "build" 20000
     waitUntil (fun () -> (getBuild ()).IsSome) 8000
@@ -1131,8 +1072,7 @@ let ``ProjectChanged after a test-file change runs a real build`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``a mixed test-and-source change runs a real build`` () =
-    // A change touching both a test file and a non-test source file builds once
-    // and succeeds — it was never the skip path, and still isn't.
+    // A mixed change was never the skip path, and still isn't.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1165,8 +1105,8 @@ let ``a mixed test-and-source change runs a real build`` () =
 
 [<Fact(Timeout = 30000)>]
 let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
-    // Drives the build-status command path that reads `Lifecycle.value` and
-    // matches BuildOutputFailed (lines 615-619).
+    // Drives the build-status path that reads `Lifecycle.value` and matches
+    // BuildOutputFailed.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
@@ -1177,17 +1117,16 @@ let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     test <@ result.IsSome @>
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
-    // The "output" field exists even when stdout was empty (false produces no
-    // bytes); having the JSON shape proves the BuildOutputFailed serializer arm.
+    // The "output" field exists even when stdout was empty (`false` produces no bytes) —
+    // the JSON shape is what proves the BuildOutputFailed serializer arm.
     let mutable outputProp = Unchecked.defaultof<JsonElement>
     let hasOutput = doc.RootElement.TryGetProperty("output", &outputProp)
     test <@ hasOutput @>
 
 [<Fact(Timeout = 30000)>]
 let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
-    // Combine the runVerifyHarness pattern (which produces BuildArtifactsStale)
-    // with build-status to drive the BuildArtifactsStale arm of the JSON
-    // serializer (lines 609-614).
+    // The runVerifyHarness shape (which produces BuildArtifactsStale) plus build-status,
+    // to drive that arm of the JSON serializer.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     withTempDir "build-status-stale" (fun tmpDir ->
@@ -1224,22 +1163,20 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         test <@ output.Contains("stale") || output.Contains("MSBuild") @>)
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-224 — `force-rebuild`: a cache hit must not assert freshness it
-// never verified.
+// AUTOMATION-224 — `force-rebuild`: a cache hit must not assert freshness it never
+// verified.
 //
-// The build cache key is a content merkle over SOURCE files only. A hit therefore
-// claims "the outputs are up to date" on evidence that never looked at the
-// outputs. That claim is false whenever `bin/` is changed out from under a tree
-// whose sources are unchanged — a working-copy flip being the usual way. The
-// build then replays "built N projects (cached)" without running, TestPrune's
-// freshness gate correctly finds the output stale and defers every affected
-// project as "waiting on build", and NOTHING EVER REBUILDS. That deadlock blocked
-// a production deploy three times; `dotnet fshw scan` was the only escape, and it
-// worked only because it forced a real build.
+// The build cache key is a content merkle over SOURCE files only, so a hit claims "the
+// outputs are up to date" on evidence that never looked at the outputs. That is false
+// whenever `bin/` changes under a tree whose sources did not — a working-copy flip being
+// the usual way. The build then replays "built N projects (cached)" without running,
+// TestPrune's freshness gate correctly finds the output stale and defers every affected
+// project as "waiting on build", and NOTHING EVER REBUILDS. `dotnet fshw scan` was the only
+// escape from that deadlock, and only because it forced a real build.
 //
-// `confirm` issues `force-rebuild` for the same reason it already forces a
-// from-disk scan: the merge verb does not get to trust a cache when its entire
-// job is to be the thing everything else trusts.
+// `confirm` issues `force-rebuild` for the same reason it already forces a from-disk scan:
+// the merge verb does not get to trust a cache when its job is to be what everything else
+// trusts.
 // ---------------------------------------------------------------------------
 
 /// A handler warmed through one real build, plus its cache-key function.
@@ -1249,14 +1186,13 @@ let private warmedWithKeyFn () =
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
-    // THE REGRESSION. Before the fix the key was unconditional, so a warm cache
-    // replayed a BuildPassed whose artifacts were long gone and the deadlock
-    // above became unexitable.
+    // The key used to be unconditional, so a warm cache replayed a BuildPassed whose
+    // artifacts were long gone and the deadlock above became unexitable.
     let handler, cacheKeyFn = warmedWithKeyFn ()
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 
-    // Baseline: cacheable, so the ordinary warm path still gets its cache.
-    // Bound outside the quotation — Unquote cannot splice an inner generic call.
+    // Baseline: the ordinary warm path still gets its cache. Bound outside the quotation —
+    // Unquote cannot splice an inner generic call.
     let before = cacheKeyFn fileEvt
     test <@ before.IsSome @>
 
@@ -1266,16 +1202,14 @@ let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () 
     |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
     |> ignore
 
-    // `None` is the framework's documented "skip the cache, run Update" bypass —
-    // i.e. a REAL build, which is the whole point.
+    // `None` is the framework's "skip the cache, run Update" bypass — i.e. a REAL build.
     let after = cacheKeyFn fileEvt
     test <@ after.IsNone @>
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild still lets the fresh build's result be cached`` () =
-    // Asymmetry is deliberate: suppressing the STORE too would make every forced
-    // build permanently uncacheable, turning a correctness fix into a standing
-    // performance regression.
+    // The asymmetry is deliberate: suppressing the STORE too would make every forced build
+    // permanently uncacheable, turning a correctness fix into a standing perf regression.
     let handler, cacheKeyFn = warmedWithKeyFn ()
 
     handler.Commands

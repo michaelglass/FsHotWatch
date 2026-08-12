@@ -10,10 +10,9 @@ let root (repoRoot: string) = Path.Combine(repoRoot, ".fshw")
 [<Literal>]
 let ConfigFileName = ".fshw.json"
 
-/// Absolute path to the repo's `.fshw.json`. Named in ONE place because the
-/// config is an INPUT to the tree hash the verdict is content-addressed by
-/// (`TreeHash`): a config change means the next verdict covers a different tree,
-/// and a second spelling of this path is a way for that to stop being true.
+/// Absolute path to the repo's `.fshw.json`. Named in ONE place because the config is
+/// an input to the tree hash the verdict is content-addressed by (`TreeHash`), and a
+/// second spelling of this path would let the two disagree.
 let configFile (repoRoot: string) = Path.Combine(repoRoot, ConfigFileName)
 
 /// Write contents atomically (temp file + rename). Used wherever we need a

@@ -11,7 +11,7 @@ open FsHotWatch.Cli.CheckVerdict
 /// The scope these coverage-convergence tests are indifferent to. Convergence is
 /// about COMPLETENESS (did every file get checked), not about what the tests
 /// covered — so these cases pin the InnerLoop mode, which ignores the scope
-/// entirely. The scope's own behaviour is pinned by the Confirmation tests below.
+/// entirely. Scope itself is pinned by the Confirmation tests below.
 let private anyScope = FullSuite 1
 
 /// A plugin whose status is `status` and which has NOTHING else to say — no run
@@ -26,10 +26,9 @@ let private statusOf (status: StatusView) : Map<string, ParsedPluginStatus> =
             LastRun = None
             Diagnostics = DiagnosticCounts.empty } ]
 
-/// The verdict's inputs, as these tests want to talk about them: `hasFailures` here
-/// means a failing DIAGNOSTIC (the term the run-once path already had, and the only
-/// one it had). The OTHER term — a plugin that failed without writing a diagnostic —
-/// has its own tests below, because it is the one that greened CI.
+/// The verdict's inputs. `hasFailures` here means a failing DIAGNOSTIC only; the OTHER
+/// term — a plugin that failed without writing a diagnostic — has its own tests below,
+/// because it is the one that greened CI.
 let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) : CheckInputs =
     { PluginStatuses = Map.empty
       FailingDiagnostics = (if hasFailures then 1 else 0)
@@ -47,7 +46,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
     // A plugin reaches `Failed` without writing an `ErrorEntry` every time it throws —
     // PluginFramework's crash-nets force exactly that, and cannot invent a file and
     // line for someone else's stack trace. Complete coverage, full suite, empty ledger,
-    // and the check DID NOT RUN. There is only one honest answer.
+    // and the check DID NOT RUN.
     let crashed =
         { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
           FailingDiagnostics = 0
@@ -62,7 +61,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
 let ``verdict: a plugin in a status this build cannot READ is FailuresFound, never Clean`` () =
     // The cross-version case, now that `PluginOutcome` has gained `Wedged`: a newer
     // daemon reporting a state we have no name for. An unknown state is not a passing
-    // state — `Verdict.read` has said so all along; the wire parser now agrees.
+    // state.
     let unreadable =
         { PluginStatuses = statusOf (StatusView.Unreadable "a status tag this build does not recognize")
           FailingDiagnostics = 0
@@ -96,9 +95,9 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, never a red`` () =
-    // The plugin reports a NON-failing terminal for a pure defer (Commit 2), and the
-    // deferred diagnostic is `Deferred` severity — so FailingDiagnostics is 0 and no
-    // plugin is Failed. The distinct `WaitingOnBuild` term carries the non-green.
+    // The plugin reports a NON-failing terminal for a pure defer, and the deferred
+    // diagnostic is `Deferred` severity — so FailingDiagnostics is 0 and no plugin is
+    // Failed. The distinct `WaitingOnBuild` term carries the non-green.
     let waiting =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
@@ -138,8 +137,6 @@ let ``verdict: a clean full run is still Clean / exit 0 — no regression from t
 // REQUIRED input. Failures short-circuit BEFORE convergence.
 // ----------------------------------------------------------------------------
 
-// hasFailures = true short-circuits to FailuresFound regardless of coverage.
-
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Complete -> FailuresFound`` () =
     test <@ verdict InnerLoop (inputs true Complete anyScope) = CheckOutcome.FailuresFound @>
@@ -152,8 +149,6 @@ let ``verdict: failures + Incomplete -> FailuresFound (failures short-circuit)``
 let ``verdict: failures + Unknown -> FailuresFound`` () =
     test <@ verdict InnerLoop (inputs true Unknown anyScope) = CheckOutcome.FailuresFound @>
 
-// no failures: coverage decides.
-
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Complete -> Clean`` () =
     test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean @>
@@ -164,13 +159,11 @@ let ``verdict: clean + Incomplete -> Incomplete`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Unknown -> Incomplete (Unknown never reads as Clean)`` () =
-    // Unknown must enter convergence, never map to Clean. We model that by
-    // mapping it to an Incomplete outcome (unchecked count unknown -> -1).
+    // Unknown must enter convergence, never map to Clean; modelled as an Incomplete
+    // outcome whose unchecked count is unknown (-1).
     match verdict InnerLoop (inputs false Unknown anyScope) with
     | CheckOutcome.Incomplete _ -> ()
     | other -> failwithf "expected Incomplete, got %A" other
-
-// exitCode is a total mapping 0/1/2.
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: Clean -> 0`` () =
@@ -183,8 +176,6 @@ let ``exitCode: FailuresFound -> 1`` () =
 [<Fact(Timeout = 15000)>]
 let ``exitCode: Incomplete -> 2`` () =
     test <@ exitCode (CheckOutcome.Incomplete 4) = 2 @>
-
-// Unknown must NEVER produce exit 0.
 
 [<Fact(Timeout = 15000)>]
 let ``Unknown coverage with no failures never yields exit 0`` () =
@@ -304,11 +295,11 @@ let ``converge: Unknown then complete -> Clean`` () =
 // ----------------------------------------------------------------------------
 // AUTOMATION-112 — a merge verdict cannot be produced from an impact-filtered run.
 //
-// Impact filtering is a latency optimization for the inner loop. A merge decision is a
-// correctness claim. An impact-filtered green means "your change didn't break
-// anything I chose to look at" — not "the suite is green". These tests pin the
-// difference in the TYPE, because "remember to also run an unfiltered test-rerun
-// before merging" is exactly the discipline that already failed.
+// Impact filtering is a latency optimization; a merge decision is a correctness claim.
+// An impact-filtered green means "your change didn't break anything I chose to look
+// at", not "the suite is green". These tests pin the difference in the TYPE, because
+// "remember to also run an unfiltered rerun before merging" is the discipline that
+// already failed.
 // ----------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
@@ -346,18 +337,15 @@ let ``Confirmation: an unknown scope cannot yield Clean`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: real failures still short-circuit ahead of scope`` () =
-    // A failing test is a failing test; don't bury it behind a scope complaint.
     test <@ verdict Confirmation (inputs true Complete (ImpactFiltered(1, 4))) = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: incomplete coverage still outranks scope`` () =
-    // Files that were never checked are a completeness problem, reported as such.
     test <@ verdict Confirmation (inputs false (Incomplete 7) (FullSuite 4)) = CheckOutcome.Incomplete 7 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
-    // The fast loop keeps its optimization. Making it demand the whole suite would
-    // defeat the point of having one; `confirm` is where the claim gets made.
+    // The fast loop keeps its optimization; `confirm` is where the merge claim is made.
     test <@ verdict InnerLoop (inputs false Complete (ImpactFiltered(1, 4))) = CheckOutcome.Clean @>
     // A repo with no test-prune plugin has no tests to run, and punishing it would be
     // nonsense. `ScopeUnknown` is "we cannot say", not "we ran nothing".
@@ -365,19 +353,15 @@ let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is f
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, not NOTHING`` () =
-    // AUTOMATION-129. This assertion used to read `= CheckOutcome.Clean`, and that was
-    // the vacuous green in its purest form.
+    // AUTOMATION-129. `NoTestsRun` does NOT mean "impact analysis selected nothing this
+    // time". It means the daemon holds NO TEST EVIDENCE AT ALL — no run has completed
+    // in this session, or the one that did executed zero tests ("0 passed, 0 failed in
+    // 0 projects"). This assertion once read `= CheckOutcome.Clean`, which is the
+    // vacuous green in its purest form.
     //
-    // `NoTestsRun` does NOT mean "impact analysis selected nothing this time". It means
-    // the daemon holds NO TEST EVIDENCE AT ALL — no run has completed in this session,
-    // or the one that did executed zero tests ("0 passed, 0 failed in 0 projects").
-    // A `check` that exits 0 on that has verified nothing and said everything was fine.
-    // It was observed in the wild twice on the day this was written.
-    //
-    // So it is refused in BOTH modes. Impact filtering is a question of HOW MUCH we
-    // tested; this is a question of WHETHER WE TESTED AT ALL, and the two are not the
-    // same axis. The inner loop is allowed to test less. It is not allowed to test
-    // nothing and call it green.
+    // So it is refused in BOTH modes: impact filtering is a question of HOW MUCH we
+    // tested, this is a question of WHETHER WE TESTED AT ALL. The inner loop may test
+    // less; it may not test nothing and call it green.
     test <@ verdict InnerLoop (inputs false Complete NoTestsRun) = CheckOutcome.UnearnedScope NoTestsRun @>
     test <@ verdict Confirmation (inputs false Complete NoTestsRun) = CheckOutcome.UnearnedScope NoTestsRun @>
 
@@ -428,7 +412,7 @@ let ``parseTestRunReport: a none reply parses as NoTestsRun`` () =
     test <@ (parseTestRunReport json).Scope = NoTestsRun @>
 
 /// Did the parser fail to READ the reply (as opposed to reading an absent scope)?
-/// The shared, exhaustive predicate — this was a local copy with a `| _ ->` wildcard.
+/// The shared, exhaustive predicate — a local copy here would need a `| _ ->` wildcard.
 let private isUnreadable = TestScope.isUnreadable
 
 [<Fact(Timeout = 15000)>]
@@ -448,8 +432,7 @@ let ``parseTestRunReport: "no scope reported" and "could not read the reply" are
     // read, so the parser has to hand back two different facts rather than one.
 
     // "running" is an ANSWER — a run is in flight, so no scope is earned yet. It stays
-    // the tolerated value; this is the positive control that the tolerated value is
-    // still producible at all.
+    // the tolerated value; this is the positive control that it is still producible.
     test <@ (parseTestRunReport """{"scope":"running","runId":null}""").Scope = ScopeUnknown @>
 
     // Everything else is a FAILURE TO READ: garbage, an empty reply, a plugin error
@@ -468,18 +451,15 @@ let ``parseTestRunReport: a full reply that did not actually cover every project
     test <@ isUnreadable (parseTestRunReport """{"scope":"full","ranProjects":0,"totalProjects":0}""").Scope @>
 
 // ----------------------------------------------------------------------------
-// A MISSING READING IS NOT A GOOD READING (AUTOMATION-150's principle, at the
-// verdict).
+// A MISSING READING IS NOT A GOOD READING (AUTOMATION-150), at the verdict.
 //
-// `NoTestsRun` is refused in both modes: a run that verified nothing may not be a
-// green. But that refusal is only ever REACHED when the scope read succeeded, and
-// every way of failing to read the scope used to produce the same value as "this repo
-// has no test projects" — which the inner loop tolerates, and must keep tolerating.
-//
-// So a fault on the read path (a throwing command, a dropped transport, a reply from
-// another version) turned exit 3 into exit 0 on an unchanged daemon state. These pin
-// the split that closes it, in BOTH directions: the fault is refused, and the
-// legitimately-absent scope is still tolerated.
+// `NoTestsRun` is refused in both modes, but that refusal is only REACHED when the
+// scope read succeeded — and every way of FAILING to read the scope used to produce
+// the same value as "this repo has no test projects", which the inner loop tolerates
+// and must keep tolerating. So a fault on the read path (a throwing command, a dropped
+// transport, a reply from another version) turned exit 3 into exit 0 on an unchanged
+// daemon state. These pin the split in BOTH directions: the fault is refused, the
+// legitimately-absent scope still tolerated.
 // ----------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]

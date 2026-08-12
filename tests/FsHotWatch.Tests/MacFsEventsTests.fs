@@ -58,7 +58,6 @@ module ``classifyEvent pure tests`` =
 
     [<Fact(Timeout = 15000)>]
     let ``MustScanSubDirs with other non-file flags is CoalescedScan`` () =
-        // Some extra bits set but not ItemIsFile + change
         let flags = EventFlags.MustScanSubDirs ||| 0x00000004u
         test <@ classifyEvent flags = EventClassification.CoalescedScan @>
 
@@ -88,14 +87,12 @@ module ``classifyEvent pure tests`` =
 
     [<Fact(Timeout = 15000)>]
     let ``MustScanSubDirs takes priority when no file change flags present`` () =
-        // MustScanSubDirs + ItemIsFile but no change type => CoalescedScan wins via ordering
-        // Actually: ItemIsFile without change flags fails the first branch, falls to MustScanSubDirs
+        // ItemIsFile without a change flag fails the first branch, so it falls through.
         let flags = EventFlags.MustScanSubDirs ||| EventFlags.ItemIsFile
         test <@ classifyEvent flags = EventClassification.CoalescedScan @>
 
     [<Fact(Timeout = 15000)>]
     let ``file change takes priority over MustScanSubDirs when both present`` () =
-        // If both ItemIsFile+change AND MustScanSubDirs are set, FileChange wins
         let flags =
             EventFlags.ItemIsFile ||| EventFlags.ItemCreated ||| EventFlags.MustScanSubDirs
 
@@ -176,9 +173,8 @@ type MacFsEventsTests() =
         if not isMacOS then
             Assert.Skip("macOS only")
         else
-            // Deterministic guard branch in the constructor — does not exercise
-            // FSEvents callbacks, so it stabilises module-level coverage without
-            // adding flake from fseventsd timing.
+            // Constructor guard only — no FSEvents callbacks, so it stabilises
+            // module coverage without fseventsd timing flake.
             let ex =
                 Assert.Throws<System.ArgumentException>(fun () ->
                     use _stream = FsHotWatch.MacFsEvents.create [] ignore 0.05
@@ -209,11 +205,11 @@ type MacFsEventsTests() =
 
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
-                // Phase 1: probe until stream is live (FSEvents cold-start can be 4-20s for new dirs).
+                // Probe until the stream is live: FSEvents cold-start is 4-20s for a new dir.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
 
-                // Phase 2: probe-write Test.fs until its event fires.
-                // fseventsd may batch subsequent events for 15-30s after a large cold-start batch.
+                // Probe-write until the event fires: fseventsd may batch subsequent events
+                // for 15-30s after a large cold-start batch.
                 let testFile = Path.Combine(tmpDir, "Test.fs")
 
                 probeLoop
@@ -241,14 +237,12 @@ type MacFsEventsTests() =
 
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
-                // Phase 1: probe until stream is live.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedCount > 0)) 60000
 
                 // Let in-flight probe events drain before capturing baseline.
                 Thread.Sleep(200)
                 let countAfterProbe = lock lockObj (fun () -> detectedCount)
 
-                // Phase 2: probe-write Lib.fs until a modification event fires.
                 probeLoop
                     (fun n -> File.WriteAllText(testFile, $"module Lib\nlet x = {n + 2}\n"))
                     (fun () -> lock lockObj (fun () -> detectedCount > countAfterProbe))
@@ -273,11 +267,10 @@ type MacFsEventsTests() =
 
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
-                // Phase 1: probe until stream is live.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
 
-                // Phase 2: delete Del.fs, retrying if fseventsd batches the event.
-                // Each probeLoop iteration deletes (and if needed re-creates) Del.fs.
+                // Each iteration deletes (and if needed re-creates) Del.fs, because
+                // fseventsd may batch the delete event.
                 probeLoop
                     (fun _ ->
                         if not (File.Exists testFile) then
@@ -312,10 +305,8 @@ type MacFsEventsTests() =
             try
                 use _stream = FsHotWatch.MacFsEvents.create [ srcDir; testDir ] onFile 0.05
 
-                // Phase 1: probe until stream is live.
                 probeUntilEvent srcDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
 
-                // Phase 2: probe-write A.fs and B.fs until events fire for both.
                 probeLoop
                     (fun n ->
                         File.WriteAllText(Path.Combine(srcDir, "A.fs"), $"module A // v{n}")

@@ -37,8 +37,7 @@ type Registry() =
         [ for kv in live do
               let p = kv.Value
 
-              // See isExpectedProcessException — any tolerated exception means
-              // "can't observe; treat as not alive".
+              // A tolerated exception means "can't observe; treat as not alive".
               let alive =
                   try
                       not p.HasExited
@@ -52,10 +51,8 @@ type Registry() =
     /// iteration may be missed and silently dropped from `live` by the final
     /// Clear — accept that for daemon shutdown; do not call from steady-state.
     member _.KillAll() : unit =
-        // See isExpectedProcessException — both HasExited and Kill can race with
-        // natural exit (InvalidOperationException) or fail with Win32Exception
-        // access-denied. Both tolerated here so daemon shutdown can proceed across
-        // the whole live set; other classes propagate as they indicate real bugs.
+        // Tolerating the expected classes (see `isExpectedProcessException`) lets
+        // shutdown proceed across the whole live set.
         for kv in live do
             try
                 let p = kv.Value
@@ -84,10 +81,9 @@ let private currentOpt () =
     let r = currentRegistry.Value
     if isNull (box r) then None else Some r
 
-/// Register `p` with the current scope's registry so daemon shutdown can tear it
-/// down. A child spawned with NO registry in scope can never be reaped — it will
-/// outlive the daemon as an init-reparented orphan — so the miss is WARNED, never
-/// swallowed. A leak you cannot see is a leak you cannot fix.
+/// Register `p` with the current scope's registry so daemon shutdown can tear it down.
+/// A child spawned with NO registry in scope can never be reaped — it outlives the
+/// daemon as an init-reparented orphan — so the miss is warned, never swallowed.
 let track (p: Process) =
     match currentOpt () with
     | Some r -> r.Track p

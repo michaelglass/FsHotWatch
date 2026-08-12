@@ -1,27 +1,17 @@
 /// The content address of the tree fshw verifies.
 ///
-/// A verdict is only ever a claim about a PARTICULAR tree. A file that says
-/// "green" and cannot say WHICH green will be read as the answer to whatever
-/// question the reader happens to be asking — a green from a different tree is
-/// still a green. So the verdict carries the hash of the tree it verified, and the
-/// consumer's rule becomes total and safe by construction:
+/// A verdict is a claim about a PARTICULAR tree, so it carries the hash of the tree it
+/// verified and the consumer's rule is total: if `treeHash ≠ hash(current tree)`, the
+/// verdict does not apply — never reuse it.
 ///
-///   read the verdict; if `treeHash ≠ hash(current tree)`, THE VERDICT DOES NOT
-///   APPLY — never reuse it.
+/// WHAT IS HASHED — everything under the discovery roots (`src/`, `tests/`) that is not
+/// build output, tooling state, or excluded by config, PLUS `.fshw.json` itself. That
+/// includes CONTENT/FIXTURE files, deliberately: a changed fixture MSBuild declines to
+/// re-copy can otherwise let a suite run green against the OLD fixture.
 ///
-/// Staleness stops being something a reader must notice and becomes something the
-/// data itself reports.
-///
-/// WHAT IS HASHED — everything under the discovery roots (`src/`, `tests/`) that
-/// is not build output, tooling state, or excluded by config, PLUS `.fshw.json`
-/// itself. That means SOURCES **and CONTENT/FIXTURE FILES**, deliberately: a
-/// fixture is an input to the verdict exactly as a source file is (a changed
-/// fixture MSBuild declines to re-copy can otherwise let a suite run green against
-/// the OLD fixture), so it is inside the hash exactly as a source file is.
-///
-/// The hash is over CONTENT, never mtimes: a checkout, a `touch`, or a filesystem
-/// with coarse timestamps all move the mtime without changing what the compiler
-/// sees, and MSBuild's up-to-date check trusts exactly that mtime.
+/// The hash is over CONTENT, never mtimes: a checkout, a `touch`, or a filesystem with
+/// coarse timestamps all move the mtime without changing what the compiler sees, and
+/// MSBuild's up-to-date check trusts exactly that mtime.
 module FsHotWatch.TreeHash
 
 open System
@@ -85,9 +75,7 @@ let hashEntries (entries: (string * string) list) : string =
 let compute (repoRoot: string) (excludePatterns: string list) : Tree =
     let entries = files repoRoot excludePatterns
 
-    // The sentinel policy for an unreadable file lives in ONE place (ContentHash):
-    // it must not match the hash of the same tree readable, or a claim could silently
-    // cover a file nobody looked at.
+    // `ContentHash` owns the sentinel policy for an unreadable file.
     let hashed = entries |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs)
 
     { Hash = hashEntries hashed

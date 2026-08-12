@@ -26,10 +26,9 @@
 /// it completed green (or it provably has no covering test). A crash between a
 /// queue addition and the analysis flush must leave the symbol QUEUED.
 ///
-/// That direction binds the READ as well as the write (AUTOMATION-150). A ledger
-/// that cannot be read is not an empty ledger: `load` answers `Unreadable`, never
-/// `empty`, so an unreadable sidecar WIDENS the next run to the full suite instead
-/// of silently absorbing the whole outstanding debt. See `LoadedQueue`.
+/// That direction binds the READ as well as the write (AUTOMATION-150): a ledger
+/// that cannot be read is not an empty ledger, so `load` answers `Unreadable` and
+/// the next run WIDENS to the full suite. See `LoadedQueue`.
 module FsHotWatch.TestPrune.PendingVerification
 
 open System
@@ -43,24 +42,19 @@ type Queue = Set<string>
 
 let empty: Queue = Set.empty
 
-/// The result of READING the sidecar — and the reason a failed read may not be
-/// spelled `empty`.
+/// The result of READING the sidecar, and why a failed read may not be spelled
+/// `empty`.
 ///
-/// If `load` answered EVERY failure with `empty`, a corrupt, truncated or unreadable
-/// file would absorb the entire outstanding test debt in silence: the value it hands
-/// back would be indistinguishable from a genuinely-clean queue, collapsing "I could
-/// not read the ledger" into "nothing is owed" — UNDER-testing, the one direction this
-/// module's header forbids.
+/// Answering every failure with `empty` would let a corrupt, truncated or unreadable
+/// file absorb the entire outstanding test debt in silence — indistinguishable from a
+/// genuinely-clean queue, collapsing "I could not read the ledger" into "nothing is
+/// owed", which is the UNDER-testing this module's header forbids. Two facts, two
+/// values, so the compiler makes every caller decide which it is holding.
 ///
-/// So the two facts are different VALUES, and the compiler makes every caller decide
-/// which one it is holding. (The same move as `ProcessOutput.DrainTimedOut`:
-/// unrepresentable beats detected; detected beats silent.)
-///
-/// Note what is deliberately NOT an `Unreadable`: a MISSING file. "The file does
-/// not exist" (first run, fresh clone, nothing ever queued) and "the file exists
-/// and I could not read it" are DIFFERENT FACTS. The first is a provable, genuine
-/// empty; only the second is an unknown. Collapsing them would wedge every fresh
-/// clone into a permanent full-suite run — the fail-open traded for a stuck-closed.
+/// A MISSING file is deliberately NOT `Unreadable`. "Does not exist" (first run,
+/// fresh clone, nothing ever queued) is a provable, genuine empty; only "exists and
+/// I could not read it" is an unknown. Collapsing them wedges every fresh clone into
+/// a permanent full-suite run.
 [<RequireQualifiedAccess>]
 type LoadedQueue =
     /// The ledger was read IN FULL: this is exactly what is owed. The only value
@@ -80,12 +74,9 @@ type LoadedQueue =
 let sidecarPath (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "test-prune", "pending-verification.json")
 
-/// Read the queue off disk. NEVER throws — but a failure comes back as
-/// `Unreadable`, not as an empty queue, so no caller can mistake "I could not read
-/// what is owed" for "nothing is owed" (AUTOMATION-150).
-///
-/// A missing file is `Loaded empty`: nothing has ever been queued here, so nothing
-/// is owed. That is the fresh-clone/first-run case and it must stay a fast no-op.
+/// Read the queue off disk. NEVER throws — a failure comes back as `Unreadable`,
+/// not as an empty queue. A missing file is `Loaded empty`: nothing has ever been
+/// queued here, so nothing is owed, and that fresh-clone case stays a fast no-op.
 let load (repoRoot: string) : LoadedQueue =
     let path = sidecarPath repoRoot
 
@@ -109,9 +100,8 @@ let load (repoRoot: string) : LoadedQueue =
                     let entries = root.AsArray() |> List.ofSeq
 
                     // An entry we cannot read is a SYMBOL WE CANNOT NAME. Skipping it
-                    // would drop outstanding debt on the floor one element at a time —
-                    // the same bug, retail instead of wholesale. One bad entry makes
-                    // the whole ledger unreadable.
+                    // would drop outstanding debt one element at a time, so one bad
+                    // entry makes the whole ledger unreadable.
                     let readEntry (node: JsonNode) : Result<string, string> =
                         if isNull node then
                             Error "a `null` entry where a symbol name was expected"
@@ -155,7 +145,7 @@ let save (repoRoot: string) (queue: Queue) : unit =
     FsHwPaths.atomicWriteAllText path (arr.ToJsonString())
 
 /// Stable content hash of the queue (order-independent). Used to fold
-/// queue-emptiness/identity into the §2a test cache key so a cached green
+/// queue-emptiness/identity into the task cache key so a cached green
 /// `TestRunCompleted` can never be replayed for a state whose pending queue
 /// differs from the run that produced it.
 let hash (queue: Queue) : string =

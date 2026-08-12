@@ -34,10 +34,10 @@ type BuildOutcome =
 /// The build plugin has no in-flight build of its own (the framework's
 /// `RunExclusive "build"` owns single-flighting). `PendingFiles` buffers
 /// file changes that arrived before this plugin's `dependsOn` were satisfied.
-/// Every source change — test files included — drives a real build: there is
-/// no longer a "skip the build for test-only changes" phase, because that
-/// skip left a stale on-disk test DLL for `dotnet run --no-build` to execute
-/// (see ADR-012). `LastBuild` carries the most recent build's lifecycle.
+/// Every source change — test files included — drives a real build; skipping it
+/// for test-only changes leaves a stale on-disk test DLL for
+/// `dotnet run --no-build` to execute (see ADR-012). `LastBuild` carries the most
+/// recent build's lifecycle.
 type BuildState =
     { LastBuild: Lifecycle<Idle, BuildOutcome option>
       PendingFiles: FileChangeKind list
@@ -47,17 +47,12 @@ type BuildState =
 /// own mailbox. Carries the outcome AND the parsed diagnostic entries so the
 /// synchronous Custom handler can apply them to the error ledger and emit
 /// BuildCompleted within the framework's per-event capture window — required
-/// for the §2a cache to record errors and downstream emissions on terminal
-/// status. The summary is NOT carried: the handler derives it from the
-/// outcome via the same pure helper the worker logs with (`buildSummary`), so
-/// the two can never disagree and no arm ships a dead summary nothing
-/// consumes.
+/// for the task cache to record errors and downstream emissions on terminal
+/// status. The summary is deliberately NOT carried: the handler derives it from
+/// the outcome via `buildSummary`, the same pure helper the worker logs with, so
+/// the two can never disagree.
 type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
 
-/// Pure decision logic: given a subprocess's success flag and combined output,
-/// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
-/// On failure with no parsed MSBuild diagnostics, the raw output is wrapped as
-/// a single error entry so callers always have something to report.
 /// Diagnostic for the "MSBuild exited non-zero but produced no parseable
 /// diagnostics" failure mode (typically a bail during evaluation/restore).
 /// Surfaces exit code, output size, and any "Time Elapsed" tail to give the
@@ -85,7 +80,7 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
 
         BuildOutputFailed [ output ], entries
 
-/// §2a: stable merkle key for the build cache, independent of the cold-start
+/// stable merkle key for the build cache, independent of the cold-start
 /// guard. Pure function — exposed `internal` so unit tests can assert the key
 /// responds to its inputs without driving a full plugin lifecycle to flip the
 /// guard. Production use goes through the closure in `create` below.
@@ -102,26 +97,18 @@ let internal computeBuildCacheKey
           "depends-on", String.concat "," (List.sort dependsOn)
           "inputs", inputsHash ]
 
-/// §2a: build all-inputs merkle. Hashes the on-disk CONTENT of every source
-/// file the project graph knows about, plus every .fsproj.
+/// build all-inputs merkle. Hashes the on-disk CONTENT of every source
+/// file the project graph knows about, plus every .fsproj — every input, every
+/// `Compute`, with no memo.
 ///
-/// Bug 1 (mtime-preserved content rewrite): a previous implementation memoized
-/// the content hash under `(path, mtimeTicks)`. `rsync -a`/`cp -p`/`tar -x`/a
-/// git checkout that restores an old mtime all change CONTENT while PRESERVING
-/// mtime, so the `(path, mtime)` key was unchanged → the memo returned the
-/// STALE content hash → the build merkle never moved → the build-plugin task
-/// cache replayed a stale `BuildDone` (an FS1178 phantom) forever. mtime is NOT
-/// a safe proxy for content equality, so the memo is gone: every input is
-/// content-hashed each Compute.
+/// Do NOT reintroduce a memo keyed on mtime. `rsync -a`/`cp -p`/`tar -x`/a git
+/// checkout restoring an old mtime all change CONTENT while PRESERVING mtime, so a
+/// `(path, mtime)` key never moves, the merkle never moves, and the task cache
+/// replays a stale `BuildDone` forever. `(path, size, mtime)` is fooled by the same
+/// rewrite. See docs/adr-008-mtime-is-not-a-content-oracle.md.
 ///
-/// Perf tradeoff: each Compute reads+hashes every input rather than skipping
-/// unchanged (path, mtime) tuples. Compute runs once per build trigger (not per
-/// file event) over `graph.GetAllFiles()`; for the repo sizes fshw targets the
-/// SHA-256 over source text is dominated by the actual `dotnet build` it gates.
-/// Correctness (never serving a stale verdict) outranks the micro-optimization
-/// the memo bought — a memo keyed on (path, size, mtime) would still be fooled
-/// by a same-size, mtime-preserved rewrite, which is exactly the class of bug
-/// this fixes.
+/// The cost is real but small: `Compute` runs once per build TRIGGER (not per file
+/// event), and SHA-256 over source text is dominated by the `dotnet build` it gates.
 type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphReader) =
     // Honest "missing" sentinel for non-existent files; let real IO exceptions
     // (UnauthorizedAccessException, IOException for locked files, etc.) propagate
@@ -130,8 +117,6 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
         if not (File.Exists path) then
             None
         else
-            // Content hash, every time — mtime is never trusted to prove
-            // content equality (let real IO exns propagate).
             Some(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path))
 
     member _.Compute() : string =
@@ -170,7 +155,7 @@ let create
     let buildCommand = command
     let buildArgs = args
 
-    /// AUTOMATION-224 — force the NEXT build to be real instead of a cache replay.
+    /// Force the NEXT build to be real instead of a cache replay (AUTOMATION-224).
     ///
     /// The cache key below is a content merkle over SOURCE files only, so a hit
     /// asserts the OUTPUTS are current on evidence that never looked at them. That
@@ -196,14 +181,11 @@ let create
     // it finishes, and a `sh -c "dotnet build 2> log; cat log"` wrapper (the shape
     // real repos use) buffers everything to the very end. So its output proves
     // nothing about liveness and a launch deadline would false-kill a healthy slow
-    // build — `buildTimeout` is the bound. It still gets the polled-exit and
-    // bounded post-exit drain that every spawn gets, which is what closes the
-    // machine-sleep and grandchild-pipe wedges here.
+    // build — `buildTimeout` is the bound.
     let buildBounds = ProcessBounds.silent buildTimeout
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
-    // (callers inject `AbsFilePath.create` per file). `isTestFile` drives the
-    // template-build path's non-test-project filter (`startTemplateBuild`).
+    // (callers inject `AbsFilePath.create` per file).
     let isTestFile (file: AbsFilePath) =
         graph.GetProjectsForFile(file)
         |> List.exists (fun proj ->
@@ -222,20 +204,14 @@ let create
     /// BuildFailed signal instead of running against artifacts MSBuild's
     /// incremental cache silently failed to update.
     ///
-    /// mtime IS the right signal HERE (unlike the build-input merkle — Bug 1 —
-    /// and the deps-freshness signature, which are content-hashed because mtime
-    /// lied to them under preserved-mtime rewrites). This guard answers a
-    /// strictly temporal question: "was the DLL regenerated *after* the newest
-    /// source?" — i.e. did MSBuild's incremental cache lie and skip relinking an
-    /// artifact a real edit should have rebuilt. In that failure mode the edit
-    /// bumped the source mtime, so DLL < source is exactly the tell. The
-    /// preserved-mtime content-rewrite class (rsync -a / git checkout) is NOT
-    /// this guard's job: the content-hashed BuildInputsHasher already invalidates
-    /// the build-cache key on a content change with preserved mtime, forcing a
-    /// real rebuild whose fresh DLL then post-dates the (old-mtime) source — so
-    /// this check correctly sees it as fresh. There is no "expected DLL content"
-    /// to hash against, so content-hashing would not even be expressible here;
-    /// the merkle is the content guard, and this is its temporal complement.
+    /// mtime IS the right signal HERE, unlike the content-hashed build-input
+    /// merkle, because the question is strictly temporal: "was the DLL regenerated
+    /// *after* the newest source?" — i.e. did MSBuild's incremental cache skip
+    /// relinking an artifact a real edit should have rebuilt. In that failure mode
+    /// the edit bumped the source mtime, so a DLL older than its source is the tell.
+    /// There is no "expected DLL content" to hash against, so a content check is
+    /// not even expressible here; the merkle is the content guard and this is its
+    /// temporal complement.
     /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
     let verifyArtifactsFresh () : StaleArtifact list =
         [ for proj in graph.GetAllProjects() do
@@ -302,7 +278,7 @@ let create
     /// the *captured* operations (ReportErrors / ClearErrors /
     /// EmitBuildCompleted / the terminal status) are deferred to the
     /// synchronous Custom BuildDone handler so the framework's per-event
-    /// capture window records them for the §2a cache. Returns the completion
+    /// capture window records them for the task cache. Returns the completion
     /// message; the framework posts it back via RunExclusive.
     let applyBuildOutcome
         (ctx: PluginCtx<BuildMsg>)
@@ -313,11 +289,9 @@ let create
         match outcome with
         | BuildPassed _ -> ctx.Log(buildSummary outcome entries)
         | BuildArtifactsStale(stale, _) ->
-            // Log the per-project detail (which DLL, and how far its mtime trails
-            // its newest source), not just the count, so an intermittent stale-
-            // artifact failure names the project and the mtime delta in the live
-            // log/test output — otherwise it surfaces only as un-actionable
-            // "build failed: 1 stale artifacts" with no way to tell which project.
+            // Per-project detail, not just the count: an intermittent stale-artifact
+            // failure otherwise surfaces only as "build failed: 1 stale artifacts",
+            // with no way to tell which project.
             ctx.Log(staleDiagnostic stale)
             error "build" (staleDiagnostic stale)
         | BuildOutputFailed _ -> ()
@@ -341,11 +315,10 @@ let create
         let buildStarted = DateTime.UtcNow
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
-        // RunExclusive "build": the framework guarantees only one build runs
-        // at a time (and reports Running at the claim). Concurrent
+        // RunExclusive "build": the framework guarantees only one build runs at a
+        // time (and reports Running at the claim). Concurrent
         // FileChanged-while-building triggers land on SlotBusy and are safe to
-        // skip: the in-flight build's completion re-buffers nothing this
-        // trigger owed — the next FileChanged re-triggers.
+        // skip — the next FileChanged re-triggers.
         let claim =
             ctx.RunExclusive
                 "build"
@@ -397,9 +370,8 @@ let create
                             return applyBuildOutcome ctx outcome entries (DateTime.UtcNow - buildStarted)
                         with ex ->
                             let crashEntry = ErrorEntry.error ex.Message
-                            // ReportErrors / EmitBuildCompleted moved into the synchronous
-                            // BuildDone handler (see applyBuildOutcome doc) so they're captured
-                            // for cache replay.
+                            // ReportErrors / EmitBuildCompleted belong to the synchronous
+                            // BuildDone handler, not here — see `applyBuildOutcome`.
                             return
                                 BuildDone(
                                     BuildOutputFailed [ ex.Message ],
@@ -411,9 +383,8 @@ let create
         match claim with
         | Claimed -> ()
         | SlotBusy ->
-            // A build is already in flight; skipping is correct here (the
-            // FileChanged guard normally catches this earlier — this is the
-            // race-free backstop).
+            // The FileChanged guard normally catches this earlier; this is the
+            // race-free backstop.
             info "build" "Skipping: build already in progress"
 
         // State carries the prior idle lifecycle. The synchronous BuildDone
@@ -529,8 +500,7 @@ let create
             match claim with
             | Claimed -> ()
             | SlotBusy ->
-                // A build is already in flight; the FileChanged guard normally
-                // catches this earlier — this is the race-free backstop.
+                // Race-free backstop; the FileChanged guard normally catches this.
                 info "build" "Skipping: build already in progress"
 
             { LastBuild = idle
@@ -543,14 +513,11 @@ let create
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: AbsFilePath list)
         =
-        // A test-file-only change is NOT a build no-op: the changed test project
-        // is run by test-prune via `dotnet run --no-build`, which executes the
-        // on-disk assembly. Only MSBuild re-emits that assembly — FCS's in-memory
-        // `BatchChecked` type-check signal does not. The previous "skip build,
-        // wait for BatchChecked, emit BuildSucceeded" path therefore left a STALE
-        // DLL on disk and let `--no-build` run it → false green (see ADR-012).
-        // Every source change, test or not, runs the real build so `verifyArtifactsFresh`
-        // confirms the DLL post-dates its sources before `BuildSucceeded` fires.
+        // A test-file-only change is NOT a build no-op: the changed test project is
+        // run by test-prune via `dotnet run --no-build`, which executes the on-disk
+        // assembly, and only MSBuild re-emits that assembly — FCS's in-memory
+        // `BatchChecked` type-check signal does not. Skipping the build for such a
+        // change leaves a stale DLL for `--no-build` to run → false green (ADR-012).
         match buildTemplate with
         | Some template ->
             { (startTemplateBuild ctx idle template files) with
@@ -636,33 +603,30 @@ let create
                     return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
                 | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
                 | Custom(BuildDone(outcome, entries, elapsed)) ->
-                    // AUTOMATION-224: a build has now actually run, which is exactly
-                    // what `force-rebuild` asked for. Clear it here rather than when
-                    // `cacheKey` consumed it, so a lookup that never reached a build
-                    // (a suppressed or superseded dispatch) does not silently spend
-                    // the request and leave the artifacts stale anyway.
+                    // A build has now actually run, which is what `force-rebuild`
+                    // asked for. Cleared HERE rather than where `cacheKey` consumed
+                    // it, so a lookup that never reached a build (a suppressed or
+                    // superseded dispatch) cannot silently spend the request and
+                    // leave the artifacts stale anyway.
                     forceRebuild.Value <- false
 
-                    // Build single-flight is owned by the framework (RunExclusive "build").
-                    // The completion message arrives carrying the pre-build idle lifecycle;
-                    // we advance the lifecycle through Running ▸ Completed for activity-log
-                    // bookkeeping.
+                    // The completion message arrives carrying the pre-build idle
+                    // lifecycle; advance it through Running ▸ Completed for
+                    // activity-log bookkeeping.
                     let prevIdle = state.LastBuild
 
                     let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
                     // Apply captured operations within this synchronous handler so
-                    // the framework's §2a cache-write window records them. Replay
-                    // of a cached BuildDone re-fires these via EmittedEvents +
-                    // captured Errors.
-                    // Contract: BuildSucceeded means every project's DLL is up-to-date
-                    // with its sources. The async worker already demoted BuildPassed to
-                    // BuildArtifactsStale when verifyArtifactsFresh found anything
-                    // wrong, so this handler just dispatches the three terminal cases.
-                    // Every terminal below carries its verdict: the same
-                    // `buildSummary` line the worker logged, plus the measured
-                    // build duration — one channel, worker log and status can
-                    // never disagree.
+                    // the framework's cache-write window records them; replay of
+                    // a cached BuildDone re-fires them via EmittedEvents + Errors.
+                    //
+                    // Contract: BuildSucceeded means every project's DLL is
+                    // up-to-date with its sources. The async worker already demoted
+                    // BuildPassed to BuildArtifactsStale where it wasn't, so this
+                    // handler only dispatches the three terminal cases — each
+                    // carrying the same `buildSummary` line the worker logged, so
+                    // log and status can never disagree.
                     match outcome with
                     | BuildPassed _ ->
                         if entries.IsEmpty then
@@ -706,11 +670,11 @@ let create
                 | _ -> return state
             }
       Commands =
-        [ // AUTOMATION-224. Idempotent and cheap: it sets a flag, it does not
-          // build. The next cache LOOKUP misses, so the build runs for real and
-          // re-emits the artifacts TestPrune gates on. `confirm` calls this for the
-          // same reason it forces a from-disk scan — the merge verb does not get to
-          // trust a cache when its job is to be the thing you trust.
+        [ // Idempotent and cheap: it sets a flag, it does not build. The next cache
+          // LOOKUP misses, so the build runs for real and re-emits the artifacts
+          // TestPrune gates on. `confirm` calls it because the merge verb does not
+          // get to trust a cache when its job is to be the thing you trust.
+          //
           // The literal, not a shared constant: plugins live BELOW the CLI, so
           // `IpcParsing.ForceRebuildCommand` is not visible here. Same split as
           // "set-scope"/"run-tests" in TestPrunePlugin. The CLI-side constant
@@ -748,10 +712,9 @@ let create
                   | None -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions =
-        // The build plugin no longer subscribes to `BatchChecked`: every source
-        // change (test files included) drives a real MSBuild build, so there is
-        // no test-only-skip phase that waited on the FCS cohort signal. TestPrune
-        // keeps its own `BatchChecked` subscription (the AffectedTests seal).
+        // Deliberately NOT `BatchChecked`: every source change drives a real
+        // MSBuild build, so there is no test-only-skip phase to wait on the FCS
+        // cohort signal for. TestPrune keeps its own subscription (AffectedTests).
         Set.ofList (
             [ SubscribeFileChanged ]
             @ (if dependsOn.IsEmpty then
@@ -760,7 +723,7 @@ let create
                    [ SubscribeCommandCompleted ])
         )
       CacheKey =
-        // §2a: content-merkle key over all build-relevant files in the project graph.
+        // content-merkle key over all build-relevant files in the project graph.
         // FileChanged and Custom BuildDone share the same key so a stored result
         // is found on the next matching FileChanged. The merkle hashes EVERY source
         // file (test files included), so a test-file edit moves the key → cache miss
@@ -768,9 +731,9 @@ let create
         let inputsHasher = lazy BuildInputsHasher(graph)
 
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
-            // AUTOMATION-224: while `forceRebuild` is set, the LOOKUP must miss so a
-            // real build runs. `None` is the framework's documented "outputs
-            // missing" bypass — skip the cache, run Update.
+            // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
+            // `None` is the framework's documented "outputs missing" bypass — skip
+            // the cache, run Update.
             //
             // Deliberately asymmetric. Only the lookup (a `FileChanged`) is
             // suppressed; `Custom BuildDone` still computes a real key, so the fresh
@@ -781,7 +744,6 @@ let create
             | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
-      // Framework gate: suppresses cache replay until this plugin completes once
-      // in-session. Replacing the local hasBuiltInSessionRef flag — same semantics,
-      // but framework-owned so all plugins share one cold-start contract.
+      // Cold start is a framework gate: cache replay is suppressed until this
+      // plugin completes once in-session, so all plugins share one contract.
       Teardown = None }

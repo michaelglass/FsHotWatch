@@ -85,12 +85,10 @@ let ``running snapshot exposes 3 subtasks and 2 activity lines; final history ca
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("fake") |> List.isEmpty |> not) 10000
 
-    // Snapshot captured during the running phase.
     test <@ duringSnapshot.Value |> List.length = 3 @>
     test <@ duringTail.Value |> List.length >= 2 @>
     test <@ duringTail.Value |> List.contains "midway through" @>
 
-    // History after completion.
     let history = host.GetHistory("fake")
     test <@ history.Length = 1 @>
     let r = List.head history
@@ -100,7 +98,6 @@ let ``running snapshot exposes 3 subtasks and 2 activity lines; final history ca
     | CompletedRun -> ()
     | other -> failwithf "expected CompletedRun, got %A" other
 
-    // Activity tail is preserved in the history snapshot.
     test <@ r.ActivityTail |> List.contains "starting batch" @>
     test <@ r.ActivityTail |> List.contains "midway through" @>
 
@@ -156,7 +153,6 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    // Wait until subtasks appear.
     waitUntil (fun () -> host.GetSubtasks("slow") |> List.length = 3) 12000
     let parsed = parsedFor host "slow"
     let lines = renderPlugin Verbose true DateTime.UtcNow "slow" parsed

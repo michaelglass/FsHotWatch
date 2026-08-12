@@ -112,13 +112,12 @@ let internal applyDepsGate
 
 /// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
 /// expensive MSBuild re-evaluation when no project files have changed.
-/// Shares both the discovery roots (`Discovery.findFsprojFiles`) and the
-/// exclude semantics (`PathFilter.isExcludedPath`) with
-/// `discoverAndRegisterProjects`, so the fingerprint tracks exactly the set of
-/// projects discovery would register: an edit to a user-excluded fsproj must
-/// not churn the fingerprint and trigger a spurious full MSBuild
-/// re-evaluation. (With no exclude patterns, `isExcludedPath` reduces to the
-/// generated-path obj/bin filter this function always applied.)
+///
+/// Shares both the discovery roots (`Discovery.findFsprojFiles`) and the exclude
+/// semantics (`PathFilter.isExcludedPath`) with `discoverAndRegisterProjects`, so
+/// the fingerprint tracks exactly the set of projects discovery would register: an
+/// edit to a user-excluded fsproj must not churn it and trigger a spurious full
+/// MSBuild re-evaluation.
 let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string list) =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
@@ -398,11 +397,9 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                     async {
                         let! msg = inbox.Receive()
 
-                        // No inner try/with — the body is a
-                        // typed match over messages we own; tcs.TrySetResult,
-                        // List.partition, and Logging.debug do not throw on valid
-                        // state. Anything that throws is a programming bug that
-                        // surfaces via `agent.Error` (exposed as `AgentCrashed`)
+                        // No inner try/with: the body is a typed match over messages
+                        // we own, so anything that throws is a programming bug and
+                        // must surface via `agent.Error` (exposed as `AgentCrashed`)
                         // rather than silently looping in the original state.
                         match msg with
                         | WaitFor(afterGeneration, tcs) ->
@@ -447,10 +444,9 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     do
         agent.Error.Add(fun ex ->
             // An unhandled exception inside the agent loop is a programming bug.
-            // Log loudly with the full stack trace
-            // (ex.ToString(), not ex.Message); the agent stops and pending
-            // waiters' WaitForGeneration tasks remain unresolved — a visible
-            // hang at the next caller, not the previous silent loop-and-drop.
+            // Logged with the full stack trace (ex.ToString(), not ex.Message); the
+            // agent stops and pending waiters' WaitForGeneration tasks remain
+            // unresolved, which is a visible hang at the next caller.
             Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
@@ -488,8 +484,7 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
 /// Messages handled by the scan agent. The agent owns ScanState + Generation
 /// in its loop's recursion — readers round-trip via PostAndReply so they never
-/// see a stale snapshot. Replaces an earlier wrapper with mutable Volatile
-/// fields and an `option ref` bootstrap cycle.
+/// see a stale snapshot.
 [<NoComparison; NoEquality>]
 type private ScanMsg =
     | RequestScan of CancellationToken * AsyncReplyChannel<unit>
@@ -520,26 +515,17 @@ let private getScanStatus (ScanAgent agent) =
 let private setScanStatus (ScanAgent agent) state =
     agent.PostAndReply(fun ch -> SetState(state, ch))
 
-/// Centralized failure handler for daemon batch/scan steps.
-/// `processBatch` and `performScan` transitively call FCS, MSBuild, and
-/// arbitrary plugin Update functions — there isn't a smaller exception type
-/// that captures "anything from this layer", so the broad `Exception` catch
-/// is genuinely justified at this boundary. We hoist the policy to one place
-/// (rather than inlining the same `with ex -> log; idle` arm at three call
-/// sites) so the contract is readable and reviewable in one read:
+/// Centralized failure handler for daemon batch/scan steps. `processBatch` and
+/// `performScan` transitively call FCS, MSBuild, and arbitrary plugin Update
+/// functions — there isn't a smaller exception type that captures "anything from
+/// this layer", so the broad `Exception` catch is justified at this boundary. The
+/// policy lives here rather than inlined at three call sites:
 ///   - `OperationCanceledException` is NOT a failure: it's the cancellation
 ///     signal threaded through `CancellationToken`. Re-raise so async
 ///     pipelines unwind; the caller decides whether to enter idle.
 ///   - Anything else is logged with `ex.ToString()` (full stack + inner
 ///     chain — `ex.Message` alone strips the diagnostic trail) and returned
 ///     as `Error`. Callers fall back to idle to keep the daemon responsive.
-///
-/// Follow-up (deferred — see audit F13): the broad `Exception` arm should
-/// eventually be replaced by the narrow set FCS/MSBuild/plugins actually
-/// raise once we have a top-level daemon Failed-status path that surfaces
-/// truly unexpected exceptions to the user instead of just logging them.
-/// That refactor is invasive (touches PluginHost status reporting) and is
-/// tracked as the §5 Tier-2 follow-up "top-level daemon failure handler design".
 let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, exn>> =
     async {
         try
@@ -829,9 +815,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
-                    // Deps-freshness gate (incremental path): skip FCS for a
-                    // project whose restored assets are stale and couldn't be
-                    // auto-recovered — see `applyDepsGate`.
+                    // Deps-freshness gate — see `applyDepsGate`.
                     if applyDepsGate ctx.DepsGate ctx.Host projPath then
                         match ctx.Pipeline.GetProjectOptions(projPath) with
                         | Some options ->
@@ -918,17 +902,15 @@ let internal waitForAllTerminalQuiescenceWindow =
 /// How long "nothing is Running, yet some plugin still reports work in flight"
 /// may persist before the wait declares that plugin WEDGED and fails.
 ///
-/// This state is legitimate only for the hand-off between a run finishing and
-/// its completion message being handled — milliseconds. While a run is genuinely
-/// executing the plugin's status is `Running`, which is a different branch
-/// entirely, so a long test suite never trips this.
+/// That state is legitimate only for the hand-off between a run finishing and its
+/// completion message being handled — milliseconds. While a run is genuinely
+/// executing the plugin's status is `Running`, a different branch entirely, so a
+/// long test suite never trips this.
 ///
-/// It exists because the alternative is what actually happened: a plugin whose
-/// inflight count never drained held `WaitForComplete` for the FULL hour-long
-/// timeout and then reported "all terminal but quiescence check failed" — an
-/// hour spent to learn nothing, three times over, and a `check` that cannot
-/// complete blocks every deploy behind it. Failing in five minutes NAMING the
-/// plugin turns an outage into a bug report.
+/// The alternative is a plugin whose inflight count never drains holding
+/// `WaitForComplete` for the full hour-long timeout and then reporting "all
+/// terminal but quiescence check failed". Failing in five minutes and naming the
+/// plugin is the point.
 let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(5.0)
 
 /// Sentinel message for shutdown-driven cancellation. Anything that surfaces
@@ -961,17 +943,14 @@ let internal daemonShuttingDownMessage = "daemon shutting down"
 /// race the OS pipe teardown for a clean exit.
 ///
 /// `requireVerdict`: when true (the `WaitForComplete` verdict path) the host is
-/// only considered "at rest" once at least one plugin has reached a real
-/// terminal state (Completed/Failed) — a cold, all-Idle host (nothing verified)
-/// must NOT resolve as clean, or `WaitForComplete` reports a vacuous "No
-/// errors" exit-0 on a daemon that has simply never run. Instead the wait keeps
-/// blocking until a real verdict arrives, faulting on shutdown/timeout. When
-/// false (the in-process `RunOnce`/scan-settling path, and every other caller)
-/// an all-Idle host is tolerated, preserving the original quiescence semantics
-/// for plugins that legitimately have no work this cycle (and so cannot hang on
-/// a never-run plugin). Note `allPluginsAdvancedToTerminal` already requires
-/// Completed/Failed for every plugin, so the guard only constrains the
-/// quiescence (`allPluginsAtRest`) path.
+/// only "at rest" once at least one plugin has reached a real terminal state, so a
+/// cold all-Idle daemon that has simply never run cannot resolve as a vacuous "No
+/// errors" exit-0; the wait blocks until a real verdict arrives, faulting on
+/// shutdown/timeout. When false (the in-process `RunOnce`/scan-settling path, and
+/// every other caller) an all-Idle host is tolerated, so the wait cannot hang on a
+/// plugin that legitimately has no work this cycle. `allPluginsAdvancedToTerminal`
+/// already requires Completed/Failed for every plugin, so the guard only constrains
+/// the quiescence (`allPluginsAtRest`) path.
 let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
@@ -1015,9 +994,9 @@ let internal waitForAllTerminalCore
             | _ -> None)
 
     /// Is anything Running? `getRunningPlugins` answers this too, but pays for a
-    /// per-plugin activity snapshot (copying up to 64 log lines and a 16-element
-    /// history array) and builds a formatted wait string for each — all of which
-    /// the 50ms poll loop then throws away. This asks only the question.
+    /// per-plugin activity snapshot (up to 64 log lines and a 16-element history
+    /// array) plus a formatted wait string, all of which the 50ms poll loop throws
+    /// away.
     let anyRunning () =
         host.GetAllStatuses()
         |> Map.exists (fun _ s ->
@@ -1028,12 +1007,10 @@ let internal waitForAllTerminalCore
     let formatTimeoutDetail () =
         match getRunningPlugins () with
         | [] ->
-            // Nothing is Running, so the wait died on one of the OTHER legs that
-            // `allPluginsAtRest` requires. "all terminal but quiescence check
-            // failed" used to cover all of them at once, which left the reader
-            // no way to tell a stuck inflight counter from a quiescence window
-            // that never closes from an unmet verdict guard — three different
-            // bugs wearing one sentence. Name the one that actually blocked.
+            // Nothing is Running, so the wait died on one of the OTHER legs
+            // `allPluginsAtRest` requires — a stuck inflight counter, a quiescence
+            // window that never closes, or an unmet verdict guard. Name the one
+            // that actually blocked rather than reporting all three at once.
             let busy = host.BusyPluginNames()
             let sinceActivity = System.DateTime.UtcNow - host.LastActivityAt()
 
@@ -1042,9 +1019,8 @@ let internal waitForAllTerminalCore
             let hasVerdict = statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
 
             if statuses.IsEmpty then
-                // Not one reason among several — it is the whole answer, and it
-                // implies the verdict reason below, which would otherwise be
-                // printed alongside it saying the same thing twice.
+                // The whole answer, and it implies the verdict reason below, which
+                // would otherwise be printed alongside it saying the same thing.
                 "nothing running, and no plugins are registered"
             else
                 let busyNames = String.concat ", " busy
@@ -1079,23 +1055,19 @@ let internal waitForAllTerminalCore
         if (now - lastLogTime).TotalSeconds >= 10.0 then
             lastLogTime <- now
 
-            // Progress is what someone watching a check wants, so "still
-            // running: X" stays at info.
+            // "still running: X" is progress, which is what someone watching a
+            // check wants, so it stays at info. The "nothing running, but ..."
+            // breakdown is a DIAGNOSTIC at debug: a healthy run emits it for
+            // minutes at a stretch while a plugin drains a large FileChecked
+            // backlog, and it is not the wedge signature (a dead agent is
+            // identified by `FaultedPlugins`). It is still printed in full where it
+            // decides something — the timeout message and the wedge failure below.
             //
-            // The "nothing running, but ..." breakdown is a DIAGNOSTIC and sits
-            // at debug. A healthy run emits it for minutes at a stretch while a
-            // plugin drains a large FileChecked backlog — alarming to read, and
-            // wrong: it is not the wedge signature. A dead agent is identified
-            // by the plugin SAYING SO (`FaultedPlugins`), not by this line. It is
-            // still printed in full where it decides something: the timeout
-            // message and the wedge failure below.
-            //
-            // `Logging.debug` takes an ALREADY-BUILT string, so guard the debug
-            // arm on the level: otherwise, at the default Info level, the whole
-            // detail is computed every 10s and thrown away — a status
+            // `Logging.debug` takes an ALREADY-BUILT string, so guard the debug arm
+            // on the level: at the default Info level the whole detail would
+            // otherwise be computed every 10s and thrown away — a status
             // round-trip, an activity snapshot per running plugin, and in the
-            // all-legs-satisfied case a reflection-based `%A` dump of every
-            // status, the slowest formatter F# has.
+            // all-legs-satisfied case a reflection-based `%A` dump of every status.
             if anyRunning () then
                 Logging.info "wait" (formatTimeoutDetail ())
             elif Logging.isEnabled Logging.LogLevel.Debug then
@@ -1148,12 +1120,9 @@ let internal waitForAllTerminalCore
                match s with
                | Running _ -> false
                | _ -> true)
-        // Verdict guard: on the WaitForComplete path at least ONE plugin must
-        // have reached a real terminal state (Completed/Failed). On a cold
-        // daemon every plugin is Idle and nothing has been verified, yet "no
-        // Running + quiescent" would otherwise resolve the wait immediately —
-        // making WaitForComplete report a vacuous clean exit-0. An all-Idle host
-        // is NOT at rest for verdict purposes; it has simply never run.
+        // Verdict guard: on the WaitForComplete path at least ONE plugin must have
+        // reached a real terminal state. An all-Idle host is not at rest for
+        // verdict purposes — see `requireVerdict`.
         && (not requireVerdict
             || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
         && isQuiescent ()
@@ -1161,23 +1130,21 @@ let internal waitForAllTerminalCore
     // Wedge detection state: how much work the host had FINISHED when we last
     // saw progress, and when that was.
     //
-    // Progress, not busy-set identity. The set of busy plugin NAMES is not a
-    // progress signal: one plugin draining a long `FileChecked` backlog is busy
-    // continuously, with nothing Running, and the set stays exactly
-    // `["test-prune"]` for the whole drain — so a clock keyed on that set never
-    // resets and the detector fires on a perfectly healthy check of a large
-    // repo. Observed: three uninterrupted minutes of that state on a green run.
-    // `CompletedDispatches` moves on every event a plugin finishes, so a drain
-    // can never look stalled and a stopped agent always does.
+    // Keyed on progress, NOT on busy-set identity: one plugin draining a long
+    // `FileChecked` backlog is busy continuously with nothing Running, and the busy
+    // set stays exactly `["test-prune"]` for the whole drain, so a clock keyed on
+    // that set never resets and fires on a healthy check of a large repo (observed:
+    // three uninterrupted minutes of it on a green run). `CompletedDispatches` moves
+    // on every event a plugin finishes, so a drain can never look stalled and a
+    // stopped agent always does.
     let mutable lastProgress = -1L
     let mutable lastProgressAt = System.DateTime.UtcNow
 
     let checkForWedgedPlugin () =
         // A plugin whose message loop died reports work in flight forever, so
-        // waiting on it can only ever time out. It says so itself now, and this
-        // is both the cheapest check and the only certain one — no threshold, no
-        // inference from silence. Everything below is the heuristic backstop for
-        // a stall we have no direct report of.
+        // waiting on it can only time out. This is the cheapest check and the only
+        // certain one — no threshold, no inference from silence. Everything below
+        // is the heuristic backstop for a stall nobody reported.
         match host.FaultedPlugins() with
         | (name, ex) :: _ ->
             raise (
@@ -1189,14 +1156,12 @@ let internal waitForAllTerminalCore
             )
         | [] ->
 
-            // Cheapest test first, and it is the one that is false almost always.
+            // Cheapest test first, and the one that is almost always false.
             // `AnyPluginBusy` is N volatile reads with short-circuiting and no
             // allocation; everything below it costs a blocking round-trip to the
-            // status agent, and this runs 20x a second for the whole wait — which is
-            // designed to last up to an hour. Asking the expensive questions first
-            // would spend ~72,000 status round-trips an hour, each copying every
-            // running plugin's activity tail, to answer a question the first line
-            // already settles.
+            // status agent, and this runs 20x a second for a wait designed to last
+            // up to an hour (~72,000 round-trips, each copying every running
+            // plugin's activity tail).
             let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
 
             let progress = host.CompletedDispatches()
@@ -1279,16 +1244,16 @@ let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: C
 /// Why this exists: cold scans emit `FileChanged(SourceChanged files)` to all
 /// subscribers, which kicks BuildPlugin into running `dotnet build`. MSBuild
 /// then rewrites `obj/Debug/.../ref/*.dll`. If FCS tier checks run in parallel,
-/// they read those same `-r:` paths mid-write, producing the spurious
+/// they read those same `-r:` paths mid-write, producing spurious
 /// "type 'X' does not match type 'X'" CCU-mismatch diagnostics. Awaiting the
 /// build's terminal status before FCS reads stabilizes the obj/ tree.
 ///
-/// Phase B (warm cache) preservation: BuildPlugin's task-cache replay path
-/// emits `BuildCompleted` synchronously inside the captured-events handler,
-/// so when the cache hits this wait completes in milliseconds.
-/// Polling implementation parameterised on a status-reader so unit tests can
-/// drive deterministic state sequences without Task.Delay. The PluginHost
-/// adapter below is the production caller.
+/// On a warm cache this costs milliseconds: BuildPlugin's task-cache replay emits
+/// `BuildCompleted` synchronously inside the captured-events handler.
+///
+/// Parameterised on a status-reader so unit tests can drive deterministic state
+/// sequences without Task.Delay; the PluginHost adapter below is the production
+/// caller.
 let internal waitForPluginTerminalIfRunningWith
     (getStatus: string -> PluginStatus option)
     (pluginName: string)
@@ -1393,17 +1358,9 @@ type Daemon
         // Dispose kills everything still tracked — that is how `fshw stop` and
         // the wedge self-heal reap in-flight children instead of orphaning them.
         //
-        // It is CONSTRUCTED AND INSTALLED BY `createWith`, BEFORE the PluginHost
-        // and the scan/change mailboxes exist — NOT here (AUTOMATION-147). The
-        // registry is scoped by an `AsyncLocal`, and an AsyncLocal set is only
-        // seen by ExecutionContexts captured AFTER it. Installing in this
-        // constructor was too late: the mailboxes that later DISPATCH to plugins
-        // had already captured their contexts, so a plugin's child resolved NO
-        // registry, `ProcessRegistry.track` silently dropped it (`| None -> ()`),
-        // and `KillAll` reaped nothing. Proven on a live daemon: `track pid=69166
-        // -> NO REGISTRY (dropped)` / `KillAll: 0 tracked`, with the child left
-        // reparented to init. Taking it as a parameter is what makes the correct
-        // ordering the ONLY constructible one.
+        // Taken as a PARAMETER, never constructed here: `createWith` must install
+        // it before anything captures an ExecutionContext (see the comment there),
+        // and a parameter makes that ordering the only constructible one.
         processRegistry: ProcessRegistry.Registry
     ) =
 
@@ -1446,10 +1403,9 @@ type Daemon
     /// The live completeness signal as `(registered, unchecked)`.
     ///
     /// THE SAME `liveCoverage` the IPC `GetUncheckedCount` closure serves to `fshw
-    /// check` — exposed, not re-derived, so the daemon-backed check and the in-process
-    /// `--run-once` check answer "did we actually check every file?" from ONE
-    /// computation. A second implementation here is a second thing that can disagree,
-    /// and the whole point of the verdict is that its inputs cannot.
+    /// check` — exposed, not re-derived, so the daemon-backed check and the
+    /// in-process `--run-once` check answer "did we actually check every file?" from
+    /// ONE computation that cannot disagree with itself.
     member _.LiveCoverage() : int * int = liveCoverage ()
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
@@ -1600,14 +1556,11 @@ type Daemon
 
                 // Count of in-flight `WaitForComplete`/verdict waits (connected
                 // check clients blocked on the daemon's authoritative settle).
-                // Feeds the idle-exit `Busy` predicate below so the daemon is
-                // NEVER treated as idle while a client is actively waiting for a
-                // verdict. (`AnyPluginBusy` now observes exclusive runs too, but
-                // a client can be blocked on a verdict even while every plugin
-                // is momentarily quiet — e.g. between convergence attempts.)
-                // Without this, a long/stuck settle let idle-exit fire mid-wait
-                // and drop the client with a connection error instead of a
-                // verdict.
+                // Feeds the idle-exit `Busy` predicate below so the daemon is NEVER
+                // treated as idle while a client is waiting for a verdict — a
+                // client can be blocked on one even while every plugin is
+                // momentarily quiet, and idle-exit firing mid-wait drops it with a
+                // connection error instead of a verdict.
                 let activeVerdictWaits = ref 0
 
                 let rpcConfig: DaemonRpcConfig =
@@ -1663,21 +1616,21 @@ type Daemon
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
-                // timer that gracefully shuts the daemon down (the SAME
-                // `cts.Cancel()` path the IPC Shutdown request uses — see
-                // `rpcConfig.RequestShutdown`) once the daemon has been idle for
-                // the window. Cancelling `cts` unblocks the wait below, runs this
-                // method's `finally` (Dispose: KillAll + lifetime.Cancel +
-                // watcher dispose), and lets the CLI clean up the pidfile — a
-                // fully graceful exit, no `Environment.Exit`. The decision logic
-                // lives in the pure, unit-tested `IdleExit` module; here we inject
-                // the live clock/busy/activity/pressure + the shutdown action. The
-                // next `fshw` command auto-restarts the daemon, so this is
-                // transparent. Memory pressure (a live `GC.GetGCMemoryInfo()` read)
-                // SHORTENS the effective window to `min(N, pressureFloor)` per tick
-                // so a tight machine sheds idle workspace daemons fast; the
-                // default/main workspace stays exempt because its `idleExitMin`
-                // resolved to `None` and pressure never creates a window.
+                // timer that gracefully shuts the daemon down once it has been idle
+                // for the window, via the SAME `cts.Cancel()` path the IPC Shutdown
+                // request uses: that unblocks the wait below, runs this method's
+                // `finally` (Dispose: KillAll + lifetime.Cancel + watcher dispose),
+                // and lets the CLI clean up the pidfile — no `Environment.Exit`.
+                // The next `fshw` command auto-restarts the daemon.
+                //
+                // The decision logic lives in the pure, unit-tested `IdleExit`
+                // module; injected here are the live clock/busy/activity/pressure
+                // and the shutdown action. Memory pressure (a live
+                // `GC.GetGCMemoryInfo()` read) SHORTENS the effective window to
+                // `min(N, pressureFloor)` per tick so a tight machine sheds idle
+                // workspace daemons fast; the default workspace stays exempt
+                // because its `idleExitMin` is `None` and pressure never creates a
+                // window.
                 use _idleExitTimer: IDisposable =
                     match idleExitMin with
                     | Some minutes when minutes > 0 ->
@@ -1687,14 +1640,11 @@ type Daemon
                               Pressure = IdleExit.readGcPressure
                               Now = fun () -> System.DateTime.UtcNow
                               // Busy when any plugin has work in flight (mailbox
-                              // events or an exclusive background run — both
-                              // observed by `AnyPluginBusy`) OR a client is
-                              // actively blocked on a verdict wait. The wait leg
-                              // is the fix for the fresh-workspace wedge: it keeps
+                              // events or an exclusive background run) OR a client
+                              // is blocked on a verdict wait. The wait leg keeps
                               // idle-exit from firing out from under a connected
-                              // `fshw check` even in the instants where no plugin
-                              // work is in flight (e.g. between convergence
-                              // attempts).
+                              // `fshw check` in the instants where no plugin work
+                              // is in flight (e.g. between convergence attempts).
                               Busy =
                                 fun () ->
                                     IdleExit.busyForIdleExit
@@ -1710,26 +1660,21 @@ type Daemon
                         { new IDisposable with
                             member _.Dispose() = () }
 
-                // Activity heartbeat. Publishes `<repoRoot>/.fshw/heartbeat`
-                // — Unix epoch seconds, rewritten every 15s — for exactly as
-                // long as a run is in progress, and NEVER while idle. Same
-                // spirit as `.fshw/daemon.pid`: a fact about this daemon that
-                // anyone may read, with no opinion here about who reads it.
-                // The "only while running" property is the whole value: a
-                // daemon that is alive but wedged does not beat, so process
-                // liveness (which would say "fine") and activity (which says
-                // "nothing is happening") can finally be told apart. Beat
-                // failures are logged and swallowed inside `runTick` — the
-                // daemon must never die for failing to announce itself.
+                // Activity heartbeat. Publishes `<repoRoot>/.fshw/heartbeat` — Unix
+                // epoch seconds, rewritten every 15s — for exactly as long as a run
+                // is in progress, and NEVER while idle. That "only while running"
+                // property is the value: a daemon that is alive but wedged does not
+                // beat, so process liveness and activity can be told apart. Beat
+                // failures are logged and swallowed inside `runTick` — the daemon
+                // must never die for failing to announce itself.
                 use _heartbeat: IDisposable =
                     Heartbeat.createBeat
                         { Now = fun () -> System.DateTime.UtcNow
-                          // Same two live signals idle-exit reads, via the
-                          // heartbeat's own predicate. `AnyPluginBusy` is the
-                          // leg that spans long quiet phases: a plugin's
-                          // inflight count is held for the whole lifetime of
-                          // an exclusive run, so a ten-minute silent browser
-                          // suite keeps beating without emitting anything.
+                          // Same two live signals idle-exit reads. `AnyPluginBusy`
+                          // is the leg that spans long quiet phases: a plugin's
+                          // inflight count is held for the whole lifetime of an
+                          // exclusive run, so a ten-minute silent browser suite
+                          // keeps beating without emitting anything.
                           RunActive =
                             fun () ->
                                 Heartbeat.runActive
@@ -1739,19 +1684,17 @@ type Daemon
                           Log = Logging.warn "heartbeat"
                           Cadence = Heartbeat.DefaultCadence }
 
-                // Plugin-wedge monitor. A plugin that reported Running and posts
-                // no completion past the bound is BY DEFINITION wedged. The monitor
-                // logs escalating "still running … (no
-                // completion posted)" lines every 5 min so a silent log can
-                // never be mistaken for a healthy idle daemon, and past the
-                // bound it names the wedge, writes the last-wedge breadcrumb
-                // (the next CLI command prints what happened), and gracefully
-                // restarts the daemon via the SAME `cts.Cancel()` path as
-                // `fshw stop` — child processes reaped, SQLite never killed
-                // mid-write, no `kill -9` ritual. The bound sits above the
-                // verdict deadline plus grace so a client blocked on
-                // WaitForComplete gets its own, more specific TimeoutException
-                // first and a healthy long run is never restarted.
+                // Plugin-wedge monitor. A plugin that reported Running and posts no
+                // completion past the bound is wedged. The monitor logs escalating
+                // "still running … (no completion posted)" lines every 5 min so a
+                // silent log is not mistaken for a healthy idle daemon; past the
+                // bound it names the wedge, writes the last-wedge breadcrumb (the
+                // next CLI command prints what happened), and gracefully restarts
+                // the daemon via the SAME `cts.Cancel()` path as `fshw stop`, so
+                // children are reaped and SQLite is never killed mid-write. The
+                // bound sits above the verdict deadline plus grace, so a client
+                // blocked on WaitForComplete gets its own more specific
+                // TimeoutException first and a healthy long run is never restarted.
                 use _wedgeMonitor: IDisposable =
                     PluginWedge.createMonitor
                         { Bound = PluginWedge.ambientBound ()
@@ -1807,23 +1750,19 @@ type Daemon
 
 /// Drive per-file checks with a bounded retry on `None` results.
 ///
-/// Why this exists — the cold-scan silent-truncation race: while the initial
-/// scan runs its FCS tiers, the BuildPlugin's `dotnet build` touches
-/// `obj/**/ref/*.dll`; the watcher fires, `processBatch` re-checks the affected
-/// files, and `CancelPreviousCheck` cancels the scan-side in-flight check of the
-/// same file. A cancelled check surfaces as `None` from the pipeline, and a naive
-/// scan emit loop that drops `None` (`| None -> ()`) would let a scan report green
-/// while the ErrorLedger never saw diagnostics for the dropped files (neither
-/// reported NOR cleared).
+/// Guards the cold-scan silent-truncation race: while the initial scan runs its FCS
+/// tiers, BuildPlugin's `dotnet build` touches `obj/**/ref/*.dll`, the watcher
+/// fires, `processBatch` re-checks the affected files, and `CancelPreviousCheck`
+/// cancels the scan-side in-flight check of the same file. A cancelled check
+/// surfaces as `None`, and a scan emit loop that drops `None` reports green while
+/// the ErrorLedger never saw diagnostics for the dropped files (neither reported NOR
+/// cleared).
 ///
-/// This helper closes that hole: files whose `check` returned `None` are
-/// re-enqueued and re-checked, up to `maxRetries` additional rounds. The retry
-/// calls the SAME `check` thunk, which (via `CheckFile`/`CheckFileWithOptions`
-/// → `CancelPreviousCheck`) re-reads current disk content — so a NEWER user edit
-/// that legitimately superseded the in-flight check is observed on retry rather
-/// than duplicated, preserving CancelPreviousCheck's ordering guarantee. Each
-/// file is emitted at most once (only when its check returns `Some`).
-///
+/// Files whose `check` returned `None` are re-enqueued for up to `maxRetries`
+/// additional rounds. The retry calls the SAME `check` thunk, which (via
+/// `CheckFile`/`CheckFileWithOptions` → `CancelPreviousCheck`) re-reads current disk
+/// content, so a NEWER user edit that legitimately superseded the in-flight check is
+/// observed on retry rather than duplicated. Each file is emitted at most once.
 /// Returns the number of files STILL unchecked after the budget is exhausted
 /// (a file under continuous concurrent edit, or a hard failure). The caller
 /// must surface a non-zero count as a non-ok scan condition — see `performScan`
@@ -1915,17 +1854,9 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
             host.EmitFileChanged(SourceChanged files)
 
-            // Serialize: wait for BuildPlugin to leave Running BEFORE running
-            // FCS check tiers. The build refreshes obj/Debug/.../ref/*.dll
-            // which FCS reads via `-r:` flags from FSharpProjectOptions.
-            // Without this wait, MSBuild and FCS race over the same files
-            // and FCS produces spurious "type 'X' does not match type 'X'"
-            // CCU-identity diagnostics on cold scans where stale obj/ ref
-            // dlls are concurrently rewritten under FCS's read.
-            //
-            // No-op when BuildPlugin is not registered or already terminal;
-            // millisecond-scale when BuildPlugin's task-cache replay path
-            // emits BuildCompleted synchronously (Phase B / warm cache).
+            // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
+            // read the obj/ refs it rewrites. See
+            // `waitForPluginTerminalIfRunningWith` for the race this closes.
             do! waitForPluginTerminalIfRunning host "build" (System.TimeSpan.FromMinutes(10.0))
 
             let mutable completed = 0
@@ -1946,10 +1877,9 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
             for tier in tiers do
                 // Resolve each checkable file in the tier to its check thunk,
-                // honouring the deps-freshness gate and per-project options.
-                // The thunk is re-runnable (an Async description), so
-                // runChecksWithRetry can re-invoke it on a cancelled result —
-                // re-reading current disk content (invariant 3).
+                // honouring the deps-freshness gate and per-project options. The
+                // thunk is re-runnable (an Async description), so
+                // `runChecksWithRetry` can re-invoke it on a cancelled result.
                 let tierThunks =
                     System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
@@ -1963,10 +1893,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
                     skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
 
-                    // Deps-freshness gate: if this project's restored assets are
-                    // stale, try a one-shot restore; if that fails, fail fast
-                    // (one diagnostic) and skip FCS for the project so the
-                    // phantom "namespace not found" storm is never produced.
+                    // Deps-freshness gate — see `applyDepsGate`.
                     if applyDepsGate ctx.DepsGate host projPath then
                         match pipeline.GetProjectOptions(projPath) with
                         | Some options ->
@@ -2037,7 +1964,6 @@ module Daemon =
         {
             CacheBackend: ICheckCacheBackend option
             CacheKeyProvider: ICacheKeyProvider option
-            /// FCS diagnostic codes to suppress. `None` means the default suppression set.
             /// FCS diagnostic codes to suppress globally. `None` means no
             /// daemon-level suppression — projects opt in via `<NoWarn>` in
             /// their fsproj or `#nowarn "code"` in source.
@@ -2091,21 +2017,18 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
-        // AUTOMATION-147 — this MUST be the first thing that happens.
+        // This MUST be the first thing that happens (AUTOMATION-147).
         //
         // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
         // value is only visible to ExecutionContexts captured AFTER it is set.
         // Everything below captures a context: the PluginHost's agents, the
         // change/scan mailboxes, the plugin handlers registered later. Whichever
         // of them eventually DISPATCHES to a plugin decides the context that
-        // plugin's `runProcess` runs in — so installing the registry any later
-        // (after these exist) would mean a plugin's spawned child resolves NO
-        // registry, `ProcessRegistry.track` drops it silently, `KillAll` reaps
-        // nothing, and a wedged plugin's process outlives the daemon as an
-        // init-reparented orphan.
-        //
-        // Installing here, before any context is captured, is what makes
-        // `fshw stop` and the wedge self-heal actually reap their children.
+        // plugin's `runProcess` runs in, so installing the registry any later
+        // means a plugin's spawned child resolves NO registry,
+        // `ProcessRegistry.track` drops it silently, `KillAll` reaps nothing, and
+        // a wedged plugin's process outlives the daemon as an init-reparented
+        // orphan.
         let processRegistry = ProcessRegistry.Registry()
         ProcessRegistry.install processRegistry |> ignore
 
@@ -2128,7 +2051,6 @@ module Daemon =
             fileReporter.ClearAll()
             let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
             let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
-            // §2c telemetry: log cache size on startup so we can pick LRU thresholds from data.
             let stats = taskCache.Stats
 
             Logging.info
@@ -2244,10 +2166,7 @@ module Daemon =
                                         let newDelay = max delayMs (delayForChange change)
                                         return! debouncing (change :: pending) newDelay suppressed
                                     | Some(Choice2Of2 replyChannel) ->
-                                        // Policy hoisted to runDaemonStep —
-                                        // OperationCanceledException propagates; everything else is
-                                        // logged with full stack and we fall back to idle so the
-                                        // daemon stays responsive while the user sees the failure.
+                                        // Failure policy lives in `runDaemonStep`.
                                         match!
                                             runDaemonStep
                                                 "processChanges (with replyChannel)"
@@ -2260,7 +2179,7 @@ module Daemon =
                                             replyChannel.Reply("format failed")
                                             return! idle suppressed
                                     | None ->
-                                        // Debounce expired — process batch (F13: see runDaemonStep).
+                                        // Debounce expired — process the batch.
                                         match!
                                             runDaemonStep
                                                 "processChanges"
@@ -2292,9 +2211,7 @@ module Daemon =
 
                                 match msg with
                                 | RequestScan(ct, reply) ->
-                                    // Policy hoisted to runDaemonStep — see
-                                    // its docblock for the broad-catch justification at this
-                                    // boundary (FCS / MSBuild / plugin Update surface).
+                                    // Failure policy lives in `runDaemonStep`.
                                     match! runDaemonStep "performScan" (performScan batchCtx scanSignal state ct) with
                                     | Ok newState ->
                                         reply.Reply(())

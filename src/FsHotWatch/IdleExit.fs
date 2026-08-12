@@ -21,11 +21,9 @@ type IdleExitConfig =
 [<Literal>]
 let AutoThresholdMin = 30
 
-/// The default pressure floor (minutes). When the daemon is already
-/// idle-exit-eligible AND the machine is under memory pressure, the effective
-/// idle window is shortened to `min(baseThreshold, pressureFloorMin)` so a tight
-/// machine sheds idle daemons fast. See `pressureIdleFloorMin` in `.fshw.json`
-/// and `effectiveThreshold`.
+/// The default pressure floor (minutes). When an idle-exit-eligible daemon is on a
+/// machine under memory pressure, the effective idle window shortens to
+/// `min(baseThreshold, pressureFloorMin)`. See `effectiveThreshold`.
 [<Literal>]
 let DefaultPressureFloorMin = 2
 
@@ -56,12 +54,10 @@ let resolvePressureFloor (config: PressureFloorConfig) : int option =
     | PressureFloorConfig.Disabled -> None
     | PressureFloorConfig.Minutes n -> if n > 0 then Some n else None
 
-/// Read the live memory-pressure signal from the runtime GC. Pressure is true
-/// when the GC's reported `MemoryLoadBytes` has reached its own
-/// `HighMemoryLoadThresholdBytes` — i.e. the GC itself considers the system
-/// high-memory-loaded. No percentage knob: we reuse the GC's own high-load mark.
-/// Defensive against a 0 threshold (some hosts report it) — that never counts as
-/// pressure. Injected as a function in the daemon wiring so the scheduler is
+/// Read the live memory-pressure signal from the runtime GC: true when
+/// `MemoryLoadBytes` has reached the GC's own `HighMemoryLoadThresholdBytes`. No
+/// percentage knob — we reuse the GC's high-load mark. A 0 threshold (some hosts report
+/// it) never counts as pressure. Injected in the daemon wiring so the scheduler is
 /// unit-testable without a real GC.
 let readGcPressure () : bool =
     let info = System.GC.GetGCMemoryInfo()
@@ -69,33 +65,27 @@ let readGcPressure () : bool =
     info.HighMemoryLoadThresholdBytes > 0L
     && info.MemoryLoadBytes >= info.HighMemoryLoadThresholdBytes
 
-/// Pure: shorten an already-eligible idle window (in minutes) under memory
-/// pressure. Eligibility (the default/main workspace being exempt) is decided
-/// upstream by `resolveThreshold`; by the time we have a `baseThreshold: int`
-/// the daemon is eligible, so pressure here only SHORTENS, never creates, a
-/// window.
-///
-/// - Under pressure with a floor (`Some f`): `min(base, f)` — the floor never
-///   LENGTHENS a window already smaller than it.
-/// - Not under pressure, or floor disabled (`None`): `base` unchanged.
+/// Pure: shorten an already-eligible idle window (in minutes) under memory pressure.
+/// Eligibility is decided upstream by `resolveThreshold`, so by the time we have a
+/// `baseThreshold: int` the daemon is eligible and pressure here only SHORTENS, never
+/// creates, a window. Under pressure with a floor it is `min(base, f)`, so the floor
+/// never lengthens a window already smaller than it; otherwise `base` is unchanged.
 let effectiveThreshold (baseThreshold: int) (pressure: bool) (pressureFloor: int option) : int =
     match pressure, pressureFloor with
     | true, Some f -> min baseThreshold f
     | _ -> baseThreshold
 
-/// True when `repoRoot` is a non-default jj workspace — i.e. the path contains a
-/// `/.workspaces/` segment (the ecosystem convention for non-default checkouts).
-/// Separators are normalized so this works regardless of the host OS. The match
-/// is on a full path *segment*, so a filename substring like `foo.workspaces.bak`
-/// does NOT match. Case-sensitive (fine on macOS/Linux).
+/// True when `repoRoot` is a non-default jj workspace — the path contains a
+/// `/.workspaces/` segment. Separators are normalized for host-OS independence, and the
+/// match is on a full path *segment*, so `foo.workspaces.bak` does NOT match.
+/// Case-sensitive (fine on macOS/Linux).
 let isNonDefaultWorkspace (repoRoot: string) : bool =
     if String.IsNullOrEmpty repoRoot then
         false
     else
         let normalized = repoRoot.Replace('\\', '/')
-        // Bracket with separators so `.workspaces` only matches as a whole
-        // segment. A trailing `/` is appended so a path ending in
-        // `/.workspaces` (no child) still presents the segment boundary.
+        // Bracket with separators so `.workspaces` only matches as a whole segment,
+        // including a path that ends in `/.workspaces` with no child.
         let padded = "/" + normalized.Trim('/') + "/"
         padded.Contains("/.workspaces/")
 
@@ -116,10 +106,9 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
     | IdleExitConfig.Disabled -> None
     | IdleExitConfig.Minutes n -> if n > 0 then Some n else None
 
-/// Atomic fire-once latch. `0` = armed, `1` = fired. The transition uses
-/// `Interlocked.CompareExchange` so that under concurrent timer ticks exactly one
-/// caller observes the arming-to-fired transition; every other caller (including
-/// re-fires after shutdown begins) is rejected.
+/// Atomic fire-once latch. `0` = armed, `1` = fired. `Interlocked.CompareExchange`
+/// means that under concurrent timer ticks exactly one caller observes the
+/// armed-to-fired transition; every other caller is rejected.
 [<NoComparison; NoEquality>]
 type FireLatch = { mutable state: int }
 
@@ -135,23 +124,19 @@ module FireLatch =
     /// True once the latch has fired (or is firing). Read for diagnostics/tests.
     let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.state) = 1
 
-/// The daemon is "busy" for idle-exit purposes when EITHER any plugin mailbox is
-/// in flight OR at least one client is actively blocked on a verdict wait
-/// (`WaitForComplete`). The wait leg is load-bearing: a background `RunExclusive`
-/// run holds a plugin in a Running status that mailbox-inflight (`AnyPluginBusy`)
-/// does not observe, so without counting active verdict waits idle-exit could
-/// fire out from under a connected `fshw check` and drop the client with a
-/// connection error instead of a verdict. Pure so the composition is unit-tested
-/// independently of the live host; the daemon injects the two live signals.
+/// The daemon is "busy" for idle-exit purposes when EITHER any plugin mailbox is in
+/// flight OR at least one client is actively blocked on a verdict wait
+/// (`WaitForComplete`). The wait leg matters: a background `RunExclusive` run holds a
+/// plugin Running in a way that mailbox-inflight (`AnyPluginBusy`) does not observe,
+/// so without it idle-exit could fire out from under a connected `fshw check` and drop
+/// the client with a connection error instead of a verdict. Pure; the daemon injects
+/// the two live signals.
 let busyForIdleExit (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
 
-/// Pure decision: should idle-exit fire on this tick?
-///
-/// Fires when the idle duration has met/exceeded the threshold AND no work is
-/// currently running AND the latch has not already fired. `busy` collapses
-/// "any plugin running / any check in flight" to a single bool at the call site,
-/// keeping this function free of host/FCS types. `alreadyFired` is the latch's
-/// current state; a `true` here always vetoes (a second fire is impossible).
+/// Pure decision: fire when the idle duration has met the threshold, no work is
+/// running, and the latch has not already fired. `busy` collapses "any plugin running /
+/// any check in flight" to a bool at the call site, keeping this free of host/FCS
+/// types. `alreadyFired = true` always vetoes.
 let shouldFire (idleThreshold: TimeSpan) (idleFor: TimeSpan) (busy: bool) (alreadyFired: bool) : bool =
     idleFor >= idleThreshold && not busy && not alreadyFired
 
@@ -186,15 +171,13 @@ type IdleExitDeps =
         Log: string -> unit
     }
 
-/// Run one scheduler tick. Reads the live clock / busy / activity / pressure,
-/// resolves the (possibly pressure-shortened) effective window, runs the pure
-/// `shouldFire` decision, and on a fire: atomically claims the latch, logs the
-/// `[idle-exit] …` line, then invokes the graceful shutdown. Pressure is
-/// re-evaluated every tick — if it subsides, the full window is restored. The
-/// atomic latch means that even if many ticks reach this point concurrently,
-/// `Shutdown` runs at most once. The whole body is guarded so a thrown exception
-/// is logged, not propagated out of the timer callback — the daemon must never
-/// crash on a tick. Returns `true` iff this tick fired the shutdown (for tests).
+/// Run one scheduler tick: resolve the (possibly pressure-shortened) effective
+/// window, run the pure `shouldFire` decision, and on a fire atomically claim the
+/// latch, log, then invoke the graceful shutdown. Pressure is re-evaluated every tick,
+/// so if it subsides the full window is restored. The latch means `Shutdown` runs at
+/// most once even if many ticks reach this point concurrently. The whole body is
+/// guarded so a thrown exception is logged rather than escaping the timer callback.
+/// Returns `true` iff this tick fired the shutdown (for tests).
 let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
     try
         let idleFor = deps.Now() - deps.LastActivityAt()
@@ -208,8 +191,8 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
 
         if shouldFire threshold idleFor busy (FireLatch.hasFired latch) then
-            // Atomically claim the single fire. Even if the pure check above
-            // raced past for several threads, only one wins tryFire.
+            // Even if the pure check above raced past for several threads, only one
+            // wins tryFire.
             if FireLatch.tryFire latch then
                 let pressureNote =
                     if pressure && effectiveMin < deps.BaseThresholdMin then

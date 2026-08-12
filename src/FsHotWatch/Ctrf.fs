@@ -1,17 +1,13 @@
-/// CTRF (Common Test Report Format) — the MACHINE-READABLE test report.
+/// CTRF (Common Test Report Format) — the machine-readable test report.
 ///
-/// fshw's runners (xUnit.v3 via Microsoft.Testing.Platform) emit CTRF when asked
-/// with `--report-ctrf`, and fshw reads it back as the AUTHORITATIVE pass/fail
-/// verdict (the process exit code is only a tie-break — see
-/// `TestPrunePlugin.classifyTestOutcome`).
+/// fshw's runners (xUnit.v3 via Microsoft.Testing.Platform) emit CTRF when asked with
+/// `--report-ctrf`, and fshw reads it back as the AUTHORITATIVE pass/fail verdict (the
+/// process exit code is only a tie-break — see `TestPrunePlugin.classifyTestOutcome`).
 ///
-///   * PARSE — one summary reader for the whole solution (`trySummary`). The
-///     verdict layer, the flakiness recorder and the verdict FILE all read the
-///     same block through the same function, so they cannot disagree about what
-///     a report says.
-///
-///   * RETAIN — reports are kept on disk (bounded, newest-per-run) so a consumer
-///     can be POINTED AT them, rather than deleted once folded into history.
+/// `trySummary` is the one summary reader: the verdict layer, the flakiness recorder
+/// and the verdict file all read the same block through it, so they cannot disagree
+/// about what a report says. Reports are retained on disk (bounded, newest-per-run) so
+/// a consumer can be pointed at them.
 module FsHotWatch.Ctrf
 
 open System
@@ -36,8 +32,8 @@ type Summary =
 /// A CTRF report belonging to a run.
 ///
 /// `Project` comes from the FILE NAME and `RunId` from the DIRECTORY it sits in.
-/// Neither is inferred from a timestamp: membership of a run is a fact about WHERE
-/// the file is, and that is the whole point (see `runDir`).
+/// Neither is inferred from a timestamp — membership of a run is decided by where the
+/// file is. See `runDir`.
 type Report =
     {
         Project: string
@@ -51,8 +47,7 @@ type Report =
 [<Literal>]
 let ReportSuffix = ".ctrf.json"
 
-/// How many RUN DIRECTORIES to retain. History is evidence — old runs are rotated,
-/// never wiped on start.
+/// How many run directories to retain. Old runs are rotated, never wiped on start.
 [<Literal>]
 let RetainedRuns = 10
 
@@ -60,10 +55,10 @@ let RetainedRuns = 10
 let reportsDir (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "test-runs")
 
-/// THE DIRECTORY IS THE RUN: `.fshw/test-runs/<runId>/<Project>.ctrf.json`, and
-/// nothing else lives there. With one directory per run, the run-dir EXISTS and
-/// is EMPTY when a run executed nothing, and does not exist at all when no run
-/// happened — so absence is unambiguous and never has to be decoded from mtimes.
+/// The directory IS the run: `.fshw/test-runs/<runId>/<Project>.ctrf.json`, and nothing
+/// else lives there. The run-dir exists and is empty when a run executed nothing, and
+/// does not exist at all when no run happened, so absence never has to be decoded from
+/// mtimes.
 let runDir (repoRoot: string) (runId: Guid) : string =
     Path.Combine(reportsDir repoRoot, runId.ToString("N"))
 
@@ -132,14 +127,12 @@ let tryReadReport (runId: string) (path: string) : Report option =
               Path = path
               Summary = summary })
 
-/// Did this run happen at all? The run-dir is created before anything executes, so
-/// its EXISTENCE is the record that a run took place — independently of whether the
-/// run produced any report.
+/// Did this run happen at all? The run-dir is created before anything executes, so its
+/// existence records that a run took place, whether or not it produced a report.
 let runExists (repoRoot: string) (runId: Guid) : bool = Directory.Exists(runDir repoRoot runId)
 
-/// The reports THIS RUN produced. Declared, not inferred: they are the files in the
-/// run's own directory. An empty list from an existing run-dir means "this run
-/// executed no tests" — a fact, not a silence.
+/// The reports THIS RUN produced — the files in the run's own directory. An empty list
+/// from an existing run-dir means the run executed no tests.
 let reportsForRun (repoRoot: string) (runId: Guid) : Report list =
     let dir = runDir repoRoot runId
 
@@ -185,21 +178,15 @@ let latestRunReports (repoRoot: string) : Report list =
         | :? IOException
         | :? UnauthorizedAccessException -> []
 
-/// Bound what `.fshw/test-runs/` accumulates. Three jobs, one sweep, run after
-/// every test run:
+/// Bound what `.fshw/test-runs/` accumulates. Run after every test run:
 ///
-///   * keep the newest `keepRuns` RUN DIRECTORIES and delete the rest. History is
-///     evidence, so old runs are ROTATED, never wiped on start.
-///
-///   * delete loose files at the top level — the old flat layout, which nothing
-///     could attribute to a run; a stale artifact that looks authoritative is
-///     worse than none.
-///
-///   * best-effort throughout — tidying is housekeeping and must never fail the
-///     run that produced the evidence, so the catch is widened to ALL exceptions,
-///     and ONE enumeration of the run dirs is used (count and list are the same
-///     observation, so a run-dir appearing mid-sweep can't push `List.skip` past
-///     the list length).
+///   * keep the newest `keepRuns` run directories, delete the rest;
+///   * delete loose files at the top level — the old flat layout, which nothing could
+///     attribute to a run;
+///   * best-effort throughout, so the catch is widened to all exceptions: tidying must
+///     never fail the run that produced the evidence. One enumeration of the run dirs
+///     is used, so a run-dir appearing mid-sweep cannot push `List.skip` past the
+///     list length.
 let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
     let root = reportsDir repoRoot
 
@@ -213,8 +200,6 @@ let tidyRunsDir (repoRoot: string) (keepRuns: int) : unit =
                 with _ ->
                     ()
 
-            // ONE listing. The count and the list are the same observation of the same
-            // directory at the same moment, so they cannot disagree about its size.
             let dirs = runDirs repoRoot
 
             dirs

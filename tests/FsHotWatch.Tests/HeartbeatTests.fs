@@ -1,11 +1,11 @@
 /// The activity heartbeat: the daemon publishes `<repoRoot>/.fshw/heartbeat`
 /// while — and ONLY while — a run is in progress.
 ///
-/// The load-bearing property, and the reason the feature exists at all, is the
-/// NEGATIVE one: an idle daemon must not beat. Process liveness cannot
-/// distinguish "working" from "alive but wedged"; a beat that only happens
-/// during a run can. Every other property here (cadence, contents, the leading
-/// edge, failure containment) exists to keep that signal trustworthy.
+/// The property that matters, and the reason the feature exists at all, is the
+/// NEGATIVE one: an idle daemon must not beat. Process liveness cannot distinguish
+/// "working" from "alive but wedged"; a beat that only happens during a run can.
+/// Every other property here (cadence, contents, the leading edge, failure
+/// containment) keeps that signal trustworthy.
 module FsHotWatch.Tests.HeartbeatTests
 
 open System
@@ -17,9 +17,8 @@ open FsHotWatch.Tests.TestHelpers
 
 let private t0 = DateTime(2026, 8, 7, 12, 0, 0, DateTimeKind.Utc)
 
-/// A deps record over a mutable clock and a mutable run-active flag, capturing
-/// every write. Mirrors `IdleExitTests.makeDeps`: ticks are driven by hand, so
-/// nothing here waits on a real 15s cadence.
+/// Deps over a mutable clock and a mutable run-active flag, capturing every write.
+/// Ticks are driven by hand, so nothing here waits on the real 15s cadence.
 let private makeDeps () =
     let clock = ref t0
     let running = ref false
@@ -41,9 +40,8 @@ let private makeDeps () =
 
 [<Fact>]
 let ``an idle daemon never beats`` () =
-    // THE property. An idle daemon holding a consumer's attention is precisely
-    // the state that must be reclaimable, so it must produce no signal at all —
-    // not a stale one, not a slow one, none.
+    // THE property: no signal at all while idle — not a stale one, not a slow one,
+    // none.
     let deps, clock, running, writes, _ = makeDeps ()
     let lastBeat = ref None
     running.Value <- false
@@ -65,8 +63,6 @@ let ``a run in progress beats`` () =
 
 [<Fact>]
 let ``the beat stops when the run ends and resumes when the next one starts`` () =
-    // The idle/running edge in both directions, on one gate. Mirrors
-    // IdleExitTests' "defers when busy then fires when free" shape.
     let deps, clock, running, writes, _ = makeDeps ()
     let lastBeat = ref None
 
@@ -110,11 +106,10 @@ let ``beats at most once per cadence while a run continues`` () =
 
 [<Fact>]
 let ``the first beat of a run is immediate, not a cadence late`` () =
-    // A run's first tick must beat straight away. The file is never deleted, so
-    // between runs it carries the PREVIOUS run's timestamp — arbitrarily old. A
-    // first beat up to a cadence late would leave a consumer reading an ancient
-    // timestamp while a run genuinely was executing, i.e. concluding "dead"
-    // during real work. That is the dangerous direction.
+    // The file is never deleted, so between runs it carries the PREVIOUS run's
+    // timestamp — arbitrarily old. A first beat up to a cadence late would leave a
+    // consumer reading an ancient timestamp while a run genuinely was executing, i.e.
+    // concluding "dead" during real work. That is the dangerous direction.
     let deps, clock, running, writes, _ = makeDeps ()
     let lastBeat = ref None
 
@@ -127,7 +122,7 @@ let ``the first beat of a run is immediate, not a cadence late`` () =
     clock.Value <- clock.Value.AddHours 3.0
     test <@ runTick deps lastBeat = false @>
 
-    // Next run: the very first tick beats, with no cadence wait inherited.
+    // Next run: the first tick beats, with no cadence wait inherited.
     running.Value <- true
     let beforeCount = writes.Count
     test <@ runTick deps lastBeat = true @>
@@ -135,14 +130,13 @@ let ``the first beat of a run is immediate, not a cadence late`` () =
 
 [<Fact>]
 let ``a long silent phase keeps beating`` () =
-    // A browser suite can run for many minutes emitting nothing. The beat is
-    // driven by "a run is in progress", never by log output, so twenty minutes
-    // of silence still produces a beat every cadence.
+    // A browser suite can run for many minutes emitting nothing: the beat is driven
+    // by "a run is in progress", never by log output.
     let deps, clock, running, writes, _ = makeDeps ()
     let lastBeat = ref None
     running.Value <- true
 
-    // 20 minutes of one-second ticks, no other activity of any kind.
+    // 20 minutes of one-second ticks, no other activity.
     for _ in 1 .. (20 * 60) do
         runTick deps lastBeat |> ignore
         clock.Value <- clock.Value.AddSeconds 1.0
@@ -180,9 +174,9 @@ let ``each beat rewrites the current time`` () =
 
 [<Fact>]
 let ``a non-utc clock still renders utc epoch seconds`` () =
-    // Epoch seconds are absolute; a Local-kind instant must not shift by the
-    // machine's offset. Guards against a consumer on another timezone reading a
-    // beat that looks hours stale (or hours in the future).
+    // Epoch seconds are absolute: a Local-kind instant must not shift by the
+    // machine's offset, or a consumer in another timezone reads a beat that looks
+    // hours stale (or hours in the future).
     let local = t0.ToLocalTime()
     test <@ render local = render t0 @>
 
@@ -221,9 +215,9 @@ let ``writeTo publishes readable epoch seconds at the contract path`` () =
 
 [<Fact>]
 let ``a failing write is logged and swallowed, never thrown`` () =
-    // A tick runs on a timer callback. An escaping exception would take the
-    // daemon down over a cosmetic signal — and a missing beat already degrades
-    // safely to "unknown" at the consumer, so there is nothing to escalate.
+    // A tick runs on a timer callback: an escaping exception would take the daemon
+    // down over a cosmetic signal, and a missing beat already degrades safely to
+    // "unknown" at the consumer.
     let logs = ResizeArray<string>()
 
     let deps: HeartbeatDeps =
@@ -292,8 +286,7 @@ let ``runActive is false only when nothing is in flight and nobody is waiting`` 
 
 [<Fact(Timeout = 15000)>]
 let ``the live timer beats to disk while running and stops when idle`` () =
-    // End-to-end through a real timer and a real file, at a compressed tick so
-    // the test does not wait on the production cadence.
+    // End-to-end through a real timer and a real file.
     withTempDir "heartbeat-live" (fun root ->
         let running = ref true
         let logs = ResizeArray<string>()
@@ -324,26 +317,23 @@ let ``the live timer beats to disk while running and stops when idle`` () =
         System.Threading.Thread.Sleep 300
         test <@ File.GetLastWriteTimeUtc p = mtimeAfterIdle @>
 
-        // Going idle must not delete the file — a stale timestamp is a stronger
-        // signal for a consumer than absence, which only means "unknown".
+        // Going idle must not delete the file — a stale timestamp says more to a
+        // consumer than absence, which only means "unknown".
         test <@ File.Exists p @>
 
         test <@ logs.Count = 0 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a tick that finds a beat in flight skips it`` () =
-    // THE serialisation property, asserted DETERMINISTICALLY: no threads, no
-    // sleeps, no timer. Re-entering `guardedBeat` from inside its own beat is
-    // exactly the situation a Timer creates when a beat outlasts the tick, and
-    // the latch must refuse the second one.
+    // THE serialisation property, asserted DETERMINISTICALLY: no threads, no sleeps,
+    // no timer. Re-entering `guardedBeat` from inside its own beat is exactly what a
+    // Timer creates when a beat outlasts the tick, and the latch must refuse the
+    // second one.
     //
-    // This exists because the sibling test below drives two real timers under load
-    // and asserts on observed concurrency. That test failed twice on a busy box
-    // having never exercised the guard at all — `maxSeen` stayed 0, so it reported
-    // a regression it had not detected. That is the failure mode a regression test
-    // must not have: it gets re-run, seen to pass, and taught to be ignored, and
-    // then the next real overlap walks straight through it. Timing stays
-    // smoke-tested below; the PROPERTY lives here, where load cannot reach it.
+    // The sibling test below drives two real timers under load and asserts on
+    // observed concurrency; on a busy box it can pass having never exercised the
+    // guard at all (`maxSeen` stuck at 0). Timing stays smoke-tested there; the
+    // PROPERTY lives here, where load cannot reach it.
     let beating = ref 0
     let ran = ResizeArray<string>()
     let reentrant = ref None
@@ -368,10 +358,10 @@ let ``overlapping ticks never beat concurrently`` () =
     // REGRESSION. A `Timer` fires on its period regardless of whether the previous
     // callback finished, so a beat slower than the tick overlaps — and two beats at
     // once race on the single temp file inside the atomic write, the loser's rename
-    // finding its source already consumed. That was observed live as a swallowed
-    // `FileNotFoundException` on `heartbeat.tmp` during heavy runs. Here the write
-    // is deliberately far slower than the tick, and the cadence is zero so every
-    // tick is due — maximum overlap pressure. Beats must still be strictly serial.
+    // finding its source already consumed (observed live as a swallowed
+    // `FileNotFoundException` on `heartbeat.tmp`). Here the write is deliberately far
+    // slower than the tick and the cadence is zero so every tick is due — maximum
+    // overlap pressure. Beats must still be strictly serial.
     let concurrent = ref 0
     let maxSeen = ref 0
     let logs = ResizeArray<string>()
@@ -392,28 +382,22 @@ let ``overlapping ticks never beat concurrently`` () =
 
     // Wait for EVIDENCE that beats are happening rather than assuming a fixed
     // wall-clock window produced some. `maxSeen = 1` conflates two claims: "beats
-    // never overlap" (the invariant this test guards, maxSeen <= 1) and "at least
-    // one beat occurred" (maxSeen >= 1), which is pure timing. On a loaded box the
-    // timer's thread-pool callbacks can be starved for the whole sleep, leaving
-    // maxSeen at 0 — and the test then reds having never exercised the invariant.
-    // Observed live: this failed with maxSeen = 0 during a `confirm` run minutes
-    // after passing in the same gate's test pass, on an identical tree.
-    //
-    // A guard that cannot tell "the invariant broke" from "I saw nothing" is the
-    // exact confusion the heartbeat contract refuses elsewhere — absence means
-    // UNKNOWN, never a verdict. So the two claims are asserted separately.
+    // never overlap" (the invariant this test guards, maxSeen <= 1) and "at least one
+    // beat occurred" (maxSeen >= 1), which is pure timing. On a loaded box the timer's
+    // thread-pool callbacks can be starved for the whole sleep, leaving maxSeen at 0 —
+    // and the test then reds having never exercised the invariant. So the two claims
+    // are asserted separately: absence means UNKNOWN, never a verdict.
     let deadline = DateTime.UtcNow.AddSeconds 8.0
 
     while lock maxSeen (fun () -> maxSeen.Value) = 0 && DateTime.UtcNow < deadline do
         System.Threading.Thread.Sleep 25
 
-    // Nothing observed at all: the run proved nothing, and fails saying so rather
-    // than masquerading as a detected overlap.
+    // Nothing observed at all: the run proved nothing, and fails saying so rather than
+    // masquerading as a detected overlap.
     test <@ lock maxSeen (fun () -> maxSeen.Value) >= 1 @>
 
-    // Beats are flowing; now give overlap a real chance. Cadence is zero and the
-    // write is 8x the tick, so this window is ~26 ticks of maximum overlap
-    // pressure against a write that is still in flight.
+    // Now give overlap a real chance: cadence is zero and the write is 8x the tick,
+    // so this window is ~26 ticks against a write that is still in flight.
     System.Threading.Thread.Sleep 400
 
     test <@ lock maxSeen (fun () -> maxSeen.Value) = 1 @>

@@ -66,7 +66,6 @@ let ``tryFire succeeds once then fails`` () =
 
 [<Fact>]
 let ``latch fires exactly once under heavy concurrency`` () =
-    // Hammer the latch from many threads; exactly one tryFire must win.
     let latch = FireLatch.create ()
     let wins = ref 0
 
@@ -175,7 +174,6 @@ let ``eligible under pressure shortens to min(base, floor)`` () =
 
 [<Fact>]
 let ``floor never lengthens a window already smaller`` () =
-    // base 1 + pressure + floor 2 → min(1,2) = 1.
     test <@ effectiveThreshold 1 true (Some 2) = 1 @>
 
 [<Fact>]
@@ -241,11 +239,9 @@ let ``runTick defers when busy then fires when free`` () =
 
     let latch = FireLatch.create ()
 
-    // Busy at threshold → defer.
     test <@ runTick deps latch = false @>
     test <@ shutdownCalls.Value = 0 @>
 
-    // Work finishes; still idle past threshold → now fires.
     busy.Value <- false
     test <@ runTick deps latch = true @>
     test <@ shutdownCalls.Value = 1 @>
@@ -286,18 +282,16 @@ let ``runTick under pressure fires at the floor boundary`` () =
 
 [<Fact>]
 let ``runTick re-evaluates pressure each tick - subsiding restores the full window`` () =
-    // idle 2min, floor 2min. Under pressure → fires at 2min; but with pressure
-    // OFF the same idle (2min < 30min base) must NOT fire — pressure is a live
-    // read, not latched.
+    // idle 2min, floor 2min: with pressure OFF the 30min base applies and nothing
+    // fires; when pressure rises the window drops to the floor and the SAME idle
+    // fires. Pressure is a live read, not latched.
     let pressure = ref false
     let deps, shutdownCalls, _ = makePressureDeps 2.0 pressure (Some 2)
     let latch = FireLatch.create ()
 
-    // No pressure: 2min idle is well under the 30min base → defer.
     test <@ runTick deps latch = false @>
     test <@ shutdownCalls.Value = 0 @>
 
-    // Pressure rises: effective window drops to 2min → fires now.
     pressure.Value <- true
     test <@ runTick deps latch = true @>
     test <@ shutdownCalls.Value = 1 @>
@@ -314,8 +308,7 @@ let ``runTick fires shutdown at most once across concurrent ticks`` () =
     let deps, shutdownCalls, _ = makeDeps 31.0 false
     let latch = FireLatch.create ()
 
-    // Hammer runTick from many threads simultaneously — the prior experiment's
-    // non-atomic latch fired 7x in 41ms here; the atomic latch must fire once.
+    // Pins the atomic latch: a non-atomic one fired 7x in 41ms under this hammer.
     Parallel.For(0, 5_000, fun _ -> runTick deps latch |> ignore) |> ignore
 
     test <@ shutdownCalls.Value = 1 @>
@@ -337,7 +330,6 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
 
     let latch = FireLatch.create ()
 
-    // Must not throw out of runTick.
     let fired = runTick deps latch
 
     test <@ fired = false @>

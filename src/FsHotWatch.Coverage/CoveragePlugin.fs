@@ -41,15 +41,11 @@ type CoverageMsg =
 /// established. Pure, so the gating policy is unit-testable without spinning a
 /// daemon.
 ///
-/// Takes the scope a run PROVED, not a bool (AUTOMATION-282). `FullSuite` gates
-/// normally; `Partial` downgrades a `SomeFailed` to a non-gating notice, because
-/// un-run files cannot be distinguished from genuine zeros.
-///
-/// A run that executed nothing cannot reach here at all — it has no `RunScope` to
-/// pass, so the caller has already had to decide what to do about that. Under the
-/// old `bool` there was no such stop: "nothing ran" arrived as `false`, which reads
-/// as "filtered" and would have quietly downgraded a real shortfall, so the call
-/// site needed a hand-rolled guard clause to intercept it first. That guard is gone.
+/// Takes the scope a run PROVED, not a bool. `FullSuite` gates normally; `Partial`
+/// downgrades a `SomeFailed` to a non-gating notice, because un-run files cannot be
+/// distinguished from genuine zeros. A run that executed nothing has no `RunScope`
+/// to pass, so it cannot reach here at all and cannot be mistaken for a filtered
+/// one — the caller has already had to decide what to do about it.
 let internal gateVerdict (scope: RunScope) (result: CheckResult) : CoverageVerdict =
     match result, scope with
     | AllPassed, _ -> Passed
@@ -139,16 +135,9 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                 match trc.Outcome, RunVerification.scope trc.Verification with
                 | Aborted _, _ -> async { return state }
                 | Normal, None ->
-                    // The run established no scope because it executed nothing, so it
-                    // produced no coverage and there is nothing here to judge
-                    // (AUTOMATION-280/282). Declining is the same move `Aborted`
-                    // above already makes, for the same reason.
-                    //
-                    // This was a `when` guard hand-rolling `executedAnything` over the
-                    // results, because the old `bool` presented "nothing ran" as
-                    // `false` — indistinguishable from "filtered", which gates
-                    // differently. Now it is simply the case where there is no scope
-                    // to ask about, and `gateVerdict` cannot be called without one.
+                    // No scope established because the run executed nothing, so it
+                    // produced no coverage and there is nothing to judge. Declining is
+                    // the same move `Aborted` above makes, for the same reason.
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
                 | Normal, Some scope ->
@@ -165,10 +154,9 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                                     else
                                         runCheck configPath xmlPaths
 
-                                // The TestPrune DB is the coverage high-watermark now:
-                                // each run ingests into it (max-merge across projects)
-                                // and emits the single shared cobertura. There is no
-                                // separate baseline to refresh here.
+                                // No baseline to refresh here: the TestPrune DB is the
+                                // coverage high-watermark, ingested (max-merged across
+                                // projects) per run, and emits the shared cobertura.
                                 return CheckDone(gateVerdict scope result, System.DateTime.UtcNow - runStarted)
                             })
 
@@ -253,12 +241,9 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
 
             | Custom(CheckDone(NotGatedFiltered belowFloorCount, elapsed)) ->
                 async {
-                    // Impact-filtered run: do NOT gate. The shortfalls are very likely
-                    // un-run files reading a false 0.0% (no current coverage, stale/missing
-                    // baseline) — indistinguishable in the cobertura data from a genuine
-                    // zero. Clear any prior reds so the verdict is a deterministic ✓ on an
-                    // unchanged commit, and surface a LOUD notice so the gap stays visible.
-                    // A real regression is caught by the next full-suite run, which gates.
+                    // Clear any prior reds so the verdict is a deterministic ✓ on an
+                    // unchanged commit; the notice below keeps the gap visible. A real
+                    // regression is caught by the next full-suite run, which gates.
                     ctx.ClearAllErrors()
 
                     let summary =
@@ -290,8 +275,6 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                         ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
 
                     let summary = $"%d{results.Length} file(s) below threshold"
-                    // UtcNow, like every other timestamp in the daemon; the
-                    // FSHW-CLOCK-001 analyzer bans local clocks repo-wide.
                     ctx.ReportStatus(PluginStatus.failedNow summary summary elapsed)
                     return Some false
                 }

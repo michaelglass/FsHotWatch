@@ -65,10 +65,10 @@ let private isTimedOut (parsed: ParsedPluginStatus) : bool =
     | Some { Outcome = TimedOut _ } -> true
     | _ -> false
 
-/// Wedge classification for a Running plugin — the SAME ambient bound and the
-/// SAME words as the daemon-side monitor, so `fshw status` and the daemon log can
-/// never disagree about a wedge. Past the bound a plugin is never rendered as
-/// merely "running": the fault is named.
+/// Wedge classification for a Running plugin — the SAME ambient bound and the SAME
+/// words as the daemon-side monitor, so `fshw status` and the daemon log can never
+/// disagree about a wedge. Past the bound a plugin is never rendered as merely
+/// "running".
 let private runningWedge (now: DateTime) (since: DateTime) : FsHotWatch.PluginWedge.RunningHealth =
     FsHotWatch.PluginWedge.classifyRunning (FsHotWatch.PluginWedge.ambientBound ()) now since
 
@@ -107,10 +107,9 @@ let private renderCompact
 
     let line =
         match parsed.Status with
-        // Fail closed: Completed with NO run record must never render as a
-        // bare ✓ — the absence is stated in words instead of left to be
-        // noticed. (When the ledger has failing diagnostics the issue-count
-        // path below is already honest, so it takes precedence.)
+        // Fail closed: no run record ⇒ no bare ✓ (see `CompletedNoRecordText`). When the
+        // ledger has failing diagnostics the issue-count path below is already honest, so
+        // it takes precedence.
         | StatusView.Completed _ when
             parsed.LastRun.IsNone
             && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
@@ -162,8 +161,6 @@ let private renderCompact
         | StatusView.Running since ->
             match runningWedge now since with
             | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
-                // Past the bound a plugin is BY DEFINITION wedged — say so,
-                // never render it as merely running.
                 $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
             | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
                 let timingStr = UI.timing elapsed
@@ -191,9 +188,8 @@ let private renderCompact
 
                 $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
         // A status this build could not read. Stated in words and glyphed as a failure —
-        // never a ✓, never a silent omission. (The daemon said something; we could not
-        // read it. That is not the same as the plugin being idle, and the operator is
-        // the one who needs to know which.)
+        // never a ✓, never a silent omission: the operator needs to know that the daemon
+        // said something unreadable, not that the plugin was idle.
         | StatusView.Unreadable reason -> $"  %s{Glyph.cross} %s{padded} %s{Color.red}%s{reason}%s{Color.reset}"
         | StatusView.Idle ->
             match parsed.LastRun with
@@ -236,8 +232,6 @@ let private verboseHeader
     | StatusView.Running since ->
         match runningWedge now since with
         | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
-            // Past the bound: named as wedged, never rendered as merely
-            // running.
             $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
         | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
             let n = List.length parsed.Subtasks
@@ -379,10 +373,9 @@ module private Agent =
     /// Terminal state for a plugin as seen by an agent consumer. `None` from
     /// `stateToken` means "omit this plugin from output" (idle with no history).
     ///
-    /// This IS `Verdict.PluginOutcome` — not a parallel copy of it. The status line an
-    /// agent reads and the `plugins[]` array in `.fshw/verdict.json` are two renderings
-    /// of ONE value, so they cannot drift into disagreeing about whether a plugin
-    /// passed — or about whether it is WEDGED.
+    /// This IS `Verdict.PluginOutcome`, not a parallel copy: the agent status line and
+    /// `plugins[]` in `.fshw/verdict.json` are two renderings of ONE value, so they
+    /// cannot drift about whether a plugin passed — or whether it is WEDGED.
     type State = Verdict.PluginOutcome
 
     let private tokenOf = Verdict.PluginOutcome.token
@@ -396,11 +389,9 @@ module private Agent =
             s.Replace('\r', ' ').Replace('\n', ' ').Replace("\"", "\\\"").Trim()
             |> truncateTo80
 
-    /// Determine the state for a plugin. Returns None when the plugin
-    /// should be omitted (Idle with no lastRun). ONE implementation, shared with the
-    /// verdict file — see `State`. It carries the wedge detection and the fail-closed
-    /// "Completed with no run record is never ok" rule, so `.fshw/verdict.json`
-    /// inherits both: a wedge can never be laundered into "running" on either surface.
+    /// Determine the state for a plugin. Returns None when the plugin should be omitted
+    /// (Idle with no lastRun). ONE implementation, shared with the verdict file — see
+    /// `State` and `Verdict.pluginOutcomeOf` for the two fail-closed rules it carries.
     let stateToken (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : State option =
         Verdict.pluginOutcomeOf warningsAreFailures now parsed
 
@@ -543,29 +534,20 @@ let renderPlugin
 
 // ----- Steering hints -----
 
-/// Point the reader at the MACHINE-READABLE results, in the output they are
-/// already reading.
+/// Point the reader at the MACHINE-READABLE results, in the output they are already
+/// reading, naming the ACTUAL paths for THIS run. A hint that merely tells you to go
+/// and find the file gets ignored — consumers have grepped `total:` and `elapsed:` out
+/// of this human progress display instead, and built merge decisions on it.
 ///
-/// The CTRF reports existed. The house rule ("if you need a primitive fshw
-/// doesn't have, add it upstream — don't route around it with bash") existed. The
-/// orchestrator's own memory said so. It still spent a night grepping `total:`
-/// and `elapsed:` out of a progress display built for a human, and then wrote a
-/// 40-line bash harness that made merge decisions. A convention that lives
-/// somewhere you must already know to look is not enforcement — it is hope. So
-/// the pointer goes HERE, at the point of use, with the ACTUAL paths for THIS
-/// run: a hint that makes you go and find the file is a hint you will ignore.
-///
-/// Printed when stdout is NOT a terminal — that is when a machine is reading.
-/// This is PRESENTATION adapting to the caller, which is allowed; the verdict is
-/// byte-for-byte identical either way. What must never adapt is the SEMANTICS,
-/// and none do: no check is stricter for an agent than for a human.
+/// Printed when stdout is NOT a terminal — that is when a machine is reading. This is
+/// PRESENTATION adapting to the caller, which is allowed; the verdict is byte-for-byte
+/// identical either way, and no check is stricter for an agent than for a human.
 module AgentHints =
 
     /// The steering block for a completed check/confirm, naming this run's files.
     let forVerdict (v: Verdict.Verdict) : string list =
-        // NEVER print a path for a file that was not written. A hint that sends you to
-        // an empty directory teaches distrust — and distrust of the tool is what drove
-        // the bash harness in the first place.
+        // NEVER print a path for a file that was not written: a hint that sends you to an
+        // empty directory teaches distrust of the tool.
         let suiteLines =
             match v.Suites, v.RunId with
             | [], None ->
@@ -579,15 +561,11 @@ module AgentHints =
                     let label = if i = 0 then "suites  " else "        "
                     $"    %s{label} %s{s.Ctrf}")
 
-        // A run can be RED with every test project at `failed: 0` — the failure
-        // living in `analyzers`, `format` or `build` instead. Printing only suites
-        // in that case shows a wall of passing counts on a failing run, which reads
-        // as "the red is not mine" and sends the reader looking somewhere else.
-        // Observed: a `confirm` returned exit 1 with six projects all green and
-        // three analyzer findings; two people misattributed it before anyone opened
-        // `plugins`. Same reasoning as the rule above about never printing a path to
-        // a file that was not written — a hint that answers a question the reader
-        // did not ask, while silently omitting the one they did, teaches distrust.
+        // A run can be RED with every test project at `failed: 0` — the failure living in
+        // `analyzers`, `format` or `build` instead. Printing only suites then shows a wall
+        // of passing counts on a failing run, which reads as "the red is not mine".
+        // Observed: a `confirm` returned exit 1 with six projects all green and three
+        // analyzer findings; two people misattributed it before anyone opened `plugins`.
         let failingPluginLines =
             match v.Plugins |> List.filter (fun p -> Verdict.PluginOutcome.isFailing p.Outcome) with
             | [] -> []

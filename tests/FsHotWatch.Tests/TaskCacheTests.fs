@@ -191,7 +191,7 @@ let ``optionalSaltedCacheKey returns None when getCommitId is None`` () =
 
     test <@ Option.isNone result @>
 
-// --- §2a: merkle cache key tests ---
+// --- merkle cache key tests ---
 
 [<Fact(Timeout = 15000)>]
 let ``merkleCacheKey is stable for identical inputs`` () =
@@ -222,7 +222,7 @@ let ``merkleCacheKey distinguishes "ab","" from "a","b"`` () =
 
 [<Fact(Timeout = 30000); Trait("Category", "Benchmark")>]
 let ``BENCH merkleCacheKey on representative .fs file`` () =
-    // §2a measurement B: per-FileChecked hashing cost. Repo avg .fs size ~12KB.
+    // measurement B: per-FileChecked hashing cost. Repo avg .fs size ~12KB.
     // Use the longest .fs file we can find as a worst-case proxy.
     let testSrc =
         let typical =
@@ -266,7 +266,7 @@ let ``BENCH merkleCacheKey on representative .fs file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key is stable across runs for same file content`` () =
-    // §2a hypothesis: editing Foo.fs and reverting it should hit the cache.
+    // hypothesis: editing Foo.fs and reverting it should hit the cache.
     // The cache key for a FileChecked event should depend on file content,
     // not on jj commit_id (which would change on every save).
     let handler = FsHotWatch.Lint.LintPlugin.create None None None None
@@ -300,7 +300,7 @@ let ``LintPlugin cache key is None for non-FileChecked events`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key reflects config file content`` () =
-    // §2a: editing the lint config should invalidate cached lint results.
+    // editing the lint config should invalidate cached lint results.
     withTempDir "lint-config" (fun tmpDir ->
         let configPath = System.IO.Path.Combine(tmpDir, "fsharplint.json")
         System.IO.File.WriteAllText(configPath, "{\"rules\":\"v1\"}")
@@ -330,7 +330,7 @@ let ``LintPlugin cache key reflects config file content`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs FullCheck`` () =
-    // §1 oracle: the cache key must distinguish ParseOnly from FullCheck even
+    // oracle: the cache key must distinguish ParseOnly from FullCheck even
     // when source bytes are identical — they may produce different lint
     // results because Lint inspects type info from check results when available.
     let handler = FsHotWatch.Lint.LintPlugin.create None None None None
@@ -1147,7 +1147,7 @@ let ``FileTaskCache ClearPluginFile removes specific entry`` () =
         test <@ c.TryGet (ck "build" "Foo.fs") (hash "h1") |> Option.isNone @>
         test <@ c.TryGet (ck "build" "Bar.fs") (hash "h2") |> Option.isSome @>)
 
-// --- §2b: atomic write tests ---
+// --- atomic write tests ---
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache.Set leaves no .tmp files behind`` () =

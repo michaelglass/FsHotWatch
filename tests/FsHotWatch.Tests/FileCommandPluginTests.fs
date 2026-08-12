@@ -13,8 +13,7 @@ let private fileTrigger (filter: string -> bool) : CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
 
-/// Emit a TestRunCompleted event with the given final Results. Used by tests
-/// that want to drive the plugin as if a test run had just finished.
+/// Drive the plugin as if a test run had just finished.
 let private emitRunCompleted (host: PluginHost) (results: (string * TestResult) list) =
     host.EmitTestRunCompleted
         { RunId = System.Guid.NewGuid()
@@ -23,8 +22,7 @@ let private emitRunCompleted (host: PluginHost) (results: (string * TestResult) 
           Results = Map.ofList results
           Verification = Ran RunScope.FullSuite }
 
-/// Emit a TestProgress event (delta for one group) with the given RunId. Used
-/// by tests that want to simulate the in-progress phase of a run.
+/// Simulate the in-progress phase of a run: one group's delta under a given RunId.
 let private emitProgress (host: PluginHost) (runId: System.Guid) (delta: (string * TestResult) list) =
     host.EmitTestProgress
         { RunId = runId
@@ -94,7 +92,7 @@ let ``command does not run for non-matching files`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // No matching files — wait briefly for agent to process the no-op
+    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
     waitUntil
         (fun () ->
             match host.GetStatus("run-scripts") with
@@ -222,7 +220,7 @@ let ``command ignores SolutionChanged`` () =
 
     host.EmitFileChanged(SolutionChanged)
 
-    // SolutionChanged is ignored — poll briefly; will time out at Idle (expected)
+    // SolutionChanged is ignored, so this poll is expected to time out at Idle.
     waitUntil
         (fun () ->
             match host.GetStatus("sln-watcher") with
@@ -268,9 +266,6 @@ let ``command reports Failed status on command failure`` () =
             | Failed _ -> true
             | _ -> false
         @>
-
-// ``FileCommandPlugin honors timeoutSec and records TimedOut`` moved to
-// FsHotWatch.IntegrationTests/PluginTimeoutTests.fs (coverage-deterministic; rationale there).
 
 [<Fact(Timeout = 15000)>]
 let ``command reports Failed status on exception`` () =
@@ -323,10 +318,9 @@ let ``status command returns not run when no files matched`` () =
 
     host.RegisterHandler(handler)
 
-    // No files match, so command never runs
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
 
-    // No matching files — poll briefly; will time out at Idle (expected)
+    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
     waitUntil
         (fun () ->
             match host.GetStatus("no-match") with
@@ -600,11 +594,9 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
     waitUntil (fun () -> getCount () >= 2) 12000
     test <@ getCount () = 2 @>
 
-// Regression: end-to-end from parseConfig(.fshw.json) → daemon registration
-// path → lifecycle dispatch. The earlier unit tests built the CommandTrigger
-// inline and hit the plugin the same way the daemon's RegisterHandler path does,
-// but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None
-// for a valid JSON list) would not be caught without going through parseConfig.
+// The other tests build the CommandTrigger inline, so a bug in the config→trigger glue
+// (a parser yielding AfterTests = None for a valid JSON list) would pass all of them.
+// This one goes through parseConfig.
 [<Fact(Timeout = 15000)>]
 let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -637,8 +629,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
     let handler =
         create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args "/tmp" None
 
-    // The plugin must subscribe to TestProgress + TestRunCompleted — if this
-    // assertion fails, dispatch will never route events to Update.
+    // Without both subscriptions, dispatch never routes events to Update.
     test
         <@
             handler.Subscriptions
@@ -653,14 +644,12 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
 
     host.RegisterHandler(handler)
 
-    // Simulate TestPrune's progressive emission: a partial delta that does NOT
-    // include the afterTests-listed project, followed by a TestRunCompleted
-    // whose Results do. The plugin must stay Idle after the partial and only
-    // fire on the completed event.
+    // TestPrune's progressive emission: a partial delta WITHOUT the afterTests-listed
+    // project, then a TestRunCompleted whose Results include it.
     let runId = System.Guid.NewGuid()
     emitProgress host runId [ "Other", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    // Brief pause to make sure the partial was processed.
+    // Long enough for the partial to be processed, so "still Idle" means something.
     System.Threading.Thread.Sleep(200)
     test <@ host.GetStatus("cov-r") = Some Idle @>
 
@@ -703,12 +692,10 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
-    // Subscribe-before-emit (see `combined-a`/`combined-b` below): the previous
-    // `waitUntil ... 5000` poll raced the Idle→Running→Completed transition — a
-    // slow `echo` fork+exec under heavy parallel CPU load could outlast the 5s
-    // polling budget while the `Fact(Timeout=15000)` watchdog still had 10s to
-    // spare. Awaiting the terminal status on the OnStatusChanged event removes
-    // the poll-granularity race and uses the full Fact budget deterministically.
+    // Subscribe-before-emit, used by every test in this file that awaits a terminal
+    // status: a `waitUntil` poll races Idle→Running→Completed, because a slow `echo`
+    // fork+exec under parallel CPU load can outlast the poll budget while the Fact
+    // watchdog still has seconds to spare. Awaiting OnStatusChanged has no such window.
     let completion = beginAwaitTerminal host "afterTests-any"
     emitRunCompleted host [ "AnyProject", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
     completion.Wait(TimeSpan.FromSeconds 12.0) |> ignore
@@ -734,9 +721,6 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
-    // Subscribe-before-emit: avoids the polling race in waitForTerminalStatus where
-    // a slow `echo` fork+exec under CI load can exceed the 5s polling budget while
-    // the Fact(Timeout=20000) watchdog still has 15s to spare.
     let completion = beginAwaitTerminal host "combined-a"
     host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
     completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
@@ -760,9 +744,6 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
-    // Subscribe-before-emit: see sibling test above. Observed 5081ms timeout under
-    // CI load when previous waitForTerminalStatus polling pattern raced the Run→
-    // Completed transition.
     let completion = beginAwaitTerminal host "combined-b"
     emitRunCompleted host [ "proj-a", TestsPassed("ok", false, TimeSpan.Zero) ]
     completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
@@ -777,12 +758,9 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
 // --- FSHW_RAN_FULL_SUITE environment variable ---
 
 /// Emit a completed run whose verification is DERIVED from the results, the way
-/// production derives it.
-///
-/// This used to take the scope as a separate bool, which let a fixture assert a
-/// breadth its own results contradicted — a filtered project alongside a claim of
-/// "full suite". Since AUTOMATION-282 the results are the single input, so a test
-/// cannot pin behaviour against a run that could not exist.
+/// production derives it. Taking the scope as a separate bool would let a fixture assert
+/// a breadth its own results contradict — a filtered project alongside a "full suite"
+/// claim — and pin behaviour against a run that could not exist.
 let private emitRunCompletedFor (host: PluginHost) (results: (string * TestResult) list) =
     let results = Map.ofList results
 
@@ -793,8 +771,7 @@ let private emitRunCompletedFor (host: PluginHost) (results: (string * TestResul
           Results = results
           Verification = RunVerification.ofResults results }
 
-/// Writes a probe script to `dir` that echoes `$FSHW_RAN_FULL_SUITE` into
-/// `outFile`. Returns the script path. The script is marked executable.
+/// Writes an executable probe script that echoes `$FSHW_RAN_FULL_SUITE` into `outFile`.
 let private writeEnvProbeScript (dir: string) (outFile: string) =
     let scriptPath = System.IO.Path.Combine(dir, "probe.sh")
     let script = $"#!/bin/sh\nprintf %%s \"$FSHW_RAN_FULL_SUITE\" > {outFile}\n"
@@ -814,12 +791,8 @@ let private anyTestTrigger: CommandTrigger =
     { FilePattern = None
       AfterTests = Some AnyTest }
 
-/// Run the env probe against an arbitrary driver that feeds the host events.
-/// Returns the value the child process observed in `FSHW_RAN_FULL_SUITE`.
-///
-/// The ONE env-probe harness: the temp-dir lifecycle, the 8000ms status budget and
-/// the swallowed cleanup live here only. `runEnvProbe` below is this function with
-/// the two things it fixes — trigger and driver — supplied.
+/// The one env-probe harness: temp-dir lifecycle, status budget and swallowed cleanup
+/// live here only. Returns the value the child observed in `FSHW_RAN_FULL_SUITE`.
 let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (drive: PluginHost -> unit) : string =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -855,8 +828,6 @@ let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (driv
 /// A complete run of one project, `afterTests: true`. The project is filtered iff
 /// the run is not a full suite, so the results agree with the claim.
 let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
-    // The project is filtered iff the run is not a full suite, so the verification
-    // derived from these results is exactly the one the caller is asking about.
     runEnvProbeWith pluginName anyTestTrigger (fun host ->
         emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ])
 
@@ -870,16 +841,12 @@ let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` (
     let contents = runEnvProbe "env-partial" false
     test <@ contents = "false" @>
 
-// REGRESSION (hook-scope): the mid-run fire derived its full-suite claim from
-// the ACCUMULATOR — a strict PREFIX of the run. A run whose projects are split
-// across `group`s emits one TestProgress per group, so with `afterTests: true`
-// (the README's own coverage-ratchet example) the hook fires after the FIRST
-// group with a claim computed from that group alone. If a later group is
-// impact-filtered the run is partial, yet the hook was told `"true"` — and
-// RunId dedupe means the truthful `TestRunCompleted` (RanFullSuite=false) can
-// never correct it. A prefix can PROVE "partial" (a filtered project stays
-// filtered) but can never prove "full", so mid-run the only honest answer is
-// `"unknown"`.
+// The mid-run fire used to derive its full-suite claim from the ACCUMULATOR — a strict
+// PREFIX of the run. Projects split across `group`s emit one TestProgress each, so with
+// `afterTests: true` the hook fired after the FIRST group with a claim computed from that
+// group alone; if a later group was impact-filtered the hook had been told `"true"`, and
+// RunId dedupe meant the truthful TestRunCompleted could never correct it. A prefix can
+// prove "partial" but never "full", so mid-run the only honest answer is `"unknown"`.
 [<Fact(Timeout = 20000)>]
 let ``afterTests command is not told the full suite ran while the run is still in flight`` () =
     let runId = System.Guid.NewGuid()
@@ -895,16 +862,11 @@ let ``afterTests command is not told the full suite ran while the run is still i
 
     test <@ contents = "unknown" @>
 
-// REGRESSION (hook-scope): a run that EXECUTED NOTHING must never tell a hook
-// the full suite ran. Both degenerate lifecycles TestPrune builds carry
-// `Results = Map.empty` with `RanFullSuite = true` (vacuously — nothing was
-// filtered): `abortedRunLifecycle` (TestPrunePlugin.fs, `Outcome = Aborted`)
-// and the "0 affected classes" impact-skip (`Outcome = Normal`).
-//
-// They are blocked today only because `CommandTrigger.matches AnyTest` requires
-// a non-empty results map, and config rejects an empty `afterTests` list — an
-// INCIDENTAL guard that nothing pinned. This pins it: an empty run fires no
-// afterTests command at all.
+// A run that EXECUTED NOTHING must never tell a hook the full suite ran. Both degenerate
+// lifecycles TestPrune builds — the aborted preflight and the "0 affected classes"
+// impact-skip — carry `Results = Map.empty` with a vacuous full-suite claim. They are
+// blocked only because `CommandTrigger.matches AnyTest` requires a non-empty results map
+// and config rejects an empty `afterTests` list: an incidental guard nothing pinned.
 [<Fact(Timeout = 20000)>]
 let ``afterTests command does not fire for a run that executed nothing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -918,13 +880,9 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
 
     host.RegisterHandler(handler)
 
-    // The impact-skip lifecycle: Normal, no results.
-    //
-    // `RanFullSuite = true` is the HARSHER input, deliberately — it is what these
-    // lifecycles emitted before AUTOMATION-281 made them say `false`. Keeping the
-    // old value here means the guard is tested against the worst thing that can
-    // arrive (a replayed cache entry or an external producer can still say `true`),
-    // rather than only against today's honest producer.
+    // The impact-skip lifecycle: Normal, no results. Fed the harsher legacy claim on
+    // purpose — a replayed cache entry or an external producer can still assert a full
+    // suite, so the guard is tested against the worst input, not today's honest one.
     host.EmitTestRunCompleted
         { RunId = System.Guid.NewGuid()
           TotalElapsed = System.TimeSpan.Zero
@@ -940,16 +898,14 @@ let ``afterTests command does not fire for a run that executed nothing`` () =
           Results = Map.empty
           Verification = NoProjectsSelected }
 
-    // Quiescence rather than a fixed 600ms: returns as soon as both events are
-    // drained, and actually proves they were — a sleep proves only that time passed.
+    // Quiescence, not a fixed sleep: it proves both events were drained, where a sleep
+    // proves only that time passed.
     waitForQuiescent host 5000
     test <@ host.GetStatus("env-empty-run") = Some Idle @>
 
 // --- FullSuiteClaim: the whole truth table, in one place ---
-// The env var's value is decided HERE, so this is where the contract is pinned.
-// The dangerous cell is the first one: a `"true"` on a run that verified nothing
-// is a licence, handed to arbitrary user code, to refresh a coverage baseline
-// off no evidence.
+// The dangerous cell is the first: a `"true"` on a run that verified nothing hands
+// arbitrary user code a licence to refresh a coverage baseline off no evidence.
 
 let private passed wasFiltered =
     FsHotWatch.Events.TestsPassed("", wasFiltered, TimeSpan.Zero)
@@ -966,8 +922,8 @@ let ``FullSuiteClaim is unknown for a completed run that selected no project`` (
 
 [<Fact>]
 let ``FullSuiteClaim is unknown when every project in a completed run failed to execute`` () =
-    // Non-empty Results, still nothing verified — NothingExecuted, the case that
-    // did not exist before AUTOMATION-282 and had to be re-derived by each consumer.
+    // Non-empty Results, still nothing verified. Before NothingExecuted existed, every
+    // consumer had to re-derive this case for itself.
     let verification =
         verificationFor
             [ "A", FsHotWatch.Events.TestsDeferred "apphost not produced"
@@ -1004,13 +960,10 @@ let ``FullSuiteClaim tokens are the documented wire values`` () =
     test <@ FullSuiteClaim.token BreadthUnknown = "unknown" @>
 
 // --- Cache-key salt regression tests ---
-// Bug: editing a config file referenced in args (e.g. coverage-ratchet.json
-// thresholds) didn't invalidate the FileCommandPlugin cache because the key
-// was just the jj commit_id. The salt must include command, args, and the
-// content of any path-like arg that exists on disk.
+// The key used to be just the jj commit_id, so editing a config file referenced in args
+// (coverage-ratchet.json thresholds, say) did not invalidate the cache. The salt must
+// include command, args, and the content of any path-like arg that exists on disk.
 
-/// Build a handler and pull its CacheKey function. Tests then evaluate it
-/// against synthetic events and assert how the key responds to input changes.
 let private cacheKeyFnFor (command: string) (args: string) =
     let handler =
         create
@@ -1039,9 +992,8 @@ let private cacheKeyFnFor (command: string) (args: string) =
 
 [<Fact(Timeout = 20000)>]
 let ``cache key is independent of commit_id`` () =
-    // jj reliance dropped: the create signature no longer accepts getCommitId.
-    // This test now degenerates to "two handlers with identical (command, args,
-    // file content) hash the same" — preserved as a structural invariant.
+    // `create` no longer accepts getCommitId, so this is now the structural invariant:
+    // two handlers with identical (command, args, file content) hash the same.
     let buildKeyFn () =
         let handler =
             create
@@ -1104,9 +1056,9 @@ let ``cache key changes when content of a path-arg file changes`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``single handler: cache key reflects current file content per event`` () =
-    // Regression: salt must be re-evaluated per event so that mid-session
-    // edits to a config file invalidate the cache. A "compute once at create"
-    // optimization would freeze the salt and reintroduce the original bug.
+    // The salt must be re-evaluated per event, or mid-session edits to a config file
+    // never invalidate the cache. A "compute once at create" optimisation reintroduces
+    // the original bug.
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
 
@@ -1210,10 +1162,8 @@ let ``collectArgFiles accepts absolute paths`` () =
         with _ ->
             ()
 
-// --- argsStalerThan: compare arg-file mtimes to a reference time ---
-// Returns the subset of arg-file paths whose mtime exceeds `referenceTime`.
-// If any are returned, a cached run from before `referenceTime` may not
-// reflect current input.
+// --- argsStalerThan: arg-file paths whose mtime exceeds `referenceTime`. A non-empty
+// result means a cached run from before that time may not reflect current input. ---
 
 [<Fact(Timeout = 15000)>]
 let ``argsStalerThan flags files modified after the reference time`` () =
@@ -1236,16 +1186,14 @@ let ``argsStalerThan flags files modified after the reference time`` () =
             ()
 
 // --- DI-injected error paths ---
-// hashFileWith and Update's defensive arms are exercised through dependency
-// injection / direct invocation rather than relying on real OS errors. A
-// separate integration suite (no coverage) confirms the injected behaviors
-// match real-world failure modes (e.g. unreadable files).
+// hashFileWith and Update's defensive arms are reached by injection rather than real OS
+// errors. The integration suite confirms the injected behaviour matches reality — without
+// that positive control these would be assertions about a mock.
 
 [<Fact(Timeout = 15000)>]
 let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some`` () =
-    // The Option.map None branch of computeArgsSalt is reached when a path
-    // passes File.Exists in collectArgFiles but tryHashFile returns None.
-    // Inject the hash function so we can exercise both branches deterministically.
+    // computeArgsSalt's Option.map None branch is reached when a path passes File.Exists
+    // in collectArgFiles but tryHashFile returns None — injectable, unlike the real race.
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
 
@@ -1279,8 +1227,8 @@ let ``hashFileWith returns None when reader throws IOException`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``hashFileWith returns None when reader throws UnauthorizedAccessException`` () =
-    // UnauthorizedAccessException is an IOException-class failure (chmod-000 path)
-    // — narrow catch must accept it as a transient/expected file-IO error.
+    // It does not derive from IOException, so the narrow catch has to name it
+    // explicitly — a chmod-000 file is expected, not a bug.
     let throwing _ =
         raise (System.UnauthorizedAccessException("denied"))
 
@@ -1289,9 +1237,9 @@ let ``hashFileWith returns None when reader throws UnauthorizedAccessException``
 
 [<Fact(Timeout = 15000)>]
 let ``hashFileWith propagates non-IO exceptions (F5)`` () =
-    // F5: bare `with _` previously swallowed real bugs. After narrowing to
-    // IOException + UnauthorizedAccessException, a programming bug
-    // (NullReferenceException) must surface, not produce silent None.
+    // A bare `with _` here swallowed real bugs. With the catch narrowed to IOException +
+    // UnauthorizedAccessException, a programming bug must surface rather than become a
+    // silent None.
     let throwing _ : byte[] =
         raise (System.NullReferenceException("real bug"))
 
@@ -1315,9 +1263,8 @@ let ``hashFileWith returns Some hex for successful read`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
-    // Defensive arm: the framework filters by Subscriptions before dispatching,
-    // so an afterTests-only handler shouldn't receive FileChanged. Direct-invoke
-    // Update to assert the safety net behaves correctly anyway.
+    // Subscriptions already filter this out before dispatch, so Update is invoked
+    // directly to reach the safety net at all.
     let trigger =
         { FilePattern = None
           AfterTests = Some AnyTest }

@@ -85,12 +85,10 @@ type ProjectCheckResult =
         FileResults: Map<string, FileCheckResult>
     }
 
-/// The evidence EVERY terminal status carries: WHAT the run did and how long
-/// it took. A guard that cannot say what it measured has not measured anything
-/// — so "done, with nothing to report" is unrepresentable by construction: the
-/// representation is PRIVATE, and the only way to obtain a value is
-/// `RunVerdict.create`, which rejects an empty summary, so no site (daemon, cache
-/// deserializer, test helper, or example) can build a hollow content-free `✓`.
+/// The evidence every terminal status carries: what the run did and how long it
+/// took. The representation is private and `RunVerdict.create` is the only
+/// constructor; it rejects an empty summary, so no call site can build a
+/// content-free `✓`.
 [<NoComparison>]
 type RunVerdict =
     private
@@ -109,8 +107,7 @@ type RunVerdict =
     member this.Elapsed = this.elapsed
 
 module RunVerdict =
-    /// The ONLY constructor. Throws on a null/empty/whitespace summary: a
-    /// verdict that says nothing is not a verdict.
+    /// The ONLY constructor. Throws on a null/empty/whitespace summary.
     let create (summary: string) (elapsed: System.TimeSpan) : RunVerdict =
         if System.String.IsNullOrWhiteSpace summary then
             invalidArg
@@ -197,65 +194,46 @@ type TestResult =
     | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool * elapsed: System.TimeSpan
     /// The project's tests NEVER RAN because its apphost wasn't produced yet (a
     /// build-ordering race: `dotnet run --no-build` fired before the build
-    /// settled). Distinct so it can NEVER masquerade as a pass. `isPassed` is
-    /// FALSE for it: a project that didn't run cannot count toward a green
-    /// verdict (a CI gate
-    /// must not report "safe to merge" when nothing was verified). It is ALSO
-    /// not a real test failure, so the verdict surfaces it as an honest
-    /// "waiting on build — tests did not run" diagnostic, not "test failed".
-    /// `reason` documents why (e.g. "apphost not produced"). Carries no
+    /// settled). `isPassed` is FALSE — a project that didn't run cannot count
+    /// toward a green verdict — but it is not a real test failure either, so the
+    /// verdict surfaces it as "waiting on build — tests did not run". `reason`
+    /// documents why (e.g. "apphost not produced"). Carries no
     /// elapsed/wasFiltered — nothing executed — so it never lowers a coverage
     /// baseline.
     | TestsDeferred of reason: string
     /// The runner STARTED but aborted before producing a usable result: a
     /// non-zero exit with NO parseable report (the test host crashed or was
     /// killed during shutdown — e.g. the Microsoft.Testing.Platform exit-7
-    /// shutdown flake — before flushing its CTRF report). Distinct from every
-    /// other case so it can NEVER be surfaced as a test failure (no test was
-    /// shown to fail) NOR as a pass (nothing was verified). `isPassed` is FALSE:
-    /// a run that produced no evidence must never count toward a green gate.
-    /// Surfaced as an honest "errored — re-run" diagnostic, NOT "tests failed".
-    /// Like `TestsDeferred`, carries no elapsed/wasFiltered (nothing usable ran)
-    /// so it never lowers a coverage baseline, and it is UNCACHEABLE by
-    /// construction (`isPassed`=false → the cacheKey gate skips the write), so a
-    /// transient abort is never replayed as a stale verdict. `reason` documents
-    /// what aborted (exit code + "no report written").
+    /// shutdown flake — before flushing its CTRF report). `isPassed` is FALSE
+    /// (nothing was verified) but no test was shown to fail either, so it
+    /// surfaces as "errored — re-run". Carries no elapsed/wasFiltered so it never
+    /// lowers a coverage baseline, and it is UNCACHEABLE by construction
+    /// (`isPassed`=false → the cacheKey gate skips the write), so a transient
+    /// abort is never replayed as a stale verdict. `reason` documents what
+    /// aborted (exit code + "no report written").
     | TestsErrored of reason: string
     /// The runner RAN, discovered the project's tests, and the active filter matched
     /// NONE of them — Microsoft.Testing.Platform's exit 8 / "Zero tests ran". Nothing
     /// executed, so nothing was verified.
     ///
-    /// A case rather than a flag because it previously was neither: it was encoded as
-    /// `TestsPassed` carrying a magic `ZeroMatchMarker` prefix on the output string
-    /// (AUTOMATION-272). That made "we ran nothing" a SUB-CASE of "we passed", so
-    /// `isPassed` was true for it and every fold over results had to remember to
-    /// re-derive the fact by string comparison. Two folds remembered; two did not, and
-    /// reported "N passed, 0 failed in N projects" about projects that ran no test at
-    /// all. It is exactly the hazard `TestsTimedOut` above calls out — "without
-    /// grepping the output for a magic prefix" — reintroduced by the next case that
-    /// needed one.
+    /// A case rather than a magic output-string prefix, so folds tell it apart
+    /// structurally rather than by string comparison (AUTOMATION-272).
     ///
-    /// Read `isPassed` here carefully: it is TRUE, and deliberately so. Per PROJECT, a
-    /// filter matching nothing is not that project's failure — an impact selection
-    /// naming no class in the Integration project must leave it passing, or every
-    /// filtered run goes red. The dishonesty was never the per-project verdict; it was
-    /// the RUN-level one, where every project matching nothing still summed to a green.
-    /// That question belongs to `RunVerification`/`verificationOf`, which this case now
-    /// lets it answer structurally instead of by string prefix.
+    /// `isPassed` is TRUE for it, deliberately: per PROJECT, a filter matching nothing
+    /// is not that project's failure — an impact selection naming no class in the
+    /// Integration project must leave it passing, or every filtered run goes red. The
+    /// RUN-level question ("did anything get verified?") belongs to `RunVerification`.
     | TestsNoMatch of output: string * elapsed: System.TimeSpan
 
 module TestResult =
     /// The magic output prefix a zero-match result used to be encoded with, before
-    /// `TestsNoMatch` existed (AUTOMATION-272).
+    /// `TestsNoMatch` existed.
     ///
-    /// Retained for ONE reason: entries already written to `.fshw`'s task cache carry
-    /// it, stored as `"passed"`. Reading such an entry back as a plain `TestsPassed`
-    /// would replay a run that executed nothing as a genuine green — the exact bug,
-    /// resurrected from disk for anyone with a warm cache. `FileTaskCache` reconstructs
-    /// the case from this prefix on read.
-    ///
-    /// It is NOT part of the live path any more: nothing constructs a result carrying
-    /// it. Delete once no cache in the wild can predate the change.
+    /// Retained ONLY because entries already written to `.fshw`'s task cache carry it,
+    /// stored as `"passed"`: reading one back as a plain `TestsPassed` would replay a
+    /// run that executed nothing as a genuine green. `FileTaskCache` reconstructs the
+    /// case from this prefix on read. Nothing constructs it any more — delete once no
+    /// cache in the wild can predate the change.
     [<Literal>]
     let LegacyZeroMatchMarker = "[fshw:no-tests-matched] "
 
@@ -278,11 +256,9 @@ module TestResult =
         // would lower a coverage baseline.
         | TestsDeferred _
         | TestsErrored _ -> true
-        // A zero match arises ONLY under a filter — an unfiltered run that
-        // discovered no test is a different (and much louder) problem. Reporting it
-        // as filtered is both true and the safe direction: `ranFullSuite` must never
-        // class a run that executed nothing as a full suite entitled to overwrite a
-        // coverage baseline.
+        // A zero match arises ONLY under a filter, and reporting it as filtered is
+        // the safe direction: `ranFullSuite` must never class a run that executed
+        // nothing as a full suite entitled to overwrite a coverage baseline.
         | TestsNoMatch _ -> true
 
     let elapsed =
@@ -300,17 +276,12 @@ module TestResult =
     let isPassed =
         function
         | TestsPassed _ -> true
-        // TRUE, deliberately — and this is the one case here where that is a
-        // judgement rather than a definition, so it is stated rather than grouped.
+        // TRUE, deliberately. `isPassed` answers a PER-PROJECT question, and per
+        // project a filter that matched nothing is not that project's failure: an
+        // impact selection naming no class in the Integration project must leave it
+        // passing, or every filtered run goes red.
         //
-        // `isPassed` answers a PER-PROJECT question, and per project a filter that
-        // matched nothing is not that project's failure: an impact selection naming no
-        // class in the Integration project must leave it passing, or every filtered run
-        // goes red. Returning false here would be the over-correction — it trades a
-        // false green for a false red on every ordinary impact run.
-        //
-        // What must NOT happen is a RUN summing these into a green, which is what
-        // AUTOMATION-272 was. That question is `verificationOf` (→ `RunVerification`),
+        // A RUN must not sum these into a green — that question is `RunVerification`,
         // and it is the aggregators' job to ask it. If you are writing a new fold over
         // results, `isPassed` is not the predicate you want for a run-level verdict.
         | TestsNoMatch _ -> true
@@ -324,10 +295,8 @@ module TestResult =
         | TestsErrored _ -> false
 
     /// True for the `TestsNoMatch` case: the project's runner ran and its filter
-    /// matched no test, so this project verified nothing.
-    ///
-    /// The predicate a RUN-level fold wants, and the one `isPassed` deliberately
-    /// cannot be. Replaces a `String.StartsWith` against a magic output prefix.
+    /// matched no test, so this project verified nothing. The predicate a RUN-level
+    /// fold wants, and the one `isPassed` deliberately cannot be.
     let isNoMatch =
         function
         | TestsNoMatch _ -> true
@@ -339,18 +308,13 @@ module TestResult =
 
     /// Did this project actually EXECUTE at least one test?
     ///
-    /// The per-project half of "was anything verified", and the predicate several
-    /// folds want when they reach for `isPassed` and get the wrong answer. Distinct
-    /// from `isPassed` in both directions: a zero-match project PASSES but executed
-    /// nothing, and a failing project executed plenty.
+    /// The per-project half of "was anything verified". Distinct from `isPassed` in
+    /// both directions: a zero-match project PASSES but executed nothing, and a
+    /// failing project executed plenty.
     ///
-    /// Deliberately exhaustive, with NO wildcard. `RunCoverage.ofRun` derived this
-    /// concept through `| _ ->` and was correct only by luck — `TestsNoMatch` landed in
-    /// the wildcard and got the right answer because a *different* function had been
-    /// updated, not because anyone reviewed the site. The next case added to
-    /// `TestResult` would have fallen in the same hole and been silently counted as
-    /// having run. Written out, every future case is a compile error here, which is the
-    /// whole point (AUTOMATION-272).
+    /// Deliberately exhaustive, with NO wildcard: a wildcard would silently count the
+    /// next `TestResult` case as having run, where writing every case out makes it a
+    /// compile error here instead.
     let executedTests =
         function
         | TestsPassed _
@@ -384,15 +348,9 @@ module TestResult =
         | TestsErrored _ -> true
         | _ -> false
 
-    /// Did this run EXECUTE anything? The run-level half of `executedTests`, and the
-    /// question every "a run that verified nothing must not claim it did" guard in
-    /// the tree is actually asking.
-    ///
-    /// It lives here, once, because it was independently hand-rolled at two consumers
-    /// in two packages the moment it was needed. Since AUTOMATION-282 the run-level
-    /// answer it feeds is `RunVerification.ofResults`, which is what callers should
-    /// reach for; this stays as its building block and for the rare caller that only
-    /// needs the yes/no.
+    /// Did this run EXECUTE anything? The run-level half of `executedTests`.
+    /// `RunVerification.ofResults` is the answer callers should reach for; this is
+    /// its building block, and is here for the rare caller that only needs the yes/no.
     let executedAnything (results: Map<string, TestResult>) : bool =
         results |> Map.exists (fun _ r -> executedTests r)
 
@@ -411,24 +369,11 @@ type TestResults =
     { Results: Map<string, TestResult>
       Elapsed: System.TimeSpan }
 
-/// What a run actually VERIFIED — the run-level answer to "did this prove anything?".
-///
-/// Lives here, in core, rather than inside TestPrune, because BOTH ends of the wire
-/// need it: TestPrune produces the token and the CLI consumes it. When it lived on
-/// only one side the other hand-wrote the string literals, so a rename on the producer
-/// was silent on the consumer — and the consumer's `else` branch mapped every
-/// unrecognized token to `Tests passed`, exit 0. That is the single outcome this whole
-/// area exists to prevent, so the token is now parsed rather than compared.
 /// How much of the suite a run that DID execute covered.
 ///
-/// Only reachable from `RunVerification.Ran`, and that is the entire point
-/// (AUTOMATION-282). It replaces a free-standing `RanFullSuite: bool` that every
-/// run carried, including runs that executed nothing — for which neither value was
-/// true. `false` meant "impact-filtered", so a run that ran nothing had to assert a
-/// filtering that never happened; `true` claimed a suite that never ran. Producers
-/// picked the less harmful lie and three separate consumers bolted on their own
-/// "…and something actually ran" conjunct to undo it. Asking about scope now
-/// requires first establishing that something ran.
+/// Only reachable from `RunVerification.Ran`, which is the point: asking about scope
+/// requires first establishing that something ran. A free-standing `RanFullSuite:
+/// bool` had no honest value for a run that executed nothing.
 type RunScope =
     /// At least one project was reduced by impact analysis. Un-run files cannot be
     /// told apart from genuine zeros, so a shortfall must not gate on this.
@@ -440,11 +385,10 @@ type RunScope =
 /// What a run actually VERIFIED — the run-level answer to "did this prove anything?".
 ///
 /// Lives here, in core, rather than inside TestPrune, because BOTH ends of the wire
-/// need it: TestPrune produces the token and the CLI consumes it. When it lived on
+/// need it: TestPrune produces the token and the CLI consumes it. With the type on
 /// only one side the other hand-wrote the string literals, so a rename on the producer
-/// was silent on the consumer — and the consumer's `else` branch mapped every
-/// unrecognized token to `Tests passed`, exit 0. That is the single outcome this whole
-/// area exists to prevent, so the token is now parsed rather than compared.
+/// was silent on the consumer, whose `else` branch mapped every unrecognized token to
+/// `Tests passed`, exit 0. The token is parsed, never compared.
 type RunVerification =
     /// No project was selected — nothing was invoked.
     | NoProjectsSelected
@@ -452,11 +396,6 @@ type RunVerification =
     | AllZeroMatch of projectCount: int
     /// Projects reported, but not one executed a test — every result was deferred,
     /// errored, or a zero match mixed among them.
-    ///
-    /// This case did not exist until AUTOMATION-282, and its absence is why two
-    /// consumers hand-rolled `Map.exists executedTests` instead of asking here:
-    /// such a run is not empty and not all-no-match, so it used to answer `Ran`,
-    /// and `verifiedNothing` answered `false` for a run that verified nothing.
     | NothingExecuted
     /// At least one project executed at least one test. Carries how much of the
     /// suite it covered — the only place scope is representable.
@@ -482,12 +421,9 @@ module RunVerification =
     /// total function with a default: a default here is precisely how an unknown
     /// reading becomes a green one.
     ///
-    /// The bare "ran" of the pre-282 wire is deliberately NOT accepted. It asserted
-    /// that tests executed while saying nothing about scope, and the missing scope
-    /// used to be supplied by a separate boolean that could claim a full suite for a
-    /// run that executed nothing. Refusing it costs one no-verdict on a daemon/CLI
-    /// version skew — which fails closed, by design — and is cheaper than inventing
-    /// a scope the sender never sent.
+    /// The bare "ran" of the older wire format is deliberately NOT accepted: it
+    /// asserted that tests executed while saying nothing about scope. Refusing it
+    /// costs one no-verdict on a daemon/CLI version skew, which fails closed.
     let tryParse (s: string) : RunVerification option =
         match s with
         | "no-projects-selected" -> Some NoProjectsSelected
@@ -576,14 +512,6 @@ type TestRunCompleted =
         Results: Map<string, TestResult>
         /// What this run VERIFIED, and — only if it verified something — how much of
         /// the suite it covered.
-        ///
-        /// This was `RanFullSuite: bool` until AUTOMATION-282. A boolean had no
-        /// inhabitant for "nothing executed", so the two degenerate lifecycles had to
-        /// assert either a suite that never ran or a filtering that never happened,
-        /// and `CoveragePlugin`, `FileCommandPlugin` and the ledger discharge each
-        /// bolted on a private "…and something actually ran" conjunct to undo it.
-        /// Those conjuncts are gone: ask this field, and the cases that verified
-        /// nothing have no scope to hand you.
         ///
         /// Gate baseline refreshes and ratchet tightening on `Ran FullSuite` — via
         /// `RunVerification.ranFullSuite` — never on "not Partial".

@@ -11,9 +11,7 @@
 ///
 /// This file exercises `Program.withRunHooks` and its helpers directly — the
 /// transport-agnostic bracket that both `check` arms and `confirm`'s `MustEarn` arm
-/// wrap the action in. The original RED test anchored at the `afterTests`
-/// fileCommand seam because `afterRun` did not exist; it now targets the real
-/// run-level hook and is GREEN (an aborted run writes the afterRun sentinel).
+/// wrap the action in.
 module FsHotWatch.Tests.RunLevelHookGapTests
 
 open System
@@ -78,9 +76,9 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
 // afterRun: a `finally` that fires on success, a red verdict, an abort, a throw
 // ---------------------------------------------------------------------------
 
-/// POSITIVE CONTROL (retargeted). A clean success (exit 0) fires afterRun — so the
-/// sentinel/hook wiring is proven sound, and the abort test's success can only mean
-/// "the finally fired", never "the harness could never have written the file".
+/// POSITIVE CONTROL. A clean success fires afterRun, so the sentinel/hook wiring is
+/// proven sound and the abort test's success can only mean "the finally fired", never
+/// "the harness could never have written the file".
 [<Fact(Timeout = 20000)>]
 let ``afterRun fires on a clean success (exit 0)`` () =
     let sentinel = freshSentinel ()
@@ -92,25 +90,22 @@ let ``afterRun fires on a clean success (exit 0)`` () =
     finally
         tryDelete sentinel
 
-/// RETARGETED RED→GREEN (AUTOMATION-188). A run that ABORTS — the daemon's
-/// `TestRunCompleted { Outcome = Aborted }` shape, surfaced at the CLI as an
-/// un-completable exit 2 — MUST still fire the run-level afterRun. This is exactly
-/// the release path a gate-lock cannot afford to miss. Under the old `afterTests`
-/// seam nothing fired on abort; the run-level `finally` does.
+/// A run that ABORTS — the daemon's `TestRunCompleted { Outcome = Aborted }` shape,
+/// surfaced at the CLI as an un-completable exit 2 — MUST still fire afterRun: it is
+/// the release path a gate-lock cannot afford to miss, and the one the older
+/// `afterTests` seam missed.
 [<Fact(Timeout = 20000)>]
 let ``an aborted run (exit 2) still fires afterRun (finally) — AUTOMATION-188`` () =
     let sentinel = freshSentinel ()
 
     try
         let code = withRunHooks tmpRoot (hooks None (Some(touch sentinel))) (fun () -> 2)
-        // afterRun fired even though the run aborted with no verdict ...
         test <@ File.Exists sentinel @>
-        // ... and it did NOT alter the run's exit code.
+        // The hook did not alter the run's exit code.
         test <@ code = 2 @>
     finally
         tryDelete sentinel
 
-/// afterRun fires on a RED verdict too (exit 1) — the release is unconditional.
 [<Fact(Timeout = 20000)>]
 let ``afterRun fires on a red verdict (exit 1)`` () =
     let sentinel = freshSentinel ()
@@ -122,8 +117,8 @@ let ``afterRun fires on a red verdict (exit 1)`` () =
     finally
         tryDelete sentinel
 
-/// afterRun is a `finally`, not a success callback: it fires even when the action
-/// THROWS, and the exception then propagates (afterRun does not swallow it).
+/// afterRun is a `finally`, not a success callback: it fires when the action THROWS,
+/// and the exception still propagates (afterRun does not swallow it).
 [<Fact(Timeout = 20000)>]
 let ``afterRun fires even when the action throws (finally)`` () =
     let sentinel = freshSentinel ()
@@ -148,11 +143,10 @@ let ``afterRun fires even when the action throws (finally)`` () =
 /// green↔red.
 [<Fact(Timeout = 20000)>]
 let ``a failing afterRun does NOT change the run's exit code`` () =
-    // Green action, afterRun exits non-zero — the verdict stays green.
     let codeGreen = withRunHooks tmpRoot (hooks None (Some "exit 9")) (fun () -> 0)
     test <@ codeGreen = 0 @>
 
-    // Red action, afterRun exits non-zero — the verdict stays red (not laundered green).
+    // ... and a red is not laundered green either.
     let codeRed = withRunHooks tmpRoot (hooks None (Some "exit 9")) (fun () -> 1)
     test <@ codeRed = 1 @>
 
@@ -160,8 +154,7 @@ let ``a failing afterRun does NOT change the run's exit code`` () =
 // beforeRun: fail-closed, and ordered before the action
 // ---------------------------------------------------------------------------
 
-/// FAIL-CLOSED: a non-zero beforeRun aborts with exit 2 (NOT 1) and runs NO plugin
-/// work — the action never executes.
+/// Exit 2, NOT 1: a blocked run is incomplete, not failed.
 [<Fact(Timeout = 20000)>]
 let ``a non-zero beforeRun is fail-closed: exit 2 and NO plugin work`` () =
     let ran = ref false
@@ -174,7 +167,6 @@ let ``a non-zero beforeRun is fail-closed: exit 2 and NO plugin work`` () =
     test <@ code = 2 @>
     test <@ not ran.Value @>
 
-/// A zero-exit beforeRun proceeds to the action, and afterRun still brackets it.
 [<Fact(Timeout = 20000)>]
 let ``a zero beforeRun proceeds and afterRun still fires`` () =
     let sentinel = freshSentinel ()
@@ -192,9 +184,8 @@ let ``a zero beforeRun proceeds and afterRun still fires`` () =
     finally
         tryDelete sentinel
 
-/// ORDERING: beforeRun runs BEFORE the action — hence before the daemon is
-/// contacted, since contacting the daemon is the first thing the wrapped action
-/// does. The action observes beforeRun's effect already on disk.
+/// ORDERING: beforeRun runs BEFORE the action — hence before the daemon is contacted,
+/// since contacting the daemon is the first thing the wrapped action does.
 [<Fact(Timeout = 20000)>]
 let ``beforeRun runs BEFORE the action (hence before the daemon is contacted)`` () =
     let beforeSentinel = freshSentinel ()
@@ -273,7 +264,6 @@ let ``onRunSignal fires afterRun once and shares the latch with the finally`` ()
     let exits = ResizeArray<int>()
     let afterRun = makeRunOnce (fun () -> incr ran)
 
-    // First signal: afterRun runs, exit 143 recorded.
     onRunSignal afterRun exits.Add 143
     // The finally's later call to the SAME latched closure is a no-op for afterRun.
     afterRun ()
@@ -291,7 +281,6 @@ let ``onRunSignal fires afterRun once and shares the latch with the finally`` ()
 let ``resolveRunHookTimeoutSec prefers runHookTimeoutSec, then global, then the default`` () =
     let cfg = defaultTestConfig ()
 
-    // runHookTimeoutSec wins over the global timeout.
     test
         <@
             resolveRunHookTimeoutSec
@@ -300,7 +289,6 @@ let ``resolveRunHookTimeoutSec prefers runHookTimeoutSec, then global, then the 
                     TimeoutSec = Some 99 } = 5
         @>
 
-    // Absent hook timeout falls through to the global timeout.
     test
         <@
             resolveRunHookTimeoutSec
@@ -349,11 +337,10 @@ let ``by default both verbs are bracketed`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``runHookCommands confirm-only leaves a check run COMPLETELY unwrapped`` () =
-    // The strongest evidence available in one assertion: a beforeRun that FAILS
-    // would abort a bracketed run with exit 2 and never invoke the action. Seeing
-    // the action's own exit code proves beforeRun never ran; the absent sentinel
-    // proves afterRun never ran either. Together that is the straight `action ()`
-    // path — no latch, no signal handlers, no shell-out.
+    // A beforeRun that FAILS would abort a bracketed run with exit 2 and never invoke
+    // the action, so seeing the action's own exit code proves beforeRun never ran; the
+    // absent sentinel proves afterRun never ran either. Together: the straight
+    // `action ()` path — no latch, no signal handlers, no shell-out.
     let sentinel = freshSentinel ()
     let calls = ref 0
 
@@ -394,11 +381,9 @@ let ``an empty runHookCommands brackets neither verb`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``the verb filter behaves identically on both transports`` () =
-    // `--run-once` and the daemon path differ ONLY in the action passed here, so
-    // the bracketing decision cannot diverge between them by construction. Pinned
-    // anyway, because the previous shape's hazard was a per-transport rule: the
-    // decision is now purely "which verb was invoked", so there is no cheapness
-    // heuristic through which CI could silently lose the gate.
+    // `--run-once` and the daemon path differ ONLY in the action passed here, so the
+    // bracketing decision cannot diverge between them by construction. Pinned anyway:
+    // the earlier per-transport rule was how CI could silently lose the gate.
     let config = hooksFor [ RunHookCommand.Confirm ] (Some "exit 7") None
 
     // check — unwrapped on BOTH transports: the failing beforeRun never runs, so
@@ -470,9 +455,9 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
             failwith "expected the StillApplies fast path to be taken"
 
         // Unwrapped REGARDLESS of `runHookCommands` — including under `["confirm"]`,
-        // where the verb IS selected and this arm must STILL not fire, because it
-        // does no heavy work at all. Both settings are exercised so a narrowed verb
-        // set can never be mistaken for the reason the hooks stayed quiet.
+        // where the verb IS selected and this arm must STILL not fire. Both settings
+        // are exercised so a narrowed verb set can never be mistaken for the reason
+        // the hooks stayed quiet.
         for verbs in [ DefaultRunHookCommands; Set.singleton RunHookCommand.Confirm ] do
             let beforeSentinel = freshSentinel ()
             let afterSentinel = freshSentinel ()
@@ -503,7 +488,6 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                         30.0
 
                 test <@ code = 0 @>
-                // Neither hook fired — the fast path is unwrapped.
                 test <@ not (File.Exists beforeSentinel) @>
                 test <@ not (File.Exists afterSentinel) @>
             finally
@@ -513,13 +497,11 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
 // ---------------------------------------------------------------------------
 // Signal-handler installation.
 //
-// The exactly-once + exit-code CONTRACT of a signal firing is tested via
-// `onRunSignal` above (the handler body, with an injected exit and the shared
-// latch). Real in-process SIGINT/SIGTERM delivery CANNOT be tested here: the MTP
-// test host installs its OWN SIGINT/SIGTERM handler and ABORTS the whole test
-// session on receipt (empirically confirmed), regardless of our `Cancel <- true`.
-// So this only checks that installation itself registers and disposes cleanly and
-// does not fire afterRun on its own (no phantom teardown).
+// The exactly-once + exit-code CONTRACT of a signal firing is tested via `onRunSignal`
+// above. Real in-process SIGINT/SIGTERM delivery CANNOT be tested here: the MTP test
+// host installs its OWN handler and ABORTS the whole test session on receipt
+// (empirically confirmed), regardless of our `Cancel <- true`. So this only checks
+// that installation registers and disposes cleanly without firing afterRun.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]

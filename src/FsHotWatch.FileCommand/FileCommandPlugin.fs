@@ -17,14 +17,14 @@ let RanFullSuiteEnvVar = "FSHW_RAN_FULL_SUITE"
 /// What an `afterTests` command can HONESTLY be told about the breadth of the
 /// run that fired it.
 ///
-/// This was a plain `bool`, and a bool cannot carry the question. Hooks are
+/// Three values, not a bool, because a bool cannot carry the question. Hooks are
 /// ARBITRARY USER CODE — the documented use is "gate baseline refreshes or
-/// threshold tightening on it" — so the one thing that must never happen is a
-/// `"true"` on a run that did not, in fact, run the whole suite. Both boolean
-/// values lie in one direction: `"true"` overstates a run that verified nothing
-/// or is still in flight, and `"false"` asserts a filtered run that never
-/// happened. The third value says "cannot tell you" instead of picking a lie,
-/// and a hook gated on `= "true"` (the documented idiom) is correct under it.
+/// threshold tightening on it" — so a `"true"` on a run that did not in fact run
+/// the whole suite must never happen. Both boolean values lie in one direction:
+/// `"true"` overstates a run that verified nothing or is still in flight, and
+/// `"false"` asserts a filtered run that never happened. The third value says
+/// "cannot tell you", and a hook gated on `= "true"` (the documented idiom) is
+/// correct under it.
 type FullSuiteClaim =
     /// The run is COMPLETE, executed at least one test, and no project was
     /// impact-filtered. The ONLY value that licenses a baseline refresh.
@@ -48,20 +48,14 @@ module FullSuiteClaim =
 
     /// Turn what a run VERIFIED into what a hook may be told.
     ///
-    /// The only thing this adds to `RunVerification` is FINALITY, which is genuinely
-    /// FileCommand's own concern: `isFinal` is true ONLY for `TestRunCompleted`,
-    /// whose Results are the whole run. A `TestProgress` accumulator is a strict
-    /// PREFIX — the plugin fires as soon as its filter is satisfied, which for
-    /// `afterTests: true` is the first group of a multi-`group` run. A prefix can
-    /// prove PARTIAL (a filtered project stays filtered) but can never prove FULL,
-    /// because a group that has not reported may yet be filtered. Deriving "full
-    /// suite" from a prefix claimed the whole suite ran while later filtered groups
-    /// were still pending, and RunId dedupe means the truthful `TestRunCompleted`
-    /// never corrects it.
-    ///
-    /// Everything else it used to decide now comes from the verification itself.
-    /// Before AUTOMATION-282 this took a results map AND a bool and re-derived
-    /// "did anything execute" locally, because the bool could not express it.
+    /// The only thing this adds to `RunVerification` is FINALITY: `isFinal` is true
+    /// ONLY for `TestRunCompleted`, whose Results are the whole run. A `TestProgress`
+    /// accumulator is a strict PREFIX — the plugin fires as soon as its filter is
+    /// satisfied, which for `afterTests: true` is the first group of a multi-`group`
+    /// run. A prefix can prove PARTIAL (a filtered project stays filtered) but can
+    /// never prove FULL, because a group that has not reported may yet be filtered —
+    /// and RunId dedupe means the truthful `TestRunCompleted` never corrects a
+    /// premature claim.
     let derive (isFinal: bool) (verification: RunVerification) : FullSuiteClaim =
         match RunVerification.scope verification with
         // No scope established — the run verified nothing, so there is no breadth to
@@ -131,11 +125,10 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
     | FileMatched file -> $"{nameStr}:{System.IO.Path.GetFileName file}"
     | TestsCompleted -> $"{nameStr}:tests-completed"
 
-/// Hash file content via an injectable reader. Exposed so unit tests can
-/// substitute a reader that throws (covers the None branch deterministically)
-/// or returns canned bytes (covers the hex-formatting branch). A separate
-/// integration test confirms the production reader's failure mode (e.g.
-/// chmod-000) really does throw.
+/// Hash file content via an injectable reader — injectable so unit tests can
+/// substitute a reader that throws (the `None` branch) or returns canned bytes
+/// (the hex-formatting branch), with a separate integration test confirming the
+/// production reader really does throw on e.g. chmod-000.
 let internal hashFileWith (read: string -> byte[]) (path: string) : string option =
     // `read` is a file-IO call, so transient IO failures (file locked by editor,
     // missing, perms) legitimately drop this entry from the merkle and we tolerate
@@ -197,11 +190,10 @@ let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.Date
             None)
     |> Array.toList
 
-/// Salt computation with an injectable hash function. Exposed so unit tests
-/// can deterministically exercise the None branch — the case where a path
-/// passes File.Exists during collectArgFiles but the subsequent read fails
-/// (e.g. file deleted in between, or permissions changed). An integration
-/// test confirms the production reader's failure mode is realistic.
+/// Salt computation with an injectable hash function — injectable so a test can
+/// deterministically exercise the `None` branch: a path that passes `File.Exists`
+/// during `collectArgFiles` but whose subsequent read fails (deleted in between,
+/// or permissions changed).
 let internal computeArgsSaltWith
     (hashFile: string -> string option)
     (repoRoot: string)
@@ -243,9 +235,7 @@ let create
 
     // A fileCommand is an arbitrary user command — it may print nothing at all
     // (a linter that only speaks on failure), so its output cannot prove
-    // liveness and `cmdTimeout` is the bound. It still gets the polled-exit and
-    // bounded post-exit drain every spawn gets: a fileCommand whose grandchild
-    // (an MSBuild node) holds the inherited stdout pipe no longer wedges the run.
+    // liveness and `cmdTimeout` is the bound.
     let cmdBounds = ProcessBounds.silent cmdTimeout
 
     /// Run the command and return the resulting CommandResult. Callers merge
@@ -404,15 +394,8 @@ let create
                             progress.NewResults |> Map.fold (fun a k v -> Map.add k v a) acc
                         | _ -> progress.NewResults
 
-                    // Mid-run view. The accumulator is a strict PREFIX of the run:
-                    // it holds only the projects that have reported so far, and
-                    // the fire happens as soon as the trigger's filter is
-                    // satisfied — for `afterTests: true` that is the FIRST group
-                    // of a multi-`group` run. `wasFiltered` is authoritative for
-                    // the projects present (a filtered one stays filtered), so a
-                    // prefix can prove PARTIAL; it can never prove FULL, because
-                    // a group that has not reported yet may be filtered. Hence
-                    // `isFinal = false` — see `FullSuiteClaim.derive`.
+                    // Mid-run view: the accumulator is a strict PREFIX of the run,
+                    // hence `isFinal = false` — see `FullSuiteClaim.derive`.
                     let claim = FullSuiteClaim.derive false (RunVerification.ofResults accumulated)
 
                     let! state' = tryFire ctx state progress.RunId accumulated claim
@@ -422,11 +405,10 @@ let create
                             RunAccumulator = Some(progress.RunId, accumulated) }
 
                 | TestRunCompleted completed ->
-                    // TestRunCompleted always carries the full cumulative Results,
-                    // so cache-hit replays (which skip TestProgress) still fire the
-                    // command correctly. Same dedupe semantics. This is the only
-                    // view that can license a `"true"` claim (`isFinal = true`) —
-                    // and even here only if something actually executed.
+                    // Always carries the full cumulative Results, so cache-hit replays
+                    // (which skip TestProgress) still fire the command correctly. The
+                    // only view that can license a `"true"` claim — and even here only
+                    // if something actually executed.
                     let claim = FullSuiteClaim.derive true completed.Verification
 
                     return! tryFire ctx state completed.RunId completed.Results claim
@@ -446,14 +428,12 @@ let create
       CacheKey =
         // Pure-content cache key: merkle of (command, args, content of every
         // arg-file that exists on disk). No jj commit_id — two daemons on the
-        // same inputs hash the same regardless of working-copy state.
-        // Recomputed per event so mid-session edits to a referenced config
-        // file invalidate the cache.
+        // same inputs hash the same regardless of working-copy state. Recomputed
+        // per event so mid-session edits to a referenced config invalidate it.
         //
-        // Always `Some` for a trigger event, so the first trigger's result is
-        // stored and an identical trigger replays instead of re-running: a `None`
-        // key is uncacheable (neither replays nor stores), which would
-        // double-execute this side-effecting command.
+        // Always `Some` for a trigger event: a `None` key is uncacheable (neither
+        // replays nor stores), which would double-execute this side-effecting
+        // command.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
             | Custom _ -> None

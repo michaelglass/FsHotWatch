@@ -4,26 +4,22 @@ open System
 open System.IO
 open FsHotWatch.Logging
 
-/// Plugin wedge detection: a plugin that reported `Running` and posts no
-/// completion past a bound is BY DEFINITION wedged. Three duties, one wording:
-///   1. SAY IT — `fshw status` and the daemon log both use `wedgedText`, so
-///      neither surface ever requires the user to infer a wedge from what
-///      isn't printed. Under the bound the detector is honest about its own
-///      limits: "still running … (no completion posted)" — it cannot yet tell,
-///      and never claims healthy by default.
-///   2. RECOVER — past the bound the monitor writes the last-wedge breadcrumb
-///      and gracefully shuts the daemon down (the same `cts.Cancel()` path as
-///      `fshw stop`, so tracked child processes are reaped and SQLite is never
-///      killed mid-write). The next fshw command starts a fresh daemon and
-///      prints the breadcrumb.
-///   3. NEVER over-correct — the bound sits above the verdict deadline (the
-///      longest legitimately-bounded wait in the system) plus grace, so a
-///      healthy daemon's warm FCS cache is never discarded for a long-but-live
-///      run; a client blocked on `WaitForComplete` gets its own, more specific
-///      TimeoutException first.
-/// Format elapsed as human-readable "5m 3s" / "45s" / "1h 12m". The one
-/// cadence every wedge/wait message uses (Daemon.formatElapsed delegates
-/// here so the daemon's wait logs and the wedge wording can never drift).
+/// Plugin wedge detection: a plugin that reported `Running` and posts no completion
+/// past a bound is by definition wedged.
+///   1. Report — `fshw status` and the daemon log both use `wedgedText`. Under the
+///      bound the verdict is "still running … (no completion posted)": the detector
+///      cannot yet tell, and never claims healthy by default.
+///   2. Recover — past the bound the monitor writes the last-wedge breadcrumb and
+///      gracefully shuts the daemon down (the same `cts.Cancel()` path as `fshw stop`,
+///      so tracked child processes are reaped and SQLite is never killed mid-write).
+///      The next fshw command starts a fresh daemon and prints the breadcrumb.
+///   3. Don't over-correct — the bound sits above the verdict deadline (the longest
+///      legitimately-bounded wait in the system) plus grace, so a healthy daemon's
+///      warm FCS cache is not discarded for a long-but-live run, and a client blocked
+///      on `WaitForComplete` gets its own more specific TimeoutException first.
+///
+/// Format elapsed as "5m 3s" / "45s" / "1h 12m". Daemon.formatElapsed delegates here
+/// so the daemon's wait logs and the wedge wording cannot drift.
 let formatElapsed (ts: TimeSpan) =
     if ts.TotalHours >= 1.0 then
         $"%d{int ts.TotalHours}h %d{ts.Minutes}m"
@@ -70,10 +66,8 @@ let ambientBound () : TimeSpan =
 
     resolveBound (env WedgeBoundEnvVar) (env "FSHW_VERDICT_DEADLINE_SEC")
 
-/// Health of one Running plugin at `now`. Deliberately NOT healthy-by-default:
-/// under the bound the verdict is only that no completion has been posted YET
-/// (`StillRunning` — could be legitimate work, could be an early wedge; the
-/// detector cannot tell and says so), never that all is well.
+/// Health of one Running plugin at `now`. Not healthy-by-default: under the bound the
+/// verdict is only that no completion has been posted yet.
 [<RequireQualifiedAccess>]
 type RunningHealth =
     /// Under the bound: running, no completion posted — cannot tell yet.
@@ -91,26 +85,22 @@ let classifyRunning (bound: TimeSpan) (now: DateTime) (since: DateTime) : Runnin
     else
         RunningHealth.StillRunning elapsed
 
-/// The one wedge sentence — used verbatim by `fshw status` and the daemon log
-/// so the two surfaces can never disagree on the words.
+/// The one wedge sentence, used verbatim by `fshw status` and the daemon log.
 let wedgedText (since: DateTime) (elapsed: TimeSpan) : string =
     $"""WEDGED: started %s{since.ToString "HH:mm:ss"}, no completion in %s{formatElapsed elapsed}"""
 
-/// The full recovery message: logged by the daemon at the moment it restarts
-/// itself, AND written to the last-wedge breadcrumb the next CLI command
-/// prints — the tool says what it did, in the same words, on both surfaces.
+/// The full recovery message: logged by the daemon as it restarts itself, and written
+/// to the last-wedge breadcrumb the next CLI command prints.
 let wedgeRecoveryMessage (plugin: string) (since: DateTime) (elapsed: TimeSpan) : string =
     $"daemon was wedged on '%s{plugin}' (%s{wedgedText since elapsed}) — restarted it; the next fshw command starts a fresh daemon"
 
-/// The honest can't-tell recovery message: work was in flight but no plugin
-/// reported Running for the whole bound, so the detector cannot NAME the
-/// plugin. It says exactly that and fails closed rather than assuming health.
+/// The can't-tell recovery message: work was in flight but no plugin reported Running
+/// for the whole bound, so the detector cannot name the plugin. Fails closed.
 let unobservableWedgeMessage (quietFor: TimeSpan) : string =
     $"daemon was wedged: work was in flight for %s{formatElapsed quietFor} with no plugin reporting Running — cannot tell which plugin; failing closed and restarting the daemon"
 
-/// Periodic escalation line for a Running plugin under the bound. States the
-/// absence explicitly ("no completion posted") so a reader never has to infer
-/// it, and names when the daemon will treat the run as wedged.
+/// Periodic escalation line for a Running plugin under the bound. States the absence
+/// explicitly, and names when the daemon will treat the run as wedged.
 let stillRunningText (plugin: string) (elapsed: TimeSpan) (bound: TimeSpan) : string =
     $"%s{plugin} still running after %s{formatElapsed elapsed} (no completion posted; treated as wedged at %s{formatElapsed bound})"
 

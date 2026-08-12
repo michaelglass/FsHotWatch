@@ -55,11 +55,9 @@ type TimestampCacheKeyProvider() =
                 let hash = System.Security.Cryptography.SHA256.HashData(bytes)
                 Some(System.Convert.ToHexString(hash).ToLowerInvariant())
             with ex ->
-                // Returning None forces the caller to treat this as a cache
-                // miss (no key, no write). A transient lock (editor save,
-                // antivirus scan) that resolves on retry then produces a real
-                // hash on the next call, instead of a synthesized
-                // "unreadable:<path>" entry that pins stale data forever.
+                // None forces a cache miss (no key, no write), so a transient lock
+                // (editor save, antivirus scan) produces a real hash on the next call
+                // rather than an "unreadable" entry that pins stale data forever.
                 Logging.debug "cache" $"Could not read %s{normalizedPath}: %s{ex.Message}"
                 None
 
@@ -111,20 +109,16 @@ let hashDiagnosticsOrFailure (extract: unit -> DiagnosticSignature seq) : string
     with ex ->
         Logging.error "cache" $"diagnostic-hash failed (%s{ex.GetType().FullName}): %s{ex.ToString()}"
 
-        // Fold the exception class + message into the synthesized payload so
-        // two distinct failures don't share a downstream cache key. Hashing
-        // the payload (rather than returning a literal prefix + raw message)
-        // keeps the output the same shape — a hex digest — as the success
-        // path, so callers don't need a separate code path for failures.
+        // Hashing the synthesized payload (rather than returning a literal prefix)
+        // keeps the failure output the same shape as the success path — a hex digest —
+        // so callers need no separate branch.
         sha256Hex $"diagnostic-hash-failed:%s{ex.GetType().FullName}:%s{ex.Message}"
 
-/// §1: signature of FCS check results, suitable as an oracle answer for plugin
-/// cache keys. Two runs of the same file with identical FCS view (i.e., the
-/// transitive cross-file state that affects this file's compilation produced
-/// identical diagnostics) hash the same. When a cross-file change shifts FCS's
-/// view of this file (new error introduced by an upstream symbol change),
-/// the signature differs even though the file's source bytes are identical —
-/// invalidating downstream plugin caches that include the signature.
+/// Signature of FCS check results, suitable as an oracle answer for plugin cache
+/// keys. Two runs of the same file with an identical FCS view hash the same. When a
+/// cross-file change shifts FCS's view of this file (a new error from an upstream
+/// symbol change), the signature differs even though the file's source bytes are
+/// identical — invalidating downstream plugin caches that include the signature.
 ///
 /// Returns "parse-only" for ParseOnly results (FCS aborted before type
 /// checking, so no useful signature is available).

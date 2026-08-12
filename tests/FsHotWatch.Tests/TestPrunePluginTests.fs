@@ -20,11 +20,8 @@ open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
-/// An empty launch set for tests that construct `TestsFinished` directly to
-/// exercise CacheKey / status reporting without going through a real run. An
-/// empty launch commits nothing — these tests don't drive the pending queue —
-/// and an empty SELECTION covers nothing, so it clears no outstanding red
-/// (AUTOMATION-125). Tests that need a run to CLEAR something use
+/// An empty launch: commits nothing and covers nothing, so it clears no outstanding red.
+/// For tests that build `TestsFinished` directly. Runs that must CLEAR something use
 /// `fullSuiteLaunch` / `filteredLaunch` below.
 let private emptyLaunch: TestRunLaunch =
     { Symbols = Set.empty
@@ -54,27 +51,29 @@ let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSe
 let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForTerminalStatus host pluginName (int (timeoutSecs * 1000.0))
 
-/// Emit a FileChecked event and wait for the plugin mailbox to drain.
-/// FileChecked persists symbol analysis as an in-handler side-effect with no
-/// status transition, so quiescence — not `beginAwaitNextTerminal`, which
-/// would hang the full timeout waiting for a Completed/Failed that never
-/// fires — is the correct (and fast) synchronization.
+/// Emit a FileChecked and wait for the mailbox to drain. FileChecked persists symbol
+/// analysis as an in-handler side-effect with no status transition, so
+/// `beginAwaitNextTerminal` would hang the full timeout — quiescence is the right sync.
 let private emitFileAndQuiesce (host: PluginHost) (result: FileCheckResult) =
     host.EmitFileChecked result
     waitForQuiescent host 10000
 
-/// Emit a BatchChecked cohort-complete signal over `files` and wait for the
-/// plugin mailbox to drain. Like FileChecked, the flush is an in-handler
-/// side-effect with no status transition.
+/// Emit the BatchChecked cohort-complete signal over `files` and wait for the mailbox to
+/// drain. This is what flushes accumulated PendingAnalysis to the symbol DB; like
+/// FileChecked it is an in-handler side-effect with no status transition.
 let private emitBatchAndQuiesce (host: PluginHost) (files: string list) =
     host.EmitBatchChecked(fakeBatchChecked files)
     waitForQuiescent host 10000
 
-/// Emit a successful BuildCompleted and wait for the plugin to reach a
-/// terminal status. Unlike FileChecked/BatchChecked, this handler spawns the
-/// test run via `Async.Start`, so the work outlives the message handler and
-/// quiescence could return before the run finishes — a terminal await is the
-/// correct sync here.
+/// Emit a successful BuildCompleted and wait for a terminal status. Unlike
+/// FileChecked/BatchChecked this handler spawns the test run via `Async.Start`, so the
+/// work outlives the handler and quiescence could return early — a terminal await is the
+/// right sync.
+///
+/// Tests that index files emit this FIRST: the freshness sidecar's `markClean` only fires
+/// for FileChecked events arriving after a BuildCompleted has been observed in the
+/// session. That mirrors fshw's cold scan, where BuildPlugin's terminal status gates the
+/// FCS tier checks.
 let private emitBuildAndWaitTerminal (host: PluginHost) =
     let await = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
@@ -108,9 +107,8 @@ let ``plugin has correct name`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``testprune subscribes to BatchChecked`` () =
-    // Item 3 (corrected): TestPrune retains FileChecked for per-file
-    // accumulation AND adds BatchChecked as the cohort-complete flush
-    // signal. Both subscriptions must be present.
+    // FileChecked (per-file accumulation) is retained alongside BatchChecked (the
+    // cohort-complete flush): both subscriptions must be present, not one or the other.
     let handler = create ":memory:" "/tmp" None None None None None []
 
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
@@ -118,9 +116,6 @@ let ``testprune subscribes to BatchChecked`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``affected-tests command returns empty array when no files checked`` () =
-    // After the lazy-compute migration, the IPC always returns a JSON array,
-    // computed on demand from state.ChangedSymbols. With no FileChecked events,
-    // ChangedSymbols is empty so the SQL query is skipped and "[]" is returned.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create ":memory:" "/tmp" None None None None None []
@@ -157,7 +152,6 @@ let ``test-prune error path sets Failed status on null check results`` () =
     with _ ->
         ()
 
-    // Framework dispatches events asynchronously — wait for the agent to process
     let deadline = DateTime.UtcNow.AddSeconds(5.0)
     let mutable statusChanged = false
 
@@ -257,7 +251,6 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
 
     host.RegisterHandler(handler)
 
-    // Verify plugin registered without crashing and status is Idle
     let status = host.GetStatus("test-prune")
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
@@ -295,7 +288,6 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for async test execution to complete
         let deadline = DateTime.UtcNow.AddSeconds(10.0)
 
         while not extensionCalled && DateTime.UtcNow < deadline do
@@ -341,7 +333,6 @@ let ``extension error is caught and does not crash plugin`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``database read-before-write preserves previous symbols for diffing`` () =
-    // RebuildForProject must happen AFTER GetSymbolsInFile to get previous state for diffing.
     withTempDir "tp-db" (fun tmpDir ->
         let db = Database.create (Path.Combine(tmpDir, "test.db"))
 
@@ -379,7 +370,6 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 
         let result2 = { result1 with Symbols = [ symbol2 ] }
 
-        // Correct pattern: read BEFORE write
         let storedBefore = db.GetSymbolsInFile("src/Lib.fs")
         db.RebuildProjects([ result2 ])
 
@@ -390,12 +380,11 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         test <@ storedAfter.Length = 1 @>
         test <@ storedAfter.[0].LineEnd = 5 @>
 
-        // Diffing against pre-write data detects the change
         let (changes, _) = detectChanges [ symbol2 ] storedBefore
         let changedNames = changedSymbolNames changes
         test <@ not changedNames.IsEmpty @>
 
-        // Diffing against post-write data finds no changes (the bug this test guards against)
+        // Diffing post-write finds nothing — the bug this guards against.
         let (noChanges, _) = detectChanges [ symbol2 ] storedAfter
         let noChangedNames = changedSymbolNames noChanges
         test <@ noChangedNames.IsEmpty @>)
@@ -427,12 +416,11 @@ let ``FileChecked never transitions plugin to Running status`` () =
         with _ ->
             ()
 
-        // Wait for processing to complete (error path sets Failed with null checker)
         waitForPluginTerminal host "test-prune" 12.0
 
-        // Regression: FileChecked must never set Running — that caused rapid Running→Completed
-        // cycling during FCS cold-start, making the UI show constantly-changing elapsed time
-        // as if individual tests were running one-by-one.
+        // Setting Running here caused rapid Running→Completed cycling during FCS
+        // cold-start: the UI showed a constantly-changing elapsed time as if individual
+        // tests were running one-by-one.
         test <@ not observedRunning.Value @>)
 
 [<Fact(Timeout = 15000)>]
@@ -474,8 +462,7 @@ let ``FileChecked does not set Running status`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // FileChecked must not set Running — that causes status cycling in the UI.
-        // Completed is acceptable (set on success path); Failed is acceptable (error path).
+        // Completed (success path) and Failed (error path) are both acceptable here.
         match status.Value with
         | Running _ -> Assert.Fail("FileChecked must not set Running — causes status cycling in the UI")
         | _ -> ())
@@ -484,34 +471,16 @@ let ``FileChecked does not set Running status`` () =
 let ``FileChecked exception while tests running surfaces in the ledger without stomping the run's status (F10, AUTOMATION-99)``
     ()
     =
-    // F10 (audit/2026-05-02) established that a FileChecked throw mid-test-run
-    // must never be SILENT. Its original mechanism — framework safeUpdate
-    // stomping PluginStatus.Failed over the live run — was itself a lie: it
-    // manufactured a terminal status while the run was executing (the
-    // AUTOMATION-99 "terminal with started: but no elapsed:" signature), and
-    // the run's own TestsFinished verdict overwrote the Failed moments later,
-    // so the "visibility" was only ever a blip.
-    //
-    // The durable form (AUTOMATION-113 machinery): the fault lands in the
-    // ERROR LEDGER as an unanalysable-file diagnostic and the file joins
-    // UnanalyzableFiles (forcing full-suite runs until it analyses cleanly).
-    // The run keeps OWNING the status: it stays Running until TestsFinished
-    // delivers the earned verdict.
-    //
-    // This test pins the not-idle path:
-    //   1. Configure a long-sleeping test command and trigger BuildCompleted
-    //      to put RunExclusive "tests" in flight.
-    //   2. Emit a FileChecked that throws inside the Update body
-    //      (ProjectOptions = Unchecked.defaultof<_> → NullReferenceException).
-    //   3. Assert the fault reached the ledger AND the status is still the
-    //      run's Running — no terminal stomp.
+    // A FileChecked throw mid-test-run must never be silent, and must never be surfaced
+    // by stomping a terminal status over the live run — that manufactured a terminal
+    // while the run was still executing (the "started: but no elapsed:" signature) and
+    // the run's own verdict overwrote it moments later anyway. The fault belongs in the
+    // error ledger; the run keeps owning the status until TestsFinished lands.
     withTempDir "tp-f10-not-idle" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        // Long-running test command so "tests" RunExclusive stays in flight
-        // through the whole assertion. We force-cancel it via the host
-        // disposable at end-of-scope (withTempDir cleanup tears down the
-        // process registry).
+        // Long-running so the "tests" RunExclusive slot stays held through the whole
+        // assertion; withTempDir cleanup tears down the process registry at end-of-scope.
         let configs =
             [ { Project = "TestProject"
                 Command = "sleep"
@@ -527,11 +496,9 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // Kick off the long-running test run.
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait until the test run is actually in flight (status reaches
-        // Running) so a run is guaranteed live when we emit FileChecked.
+        // A run must be provably live before the FileChecked, or this proves nothing.
         let runningWait =
             beginAwaitStatus host "test-prune" (function
                 | Running _ -> true
@@ -540,8 +507,8 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
         if not (runningWait.Wait(TimeSpan.FromSeconds 10.0)) then
             Assert.Fail("test run never reached Running — cannot exercise the mid-run path")
 
-        // Now emit a FileChecked that throws inside the FileChecked branch
-        // of Update (ProjectOptions = Unchecked.defaultof<_>).
+        // `fakeFileCheckResult` carries ProjectOptions = Unchecked.defaultof<_>, so the
+        // FileChecked branch of Update throws a NullReferenceException.
         let fakeFile = Path.Combine(tmpDir, "Lib.fs")
         File.WriteAllText(fakeFile, "module Lib\n")
 
@@ -554,12 +521,11 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
         with _ ->
             ()
 
-        // The fault must land in the error ledger (never silent — F10)...
+        // The fault lands in the ledger (never silent) ...
         waitUntil (fun () -> not (host.GetErrorsByPlugin("test-prune").IsEmpty)) 10000
         test <@ not (host.GetErrorsByPlugin("test-prune").IsEmpty) @>
 
-        // ...WITHOUT stomping a terminal status over the live run
-        // (AUTOMATION-99): the run reported Running and still owns the status.
+        // ... without stomping a terminal over the live run, which still owns the status.
         let statusAfterFault = host.GetStatus("test-prune")
 
         test
@@ -596,7 +562,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // Error path (null checker in tests) reports Failed; success path leaves status unchanged.
+        // The null checker forces the error path; the success path would leave status alone.
         match status.Value with
         | Failed _ -> ()
         | other -> Assert.Fail($"Expected Failed on analysis error, got: %A{other}"))
@@ -621,13 +587,12 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
 
         host.RegisterHandler(handler)
 
-        // Trigger build -> test run
         host.EmitBuildCompleted(BuildSucceeded)
 
         waitForPluginTerminal host "test-prune" 12.0
 
-        // After tests complete (Completed), emit FileChecked — error path (null checker) sets Failed,
-        // so status changes away from Completed. On success path it would remain Completed.
+        // The null checker drives FileChecked down the error path, so the status must move
+        // off the test run's Completed.
         let fakeFile = Path.Combine(tmpDir, "New.fs")
         File.WriteAllText(fakeFile, "module New")
 
@@ -640,7 +605,6 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
         with _ ->
             ()
 
-        // Framework dispatches events asynchronously — wait for agent to process
         let deadline = DateTime.UtcNow.AddSeconds(5.0)
         let mutable statusChanged = false
 
@@ -784,12 +748,10 @@ let ``run-tests with only-failed reruns failed projects`` () =
 
         host.RegisterHandler(handler)
 
-        // First run — Fails project will fail
         host.EmitBuildCompleted(BuildSucceeded)
 
         waitForPluginTerminal host "test-prune" 12.0
 
-        // Now rerun only failed — should only run "Fails", not "Passes"
         let result =
             host.RunCommand("run-tests", [| """{"only-failed": true}""" |])
             |> Async.RunSynchronously
@@ -807,10 +769,9 @@ let ``run-tests not registered when no testConfigs`` () =
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
     test <@ result.IsNone @>
 
-/// A minimal, fully-covered Cobertura document. Seeded ONLY so the coverage
-/// plugin's `pollForFiles` finds a file on its FIRST attempt — see the test
-/// below for why that matters. Fully covered (`hits="1"`) so the default 100%
-/// thresholds pass and the run is a deterministic `Completed`.
+/// A minimal Cobertura document, seeded only so the coverage plugin's `pollForFiles`
+/// finds a file on its FIRST attempt (see the test below). Fully covered (`hits="1"`) so
+/// the default 100% thresholds pass and the run is a deterministic `Completed`.
 let private trivialCoberturaXml =
     """<?xml version="1.0" encoding="utf-8"?>
 <coverage line-rate="1" branch-rate="1" version="1.9">
@@ -833,46 +794,32 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, "{}")
 
-        // The subject here is the EMISSION — that a `run-tests` force-run fires
-        // TestRunCompleted where a third-party subscriber can see it. Coverage
-        // is the observer, not the thing under test.
+        // The subject is the EMISSION — that a `run-tests` force-run fires
+        // TestRunCompleted where a third-party subscriber can see it. Coverage is the
+        // observer, not the thing under test.
         //
-        // Without this file the observation cost a fixed 5s: `CoveragePlugin`
-        // polls `findCoverageFiles` 50 times at 100ms whenever no cobertura XML
-        // exists (`pollForFiles searchDir 50 100`), and the temp dir here has
-        // none — the harness's test command is `sh -c "touch <sentinel>"`.
-        // Measured on an IDLE box: coverage reached terminal after 5122ms, i.e.
-        // the old 10000ms bound left a 1.95x margin over a floor the plugin is
-        // DESIGNED to hit. Under `mise run ci` — which fans `test-direct` out
-        // alongside `compile` and `lint-project` — 50 × `Async.Sleep 100` and 50
-        // directory walks dilate past 10s on a saturated thread pool, which is
-        // exactly the observed 10.1–10.8s failures.
-        //
-        // Seeding one cobertura file makes `pollForFiles` return on attempt 0,
-        // so the observer's work is a directory walk plus a ~600-byte XML parse.
-        // The assertion is unweakened: the plugin still runs a real check and
-        // still has to reach a terminal status for this test to pass.
+        // With no cobertura XML on disk, CoveragePlugin polls `pollForFiles searchDir 50
+        // 100` — a designed 5s floor (measured: 5122ms idle), which dilates past 10s
+        // under a saturated thread pool. Seeding one file makes it return on attempt 0.
+        // The assertion is unweakened: the plugin still runs a real check and still has
+        // to reach a terminal status.
         File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), trivialCoberturaXml)
 
         let host, _ = withSingleProjectHarness dir "TestProject"
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
-        // Subscribe BEFORE the trigger, and on the NEXT transition rather than
-        // the current status: `waitForTerminalStatus` polls `GetStatus`, which
-        // cannot tell "reached terminal because of THIS run" from "was already
-        // terminal", and which lags the transition it is sampling. `run-tests`
-        // returns as soon as the force-run resolves its reply — strictly BEFORE
-        // the mailbox handles `TestsFinished` and emits TestRunCompleted — so
-        // the signal we want always arrives after this subscription.
+        // Subscribe before the trigger, and to the NEXT transition rather than the current
+        // status: `waitForTerminalStatus` polls `GetStatus`, which cannot tell "reached
+        // terminal because of THIS run" from "was already terminal". `run-tests` returns
+        // as soon as the force-run resolves its reply — strictly before the mailbox
+        // handles `TestsFinished` — so the signal always arrives after this subscription.
         let completion = beginAwaitNextTerminal host "coverage"
 
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
 
-        // 15s is a LIVENESS backstop, not a timing assertion: the awaited work
-        // is one mailbox dispatch plus the walk+parse above (milliseconds), so
-        // this is ~3 orders of magnitude of headroom rather than the ~2x the
-        // old bound had. It exists only so a wedged plugin fails with the
-        // message below instead of hanging to the xUnit timeout.
+        // A liveness backstop, not a timing assertion: the awaited work is one mailbox
+        // dispatch plus a walk and a ~600-byte parse. It exists so a wedged plugin fails
+        // with the message below instead of hanging to the xUnit timeout.
         let observed = completion.Wait(TimeSpan.FromSeconds 15.0)
 
         if not observed then
@@ -884,7 +831,8 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
-    // Framework-managed plugins don't need explicit dispose, but verify create doesn't throw
+    // Framework-managed plugins need no explicit dispose; this only pins that construction
+    // does not throw.
     let _handler = create ":memory:" "/tmp" None None None None None []
     ()
 
@@ -920,7 +868,6 @@ let ``parseFailedTests handles output with no failures`` () =
 [<Fact(Timeout = 15000)>]
 let ``test failures are reported to error ledger`` () =
     withTempDir "tp-ledger" (fun tmpDir ->
-        // Use "false" command which always fails, producing test failure output
         let configs =
             [ { Project = "TestProject"
                 Command = "false"
@@ -946,17 +893,11 @@ let ``test failures are reported to error ledger`` () =
 [<Fact(Timeout = 20000)>]
 let ``test errors are cleared when all tests pass`` () =
     withTempDir "tp-ledger-clear" (fun tmpDir ->
-        // First run fails, second run RE-RUNS the project and passes → the red clears.
-        //
-        // AUTOMATION-125: the second cycle is driven by `run-tests`, not by a second
-        // BuildCompleted, because a warm BuildCompleted with no changed symbols hits the
-        // zero-affected skip and runs NOTHING — and a run that ran nothing may not clear
-        // a red (that is the laundering this ticket removed; see the skip regression
-        // below). The same reason the sibling "stale failures from a prior cycle" test
-        // drives its cycles through `run-tests`. Here the change that flips the outcome
-        // is a FILE the symbol graph cannot see, so the force-run is the honest verb for
-        // it: `dotnet fshw test-rerun` runs every project unfiltered, which covers the
-        // failing project and so may clear it.
+        // The second cycle is driven by `run-tests`, not a second BuildCompleted: a warm
+        // BuildCompleted with no changed symbols hits the zero-affected skip and runs
+        // NOTHING, and a run that ran nothing may not clear a red. Here the change that
+        // flips the outcome is a FILE the symbol graph cannot see, so an unfiltered
+        // force-run is the honest verb — it covers the failing project, so it may clear it.
         let configs =
             [ { Project = "TestProject"
                 Command = "sh"
@@ -974,13 +915,11 @@ let ``test errors are cleared when all tests pass`` () =
 
         host.RegisterHandler(handler)
 
-        // Create fail flag so first run fails
         File.WriteAllText(Path.Combine(tmpDir, "fail_flag"), "")
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-        // Remove fail flag so the re-run passes.
         File.Delete(Path.Combine(tmpDir, "fail_flag"))
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
         waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 12000
@@ -994,10 +933,9 @@ let ``test errors are cleared when all tests pass`` () =
 [<Fact(Timeout = 15000)>]
 let ``RerunQueued path records previous run outcome to history before starting rerun`` () =
     withTempDir "tp-rerun-queued-history" (fun tmpDir ->
-        // First run sleeps ~1s and fails. The second BuildSucceeded arrives mid-run,
-        // putting state into RerunQueued. Both runs' outcomes must end up in history —
-        // before the fix, the RerunQueued path silently dropped the previous run's
-        // lifecycle, so only the rerun's outcome ever made it to history.
+        // Run 1 sleeps ~1s and fails; the second BuildSucceeded arrives mid-run, putting
+        // state into RerunQueued. That path used to drop the previous run's lifecycle
+        // silently, so only the rerun's outcome ever reached history.
         let configs =
             [ { Project = "TestProject"
                 Command = "sh"
@@ -1030,12 +968,8 @@ let ``RerunQueued path records previous run outcome to history before starting r
 
         let history = host.GetHistory("test-prune")
 
-        // The bug under test: before the fix, RerunQueued silently dropped the
-        // previous run's outcome — history would be empty (or contain only the
-        // rerun's no-op skip). After the fix, the previous failed run is
-        // recorded. We assert exactly that — not an exact count, because the
-        // rerun's no-op skip may or may not produce its own history entry
-        // depending on scheduler timing (race-prone).
+        // Not an exact count: whether the rerun's no-op skip produces its own history
+        // entry depends on scheduler timing.
         test <@ history.Length >= 1 @>
 
         let firstFailed =
@@ -1045,22 +979,16 @@ let ``RerunQueued path records previous run outcome to history before starting r
                 | FailedRun _ -> true
                 | _ -> false)
 
-        // The first run definitely failed (script always exits 1). Whether the
-        // rerun produces its own entry is incidental.
+        // Run 1 definitely failed — the script always exits 1.
         test <@ firstFailed @>)
 
-// ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering subsides``
-// moved to FsHotWatch.IntegrationTests/TestPruneStormTests.fs — it is a genuine
-// convergence-under-load stress test (fires a burst of BuildCompleted events at a
-// live test run and asserts EVENTUAL settling), not a fixed-window behavior test.
-// Its terminal-settle timing is scheduler-dependent, so under CPU load it flaked
-// in the unit suite (runner exit 2). Lives in the coverage-excluded integration
-// suite per the house "move convergence-under-load tests out of the unit metric"
-// rule; full rationale at the new site.
+// ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering
+// subsides`` lives in FsHotWatch.IntegrationTests/TestPruneStormTests.fs: it asserts
+// EVENTUAL settling under load, which is scheduler-dependent and flaked here.
 
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
-// Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
-// via FCS symbol uses without needing resolved assembly references.
+// Module-level [<Fact>] functions are the pattern analyzeSource reliably detects via FCS
+// symbol uses without resolved assembly references.
 let private testSource moduleName =
     $"""module {moduleName}
 
@@ -1086,9 +1014,8 @@ let computeTest () =
     ()
 """
 
-/// Emit a file through the CheckPipeline and wait for the plugin's async analysis to settle.
-/// Uses the changed-files command to deterministically detect when the agent has processed
-/// the FileChecked message (no sleeps).
+/// Emit a file through the CheckPipeline and wait for the plugin's async analysis to
+/// settle, polling `changed-files` rather than sleeping.
 let private emitFileAndWait
     (checker: FSharpChecker)
     (pipeline: CheckPipeline)
@@ -1106,8 +1033,6 @@ let private emitFileAndWait
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith $"CheckFile returned None for {filePath}"
 
-        // Poll changed-files command until the file appears — deterministic proof
-        // that the FileChecked message was processed by the agent.
         let fileName = Path.GetFileName(filePath)
 
         waitUntil
@@ -1120,13 +1045,9 @@ let private emitFileAndWait
             10000
     }
 
-// Generous xUnit cap: this test drives real FCS analysis (emitFileAndWait,
-// 10s condition-based cap) then waits for the plugin terminal (12s cap). On a
-// fast machine both resolve in <1s, but FCS cold-start on a slow/loaded CI
-// runner can take >15s — the previous 15000ms Fact cap fired mid-progress and
-// the run was CANCELED. The internal waits stay condition-based (they fail fast
-// on a genuine hang); only the hard xUnit cap is raised so a slow-but-
-// progressing run can finish.
+// The 60s Fact cap is a cancellation guard, not a budget: tests that drive real FCS have
+// a cold start that outruns the sum of their internal condition-based waits, and those
+// waits still fail fast on a genuine hang. Same reasoning for every 60s cap in this file.
 [<Fact(Timeout = 60000)>]
 let ``FileChecked reports Completed when testConfigs provided (analysis done, awaiting build)`` () =
     withTempDir "tp-no-complete-real" (fun tmpDir ->
@@ -1152,13 +1073,12 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
 
         let testFile = Path.Combine(tmpDir, "MyTests.fsx")
 
-        // Use real FCS analysis to exercise the Ok analysisResult path
+        // Real FCS, to exercise the Ok analysisResult path.
         emitFileAndWait checker pipeline host testFile (testSource "MyTests")
         |> Async.RunSynchronously
 
-        // Wait for terminal status — plugin reports Completed after analysis
-        // even with testConfigs, so WaitForComplete doesn't hang waiting for
-        // a BuildCompleted that may never come.
+        // Completed even with testConfigs, so WaitForComplete doesn't hang waiting for a
+        // BuildCompleted that may never come.
         waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
@@ -1168,9 +1088,6 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed after FileChecked analysis, got: %A{other}"))
 
-// Generous xUnit cap (real FCS via emitFileAndWait + 12s terminal wait =
-// 22s internal budget). Same slow-runner cancellation risk as the testConfigs
-// sibling above; internal waits remain condition-based.
 [<Fact(Timeout = 60000)>]
 let ``FileChecked reports Completed when no testConfigs (success path)`` () =
     withTempDir "tp-complete-real" (fun tmpDir ->
@@ -1180,37 +1097,28 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
-        // No testConfigs — analysis-only mode
+        // No testConfigs — analysis-only mode.
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let testFile = Path.Combine(tmpDir, "MyLib.fsx")
 
-        // Use real FCS analysis to exercise the Ok analysisResult path
+        // Real FCS, to exercise the Ok analysisResult path.
         emitFileAndWait checker pipeline host testFile (testSource "MyLib")
         |> Async.RunSynchronously
 
-        // Wait for terminal status
         waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // Without testConfigs, analysis-only mode should report Completed
         match status.Value with
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed in analysis-only mode, got: %A{other}"))
 
-// Timing race under Fact(Timeout) is fixed by TestHelpers.beginAwaitTerminal
-// (subscribe-before-trigger via host.OnStatusChanged). But this test then fails
-// because a fresh Database.create(dbPath) connection does not observe the
-// plugin's just-flushed rows — cross-connection SQLite WAL visibility bug,
-// orthogonal to timing. Re-enable once the plugin exposes test-methods via a
-// command (preferred) or the DB write is committed with explicit sync.
 [<Fact(Timeout = 20000)>]
 let ``after scan and build, test methods are in the sqlite database`` () =
     withTempDir "tp-tm-db" (fun tmpDir ->
-        // Canonicalize path to avoid symlink divergence (e.g., /var/folders vs /private/var/folders).
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
 
@@ -1266,9 +1174,9 @@ let beta () = ()
         host.EmitBuildCompleted(BuildSucceeded)
         firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        // Cross-connection WAL visibility has a brief race after the plugin's
-        // commit: fresh connections can momentarily observe an empty DB even
-        // though the plugin saw its own writes.
+        // Cross-connection WAL visibility races the plugin's commit: a fresh connection
+        // can momentarily observe an empty DB even though the plugin saw its own writes.
+        // Hence the pool clear and the poll rather than a single read.
         let mutable testMethods: TestMethodInfo list = []
 
         waitUntil
@@ -1283,12 +1191,6 @@ let beta () = ()
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "alpha") @>
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "beta") @>)
 
-// Generous xUnit cap: real FCS (getScriptOptions + multiple CheckFile) plus
-// several condition-based waits (build/batch terminal 20s each, idle 10s,
-// affected-tests poll 5s) whose summed budget already exceeds 20s. On a slow
-// runner the 20000ms Fact cap fired before the legitimately-slow FCS work
-// finished. Internal condition-based waits keep their own caps (fail fast on a
-// real hang); the xUnit cap is raised so a slow-but-progressing run completes.
 [<Fact(Timeout = 60000)>]
 let ``after a symbol change, affected-tests identifies the dependent test`` () =
     withTempDir "tp-sym" (fun tmpDir ->
@@ -1320,8 +1222,8 @@ let computeTest () =
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
-        // testConfigs is required for the plugin to subscribe to BuildCompleted
-        // (without it, flushAndQueryAffected is never triggered). Command is a no-op.
+        // testConfigs is required for the plugin to subscribe to BuildCompleted; without
+        // it flushAndQueryAffected never fires. The command itself is a no-op.
         let testConfigs =
             [ { Project = "Lib"
                 Command = "echo"
@@ -1346,10 +1248,6 @@ let computeTest () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
-        // Item 3 ordering: BuildCompleted FIRST so subsequent FileChecked
-        // events are allowed to promote the freshness sidecar to clean.
-        // Mirrors fshw's real cold-scan pipeline (BuildPlugin terminal
-        // gates FCS tier dispatch).
         emitBuildAndWaitTerminal host
 
         // Initial index: both files analysed, edges written to DB.
@@ -1360,10 +1258,8 @@ let computeTest () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
 
-        // (No waitUntil for `Lib.fsx` in ChangedFiles here — under Item 3 the
-        // first detectChanges against an empty stored sidecar is bypassed,
-        // so this initial check just primes the sidecar to clean. The real
-        // assertion is the affected-tests check at the end.)
+        // No waitUntil for `Lib.fsx` in ChangedFiles: the first detectChanges against an
+        // empty stored sidecar is bypassed, so this check only primes the sidecar clean.
         let testsResult =
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
@@ -1373,8 +1269,6 @@ let computeTest () =
 
         waitForPluginIdle host "test-prune" 10.0
 
-        // Drive a BatchChecked so the symbol DB is flushed from
-        // PendingAnalysis.
         emitBatchAndQuiesce host [ libFile; testsFile ]
 
         // Modify compute's body — content hash changes but signature does not.
@@ -1392,7 +1286,6 @@ let compute (x: int) = x + 2
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile 2 failed"
 
-        // Poll affected-tests; after FileChecked processing, computeTest should appear.
         let mutable affectedTests = ""
 
         waitUntil
@@ -1406,25 +1299,15 @@ let compute (x: int) = x + 2
 
         test <@ affectedTests.Contains("computeTest") @>)
 
-// Deterministic status signal (TestHelpers.beginAwaitTerminal) replaces the
-// former polling race. With that fix, the test still fails at the same place
-// as ``after a symbol change`` — affected-tests returns "[]" after a type
-// change that should flag dependent tests. Same root cause: dependency edges
-// not produced by the current symbol-diff path.
-// Generous xUnit cap: real FCS over two files plus three 20s terminal waits
-// and two 10s/5s polls — internal budget far exceeds 20s, so the old 20000ms
-// Fact cap canceled slow-but-progressing CI runs. Internal waits stay
-// condition-based.
 [<Fact(Timeout = 60000)>]
 let ``cross-file type change only runs affected test classes`` () =
-    // End-to-end test: change Lib.fsx type -> affected-tests identifies dependent tests -> only those classes run
     withTempDir "tp-e2e" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
         let captureFile = Path.Combine(tmpDir, "test-invocation.txt")
 
-        // Note: This test requires bash and only runs successfully on Unix/Linux
+        // Requires bash: Unix/Linux only.
         let bashPath = Path.Combine(tmpDir, "test-wrapper.sh")
 
         try
@@ -1453,7 +1336,6 @@ let ``cross-file type change only runs affected test classes`` () =
 
         host.RegisterHandler(handler)
 
-        // Setup: Lib defines a type, Tests uses it
         let libSource =
             """module Lib
 
@@ -1488,7 +1370,6 @@ let testOtherStuff () =
     assert (x = 2)
 """
 
-        // Emit both files
         File.WriteAllText(libFile, libSource)
         File.WriteAllText(testsFile, testsSource)
 
@@ -1501,12 +1382,8 @@ let testOtherStuff () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
-        // Item 3 ordering: BuildCompleted FIRST so subsequent FileCheckeds
-        // promote the freshness sidecar to clean. Mirrors fshw's real
-        // cold-scan pipeline.
         emitBuildAndWaitTerminal host
 
-        // Emit lib file
         let libResult =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
@@ -1514,7 +1391,6 @@ let testOtherStuff () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
 
-        // Emit tests file
         let testsResult =
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
@@ -1522,15 +1398,11 @@ let testOtherStuff () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "tests CheckFile failed"
 
-        // Wait for analysis
         waitForPluginIdle host "test-prune" 10.0
 
-        // BatchChecked drives the flush of accumulated PendingAnalysis to
-        // the symbol DB so the subsequent edited-file FileChecked has stored
-        // rows to diff against.
+        // Flush, so the edited-file FileChecked below has stored rows to diff against.
         emitBatchAndQuiesce host [ libFile; testsFile ]
 
-        // Now change the type: add a new field
         let libSource2 =
             """module Lib
 
@@ -1548,7 +1420,6 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile 2 failed"
 
-        // Framework dispatches async — poll until affected-tests shows the expected results
         let mutable affectedTests = ""
 
         waitUntil
@@ -1566,7 +1437,6 @@ let validate (cfg: Config) = cfg.Value.Length > 0
 
         emitBuildAndWaitTerminal host
 
-        // Verify that the test command was invoked with the correct filter
         let capturedArgs =
             try
                 File.ReadAllText(captureFile)
@@ -1577,32 +1447,22 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ capturedArgs.Contains("Tests") @>)
 
 // =============================================================================
-// AUTOMATION-67 — seeded-workspace under-selection regression tests.
+// AUTOMATION-67 — seeded-workspace under-selection.
 //
-// A fresh jj workspace seeds `test-impact.db` from the default workspace
-// (ADR-010) but NOT the fshw-owned freshness sidecar (it lives under `.fshw/`
-// and doesn't travel with the copied DB). Before the fix, every seeded file
-// therefore classified `storedClean = false` and the `detectChanges` call site
-// BYPASSED the diff — a real edit against a seeded row set detected zero changed
-// symbols → zero affected tests → vacuous green (the NEWS-661 gate that
-// "selected ZERO tests"). The fix distinguishes an ABSENT sidecar record
-// (`Unknown` — a seeded DB, diffable) from an explicit dirty stamp (`Dirty` —
-// poisoned rows, still bypassed).
+// A fresh jj workspace seeds `test-impact.db` from the default workspace (ADR-010) but
+// NOT the freshness sidecar, which lives under `.fshw/`. Every seeded file therefore
+// classified `storedClean = false`, the `detectChanges` call site bypassed the diff, and
+// a real edit against seeded rows detected zero changed symbols → zero affected tests →
+// vacuous green. The fix distinguishes an ABSENT sidecar record (a seeded DB, diffable)
+// from an explicit dirty stamp (poisoned rows, still bypassed).
 //
-// These two tests reproduce the seam directly: seed the DB exactly as the
-// plugin's flush would, leave the sidecar ABSENT, edit a covered symbol, and
-// assert the covering test is re-selected. Before the fix both assertions fail
-// (affected-tests returns "[]"). They also prove the edges the ticket flagged
-// are structurally trackable: a string-literal-only change inside a function
-// (instance 1) and a DU-list length change (instance 2) both alter the changed
-// symbol's content hash and re-select the asserting test.
+// Both tests seed the DB as the plugin's flush would, leave the sidecar absent, edit a
+// covered symbol and assert the covering test is re-selected; pre-fix both get "[]".
 // =============================================================================
 
-/// Seed `dbPath` with the combined analysis of `libSource` + `testsSource`,
-/// mirroring `flushPendingAnalysis` (one merged AnalysisResult per project,
-/// symbol paths normalized to repo-relative, TestProject stamped). Deliberately
-/// does NOT write the freshness sidecar — that absence IS the fresh-workspace
-/// condition under test. Returns the registered project options.
+/// Seed `dbPath` with the combined analysis of `libSource` + `testsSource`, mirroring
+/// `flushPendingAnalysis`. Deliberately does NOT write the freshness sidecar — that
+/// absence IS the fresh-workspace condition under test.
 let private seedImpactDbNoSidecar
     (checker: FSharpChecker)
     (tmpDir: string)
@@ -1626,8 +1486,8 @@ let private seedImpactDbNoSidecar
         { libOptions with
             SourceFiles = [| libFile; testsFile |] }
 
-    // Derive the project name exactly as the plugin does from ProjectFileName so
-    // the seeded TestProject label matches what the live plugin will compute.
+    // Derived exactly as the plugin does, so the seeded TestProject label matches what
+    // the live plugin will compute.
     let projectName =
         let raw = projOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
 
@@ -1658,9 +1518,8 @@ let private seedImpactDbNoSidecar
     db.RebuildProjects([ combined ])
     projOptions
 
-/// Drive an edited `libFile` through a FRESH plugin (empty sidecar) over the
-/// seeded DB and poll `affected-tests`. Returns the raw JSON so the caller can
-/// assert on the selected test method name.
+/// Drive an edited `libFile` through a FRESH plugin (empty sidecar) over the seeded DB
+/// and poll `affected-tests`, returning the raw JSON.
 let private selectAfterSeededEdit
     (checker: FSharpChecker)
     (tmpDir: string)
@@ -1699,8 +1558,6 @@ let private selectAfterSeededEdit
 
     affected
 
-// Generous xUnit cap: two full analyzeSource seeds + a real CheckFile + a 10s
-// affected-tests poll. Internal waits stay condition-based.
 [<Fact(Timeout = 60000)>]
 let ``seeded DB + absent sidecar: string-literal change re-selects the asserting test (AUTOMATION-67 instance 1)`` () =
     withTempDir "tp-seed-logstring" (fun tmpDir ->
@@ -1720,10 +1577,8 @@ let ``seeded DB + absent sidecar: string-literal change re-selects the asserting
         let projOptions =
             seedImpactDbNoSidecar checker tmpDir dbPath libFile libV1 testsFile testsSrc
 
-        // Change ONLY the log string. Signature is identical; the function-body
-        // content hash changes, so the symbol is Modified and its covering test
-        // must be re-selected. Before the fix, the seeded rows classified
-        // storedClean=false → bypass → "[]".
+        // Only the log string changes. The signature is identical, so nothing but the
+        // function-body content hash moves — and that must still re-select the test.
         let libV2 =
             "module Lib\n\nlet auditFailureMessage (write: string -> unit) =\n    write \"audit-log write threw\"\n"
 
@@ -1763,10 +1618,6 @@ let ``seeded DB + absent sidecar: DU-list length change re-selects the count-ass
 
         test <@ affected.Contains("allHasExpectedCount") @>)
 
-// Generous xUnit cap: chains a 12s terminal wait, a 5s settle wait, and an 8s
-// waitForAllTerminal task (25s internal budget). The previous 20000ms Fact cap
-// could fire before the (condition-based) stability window resolved on a slow
-// runner. Internal waits stay condition-based and fail fast on a real hang.
 [<Fact(Timeout = 60000)>]
 let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and tests finish`` () =
     withTempDir "tp-hang" (fun tmpDir ->
@@ -1787,11 +1638,9 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         host.RegisterHandler(handler)
 
-        // 1. Build completes → tests run and finish
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
 
-        // Confirm we reached terminal state
         let statusAfterTests = host.GetStatus("test-prune")
         test <@ statusAfterTests.IsSome @>
 
@@ -1800,7 +1649,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
         | Failed _ -> ()
         | other -> Assert.Fail($"Expected terminal after tests, got: %A{other}")
 
-        // 2. Late FileChecked arrives (simulating FCS check completing after build)
+        // A late FileChecked: the FCS check completing after the build.
         let fakeFile = Path.Combine(tmpDir, "Late.fs")
         File.WriteAllText(fakeFile, "module Late\nlet x = 1\n")
 
@@ -1813,12 +1662,10 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
         with _ ->
             ()
 
-        // Wait for the plugin to process the FileChecked event and settle.
-        // With the fix, plugin goes Running → Completed. Without the fix, it stays Running.
         waitForSettled host "test-prune" 5000
 
-        // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
-        //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
+        // Without the fix the plugin stays Running indefinitely after that FileChecked,
+        // and this never resolves.
         let waitTask =
             waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
@@ -1826,19 +1673,17 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         test <@ completed @>)
 
-// AUTOMATION-65 QA: the "nothing to verify" completion path. A cycle whose
-// changed/queued symbols ALL prove to have no covering test must resolve as a
-// clean green (0 ran) IMMEDIATELY — even on a cold daemon with no session
-// baseline — instead of falling through to the cold-start full-suite run, which
-// (on a loaded box) can wedge in executeTests and never resolve WaitForComplete.
+// The "nothing to verify" completion path. A cycle whose changed/queued symbols all prove
+// to have no covering test must resolve as a clean green (0 ran) immediately, even on a
+// cold daemon with no session baseline — rather than falling through to the cold-start
+// full-suite run, which on a loaded box can wedge in executeTests and never resolve
+// WaitForComplete.
 [<Fact(Timeout = 30000)>]
 let ``all changed symbols with no covering test complete green without running`` () =
     withTempDir "tp-nothing-to-verify" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
-        // A test project whose command would create this sentinel IF it ran. The
-        // whole point of the fix is that it must NOT run (nothing changed here is
-        // testable), so the sentinel must stay absent.
+        // Created only if the suite runs — and it must not.
         let sentinel = Path.Combine(tmpDir, "ran")
 
         let configs =
@@ -1852,14 +1697,11 @@ let ``all changed symbols with no covering test complete green without running``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // INDEX the orphan symbol, with no covering test, and let the plugin reopen
-        // this DB compatibly. Both halves matter (AUTOMATION-275): the guarantee under
-        // test is that a symbol PROVABLY has no covering test, and only an index that
-        // knows the symbol can prove it. Seeding the queue against a database that had
-        // never heard of `Orphan.uncovered` — the original fixture — asserted the same
-        // green over "the index cannot answer", which is the silent-green bug, not this
-        // feature. A pre-created DB also keeps `WasRecreated` false on the plugin's
-        // open, so the shortcut is legitimately available here.
+        // The orphan must be INDEXED, not merely absent: the guarantee under test is that
+        // a symbol PROVABLY has no covering test, and only an index that knows the symbol
+        // can prove it. Seeding the queue against a DB that never heard of
+        // `Orphan.uncovered` would assert the same green over "the index cannot answer" —
+        // the silent-green bug, not this feature.
         let orphan: SymbolInfo =
             { FullName = "Orphan.uncovered"
               Kind = SymbolKind.Value
@@ -1876,60 +1718,49 @@ let ``all changed symbols with no covering test complete green without running``
         test <@ (seedDb.QueryAffectedTests [ "Orphan.uncovered" ]).IsEmpty @>
         test <@ (seedDb.GetSymbolsInFile "src/Orphan.fs").Length = 1 @>
 
-        // Seed the durable needs-testing queue with that symbol. The plugin loads the
-        // queue at construction, so the very first BuildCompleted flush drops it as
-        // uncovered, leaving an empty affected set (ChangedSymbolsAllUncovered = true).
+        // The plugin loads the queue at construction, so the first BuildCompleted flush
+        // drops this symbol as uncovered, leaving an empty affected set.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Orphan.uncovered" ])
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        // No prior run this session ⇒ hasCachedResults = false. BEFORE the fix,
-        // that forced the cold-start else-branch to run the FULL suite (touching
-        // the sentinel) even though the only pending symbol is untestable — and
-        // that run could then wedge, never resolving WaitForComplete. AFTER the
-        // fix, the all-uncovered cycle is a "nothing to verify" green: 0 ran.
+        // No prior run this session ⇒ hasCachedResults = false, which used to force the
+        // cold-start branch into a FULL suite even though the only pending symbol is
+        // untestable.
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         let completion = beginAwaitTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Bounded terminal wait — a hang (the bug) fails here rather than passing.
+        // Bounded — a hang (the bug) fails here rather than passing.
         let reached = completion.Wait(TimeSpan.FromSeconds 15.0)
         test <@ reached @>
 
-        // Green: reached Completed (a clean pass), NOT Failed and NOT stuck Running.
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"Expected Completed (nothing to verify), got: %A{other}")
 
-        // The discriminator: zero tests ran. The sentinel-touching command must
-        // never have executed. (Before the fix, the cold-start full suite ran it.)
+        // The discriminator: zero tests ran.
         test <@ not (File.Exists sentinel) @>
 
-        // And WaitForComplete itself resolves promptly — it never blocks on a
-        // Running test-prune, because the plugin reached terminal.
         let waitTask =
             waitForAllTerminal host (TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
 
         test <@ waitTask.Wait(TimeSpan.FromSeconds 8.0) @>)
 
-// AUTOMATION-275. The "nothing to verify" green above infers "this symbol has no
-// covering test" from an EMPTY `QueryAffectedTests` result. That inference is sound
-// only when the symbol is KNOWN to the index — an empty result otherwise means
-// "I have never heard of this name", which is not a fact about the symbol at all.
+// The "nothing to verify" green above infers "no covering test" from an EMPTY
+// `QueryAffectedTests` result. That is sound only when the symbol is KNOWN to the index;
+// otherwise an empty result means "I have never heard of this name", which is not a fact
+// about the symbol at all.
 //
-// The two are made to differ by TestPrune's own self-healing: a `SchemaVersion` bump
-// DELETES and recreates `test-impact.db` (`TestPrune.Database` — "A mismatch causes
-// the database file to be deleted and recreated"), and the pending-verification
-// sidecar sitting BESIDE it survives untouched. Every name it holds now resolves to
-// nothing. Real, unverified debt reads as "provably uncovered", is dropped from the
-// queue as unverifiable, and the cycle completes GREEN having run ZERO tests — the
-// debt discharged without a single test executing.
+// A `SchemaVersion` bump makes the two differ: it deletes and recreates
+// `test-impact.db` while the pending-verification sidecar beside it survives untouched,
+// so every name the queue holds resolves to nothing. Real debt then reads as "provably
+// uncovered", drops from the queue, and the cycle greens having run zero tests.
 //
-// The discriminator against the AUTOMATION-65 test above is that here the symbol IS
-// covered: `Lib.foo` was indexed with a covering test in `TestProject`, and only the
-// recreate destroyed the evidence. A run that verifies nothing may not report green.
+// Unlike the test above, `Lib.foo` here IS covered — only the recreate destroyed the
+// evidence.
 [<Fact(Timeout = 30000)>]
 let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-test green`` () =
     withTempDir "tp-recreate-orphan" (fun tmpDir ->
@@ -1949,8 +1780,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // 1. A healthy index: `Lib.foo` exists and `Tests.myTest` in `TestProject`
-        //    covers it. This is what makes the symbol legitimately verifiable.
+        // A healthy index: `Lib.foo` exists and `Tests.myTest` in `TestProject` covers it.
         let symbol: SymbolInfo =
             { FullName = "Lib.foo"
               Kind = SymbolKind.Value
@@ -1960,9 +1790,9 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
               ContentHash = "hash-v1"
               IsExtern = false }
 
-        // The test method needs a `symbols` row of its own: `QueryAffectedTests`
-        // reaches tests by joining `test_methods.symbol_id`, so a test method with
-        // no symbol row is unreachable and every query returns empty.
+        // The test method needs a `symbols` row of its own: `QueryAffectedTests` reaches
+        // tests by joining `test_methods.symbol_id`, so a test method with no symbol row
+        // is unreachable and every query returns empty.
         let testSymbol: SymbolInfo =
             { FullName = "Tests.myTest"
               Kind = SymbolKind.Value
@@ -1991,23 +1821,19 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
               ) ]
         )
 
-        // Positive control. While the index stands, `Lib.foo` IS covered — so an
-        // empty result later is the recreate's doing and not a broken fixture.
-        // (Without this, an unreachable test method would make the whole test pass
-        // vacuously: the first draft did exactly that.)
+        // Positive control: while the index stands, `Lib.foo` IS covered, so an empty
+        // result later is the recreate's doing and not a broken fixture. Without it an
+        // unreachable test method would make the whole test pass vacuously.
         test <@ not (db.QueryAffectedTests [ "Lib.foo" ]).IsEmpty @>
 
-        // 2. `Lib.foo` changed and no covering run has passed since — genuine
-        //    outstanding debt, of exactly the kind this queue exists to hold.
+        // Genuine outstanding debt: changed, and no covering run has passed since.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
 
-        // 3. A SchemaVersion bump lands (v8→v9 shipped days ago). Stamp the
-        //    incompatible version an older TestPrune.Core would have left, so the
-        //    plugin's own `Database.create` performs the REAL delete-and-recreate
-        //    rather than a simulation of it. (Deleting the file by hand does NOT
-        //    work: Microsoft.Data.Sqlite pools connections, so a later open is
-        //    handed the deleted inode with its data intact and the test passes
-        //    against a database that was never actually recreated.)
+        // Stamp the incompatible version an older TestPrune.Core would have left, so the
+        // plugin's own `Database.create` performs the REAL delete-and-recreate. Deleting
+        // the file by hand does NOT work: Microsoft.Data.Sqlite pools connections, so a
+        // later open is handed the deleted inode with its data intact and the test passes
+        // against a database that was never recreated.
         do
             use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
             conn.Open()
@@ -2015,14 +1841,13 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
             cmd.CommandText <- "PRAGMA user_version = 1;"
             cmd.ExecuteNonQuery() |> ignore
 
-        // 4. The next run opens a DB that has never heard of `Lib.foo`.
+        // The next run opens a DB that has never heard of `Lib.foo`.
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // Second positive control, the other way round: the recreate really did wipe
-        // the index. A compatible reopen now finds nothing, so the plugin's empty
-        // selection below is genuine.
+        // The paired control: the recreate really did wipe the index, so the plugin's
+        // empty selection below is genuine.
         test <@ (Database.create dbPath).QueryAffectedTests([ "Lib.foo" ]).IsEmpty @>
 
         let completion = beginAwaitTerminal host "test-prune"
@@ -2030,20 +1855,16 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
 
         test <@ completion.Wait(TimeSpan.FromSeconds 20.0) @>
 
-        // THE ASSERTION. `Lib.foo` is real, changed, covered, unverified debt. The
-        // recreate destroyed the record of what covers it; it did not verify it.
-        // Reporting green here discharges the debt having executed nothing.
+        // The recreate destroyed the record of what covers `Lib.foo`; it did not verify
+        // it. Greening here would discharge real debt having executed nothing.
         test <@ File.Exists sentinel @>)
 
-// The door the `WasRecreated` proxy left open. The index here is NOT recreated — it is
-// healthy, populated, and opened compatibly — but it has never heard of the symbol the
-// queue names, because that symbol was renamed or deleted while it sat in the queue.
-//
-// `QueryAffectedTests` answers empty for it, exactly as it does for a symbol that
-// genuinely has no covering test, and the old guard asked "was the index rebuilt?" —
-// which is FALSE here. So the vacuous green was reachable through a healthy index, and
-// the recreate fix did not touch it. What licenses the shortcut is whether the index
-// KNOWS the name, not how it came to be in its current state.
+// The door a `WasRecreated` guard leaves open. The index here is healthy, populated and
+// opened compatibly, but has never heard of the queued symbol — renamed or deleted while
+// it sat in the queue. `QueryAffectedTests` answers empty exactly as it does for a symbol
+// with genuinely no covering test, so the vacuous green is reachable through a healthy
+// index. What licenses the shortcut is whether the index KNOWS the name, not how it came
+// to be in its current state.
 [<Fact(Timeout = 30000)>]
 let ``a queued symbol the index has never heard of must not discharge as a zero-test green`` () =
     withTempDir "tp-unknown-symbol" (fun tmpDir ->
@@ -2061,8 +1882,8 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // A healthy, populated index — note we never bump `user_version`, so the
-        // plugin's open below is a COMPATIBLE REOPEN and `WasRecreated` is false.
+        // `user_version` is never bumped, so the plugin's open below is a COMPATIBLE
+        // REOPEN and `WasRecreated` is false.
         let liveSymbol: SymbolInfo =
             { FullName = "Lib.stillHere"
               Kind = SymbolKind.Value
@@ -2075,9 +1896,8 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
         let db = Database.create dbPath
         db.RebuildProjects([ AnalysisResult.Create([ liveSymbol ], [], []) ])
 
-        // Positive controls, both directions: the index IS populated, and it genuinely
-        // does not know the queued name. Without these the test could pass against an
-        // empty database and prove nothing.
+        // Positive controls both ways: the index IS populated, and it genuinely does not
+        // know the queued name. Without these the test passes against an empty database.
         test <@ (db.GetAllSymbolNames()).Contains "Lib.stillHere" @>
         test <@ not ((db.GetAllSymbolNames()).Contains "Lib.renamedAway") @>
 
@@ -2097,9 +1917,9 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
         // proof about it and the run must actually happen.
         test <@ File.Exists sentinel @>)
 
-// AUTOMATION-275 — the poisoned-seed guard's decision, tested without a daemon.
-// Each half of the conjunction gets a test that would pass if the OTHER half were
-// deleted, so neither can rot into a tautology.
+// The poisoned-seed guard's decision, without a daemon. Each half of the conjunction gets
+// a test that would pass if the OTHER half were deleted, so neither can rot into a
+// tautology.
 
 [<Fact>]
 let ``a seed selecting the whole suite for one run is not yet a poison suspect`` () =
@@ -2117,8 +1937,8 @@ let ``a seed pinned for many runs but selecting narrowly is not a poison suspect
 let ``a seed that is both pinned and dominant is a poison suspect`` () =
     // Exactly on the threshold: 250 of 1000 is the 25% share.
     test <@ isPoisonSuspect PoisonSeedRuns 1000 250 @>
-    // The shape actually observed: one mis-qualified symbol taking the whole run,
-    // every run (AUTOMATION-270 — `name` alone selected 2,837 tests).
+    // The shape observed in the field: one mis-qualified symbol (`name`) taking the whole
+    // run — 2,837 tests — every run.
     test <@ isPoisonSuspect 10 2837 2837 @>
 
 [<Fact>]
@@ -2143,15 +1963,13 @@ let ``seed ages count consecutive appearances only`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` () =
-    // After the lazy-compute migration, FileChecked accumulates ChangedSymbols
-    // (it does not eagerly query DB or populate AffectedTests). Because this
-    // test uses a fake CheckResults=ParseOnly, analyzeSource yields no symbols
-    // and ChangedSymbols stays []; affected-tests therefore returns "[]".
+    // The fake result carries CheckResults = ParseOnly, so analyzeSource yields no
+    // symbols and ChangedSymbols stays empty — the lazy IPC then answers "[]" without
+    // touching the DB, which is what the pre-populated rows below are there to prove.
     withTempDir "tp-no-query" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
         let db = Database.create dbPath
 
-        // Pre-populate DB with a symbol and a test that depends on it
         let symbol: SymbolInfo =
             { FullName = "Lib.foo"
               Kind = SymbolKind.Value
@@ -2179,13 +1997,11 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
 
         db.RebuildProjects([ analysis ])
 
-        // Create plugin WITHOUT testConfigs (analysis-only mode)
+        // No testConfigs — analysis-only mode.
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
-        // Emit FileChecked with a changed symbol — in the old code this would
-        // query the DB and populate AffectedTests. In the fix, it should NOT.
         let fakeFile = Path.Combine(tmpDir, "src", "Lib.fs")
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         File.WriteAllText(fakeFile, "module Lib\nlet foo = 2\n")
@@ -2201,25 +2017,16 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
 
         waitForPluginTerminal host "test-prune" 12.0
 
-        // After FileChecked with no real analysis results, ChangedSymbols stays
-        // empty so the lazy IPC returns "[]" without hitting the DB.
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
         test <@ result.Value = "[]" @>
         test <@ not (result.Value.Contains("myTest")) @>)
 
-// Generous xUnit cap: real FCS over two files plus 20s build + 10s idle + 20s
-// batch terminal waits and a 5s affected-tests poll. Internal budget exceeds
-// 20s, so the old 20000ms Fact cap canceled slow CI runs mid-progress. Internal
-// waits stay condition-based.
 [<Fact(Timeout = 60000)>]
 let ``affected-tests computes lazily on demand from ChangedSymbols`` () =
-    // Locks in the post-migration contract: FileChecked accumulates
-    // state.ChangedSymbols but does NOT eagerly QueryAffectedTests; the IPC
-    // command runs the SQL on demand against the current DB state. After
-    // an initial FileChecked + BuildCompleted populates the DB, a second
-    // FileChecked that mutates a symbol should make affected-tests return
-    // the dependent test BEFORE another BuildCompleted fires.
+    // FileChecked accumulates state.ChangedSymbols but does NOT eagerly
+    // QueryAffectedTests; the IPC command runs the SQL on demand. Hence the deliberate
+    // absence of a second BuildCompleted below — the answer must come from the lazy path.
     withTempDir "tp-lazy-affected" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
@@ -2272,9 +2079,6 @@ let lazyComputeTest () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
-        // Item 3 ordering: BuildCompleted FIRST so the seed FileCheckeds
-        // can promote the freshness sidecar to clean. (Mirrors fshw's real
-        // cold-scan: BuildPlugin terminal gates FCS tier checks.)
         emitBuildAndWaitTerminal host
 
         // Seed the DB with the initial baseline.
@@ -2288,13 +2092,8 @@ let lazyComputeTest () =
 
         waitForPluginIdle host "test-prune" 10.0
 
-        // BatchChecked drives the flush of accumulated PendingAnalysis to
-        // the symbol DB.
         emitBatchAndQuiesce host [ libFile; testsFile ]
 
-        // Now mutate the symbol and emit a single FileChecked. We do NOT
-        // emit BuildCompleted afterward — affected-tests must be answered
-        // by the lazy on-demand SQL, not by an eager populate from FileChecked.
         let libSource2 =
             """module Lib
 let compute (x: int) = x + 2
@@ -2321,7 +2120,6 @@ let compute (x: int) = x + 2
 
 [<Fact(Timeout = 15000)>]
 let ``BuildCompleted queries affected tests after flush`` () =
-    // Bug 2: After flush, QueryAffectedTests should run against fresh DB data.
     withTempDir "tp-query-after-flush" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -2340,8 +2138,8 @@ let ``BuildCompleted queries affected tests after flush`` () =
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // After BuildCompleted with no prior FileChecked, should still work
-        // (AnalysisRan will be false, affected-tests returns "not analyzed")
+        // No prior FileChecked, so AnalysisRan is false and affected-tests answers
+        // "not analyzed" rather than throwing.
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
 
@@ -2350,7 +2148,6 @@ let ``BuildCompleted queries affected tests after flush`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``skip tests when 0 affected classes and not cold start`` () =
-    // Bug 1: After first run, 0 affected classes should skip (not run all).
     withTempDir "tp-skip" (fun tmpDir ->
         let mutable runCount = 0
 
@@ -2372,28 +2169,26 @@ let ``skip tests when 0 affected classes and not cold start`` () =
 
         host.RegisterHandler(handler)
 
-        // First BuildCompleted = cold start, should run all
+        // Cold start: runs everything.
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>
 
-        // Second BuildCompleted with no changed symbols — should SKIP
+        // No changed symbols this time.
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>) // still 1, not 2
 
 // ── Dependency-fanout (DependencyFanout + PluginCtx.ProjectGraph) ─────────────
-// A dependency/PackageReference change flips a test project's dependency
-// fingerprint (its referenced-project DLL content) without changing any F#
-// symbol. The fanout must force-run that test project — closing the zero-
-// affected skip gate for dependency-only changes — while an ordinary build with
-// NO dependency change still skips (no regression to the symbol-precise path).
+// A dependency/PackageReference change flips a test project's dependency fingerprint (its
+// referenced-project DLL content) without changing any F# symbol, so it must force-run
+// that project past the zero-affected skip gate — while a build with no dependency change
+// still skips.
 
-/// Emit a BuildSucceeded and fully serialize: catch THIS build's terminal
-/// transition, then wait for the plugin to settle to idle so the async run (and
-/// any queued rerun it spawns) has drained before the next build. Required for
-/// the fanout tests, which depend on each build's fingerprint comparison seeing
-/// the prior build's committed state (not a half-applied pipelined one).
+/// Emit a BuildSucceeded and fully serialize: catch THIS build's terminal transition, then
+/// wait for idle so the async run (and any rerun it queues) has drained. The fanout tests
+/// need each build's fingerprint comparison to see the prior build's committed state, not
+/// a half-applied pipelined one.
 let private emitBuildAndSettle (host: PluginHost) =
     let await = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
@@ -2448,25 +2243,23 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
 
         host.RegisterHandler(handler)
 
-        // 1) Cold-start build runs all + records the baseline fingerprint.
+        // Cold start: runs all, records the baseline fingerprint.
         emitBuildAndSettle host
         test <@ runCount = 1 @>
 
-        // 2) Build with NO dependency change and no symbols — must SKIP.
+        // No dependency change and no symbols.
         emitBuildAndSettle host
-        test <@ runCount = 1 @> // skipped, still 1
+        test <@ runCount = 1 @>
 
-        // 3) Bump the referenced DLL (as if Ops rebuilt against CommandTree 0.7.0).
-        //    No F# symbol in TestProj changed, but its dependency fingerprint flips
-        //    → the fanout must force-run TestProj.
+        // Ops rebuilt against a new CommandTree: no F# symbol in TestProj changed, but its
+        // dependency fingerprint flips.
         File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-v070-DIFFERENT")
         emitBuildAndSettle host
-        test <@ runCount = 2 @>) // fanout ran it
+        test <@ runCount = 2 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``no dependency change and no symbol change still skips (no regression)`` () =
-    // Same harness as the fanout test but the referenced DLL never changes — the
-    // symbol-precise skip must remain intact (the fanout must not fire spuriously).
+    // Same harness as the fanout test, with the referenced DLL held constant.
     withTempDir "tp-fanout-noregress" (fun tmpDir ->
         let mutable runCount = 0
 
@@ -2508,18 +2301,14 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``comment-only change does not add file to ChangedFiles but AST change does`` () =
-    // Regression test: before the fix, newChangedFiles was computed unconditionally
-    // before changedNames, so any file emit (even comment-only) would add the file
-    // to ChangedFiles and trigger extension-based tests (e.g. Falco routes).
-    //
-    // After the fix, newChangedFiles is only updated when changedNames is non-empty,
-    // i.e. only when the AST actually changed.
+    // `newChangedFiles` used to be computed before `changedNames`, so any emit — even a
+    // comment-only one — added the file to ChangedFiles and triggered extension-based
+    // tests (Falco routes and the like).
     let initialSource = "module Lib\nlet x = 1\n"
     let commentOnlySource = "module Lib\n// a comment added\nlet x = 1\n"
     let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
 
     withSeededTestEnv "tp-comment-regression" "Lib.fs" initialSource (fun env ->
-        // --- Phase 1: comment-only change should NOT add file to ChangedFiles ---
         File.WriteAllText(env.FilePath, commentOnlySource)
 
         match
@@ -2536,7 +2325,6 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
         test <@ changedAfterComment.Value = "[]" @>
 
-        // --- Phase 2: AST change should add file to ChangedFiles ---
         File.WriteAllText(env.FilePath, astChangedSource)
 
         match
@@ -2555,15 +2343,13 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
 // --- formatFailureReport: CI observability for a red test run ---
 //
-// Regression coverage for the bug where a failed run reported "0 test(s)
-// failed:" with NO test name in the CI console — undiagnosable because the
-// per-test detail only lived in the on-disk `.fshw/test-runs` log that CI
-// discards. The matcher must surface the failing test name(s) robustly, and
+// A failed run once reported "0 test(s) failed:" with NO test name in the CI console —
+// undiagnosable, because the per-test detail only lived in the on-disk `.fshw/test-runs`
+// log that CI discards. The matcher must surface the failing test names robustly, and
 // when nothing parses it must dump the output tail rather than swallow it.
 
-/// The run log these tests pretend was written. Most of them are about the
-/// per-test MATCHER and don't care which arm this is; the ones that ARE about the
-/// log (below) pass their own.
+/// The run log these tests pretend was written. Most are about the per-test MATCHER and
+/// don't care which arm this is; the ones that ARE about the log pass their own.
 let private savedLog =
     FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/deadbeef/FsHotWatch.Tests.output.log"
 
@@ -2580,8 +2366,8 @@ let ``formatFailureReport surfaces a plain failed-test line`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport surfaces a timed-out (canceled) test — the daemon-load flake`` () =
-    // MTP prints a `[<Fact(Timeout=...)>]` cancellation as `failed (canceled) <name>`.
-    // This is the documented under-load flake; its name MUST appear.
+    // MTP prints a `[<Fact(Timeout=...)>]` cancellation as `failed (canceled) <name>` —
+    // the documented under-load flake, whose name must still reach the console.
     let output =
         "failed (canceled) FsHotWatch.Tests.Slow.thing (118ms)\n  Test execution timed out after 100 milliseconds\n  total: 1\n  failed: 1"
 
@@ -2594,9 +2380,8 @@ let ``formatFailureReport surfaces a timed-out (canceled) test — the daemon-lo
 
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport matches a failed line with leading whitespace`` () =
-    // The exact CI gap: some MTP/capture paths indent the failed line, so the
-    // old `StartsWith("failed ")` (no trim) silently missed it → "0 test(s)
-    // failed" with the name nowhere in the console.
+    // The CI gap exactly: some MTP/capture paths indent the failed line, and an untrimmed
+    // `StartsWith("failed ")` silently missed it.
     let output =
         "    failed FsHotWatch.Tests.Indented.case (5ms)\n  total: 1\n  failed: 1"
 
@@ -2608,9 +2393,8 @@ let ``formatFailureReport matches a failed line with leading whitespace`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport dumps the output tail when no failed line parses (backstop)`` () =
-    // A crash / OOM-kill / unrecognised format yields a non-zero run with no
-    // `failed ` line. Rather than report "0 test(s) failed" and hide the cause,
-    // the tail of the output is echoed so the failure is visible in the console.
+    // A crash / OOM-kill / unrecognised format yields a non-zero run with no `failed `
+    // line, and reporting "0 test(s) failed" there hides the cause entirely.
     let output =
         "Building...\nUnhandled exception: System.AccessViolationException\n  at Some.Native.Frame()\nProcess terminated."
 
@@ -2624,10 +2408,9 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
 
 // --- AUTOMATION-279: the backstop message must name a log that EXISTS ---
 //
-// The defect: this message told its reader the failure was visible "without the
-// saved log" — and there was no saved log. The plugin's only `File.WriteAllText`
-// wrote Cobertura coverage. So the one line a stuck engineer reads at 2am pointed
-// at a file no code had ever written, and the 40-line tail was all there was.
+// The message told its reader the failure was visible "without the saved log" — and
+// there was no saved log. The plugin's only `File.WriteAllText` wrote Cobertura coverage,
+// so the line pointed at a file no code had ever written.
 
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport names the run log it was actually given`` () =
@@ -2639,17 +2422,14 @@ let ``formatFailureReport names the run log it was actually given`` () =
         formatFailureReport "Intelligence.Tests.Integration" (FsHotWatch.RunLog.Ref.Written path) output
         |> String.concat "\n"
 
-    // The path — the whole point. A reader can copy it and go.
+    // A reader can copy the path and go.
     test <@ report.Contains(path) @>
-    // And the phrasing that sent them nowhere is gone for good.
     test <@ not (report.Contains("without the saved log")) @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatFailureReport states WHY there is no log rather than naming one`` () =
-    // The invariant that keeps this bug from coming back in a new costume: a path
-    // is printed only when something opened it. When the open failed, the message
-    // says so — it does not fall back to a plausible-looking path, and it does not
-    // fall silent either.
+    // A path is printed only when something opened it. When the open failed the message
+    // says so — no plausible-looking fallback path, and no silence either.
     let output = "Building...\nProcess terminated."
 
     let report =
@@ -2664,12 +2444,11 @@ let ``formatFailureReport states WHY there is no log rather than naming one`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``the console tail cannot reach the head — which is why the log exists`` () =
-    // The incident, reduced to an assertion. 60 lines: the cause is line 1 and the
-    // remaining 59 are the indistinguishable repeated startup logging that filled
-    // all forty lines of the real tail. This test does NOT ask the tail to improve
-    // — a fixed tail structurally cannot reach a head. It pins the reason the file
-    // is worth writing, and it is the positive control for the message tests
-    // above: if it ever passes trivially, they were proving nothing.
+    // 60 lines: the cause is line 1 and the other 59 are the indistinguishable repeated
+    // startup logging that filled all forty lines of the real tail. A fixed tail
+    // structurally cannot reach a head — that is why the file is worth writing. This is
+    // also the positive control for the message tests above: if it ever passes trivially,
+    // they were proving nothing.
     let output =
         [ "Test shard pool 'intelligence_test_9f80_integration' is already in use by PID 18024"
           yield! List.replicate 59 "Applying migration 20250714_AddThing" ]
@@ -2683,12 +2462,11 @@ let ``the console tail cannot reach the head — which is why the log exists`` (
     // ...so the message had better point at something that does contain it.
     test <@ report.Contains(".output.log") @>
 
-// --- isZeroTestsUnderFilter unit tests ---
+// --- isZeroTestsUnderFilter ---
 //
-// Regression coverage for the bug where `test-rerun --filter-class X` (a raw
-// passthrough filter fanned out to EVERY test project) reported every project
-// WITHOUT a matching test as "failed", because the runner exits non-zero
-// (MTP exit code 8 / "Zero tests ran") and that was interpreted as a failure.
+// `test-rerun --filter-class X` fans a raw passthrough filter out to EVERY test project,
+// and every project without a matching test was reported "failed": the runner exits
+// non-zero (MTP exit code 8 / "Zero tests ran") and that read as a failure.
 
 [<Fact(Timeout = 15000)>]
 let ``isZeroTestsUnderFilter true for filtered run with MTP zero-tests exit code`` () =
@@ -2702,8 +2480,8 @@ let ``isZeroTestsUnderFilter true for filtered run with MTP zero-tests exit code
 
 [<Fact(Timeout = 15000)>]
 let ``isZeroTestsUnderFilter true for filtered run whose output reports zero tests (non-8 exit)`` () =
-    // Fallback path: a runner that exits non-zero without the canonical code 8
-    // but still prints MTP's zero-tests summary line.
+    // A runner that exits non-zero without the canonical code 8 but still prints MTP's
+    // zero-tests summary line.
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
             1,
@@ -2747,14 +2525,12 @@ let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
     test <@ not (isZeroTestsUnderFilter true outcome) @>
 
 // =============================================================================
-// FIX 2 — `test-rerun --filter-*` force-executes; zero-match reported DISTINCTLY.
-//
 // `test-rerun` is the explicit force-rerun verb. Two defects it had:
 //   (a) a filtered run that matched NOTHING was recorded as a (filtered) PASS,
-//       indistinguishable from a real green run — so you couldn't tell the
-//       filter selected no test (the "test-rerun didn't actually run" symptom).
-//   (b) it returned an INSTANT non-result ("tests already running") when a
-//       background run held the test slot — no execution, no log.
+//       indistinguishable from a real green — so "test-rerun didn't actually run" was
+//       invisible.
+//   (b) it returned an INSTANT non-result ("tests already running") when a background run
+//       held the test slot: no execution, no log.
 // =============================================================================
 
 [<Fact(Timeout = 10000)>]
@@ -2787,10 +2563,8 @@ let ``isNoMatch / allZeroMatch detect the zero-match case`` () =
 [<Fact(Timeout = 15000)>]
 let ``run-tests with a filter that matches nothing reports no-tests-matched distinctly, not a generic pass`` () =
     withTempDir "tp-run-nomatch" (fun tmpDir ->
-        // `sh -c "exit 8"` simulates Microsoft Testing Platform's zero-tests
-        // exit (code 8) for a FILTERED project that has no matching test. With a
-        // raw filter present, isZeroTestsUnderFilter classifies this as a
-        // zero-match (passed/filtered) — which FIX 2 now surfaces distinctly.
+        // `exit 8` is Microsoft Testing Platform's zero-tests exit for a filtered project
+        // with no matching test.
         let configs =
             [ { Project = "NoMatchProj"
                 Command = "sh"
@@ -2812,9 +2586,8 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
 
         test <@ result.IsSome @>
         let doc = JsonDocument.Parse(result.Value)
-        // Run-level distinct signal.
         test <@ doc.RootElement.GetProperty("noTestsMatched").GetBoolean() @>
-        // Per-project distinct status (not "passed", not "failed").
+        // Per-project: neither "passed" nor "failed".
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
 
@@ -2843,19 +2616,14 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
 
         test <@ result.IsSome @>
         let doc = JsonDocument.Parse(result.Value)
-        // The run actually executed → NOT no-tests-matched.
         test <@ not (doc.RootElement.GetProperty("noTestsMatched").GetBoolean()) @>
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
 
 [<Fact(Timeout = 30000)>]
 let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
-    // The OLD behavior bailed instantly with {error="tests already running"} when
-    // the `tests` slot was held by a background run. FIX 2 makes `run-tests` WAIT
-    // for the slot to clear, then execute — so an explicit force-rerun always
-    // runs. We hold the slot briefly with a slow background run (BuildCompleted),
-    // fire run-tests concurrently, and assert it ultimately EXECUTES (real
-    // results) rather than returning the instant in-flight error.
+    // An explicit force-rerun always runs: it waits for the `tests` slot rather than
+    // bailing instantly with {error="tests already running"}.
     withTempDir "tp-run-force" (fun tmpDir ->
         let configs =
             [ { Project = "SlowProj"
@@ -2873,20 +2641,18 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // Kick off the background run (holds RunExclusive "tests").
+        // Kick off the background run (holds RunExclusive "tests"), and give it a moment
+        // to acquire the slot before forcing a rerun into it.
         host.EmitBuildCompleted(BuildSucceeded)
-
-        // Give the background run a moment to acquire the slot, then force a rerun.
         Thread.Sleep(300)
 
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
 
         test <@ result.IsSome @>
         let doc = JsonDocument.Parse(result.Value)
-        // It must NOT be the instant in-flight error and must have actually run
-        // (a `projects` array present means executeTests produced results).
-        // `fst (TryGetProperty …)` is computed OUTSIDE the Unquote quotation
-        // because the ValueTuple it returns can't appear inside a quotation.
+        // A `projects` array means executeTests produced real results. `fst
+        // (TryGetProperty …)` is computed OUTSIDE the quotation because the ValueTuple it
+        // returns cannot appear inside one.
         let hasError = fst (doc.RootElement.TryGetProperty("error"))
         let hasProjects = fst (doc.RootElement.TryGetProperty("projects"))
         test <@ not hasError @>
@@ -2914,8 +2680,7 @@ let ``parseRunTestsWaitMs falls back on malformed or non-numeric or non-positive
 
 [<Fact(Timeout = 15000)>]
 let ``DefaultRunTestsWaitMs is well above the old fixed 120s`` () =
-    // Regression guard: the whole point of AUTOMATION-66 bug 2 is that the wait
-    // must outlast a ~90s+ beforeRun chain a prior in-flight run is executing.
+    // The wait must outlast a ~90s+ beforeRun chain a prior in-flight run is executing.
     test <@ DefaultRunTestsWaitMs > 120_000 @>
 
 // --- buildFilterArgs unit tests ---
@@ -3046,12 +2811,10 @@ let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift
 
 [<Fact(Timeout = 2000)>]
 let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` () =
-    // Regression: deleting only the main DB file leaves -wal/-shm on disk.
-    // SQLite in WAL mode ties the sidecars to the main file; a new connection
-    // opening a fresh (empty) main DB with stale sidecars produces a
-    // 0-byte main DB with garbage recovery state — subsequent inserts hit
-    // "no such column: parent_symbol_id" because the schema DDL never fully
-    // applied. Observed in production after a schema-drift recovery pass.
+    // SQLite in WAL mode ties the sidecars to the main file: opening a fresh (empty) main
+    // DB alongside stale -wal/-shm yields a 0-byte main DB with garbage recovery state,
+    // and subsequent inserts hit "no such column: parent_symbol_id" because the schema
+    // DDL never fully applied. Observed in production after a drift-recovery pass.
     let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-wal-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
     let dbPath = Path.Combine(tmpDir, "testprune.db")
@@ -3091,16 +2854,13 @@ let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
 let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
     let missingPath =
         Path.Combine(Path.GetTempPath(), $"tp-missing-{Guid.NewGuid():N}.db")
-    // Should not throw even though the file does not exist.
+
     tryRepairSchemaDrift missingPath (exn "no such column: source")
     test <@ not (File.Exists missingPath) @>
 
-// ---------------------------------------------------------------------------
-// Progressive TestCompleted emission: a group that completes quickly emits a
-// partial snapshot even while a slower group is still running. Without this,
-// downstream plugins subscribed to TestCompleted (e.g. afterTests triggers)
-// are forever blocked by the slowest test project.
-// ---------------------------------------------------------------------------
+// A group that completes quickly emits a partial snapshot even while a slower group is
+// still running. Without it, downstream TestCompleted subscribers (afterTests triggers and
+// the like) are blocked by the slowest test project.
 
 [<Fact(Timeout = 30000)>]
 let ``executeTests emits a TestProgress per group as groups finish`` () =
@@ -3109,11 +2869,9 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
         let (getEvents, recorder) = testProgressRecorder ()
         host.RegisterHandler(recorder)
 
-        // Three groups: two run `echo` (near-instant), one runs `sleep 2`.
-        // Each group's async must resolve independently; if executeTests emits
-        // only once at batch end, the test will see one event instead of three.
-        // runProcess tokenises args space-separated with no shell, so we use
-        // simple single-binary commands with one numeric arg to avoid quoting.
+        // Two near-instant groups and one slow one: if executeTests emits only once at
+        // batch end this sees one event instead of three. runProcess tokenises args
+        // space-separated with no shell, hence the single-binary commands.
         let configs =
             [ { Project = "ProjFastA"
                 Command = "echo"
@@ -3149,21 +2907,16 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
 
         host.RegisterHandler(handler)
 
-        // Trigger test execution by emitting BuildSucceeded.
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for three TestProgress emissions — one per group.
         waitUntil (fun () -> getEvents () |> List.length >= 3) 20000
 
         let events = getEvents ()
-        // One emission per group — three groups, three emissions.
         test <@ events.Length = 3 @>
 
-        // All three share a single RunId.
         let runIds = events |> List.map (fun p -> p.RunId) |> List.distinct
         test <@ runIds.Length = 1 @>
 
-        // Each emission carries exactly that group's projects as a delta.
         let allProjects =
             events
             |> List.collect (fun p -> p.NewResults |> Map.toList |> List.map fst)
@@ -3171,9 +2924,8 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
 
         test <@ allProjects = Set.ofList [ "ProjFastA"; "ProjFastB"; "ProjSlow" ] @>
 
-        // The slow group must appear in the LAST emission — it completes after
-        // the two fast groups. (Under cumulative emission the invariant was a
-        // prefix-chain; under delta emission the invariant is an ordering.)
+        // Deltas, not cumulative snapshots: the invariant is an ordering, so the slow
+        // group appears in the LAST emission and in no earlier one.
         let lastEvent = events |> List.last
 
         test <@ lastEvent.NewResults |> Map.containsKey "ProjSlow" @>
@@ -3185,11 +2937,6 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 earlierEvents
                 |> List.forall (fun p -> not (p.NewResults |> Map.containsKey "ProjSlow"))
             @>)
-
-// ---------------------------------------------------------------------------
-// WasFiltered on per-project test results. Full runs (no impact filter applied)
-// must report WasFiltered = false; partial runs report true.
-// ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
 let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
@@ -3225,18 +2972,11 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
         | Some r -> test <@ TestResult.wasFiltered r = false @>
         | None -> Assert.Fail("ProjA not in Results"))
 
-// ---------------------------------------------------------------------------
-// AUTOMATION-279 — every project's output is STREAMED to
-// `.fshw/test-runs/<runId>/<Project>.output.log`, and a suite KILLED at its
-// timeout still leaves the part it managed to print.
-//
-// This is the case the ticket exists for. An integration suite hit its 900s cap
-// on four consecutive `check`/`confirm` runs; the only evidence was a 40-line
-// tail, and all forty lines were the same repeated startup logging. Run by hand,
-// the cause appeared in seconds — at the HEAD. A killed child reaches no
-// end-of-run writer, so anything that buffers and flushes at the end leaves
-// nothing at all here.
-// ---------------------------------------------------------------------------
+// Every project's output is STREAMED to `.fshw/test-runs/<runId>/<Project>.output.log`,
+// so a suite KILLED at its timeout still leaves the part it managed to print. A killed
+// child reaches no end-of-run writer, so anything that buffers and flushes at the end
+// leaves nothing at all — which is how an integration suite hit its 900s cap four runs
+// running with no evidence but a 40-line tail of repeated startup logging.
 
 /// The run logs on disk under a repo root, as (file name, contents).
 let private runLogsUnder (repoRoot: string) =
@@ -3257,7 +2997,7 @@ let ``a test project KILLED at its timeout still leaves its partial run log`` ()
         let (getCompleted, recorder) = testRunCompletedRecorder ()
         host.RegisterHandler(recorder)
 
-        // Announces its cause, then hangs. `timeoutSec` 2 kills the tree, so this
+        // Announces its cause, then hangs. `TimeoutSec = 2` kills the tree, so this
         // project never exits and never reaches a writer of any kind.
         let configs =
             [ { Project = "ProjKilled"
@@ -3283,8 +3023,7 @@ let ``a test project KILLED at its timeout still leaves its partial run log`` ()
         let completed = getCompleted ()
         test <@ completed.Length >= 1 @>
 
-        // The run really did end in a kill — otherwise this proves nothing about
-        // the kill path.
+        // Without this the test proves nothing about the kill path.
         match (completed |> List.last).Results |> Map.tryFind "ProjKilled" with
         | Some(TestsTimedOut _) -> ()
         | other -> Assert.Fail $"fixture broken: expected ProjKilled to be TestsTimedOut, got %A{other}"
@@ -3298,9 +3037,8 @@ let ``a test project KILLED at its timeout still leaves its partial run log`` ()
 
 [<Fact(Timeout = 60000)>]
 let ``a PASSING project gets a run log too — no special-casing the suspect suite`` () =
-    // Which project will need explaining is not knowable in advance, and a
-    // passing-but-slow suite is worth reading. So the log is not a failure
-    // artifact: it is written for every project on every run.
+    // Which project will need explaining is not knowable in advance, and a passing-but-slow
+    // suite is worth reading. The log is not a failure artifact.
     withTempDir "tp-runlog-pass" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let (getCompleted, recorder) = testRunCompletedRecorder ()
@@ -3344,11 +3082,8 @@ let ``a PASSING project gets a run log too — no special-casing the suspect sui
             test <@ contentsB.Contains("hello-from-b") @>
         | other -> Assert.Fail $"expected one run log per project, got %A{other}")
 
-// ---------------------------------------------------------------------------
-// Coverage path selection + post-test merge step. Pure helpers — tested
-// directly against the filesystem with pre-seeded JSON fixtures so we don't
-// need a real coverlet run.
-// ---------------------------------------------------------------------------
+// Coverage path selection + post-test merge. Pure helpers, tested against the filesystem
+// with pre-seeded fixtures rather than a real coverlet run.
 
 open FsHotWatch.TestPrune
 
@@ -3370,11 +3105,9 @@ let ``buildCoverageArgs picks baseline on full run and partial on filtered run``
 
 [<Fact>]
 let ``default template uses an MTP-accepted output format`` () =
-    // Regression: previous impl emitted `--coverage-output-format json`, but
-    // MTP (Microsoft Testing Platform) only accepts `coverage | xml | cobertura`.
-    // Passing `json` made every test run fail at startup with an invalid-args
-    // error and zero tests executed. Pin the default template value so this
-    // can't silently regress.
+    // MTP accepts only `coverage | xml | cobertura`. Emitting `--coverage-output-format
+    // json` made every test run fail at startup with an invalid-args error and zero tests
+    // executed.
     let paths: CoveragePaths =
         { Baseline = "/tmp/cov/baseline.cobertura.xml"
           Partial = "/tmp/cov/partial.cobertura.xml"
@@ -3393,13 +3126,9 @@ let ``default template uses an MTP-accepted output format`` () =
 
 [<Fact>]
 let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`` () =
-    // Coverage invocation varies by test runner (MTP / classic dotnet test +
-    // coverlet.collector / AltCover / xUnit classic + OpenCover). The plugin
-    // must not hard-code one shape. Callers supply a template; the plugin
-    // substitutes `{output}` with the chosen baseline/partial path.
-    //
-    // Substitution is a pure string replace — the template is responsible for
-    // its own quoting if paths might contain spaces.
+    // Coverage invocation varies by runner (MTP, classic dotnet test + coverlet.collector,
+    // AltCover, OpenCover), so callers supply a template and the plugin substitutes
+    // `{output}`. It is a pure string replace — the template owns its own quoting.
     let paths: CoveragePaths =
         { Baseline = "/tmp/cov/B.xml"
           Partial = "/tmp/cov/P.xml"
@@ -3414,9 +3143,7 @@ let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`
 
 [<Fact>]
 let ``buildCoverageArgs treats a template missing {output} as invalid`` () =
-    // If the caller forgot the placeholder we don't silently produce invalid
-    // args — surface the mistake. Pattern-pinning via substring makes the
-    // error diagnosable.
+    // A forgotten placeholder must surface, not silently produce invalid args.
     let paths: CoveragePaths =
         { Baseline = "/tmp/cov/B.xml"
           Partial = "/tmp/cov/P.xml"
@@ -3441,8 +3168,8 @@ let private mkCobertura (pkg: string) (file: string) (lines: (int * int) list) :
         file
         linesXml
 
-// Seed a DB with a single symbol spanning the given repo-relative file and line
-// span, so `ingestCobertura` can map covered lines onto it. Returns the DB.
+// Seed a DB with a single symbol spanning the given repo-relative file and line span, so
+// `ingestCobertura` can map covered lines onto it.
 let private seedSymbolDb (dbPath: string) (sourceFile: string) (lineStart: int) (lineEnd: int) =
     let db = Database.create dbPath
 
@@ -3458,19 +3185,17 @@ let private seedSymbolDb (dbPath: string) (sourceFile: string) (lineStart: int) 
     db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
     db
 
-// New DB-backed coverage path: `ingestAndEmitCoverage` ingests each project's
-// raw runner cobertura into the TestPrune DB (max-merge, symbol-relative) and
-// emits the FULL DB ONCE to the single shared cobertura file. These replace the
-// old per-line/per-file max-merge `processCoverageOutput` tests.
+// `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
+// DB (max-merge, symbol-relative), then emits the full DB once to the single shared
+// cobertura file.
 [<Fact>]
 let ``ingestAndEmitCoverage ingests covered lines and emits the single shared cobertura`` () =
     withTempDir "cov-ingest" (fun dir ->
         let repoRoot = dir
         let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
 
-        // Raw cobertura from the runner uses an ABSOLUTE filename (as a real run
-        // would); ingest relativizes it against repoRoot to match the symbol's
-        // repo-relative source_file. Lines 10 and 11 covered, 12 not.
+        // Raw cobertura from the runner uses an ABSOLUTE filename, as a real run would;
+        // ingest relativizes it against repoRoot to match the symbol's source_file.
         let absFile = Path.Combine(repoRoot, "src/Foo.fs")
         let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
         let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
@@ -3480,17 +3205,14 @@ let ``ingestAndEmitCoverage ingests covered lines and emits the single shared co
 
         test <@ File.Exists sharedOut @>
         let xml = File.ReadAllText sharedOut
-        // The emitted cobertura reports the covered lines back, at the symbol's
-        // current absolute positions.
+        // Reported back at the symbol's current absolute positions.
         test <@ xml.Contains("number=\"10\"") @>
         test <@ xml.Contains("number=\"11\"") @>
         test <@ xml.Contains("hits=\"3\"") @>)
 
 [<Fact>]
 let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an existing emitted cobertura`` () =
-    // Issue 3: an aborted run can leave an empty raw cobertura. It ingests
-    // nothing (parse → [] → no-op), so the previously emitted shared cobertura
-    // must survive untouched rather than being overwritten with empty coverage.
+    // An aborted run can leave an empty raw cobertura, which ingests nothing.
     withTempDir "cov-noclobber" (fun dir ->
         let repoRoot = dir
         let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
@@ -3506,19 +3228,15 @@ let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an exis
 
         ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
 
-        // The empty raw still counts as an input on disk, so the DB is emitted —
-        // but it ingested nothing, so the DB has no coverage and emits an empty
-        // document. Critically, the run must not LOWER an existing good emission:
-        // since nothing was ingested, the emitted file must contain no covered
-        // lines newly introduced and certainly must not silently drop the prior
-        // coverage to a worse number. Assert no symbol coverage was recorded.
+        // The empty raw still counts as an input on disk, so the DB is emitted — but
+        // nothing was ingested, so no symbol coverage may have been recorded. The run
+        // must never LOWER an existing good emission.
         let summary = TestPrune.Coverage.fileCoverageSummary db "src/Foo.fs"
         test <@ summary.Covered = 0 @>)
 
 [<Fact>]
 let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura untouched`` () =
-    // When NO raw inputs exist on disk (e.g. every project skipped/deferred),
-    // the shared cobertura must NOT be written — a prior good emission survives.
+    // Every project skipped or deferred, so nothing to emit from.
     withTempDir "cov-noinputs" (fun dir ->
         let repoRoot = dir
         let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
@@ -3538,12 +3256,10 @@ let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura unto
 
 [<Fact>]
 let ``ingestAndEmitCoverage does NOT clobber prior coverage when the symbol graph is incomplete`` () =
-    // Cold start (the first run after a schema bump recreated the TestPrune DB, before the
-    // daemon's scan reached the covered files): the covered file has no symbols yet, so its
-    // lines can't map. Emitting the DB now would write a partial cobertura that DROPS that
-    // file's coverage entirely, clobbering a prior good emission and failing the ratchet.
-    // The plugin must SKIP the emit until the graph is populated; the DB persists, so a
-    // later warm run emits in full.
+    // Cold start — a schema bump recreated the DB and the scan has not yet reached the
+    // covered files, so their lines cannot map. Emitting now would write a partial
+    // cobertura that DROPS that file's coverage, clobbering a prior good emission and
+    // failing the ratchet. The DB persists, so a later warm run emits in full.
     withTempDir "cov-coldstart" (fun dir ->
         let repoRoot = dir
         // The DB only knows an unrelated, already-indexed file — NOT the covered one.
@@ -3557,21 +3273,19 @@ let ``ingestAndEmitCoverage does NOT clobber prior coverage when the symbol grap
 
         File.WriteAllText(sharedOut, priorGood)
 
-        // This run's raw cobertura covers Embeddings.fs, but the DB has no symbols for it
-        // yet → every line is skipped.
+        // This run's raw cobertura covers Embeddings.fs, which the DB has no symbols for,
+        // so every line is skipped.
         let absFile = Path.Combine(repoRoot, "src/Embeddings.fs")
         let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
         File.WriteAllText(rawPath, mkCobertura "Intelligence.dll" absFile [ (10, 3); (11, 3); (12, 1) ])
 
         ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
 
-        // The prior good emission must survive untouched — NOT be overwritten with a
-        // partial snapshot that dropped Embeddings.fs.
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
 [<Fact>]
 let ``ingestAndEmitCoverage emits when the symbol graph maps the bulk of lines (warm)`` () =
-    // The complement: once the covered file IS indexed, the lines map and the emit proceeds.
+    // The complement of the cold-start skip above.
     withTempDir "cov-warm" (fun dir ->
         let repoRoot = dir
         let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Embeddings.fs" 10 12
@@ -3602,7 +3316,7 @@ let ``clearFcsCheckCache removes the cache json files and reports the count`` ()
         Directory.CreateDirectory(cacheDir) |> ignore
         File.WriteAllText(Path.Combine(cacheDir, "a.json"), "{}")
         File.WriteAllText(Path.Combine(cacheDir, "b.json"), "{}")
-        // A non-json sibling must survive — we only clear FCS check-cache entries.
+        // Only FCS check-cache entries are cleared; a non-json sibling must survive.
         File.WriteAllText(Path.Combine(cacheDir, "keep.txt"), "x")
 
         let cleared = clearFcsCheckCache repoRoot
@@ -3615,19 +3329,8 @@ let ``clearFcsCheckCache removes the cache json files and reports the count`` ()
 let ``clearFcsCheckCache is a no-op when there is no cache dir`` () =
     withTempDir "fcs-nocache" (fun repoRoot -> test <@ clearFcsCheckCache repoRoot = 0 @>)
 
-// `TestRunCompleted carries RanFullSuite=true when no projects filtered` stood
-// here. It built an event with EMPTY results and asserted the full-suite flag was
-// true — pinning the vacuity as intended behaviour rather than testing anything
-// about filtering. There is no longer a value that expresses it: an empty run is
-// `NoProjectsSelected`, which has no scope to assert. The real question it meant to
-// ask is `ofResults: every project executed unfiltered is the ONLY full suite`, in
-// EventTests.fs.
-
-// `TestResult.ranFullSuite`'s unit tests are NOT here. It is core (`Events.fs`)
-// and `EventTests.fs` is its home, covering the empty map, the all-unfiltered and
-// any-filtered cases, deferred-counts-as-filtered, and the positive control that
-// a real unfiltered run still answers true. Three of those lived here as well
-// until AUTOMATION-281 had to apply the same reversal in both files.
+// `TestResult.ranFullSuite`'s unit tests live in EventTests.fs beside the core type they
+// cover. Duplicating them here meant editing both files in lockstep for every change.
 
 [<Fact(Timeout = 15000)>]
 let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` () =
@@ -3660,13 +3363,10 @@ let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` ()
 
 [<Fact(Timeout = 20000)>]
 let ``regression: TestPrune writes a cache entry with TestRunCompleted on terminal status`` () =
-    // Before this fix, TestPrune emitted TestRunStarted/Completed from the
-    // fire-and-forget async (runTestsWithImpact). The framework's per-event
-    // capture window for the synchronous Custom TestsFinished handler had
-    // no events to capture, so the cached EmittedEvents was empty.
-    // After: lifecycle events emit from the synchronous handler instead, so
-    // they're captured. Cache replay can re-fire TestRunCompleted to
-    // downstream subscribers (e.g. FileCommandPlugin) on a hit.
+    // Lifecycle events must emit from the SYNCHRONOUS Custom(TestsFinished) handler, not
+    // from the fire-and-forget async: the framework's per-event capture window only sees
+    // the former, so emitting from the async left cached EmittedEvents empty and cache
+    // replay could not re-fire TestRunCompleted to downstream subscribers.
     withTempDir "tp-cache-emit" (fun tmpDir ->
         let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
         let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
@@ -3690,18 +3390,16 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 10000
 
-        // Cache should now contain an entry with at least one TestRun event captured.
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
         let cacheKeyFn = handler.CacheKey.Value
         let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
         test <@ computedKey.IsSome @>
 
-        // The framework's `cache.Set` runs AFTER the handler's Update returns,
-        // while `waitForTerminalStatus` observes the terminal status reported
-        // *inside* that Update — so under load the entry can lag the status by a
-        // scheduling quantum. Poll-until-deadline for the entry rather than
-        // reading once (the write is deterministic, just not instantly visible).
+        // `cache.Set` runs AFTER the handler's Update returns, while
+        // `waitForTerminalStatus` observes the status reported *inside* that Update — so
+        // the entry can lag the status by a scheduling quantum. The write is
+        // deterministic, just not instantly visible, hence the poll rather than one read.
         waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 5000
         let result = cacheIface.TryGet key computedKey.Value
         test <@ result.IsSome @>
@@ -3716,21 +3414,16 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         test <@ hasCompleted @>)
 
 // =============================================================================
-// AUTOMATION-5 — a FAILED test verdict must never be served from the task cache.
-// Root cause: the §2a merkle key (changed-symbols + commit) does NOT pin the
-// test OUTCOME, so a failing run and a later passing run on the same tree share
-// a key. Caching the failure let `tryReplayCache` replay a stale red on a now-
-// green tree ("green tree read as red"), surviving daemon restarts via the
-// on-disk cache. Fix: `Custom(TestsFinished)` returns a `None` cache key when
-// any project did not pass, making the failure UNCACHEABLE.
+// AUTOMATION-5 — a FAILED verdict must never be served from the task cache. The merkle
+// key (changed-symbols + commit) does NOT pin the test OUTCOME, so a failing run and a
+// later passing run on the same tree share a key.
+// Caching the failure let `tryReplayCache` replay a stale red on a now-green tree,
+// surviving daemon restarts via the on-disk cache. `Custom(TestsFinished)` therefore
+// returns no key when any project did not pass, making the failure uncacheable.
 // =============================================================================
 
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some for an all-pass`` () =
-    // Unit-pins the root-cause decision: the plugin's own CacheKey function must
-    // refuse to produce a key for a non-passing outcome (so the framework never
-    // writes the poisoned entry), while still keying an all-pass run for the
-    // green fast-path.
     let handler = create ":memory:" "/tmp" None None None None None []
     let cacheKeyFn = handler.CacheKey.Value
 
@@ -3767,7 +3460,7 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
             )
         )
 
-    // A timed-out / deferred project is also non-green and must be uncacheable.
+    // A timed-out / deferred project is non-green too.
     let timedOut =
         Custom(
             TestsFinished(
@@ -3781,18 +3474,13 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
     test <@ (cacheKeyFn timedOut).IsNone @>
     test <@ (cacheKeyFn passing).IsSome @>
 
-// AUTOMATION-272 — a run that matched NO tests must not be cacheable as a green.
-//
 // A filter that matched nothing is `TestsNoMatch`, for which `TestResult.isPassed` is
-// deliberately TRUE (per project, selecting nothing is not that project's failure), so
-// the cache key's `allPassed` fold cannot see the difference on its own. The entry it mints is then
-// replayable: a later `BuildCompleted` on the same tree hits a cached green that was
-// produced by executing zero tests. That is the same defect as the failing-run case
-// this file already pins, with a longer half-life — the poisoned entry outlives the
-// run that created it.
-//
-// The neighbouring `notAborted` gate exists for exactly this hazard (empty results
-// trivially satisfying an all-passed fold); zero-match is the case it does not cover.
+// deliberately TRUE — per project, selecting nothing is not that project's failure — so
+// the cache key's `allPassed` fold cannot see the difference on its own. The entry it
+// mints is replayable: a later `BuildCompleted` on the same tree hits a cached green
+// produced by executing zero tests, and the poisoned entry outlives the run that made it.
+// The neighbouring `notAborted` gate covers the empty-results version of this hazard;
+// zero-match is the case it misses.
 [<Fact(Timeout = 15000)>]
 let ``a run where every project matched zero tests is not cacheable as a green`` () =
     let handler = create ":memory:" "/tmp" None None None None None []
@@ -3814,8 +3502,7 @@ let ``a run where every project matched zero tests is not cacheable as a green``
     let allZeroMatch =
         Custom(TestsFinished(started, completedWith [ "ProjA", zeroMatch; "ProjB", zeroMatch ], emptyLaunch))
 
-    // A run where SOME project really ran is still cacheable — the guard must key on
-    // "nothing was verified", not on "a filter was used anywhere".
+    // The guard must key on "nothing was verified", not "a filter was used anywhere".
     let mixed =
         Custom(
             TestsFinished(
@@ -3829,13 +3516,11 @@ let ``a run where every project matched zero tests is not cacheable as a green``
     test <@ (cacheKeyFn mixed).IsSome @>
 
 // =============================================================================
-// tests.dependsOn — external-input cache-key salt.
-// A developer who edits a DB migration changes the TEST database schema but no
-// test SOURCE symbol, so test-prune's symbol-diff merkle is unchanged and a
-// stale verdict replays. Declaring the migration under `tests.dependsOn` salts
-// the BuildCompleted cache key with the migration's content hash, so editing it
-// is a cache MISS → genuine re-run. With NO dependsOn the key must be
-// byte-identical to the pre-feature key (existing caches keep hitting).
+// tests.dependsOn — external-input cache-key salt. Editing a DB migration changes the
+// TEST database schema but no test SOURCE symbol, so the symbol-diff merkle is unchanged
+// and a stale verdict replays. Declaring the migration under `tests.dependsOn` salts the
+// BuildCompleted key with its content hash. With NO dependsOn the key must stay
+// byte-identical to the pre-feature key, so existing caches keep hitting.
 // =============================================================================
 
 [<Fact(Timeout = 15000)>]
@@ -3852,8 +3537,7 @@ let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` 
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
 
-        // Edit the migration in place (the exact scenario: schema changed, no
-        // test source touched).
+        // Schema changed, no test source touched.
         File.WriteAllText(migration, "CREATE TABLE a (id int, name text);")
         let keyAfter = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
 
@@ -3870,8 +3554,6 @@ let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache ke
         let cacheKeyFn = handler.CacheKey.Value
 
         let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
-        // A NEW migration is added — the schema changed even though no test
-        // source did. The salt must move.
         File.WriteAllText(Path.Combine(migrationsDir, "002_more.sql"), "ALTER TABLE a ADD COLUMN x int;")
         let keyAfter = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
 
@@ -3880,9 +3562,8 @@ let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache ke
 [<Fact(Timeout = 15000)>]
 let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to the no-salt key`` () =
     withTempDir "tp-dependson-absent" (fun tmpDir ->
-        // Even with files on disk that WOULD match a glob, a plugin configured
-        // with NO dependsOn must produce exactly the key it produced before the
-        // feature existed — so pre-existing on-disk caches keep hitting.
+        // Files on disk that WOULD match a glob, to prove the absent config is what
+        // decides.
         let migrationsDir = Path.Combine(tmpDir, "migrations")
         Directory.CreateDirectory(migrationsDir) |> ignore
         File.WriteAllText(Path.Combine(migrationsDir, "001_init.sql"), "CREATE TABLE a (id int);")
@@ -7644,7 +7325,7 @@ let ``an unanalysable file is reported LOUDLY, naming the file and the reason`` 
     let detail = entry.Detail |> Option.defaultValue ""
     test <@ detail.Contains "INVISIBLE to the impact graph" @>
 
-// --- AUTOMATION-112: the full-suite scope is part of the §2a cache key ---
+// --- AUTOMATION-112: the full-suite scope is part of the task cache key ---
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdict`` () =

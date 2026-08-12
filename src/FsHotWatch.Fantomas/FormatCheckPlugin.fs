@@ -25,10 +25,11 @@ let FormatTimeoutDefaultSec = 60
 /// CHANGE AGENT, so the daemon silently never processes another file change — and
 /// inside `performScan`, which `WaitForScan` blocks on as `check`'s very first
 /// step. A stuck file is skipped, loudly (`WorkTimedOut`).
+///
 /// `slowHook` is a TEST SEAM, mirroring `createFormatCheckWithSlowHook`: it runs
 /// inside the timeout-guarded region, before formatting, so a test can force the
-/// `WorkTimedOut` branch DETERMINISTICALLY rather than racing a zero-length timer
-/// against Fantomas (a coin toss that flakes on a warm box).
+/// `WorkTimedOut` branch deterministically rather than racing a zero-length timer
+/// against Fantomas.
 type FormatPreprocessor(?timeoutSec: int, ?slowHook: unit -> unit) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
 
@@ -132,10 +133,8 @@ let internal createFormatCheckWithSlowHook
                                 let source = File.ReadAllText(file)
                                 let isSignature = file.EndsWith(".fsi")
 
-                                // Drive Fantomas under the timeout's token so a
-                                // stuck/slow format is actually cancelled on
-                                // expiry (releasing the thread) rather than
-                                // orphaned. Fantomas's async honours the token.
+                                // Fantomas's async honours the token, so a stuck
+                                // format is cancelled on expiry, not orphaned.
                                 let formatted =
                                     Async.RunSynchronously(
                                         CodeFormatter.FormatDocumentAsync(isSignature, source),
@@ -241,9 +240,8 @@ let internal createFormatCheckWithSlowHook
             | FileChanged(SourceChanged files) when not (List.isEmpty files) ->
                 let sortedFiles = List.sort files
 
-                // Read every file or surrender the key. Using a fold with
-                // early exit (Option.bind) ensures any single unreadable
-                // file produces None for the whole event.
+                // Read every file or surrender the key: one unreadable file must
+                // produce None for the whole event.
                 let allInputs =
                     (Some [], sortedFiles)
                     ||> List.fold (fun acc f ->
@@ -261,9 +259,8 @@ let internal createFormatCheckWithSlowHook
 
 /// Read-only format check plugin (reports unformatted files without modifying them).
 /// Use this instead of FormatPreprocessor if you don't want auto-formatting.
-/// Respects .gitignore and .fantomasignore files in the repo root.
-/// Per-file format work is wrapped in `runWithTimeout`; on expiry the run is
-/// recorded as `TimedOut` and the orphan work continues running (result
-/// discarded).
+/// Respects .gitignore and .fantomasignore files in the repo root. Per-file format
+/// work is bounded by `runWithCancellableTimeout`; on expiry the run is recorded as
+/// `TimedOut` and the in-flight format is cancelled.
 let createFormatCheck (timeoutSec: int option) : PluginHandler<FormatCheckState, unit> =
     createFormatCheckWithSlowHook timeoutSec None

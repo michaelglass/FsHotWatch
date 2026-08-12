@@ -92,13 +92,10 @@ let ``classifyChange maps .slnx to SolutionChanged`` () =
     test <@ classifyChange "/repo/App.slnx" = SolutionChanged @>
 
 // === project.assets.json — post-restore package-graph signal ===
-// FR docs/fr-auto-refresh-fsproj-changes.md (2026-05-25): the daemon
-// must detect when `dotnet restore` materializes a new PackageReference,
-// not just when the user types `<PackageReference>` into the .fsproj.
-// `obj/project.assets.json` is the canonical post-restore signal — it's
-// updated atomically when the resolver finishes, so reacting to it
-// avoids the race where the .fsproj has the new package but restore
-// hasn't completed yet.
+// The daemon must detect a PackageReference `dotnet restore` materializes, not
+// only one the user typed into the .fsproj. `obj/project.assets.json` is written
+// atomically when the resolver finishes, so reacting to it avoids the race where
+// the .fsproj has the new package but restore has not completed.
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFile accepts obj/project.assets.json despite obj/ exclusion`` () =
@@ -117,8 +114,7 @@ let ``classifyChange maps obj/project.assets.json to ProjectChanged`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``classifyChange routes assets.json identically to .fsproj (so processBatch dispatch is shared)`` () =
-    // Both paths must arrive at processBatch through the same FileChangeKind
-    // variant so the project-tier code path handles them identically. If they
+    // Both must reach processBatch through the same FileChangeKind variant; if they
     // diverge, downstream tier-check / invalidation logic has to branch.
     let fsprojChange = classifyChange "/repo/src/MyProj/MyProj.fsproj"
     let assetsChange = classifyChange "/repo/src/MyProj/obj/project.assets.json"
@@ -183,20 +179,18 @@ let ``hasContentChanged returns true and removes from cache when file is deleted
     File.WriteAllText(tmpFile, "let x = 1")
     hasContentChanged tmpFile |> ignore // stores hash
     File.Delete(tmpFile)
-    // Now file doesn't exist - should return true and remove from cache
     test <@ hasContentChanged tmpFile = true @>
 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns true on IOException`` () =
-    // Use a path that will cause IOException (directory, not a file)
+    // A directory, not a file: reading it as a file raises IOException on most
+    // platforms.
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-ioerr-{Guid.NewGuid():N}")
 
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        // Reading a directory as a file causes IOException on most platforms
-        // If it doesn't throw, the test still passes (it's a best-effort test)
         let result = hasContentChanged tmpDir
         test <@ result = true @>
     finally
@@ -299,8 +293,7 @@ let ``FileWatcher with wildcard pattern fires SourceChanged for matching file`` 
         use _watcher =
             FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] 0.05 :> IDisposable
 
-        // Probe by repeatedly rewriting a matching file until the watcher delivers an event.
-        // FileSystemWatcher on macOS (kqueue/FSEvents backend) can have cold-start latency.
+        // Rewrite until an event lands: the macOS backend has cold-start latency.
         let configPath = Path.Combine(tmpDir, "coverage.ratchet.json")
 
         let hasMatch () =
@@ -338,12 +331,10 @@ let ``FileWatcher with literal filename pattern fires only for matching file`` (
         test <@ hasMatch () @>)
 
 // === Cross-instance dedup isolation (ContentDedup.Tracker) ===
-// The content-dedup hash store must be scoped per daemon instance, not shared
-// process-globally. Two daemons in one process (e.g. parallel test daemons, or
-// a daemon restarted over the same repo root within a long-lived process) watch
-// overlapping absolute paths; a hash written by daemon A must NOT suppress a
-// genuine first-observation change event in daemon B. The keys are absolute
-// paths, so the collision is exact: same path, two trackers.
+// The hash store must be scoped per daemon instance, not process-globally. Two
+// daemons in one process (parallel test daemons, or a restart over the same repo
+// root) watch overlapping absolute paths, and the keys ARE absolute paths — so a
+// hash written by daemon A would exactly collide with daemon B's.
 
 [<Fact(Timeout = 15000)>]
 let ``Tracker first observation reports changed even when another tracker already saw the file`` () =
@@ -356,11 +347,9 @@ let ``Tracker first observation reports changed even when another tracker alread
         let trackerA = Tracker()
         let trackerB = Tracker()
 
-        // Daemon A observes the file first and stores its hash.
         test <@ trackerA.HasContentChanged tmpFile = true @>
-        // Daemon B's FIRST EVER observation of the same path must still be
-        // reported as changed — B has never seen this file. With a shared
-        // global store this returns false (the genuine event is suppressed).
+        // B's first ever observation of that path must still report changed. With a
+        // shared global store this returns false and the genuine event is suppressed.
         test <@ trackerB.HasContentChanged tmpFile = true @>
     finally
         File.Delete(tmpFile)
@@ -380,15 +369,13 @@ let ``Tracker tracks its own state independently`` () =
     finally
         File.Delete(tmpFile)
 
-// === Item 6: FilePattern.parse must reject globs it cannot match consistently ===
+// === FilePattern.parse must reject globs it cannot match consistently ===
 //
-// An embedded (non-leading) `*` diverges between the two matchers: the raw
-// pattern string is handed to FileSystemWatcher.Filter (which GLOBS it, so the
-// OS watcher fires for e.g. schema.users.sql) while the in-process
-// FilePattern.matches treats it as a literal basename / literal suffix (which
-// never matches those same files) — the event fires and is then silently
-// dropped, so the user's file command never runs and never errors. parse must
-// reject such patterns loudly at config-load time instead.
+// An embedded (non-leading) `*` diverges between the two matchers: the raw pattern
+// goes to FileSystemWatcher.Filter, which GLOBS it (so the OS watcher fires for
+// schema.users.sql), while FilePattern.matches treats it as a literal basename or
+// suffix and never matches. The event fires and is silently dropped, so the user's
+// file command never runs and never errors — parse must reject it at config load.
 
 [<Fact(Timeout = 15000)>]
 let ``parse rejects literal patterns with embedded wildcard`` () =

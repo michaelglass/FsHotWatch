@@ -242,7 +242,6 @@ let ``formatErrors excludes files with only info entries from file count`` () =
 [<Fact(Timeout = 15000)>]
 let ``failIfNoProjects returns Some 2 when no fsproj exists`` () =
     withTempDir "failif-zero-projects" (fun tmpDir ->
-        // Empty src/ — no .fsproj files anywhere.
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
         |> ignore
 
@@ -265,9 +264,8 @@ let ``failIfNoProjects returns None when at least one fsproj exists`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``failIfNoProjects returns None when fsproj is in tests directory`` () =
-    // Exercises the cross-directory search: src/ exists but is empty; the
-    // sole fsproj lives under tests/. Both directories must be probed
-    // before the helper can declare success.
+    // src/ exists but is empty and the sole fsproj lives under tests/, so both directories
+    // must be probed before the helper can declare success.
     withTempDir "failif-tests-only" (fun tmpDir ->
         let srcDir = System.IO.Path.Combine(tmpDir, "src")
         let testsDir = System.IO.Path.Combine(tmpDir, "tests")
@@ -284,10 +282,8 @@ let ``failIfNoProjects returns None when fsproj is in tests directory`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``failIfNoProjects returns None when some fsprojs excluded but at least one remains`` () =
-    // Drives Array.exists past the first element: the first fsproj matches
-    // the exclude (predicate returns false → keep iterating); the second
-    // does not (predicate returns true → match). Without this case the
-    // "keep iterating" branch is never exercised.
+    // Drives `Array.exists` past its first element — with only one fsproj the "keep
+    // iterating" branch is never exercised.
     withTempDir "failif-mixed-excludes" (fun tmpDir ->
         let srcDir = System.IO.Path.Combine(tmpDir, "src")
 
@@ -310,10 +306,8 @@ let ``failIfNoProjects returns None when some fsprojs excluded but at least one 
 
 [<Fact(Timeout = 15000)>]
 let ``failIfNoProjects returns Some 2 when every fsproj is excluded`` () =
-    // Stress-test scenario: fsproj exists on disk but the user's exclude
-    // pattern matches it. The pre-check must respect repo-relative
-    // gitignore semantics (per Bug 1) so this exclude only matches files
-    // at repoRoot/.workspaces/...
+    // An fsproj exists on disk but the user's exclude pattern matches it. The pre-check
+    // resolves excludes with repo-relative gitignore semantics.
     withTempDir "failif-all-excluded" (fun tmpDir ->
         let srcDir = System.IO.Path.Combine(tmpDir, "src")
         System.IO.Directory.CreateDirectory(srcDir) |> ignore
@@ -331,7 +325,6 @@ let ``failIfNoProjects returns Some 2 when every fsproj is excluded`` () =
 [<Fact(Timeout = 30000)>]
 let ``runOnceAndReport returns 2 when no projects are discovered`` () =
     withTempDir "runonce-zero-projects" (fun tmpDir ->
-        // Empty src/ — no .fsproj files anywhere.
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
         |> ignore
 
@@ -355,19 +348,15 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
 // ---------------------------------------------------------------------------
 // AUTOMATION-117 — `confirm --run-once`: the merge verdict WITHOUT a daemon.
 //
-// `confirm` used to exist only on the daemon IPC path, and `--run-once` bypasses the
-// daemon entirely — which is what CI uses. So our own CI could not invoke the very
-// check it is supposed to be judged by. It ran the full suite anyway, but only because a
-// CI checkout starts with a COLD impact DB; warm that cache and the same green
-// would silently start coming from a subset.
+// `confirm` used to exist only on the daemon IPC path, and `--run-once` (what CI uses)
+// bypasses the daemon entirely. CI ran the full suite anyway, but only because a checkout
+// starts with a COLD impact DB; warm that cache and the same green comes from a subset.
 //
-// These drive the REAL run-once driver (`RunOnceCheck.runOnceAndVerdict`), not a
-// pure helper beside it. A repo with a project but NO test projects has no
-// test-prune plugin, so the `test-scope` command does not exist and the scope reads
-// `ScopeUnknown` — the "I could not establish what ran" case. `confirm` must
-// refuse it (exit 3); the inner loop is allowed to tolerate it (exit 0), because a
-// repo with no tests configured has no tests to run and punishing it would be
-// nonsense.
+// These drive the REAL run-once driver (`RunOnceCheck.runOnceAndVerdict`), not a pure
+// helper beside it. A repo with a project but NO test projects has no test-prune plugin, so
+// `test-scope` does not exist and the scope reads `ScopeUnknown` — "I could not establish
+// what ran". `confirm` must refuse it (exit 3); the inner loop tolerates it (exit 0),
+// because a repo with no tests configured has no tests to run.
 // ---------------------------------------------------------------------------
 
 /// A repo with one discoverable, loadable project and NO test projects.
@@ -390,16 +379,13 @@ let private withProjectOnlyRepo (name: string) (f: string -> 'a) : 'a =
 /// The cheapest config that still registers a plugin: the read-only format check —
 /// in-process (no `dotnet` spawn), and a no-op on a repo with no `.fs` files.
 ///
-/// It has to register SOMETHING. `waitForAllTerminal` is built on `isAllTerminal`,
-/// which is false for an EMPTY plugin map ("no plugins registered yet" is not
-/// "everything finished"), so a genuinely plugin-free daemon never settles and
-/// `RunOnce` blocks until its 30-minute timeout. Nothing to do with `confirm` — but it
-/// is exactly the kind of incidental hang that gets a test quarantined rather than
-/// understood, so it is named here.
+/// It has to register SOMETHING. `isAllTerminal` is false for an EMPTY plugin map ("no
+/// plugins registered yet" is not "everything finished"), so a genuinely plugin-free daemon
+/// never settles and `RunOnce` blocks until its 30-minute timeout.
 ///
-/// No build, no lint, and above all NO TESTS: with no test projects there is no
-/// test-prune plugin, hence no `test-scope` command, hence no way to establish what
-/// ran. That is the state `confirm` must refuse.
+/// No build, no lint, and above all NO TESTS: with no test projects there is no test-prune
+/// plugin, hence no `test-scope` command, hence no way to establish what ran. That is the
+/// state `confirm` must refuse.
 let private noTestProjectsConfig () : DaemonConfiguration =
     { defaultTestConfig () with
         Build = None
@@ -426,31 +412,25 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
 
 [<Fact(Timeout = 60000)>]
 let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` () =
-    // `confirm`'s whole reason to exist. No test-prune plugin ⇒ no `test-scope` command
-    // ⇒ the scope cannot be established ⇒ `ScopeUnknown`, which is NOT full-suite and
-    // therefore cannot reach a green. Exit 3 = UnearnedScope: nothing is reported
-    // broken, and nothing is reported sound either.
+    // No test-prune plugin ⇒ no `test-scope` command ⇒ `ScopeUnknown`, which is not
+    // full-suite and so cannot reach green. Exit 3 = UnearnedScope: nothing reported broken,
+    // nothing reported sound either.
     withProjectOnlyRepo "confirm-runonce-refuses" (fun repoRoot ->
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.Confirmation repoRoot
         test <@ exitCode = 3 @>)
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once tolerates an unknown scope`` () =
-    // The inner loop is allowed to test LESS. A repo with no tests configured is not a
-    // failure of `check` — only of `confirm`. Same driver, same tree, DIFFERENT mode: this
-    // is what pins that the mode is what decides, and not something incidental.
+    // Same driver, same tree, DIFFERENT mode — this pins that the mode is what decides.
     //
-    // It is ALSO the positive control for the faulted-read test below: same driver, same
-    // tree, same config, and the only difference there is that the `test-scope` command
-    // throws. An exit 3 there is therefore the fault's doing and nothing else's.
+    // It is also the positive control for the faulted-read test below, where the only
+    // difference is a throwing `test-scope`; an exit 3 there is therefore the fault's doing.
     withProjectOnlyRepo "check-runonce-tolerates" (fun repoRoot ->
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
         test <@ exitCode = 0 @>)
 
-/// The REAL run-once driver, on a daemon whose `test-scope` command throws.
-///
-/// Identical to `runOnceIn` in every other respect — same repo shape, same config, same
-/// mode — so the only variable is whether the scope read succeeds.
+/// The REAL run-once driver, on a daemon whose `test-scope` command throws. Identical to
+/// `runOnceIn` otherwise, so the only variable is whether the scope read succeeds.
 let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRoot: string) : int =
     let createDaemon (root: string) =
         let daemon =
@@ -484,14 +464,12 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once REFUSES a scope read that faulted — and records WHY on disk`` () =
-    // The fail-open, driven end to end. The daemon holds no test evidence; asking it what
-    // ran throws. Before the split, that fault produced the same value as the test above
-    // (`ScopeUnknown`), which the inner loop tolerates — so `check` exited 0 having
-    // verified nothing, which is the exact end state `NoTestsRun` exists to refuse.
+    // The trap: a throwing scope read used to produce the same `ScopeUnknown` as the test
+    // above, which the inner loop tolerates — so `check` exited 0 having verified nothing.
     //
-    // Now it is exit 3, and the verdict FILE carries the reason: an agent that reads
-    // `.fshw/verdict.json` must be able to tell "this repo has no tests" from "this check
-    // could not see what it was judging", because only the second one is a broken check.
+    // The verdict FILE must also carry the reason: a reader of `.fshw/verdict.json` has to
+    // tell "this repo has no tests" from "this check could not see what it was judging",
+    // because only the second is a broken check.
     withProjectOnlyRepo "check-runonce-faulted-scope" (fun repoRoot ->
         let exitCode =
             runOnceWithFaultingScope FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
@@ -511,12 +489,9 @@ let ``check --run-once REFUSES a scope read that faulted — and records WHY on 
 
 [<Fact(Timeout = 60000)>]
 let ``run-once publishes a verdict file that agrees with its exit code`` () =
-    // Before AUTOMATION-117 the run-once path wrote NO verdict at all — so `fshw
-    // verdict` after a CI run reported "no verdict on disk". The machine-readable
-    // answer was missing from the one place a machine was reading.
-    //
-    // The file and the exit code are two renderings of ONE `CheckOutcome`, so this
-    // pins that they cannot disagree: a refused confirm must not leave a green on disk.
+    // The run-once path once wrote NO verdict at all, so `fshw verdict` after a CI run
+    // reported "no verdict on disk" (AUTOMATION-117). File and exit code are two renderings
+    // of ONE `CheckOutcome`: a refused confirm must not leave a green on disk.
     withProjectOnlyRepo "runonce-verdict-file" (fun repoRoot ->
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.Confirmation repoRoot
 
@@ -533,21 +508,17 @@ let ``run-once publishes a verdict file that agrees with its exit code`` () =
 // A CRASHED PLUGIN MUST NOT GREEN CI.
 //
 // `PluginStatus.Failed` is reachable WITHOUT a single `ErrorEntry` being written:
-// PluginFramework's two crash-nets (a faulted exclusive run; a throwing event
-// handler) force `Failed` and report NO diagnostics — deliberately, because the
+// PluginFramework's crash-nets force `Failed` and report NO diagnostics, because the
 // framework cannot invent a file/line for someone else's stack trace.
 //
-// The daemon path has always counted that: `IpcOutput.hasFailures` is
-// `anyPluginFailed || failingDiagnostics`. The `--run-once` path — which is what CI
-// runs — counted ONLY the diagnostics, so a plugin that CRASHED exited 0, `outcome:
-// green`, with `plugins: [{"outcome":"fail"}]` sitting in the same verdict file.
-//
-// This drives the REAL run-once driver against a plugin that throws in its handler.
+// The daemon path counts that (`IpcOutput.hasFailures` is `anyPluginFailed ||
+// failingDiagnostics`). The `--run-once` path — what CI runs — counted ONLY the
+// diagnostics, so a CRASHED plugin exited 0 with `outcome: green` and
+// `plugins: [{"outcome":"fail"}]` in the same verdict file.
 // ---------------------------------------------------------------------------
 
-/// A plugin whose event handler THROWS. Not a contrived shape: this is what EVERY
-/// unhandled plugin exception looks like from the framework's side. It writes no
-/// `ErrorEntry` — it never gets the chance to.
+/// A plugin whose event handler THROWS — what every unhandled plugin exception looks like
+/// from the framework's side. It writes no `ErrorEntry`; it never gets the chance to.
 let private crashingHandler () : FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
     { Name = FsHotWatch.PluginFramework.PluginName.create "crash-plugin"
       Init = ()
@@ -557,9 +528,9 @@ let private crashingHandler () : FsHotWatch.PluginFramework.PluginHandler<unit, 
       CacheKey = None
       Teardown = None }
 
-/// A run-once driver whose daemon carries a plugin that has been handed an event it
-/// will crash on. The event is emitted BEFORE `RunOnce`, so the crash happens inside
-/// the settle the driver itself waits out — exactly as a real plugin fault would.
+/// A run-once driver whose daemon carries a plugin handed an event it will crash on. The
+/// event is emitted BEFORE `RunOnce`, so the crash happens inside the settle the driver
+/// itself waits out — as a real plugin fault would.
 let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRoot: string) : int =
     let createDaemon (root: string) =
         let daemon =
@@ -583,8 +554,8 @@ let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.Che
 
 [<Fact(Timeout = 60000)>]
 let ``check --run-once goes RED on a plugin that FAILED without writing a diagnostic`` () =
-    // THE hole. The ledger is spotless — the plugin never reached `ReportErrors`,
-    // it threw. Exit 0 here is a green stamped over a check that did not run.
+    // The ledger is spotless — the plugin never reached `ReportErrors`, it threw. Exit 0
+    // here would be a green stamped over a check that did not run.
     withProjectOnlyRepo "runonce-crashed-plugin" (fun repoRoot ->
         let exitCode =
             runOnceWithCrashedPlugin FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
@@ -593,9 +564,8 @@ let ``check --run-once goes RED on a plugin that FAILED without writing a diagno
 
 [<Fact(Timeout = 60000)>]
 let ``the verdict file can NEVER say green while a plugin says fail`` () =
-    // The contradiction bug #1 produces, asserted on the artifact itself:
-    // `{"outcome":"green", "plugins":[{"outcome":"fail"}]}`. Whatever the exit code,
-    // the FILE must not be able to state both.
+    // The contradiction asserted on the artifact itself: `{"outcome":"green",
+    // "plugins":[{"outcome":"fail"}]}`. Whatever the exit code, the FILE cannot state both.
     withProjectOnlyRepo "runonce-crashed-verdict-file" (fun repoRoot ->
         runOnceWithCrashedPlugin FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
         |> ignore
@@ -613,9 +583,9 @@ let ``the verdict file can NEVER say green while a plugin says fail`` () =
 // ---------------------------------------------------------------------------
 // RunOnceCheck — `confirm`'s scope commands over the IN-PROCESS transport.
 //
-// The daemon path reaches `test-scope`/`set-scope` over a socket; run-once reaches
-// the same commands on the same plugin host, directly. These pin the transport and
-// the fail-closed reading, without a daemon, a build, or a test run.
+// The daemon path reaches `test-scope`/`set-scope` over a socket; run-once reaches the same
+// commands on the same plugin host, directly. These pin the transport and the fail-closed
+// reading, without a daemon, a build, or a test run.
 // ---------------------------------------------------------------------------
 
 /// A host carrying a test-prune-shaped plugin that answers the given commands.
@@ -662,19 +632,17 @@ let ``readTestRun reports an impact-filtered run as filtered, never as full`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``readTestRun on a host with NO test-scope command is ScopeUnknown, not full-suite`` () =
-    // AUTOMATION-129 in miniature: the command `confirm` asks for did not exist, the host
-    // returned nothing, and that silence must read as "I could not establish what ran" —
-    // which `confirm` refuses. It must never round up to full-suite.
+    // The host returned nothing because the command does not exist; that silence must read
+    // as "I could not establish what ran", never round up to full-suite (AUTOMATION-129).
     let report = FsHotWatch.Cli.RunOnceCheck.readTestRun (hostWith [])
     test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ScopeUnknown @>
 
 [<Fact(Timeout = 15000)>]
 let ``readTestRun on a THROWING test-scope command is ScopeUnreadable, NOT the tolerated unknown`` () =
-    // Fail closed: a command that blows up has not established a scope. And it fails
-    // closed to its OWN value — a throw is "I could not find out", which is a different
-    // fact from the no-test-projects host above ("there is nothing to find out"). They
-    // were the same value, and because the inner loop tolerates the second it tolerated
-    // the first, so a throwing read exited 0.
+    // A throw is "I could not find out", a different fact from the no-test-projects host
+    // above ("there is nothing to find out"). The trap: they were once the SAME value, and
+    // because the inner loop tolerates the second it tolerated the first — so a throwing
+    // read exited 0.
     let host =
         hostWith [ FsHotWatch.Cli.IpcParsing.TestScopeCommand, fun _ -> failwith "SQLITE_BUSY" ]
 
@@ -685,27 +653,24 @@ let ``readTestRun on a THROWING test-scope command is ScopeUnreadable, NOT the t
     | other -> failwithf "expected ScopeUnreadable carrying the fault, got %A" other
 
 // ---------------------------------------------------------------------------
-// A FAULTED READING IS NOT A GOOD READING (AUTOMATION-150's principle, applied to
-// the TEST SCOPE).
+// A FAULTED READING IS NOT A GOOD READING (AUTOMATION-150's principle, applied to the
+// TEST SCOPE).
 //
-// `CheckVerdict.verdict` refuses `NoTestsRun` in BOTH modes — "the daemon holds no
-// test evidence at all" may never read as green. But that refusal is only ever
-// reached when the scope read SUCCEEDS. Every way of failing to read it — the
-// command threw, the reply was garbage, the daemon answered something this build
-// has no name for — degraded to the SAME value the "this repo has no tests
-// configured" case uses, and the inner loop tolerates that value.
+// `CheckVerdict.verdict` refuses `NoTestsRun` in BOTH modes, but that refusal is only
+// reached when the scope read SUCCEEDS. Every way of failing to read it — the command
+// threw, the reply was garbage, the daemon answered something this build has no name for —
+// degraded to the SAME value the "this repo has no tests configured" case uses, which the
+// inner loop tolerates. So a fault converted a refusal (exit 3) into a pass (exit 0) on an
+// identical daemon state: "I could not read what ran" collapsed into "nothing needed to
+// run".
 //
-// So a fault on the read path converted a refusal (exit 3) into a pass (exit 0) on
-// an identical daemon state: exactly `PendingVerification`'s bug, one layer up —
-// "I could not read what ran" collapsed into "nothing needed to run".
-//
-// These drive the REAL transport read and the REAL verdict, composed, so the test
-// fails if either half stops holding.
+// These compose the REAL transport read with the REAL verdict, so the test fails if either
+// half stops holding.
 // ---------------------------------------------------------------------------
 
-/// The exit code `fshw check` (InnerLoop) would produce for `scope`, with everything
-/// else spotless: complete coverage, no failing plugin, no failing diagnostic, no
-/// deferred build. The scope is the ONLY variable.
+/// The exit code `fshw check` (InnerLoop) would produce for `scope`, with everything else
+/// spotless: complete coverage, no failing plugin or diagnostic, no deferred build. The
+/// scope is the ONLY variable.
 let private innerLoopExitFor (scope: FsHotWatch.Cli.IpcParsing.TestScope) : int =
     let inputs: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
@@ -722,9 +687,8 @@ let private scopeReadFrom (host: FsHotWatch.PluginHost.PluginHost) : FsHotWatch.
 
 [<Fact(Timeout = 15000)>]
 let ``check refuses a scope read that FAULTED — a fault may not be read as a pass`` () =
-    // POSITIVE CONTROL 1: the fixture can observe an exit 0. A host that answers with a
-    // real full-suite run goes green through this exact composition, so a non-zero below
-    // is the scope's doing and not a broken harness.
+    // POSITIVE CONTROL 1: the fixture can observe an exit 0, so a non-zero below is the
+    // scope's doing and not a broken harness.
     let ranEverything =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
@@ -732,9 +696,8 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
 
     test <@ innerLoopExitFor (scopeReadFrom ranEverything) = 0 @>
 
-    // POSITIVE CONTROL 2: the state we are worried about, READ SUCCESSFULLY, is already
-    // refused. The daemon has three test projects and holds no test evidence; it says so;
-    // `check` exits 3. This is the behaviour the fault below must not be able to undo.
+    // POSITIVE CONTROL 2: the same state READ SUCCESSFULLY is already refused — three test
+    // projects, no test evidence, exit 3. That is what the fault below must not undo.
     let ranNothing =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
@@ -742,23 +705,21 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
 
     test <@ innerLoopExitFor (scopeReadFrom ranNothing) = 3 @>
 
-    // THE DEFECT: the SAME daemon state, but the read throws. Nothing about what ran has
-    // changed — only our ability to find out — and the answer flips from "no verdict" to
-    // "everything is fine".
+    // THE DEFECT: the SAME daemon state, but the read throws. Only our ability to find out
+    // changed, yet the answer flipped from "no verdict" to "everything is fine".
     let threw =
         hostWith [ FsHotWatch.Cli.IpcParsing.TestScopeCommand, fun _ -> failwith "SQLITE_BUSY: database is locked" ]
 
     test <@ innerLoopExitFor (scopeReadFrom threw) <> 0 @>
 
-    // ...and the same for a reply this build cannot turn into a scope at all. An answer
-    // we cannot read is not an answer.
+    // ...and the same for a reply this build cannot turn into a scope at all.
     let garbled =
         hostWith [ FsHotWatch.Cli.IpcParsing.TestScopeCommand, fun _ -> "<html>502 Bad Gateway</html>" ]
 
     test <@ innerLoopExitFor (scopeReadFrom garbled) <> 0 @>
 
-    // ...and for a daemon that contradicts itself: "full", over 2 of 4 projects. The
-    // counts are the evidence and they refute the label; that is unreadable, not clean.
+    // ...and for a daemon that contradicts itself: "full", over 2 of 4 projects. The counts
+    // are the evidence and they refute the label, so that reads unreadable, not clean.
     let selfContradicting =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
@@ -768,12 +729,10 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
 
 [<Fact(Timeout = 15000)>]
 let ``check still tolerates a host with NO test-scope command — nothing to read is not a fault`` () =
-    // THE OVER-CORRECTION GUARD, and the reason this is a split rather than a blanket
-    // refusal. A host with no `test-scope` command has no test projects configured: there
-    // is no test evidence to be had, and there never was any to lose. That is a PROVABLE
-    // nothing — `PendingVerification`'s missing-sidecar case — not a failed read, and
-    // turning every tests-less repo's inner loop red would be a worse bug than the one
-    // above. Exit 0 stays exit 0.
+    // The over-correction guard, and why this is a split rather than a blanket refusal. A
+    // host with no `test-scope` command has no test projects configured — a PROVABLE
+    // nothing, not a failed read — and turning every tests-less repo's inner loop red would
+    // be a worse bug than the one above.
     test <@ innerLoopExitFor (scopeReadFrom (hostWith [])) = 0 @>
 
     // A run still IN FLIGHT is the same kind of fact: the daemon answered, and its answer
@@ -785,8 +744,7 @@ let ``check still tolerates a host with NO test-scope command — nothing to rea
 
 [<Fact(Timeout = 15000)>]
 let ``confirm refuses every scope it did not positively establish — fault or not`` () =
-    // `confirm` was already right about all of these and must STAY right: the split above
-    // may not open a door on the confirmation side. Exit 3 across the board.
+    // The split above may not open a door on the confirmation side. Exit 3 across the board.
     let confirmExit (scope: FsHotWatch.Cli.IpcParsing.TestScope) =
         let inputs: FsHotWatch.Cli.CheckVerdict.CheckInputs =
             { PluginStatuses = Map.empty
@@ -815,11 +773,10 @@ let ``confirm refuses every scope it did not positively establish — fault or n
 
 [<Fact(Timeout = 15000)>]
 let ``requestFullSuiteScope sends set-scope full to the host`` () =
-    // The AUTOMATION-129 regression, pinned: `confirm` must address the COMMAND
-    // (`set-scope`), not the plugin (`test-prune`). It once passed the plugin name in the
-    // command slot, so the host resolved nothing, the request never landed, and `confirm`
-    // could never establish a full-suite scope on any repo, ever. It failed SAFE — which
-    // is why nothing caught it for its whole life.
+    // AUTOMATION-129: `confirm` must address the COMMAND (`set-scope`), not the plugin
+    // (`test-prune`). It once passed the plugin name in the command slot, so the host
+    // resolved nothing and `confirm` could never establish a full-suite scope on any repo.
+    // It failed SAFE, which is why nothing caught it.
     let mutable received: string list = []
 
     let host =
@@ -835,15 +792,14 @@ let ``requestFullSuiteScope sends set-scope full to the host`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``requestFullSuiteScope survives a host that has no set-scope command`` () =
-    // A repo with no test projects has no such command. That is not a crash — it is a
-    // a check with nothing to judge, and `readTestRun` will refuse it on the evidence.
+    // A repo with no test projects has no such command. Not a crash — `readTestRun` refuses
+    // it on the evidence instead.
     FsHotWatch.Cli.RunOnceCheck.requestFullSuiteScope (hostWith [])
 
 [<Fact(Timeout = 15000)>]
 let ``requestFullRun asks the host to run EVERY project — no filter, no selection`` () =
-    // `confirm`'s teeth. `run-tests` with an empty payload means "all configured projects,
-    // unfiltered" — a filter or a project list here would be `confirm` quietly narrowing
-    // the very thing it exists to widen.
+    // `run-tests` with an empty payload means "all configured projects, unfiltered" — a
+    // filter or project list here would be `confirm` narrowing what it exists to widen.
     let mutable received: string list = []
 
     let host =
@@ -865,7 +821,7 @@ let ``requestFullRun survives a host with no run-tests command`` () =
 [<Fact(Timeout = 15000)>]
 let ``requestFullRun survives a THROWING run-tests command`` () =
     // A forced run that blows up has produced no evidence. `confirm` must still reach its
-    // verdict (and refuse), never die with a stack trace on the way there.
+    // verdict and refuse, not die with a stack trace on the way there.
     let host =
         hostWith [ FsHotWatch.Cli.IpcParsing.RunTestsCommand, fun _ -> failwith "runner exploded" ]
 

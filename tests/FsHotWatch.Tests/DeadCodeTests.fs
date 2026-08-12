@@ -188,7 +188,6 @@ let ``verbose run annotates each unreachable symbol with a reason`` () =
         let lines = formatReport true result
         let joined = System.String.Join("\n", lines)
 
-        // orphan has no incoming edges at all.
         test <@ joined.Contains("App.Lib.orphan") @>
         test <@ joined.Contains("no incoming edges") @>)
 

@@ -166,7 +166,6 @@ let private createCFStringArray (paths: string list) =
         |> List.toArray
 
     if cfStrings |> Array.exists (fun s -> s = nativeint 0) then
-        // Release any successfully created strings before failing
         for s in cfStrings do
             if s <> nativeint 0 then
                 CFRelease(s)
@@ -317,13 +316,12 @@ type FsEventStream
                     let rl = CFRunLoopGetCurrent()
                     Volatile.Write(&runLoopRef, rl)
 
-                    // Schedule the stream on this thread's run loop before signalling
+                    // Schedule before signalling — the constructor starts the stream once
+                    // this fires.
                     FSEventStreamScheduleWithRunLoop(capturedStreamRef, rl, capturedModeRef)
-
-                    // Signal the constructor that scheduling is complete
                     runLoopReady.Set()
 
-                    // Block here, pumping CFRunLoop events until CFRunLoopStop() is called in cleanup()
+                    // Blocks, pumping CFRunLoop events, until CFRunLoopStop() in cleanup().
                     CFRunLoopRun()
                     debug "fsevents" "CFRunLoopRun() returned — run loop thread exiting")
 
@@ -331,10 +329,9 @@ type FsEventStream
             runLoopThread.Name <- "com.fshotwatch.fsevents.runloop"
             runLoopThread.Start()
 
-            // Wait until the run loop thread has scheduled the stream
             runLoopReady.Wait()
 
-            // Start the stream — safe to call from any thread once the stream is scheduled
+            // Safe from any thread once the stream is scheduled.
             if not (FSEventStreamStart(streamRef)) then
                 failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
 
@@ -365,7 +362,6 @@ let create (directories: string list) (onFileEvent: string -> unit) (latencySeco
     new FsEventStream(directories, onFileEvent, None, latencySeconds)
 
 /// Create an FsEventStream with a handler for coalesced (MustScanSubDirs) events.
-/// `latencySeconds` is the FSEvents coalescing window passed to `FSEventStreamCreate`.
 let createWithCoalesced
     (directories: string list)
     (onFileEvent: string -> unit)

@@ -80,8 +80,8 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Completed verdict summary is captured in history`` () =
-    // The status IS the summary channel: there is no side-channel left to
-    // disagree with it (CompleteWithSummary was deleted with AUTOMATION-99).
+    // The status IS the summary channel — CompleteWithSummary is gone
+    // (AUTOMATION-99), so no side-channel is left to disagree with it.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
@@ -108,8 +108,7 @@ let ``Completed verdict elapsed is recorded in history`` () =
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("timer") |> List.isEmpty |> not) 12000
     let r = List.head (host.GetHistory("timer"))
-    // The record carries the verdict's sworn duration — exactly, not a host
-    // wall-clock approximation.
+    // The verdict's measured duration, exactly — not a host wall-clock estimate.
     test <@ r.Elapsed = TimeSpan.FromMilliseconds 25.0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -126,11 +125,10 @@ let ``Terminal transition auto-ends open subtasks`` () =
 
 // --- The Failed path can no longer manufacture a zero-length run -------------
 //
-// AUTOMATION-99's diagnostic tell is a terminal that renders "started:" with no
-// "elapsed:". It survived the first fix on the `Failed` arm: RecordTerminal fell
-// back to `startedAt = at` whenever no `Running` preceded, recording elapsed 0.
-// Now the verdict rides the terminal TRANSITION, so the host derives startedAt
-// from the run's own sworn duration and never guesses.
+// The trap (AUTOMATION-99): with no `Running` before the terminal, RecordTerminal
+// fell back to `startedAt = at` and recorded elapsed 0 — a terminal rendering
+// "started:" with no "elapsed:". The verdict now rides the terminal transition,
+// so the host derives startedAt from the run's own measured duration.
 
 /// A handler that reports a terminal `Failed` WITHOUT ever reporting `Running`
 /// — the shape that used to record a fabricated zero-length run.
@@ -176,8 +174,6 @@ let ``a Failed with no preceding Running still records the verdict's measured el
 
 [<Fact(Timeout = 15000)>]
 let ``a Failed run's history summary comes from the verdict, not a side-channel`` () =
-    // One channel: the status IS the summary. There is no CompleteWithSummary
-    // left to set a different value with.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     host.RegisterHandler(

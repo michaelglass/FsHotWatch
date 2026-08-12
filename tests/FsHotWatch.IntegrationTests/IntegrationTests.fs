@@ -57,13 +57,9 @@ let private findRepoRoot () =
 
     walk assemblyDir
 
-/// Poll until the plugin status is no longer Running, with a timeout.
 let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeoutMs: int) =
     waitForSettled host pluginName timeoutMs
 
-// ---------------------------------------------------------------------------
-// Helper: build the ExampleAnalyzer once (thread-safe, shared across tests)
-// ---------------------------------------------------------------------------
 let private exampleAnalyzerPath =
     lazy
         let repoRoot = findRepoRoot ()
@@ -78,9 +74,6 @@ let private exampleAnalyzerPath =
 
         Path.Combine(dir, "bin/Debug/net10.0")
 
-// ---------------------------------------------------------------------------
-// Helper: build the repo's own convention rules (FsHotWatch.Rules) once
-// ---------------------------------------------------------------------------
 let private conventionRulesPath =
     lazy
         let repoRoot = findRepoRoot ()
@@ -104,11 +97,9 @@ let ``all plugins receive events when checking a file`` () =
     let pipeline = CheckPipeline(checker)
     let host = PluginHost.create checker repoRoot
 
-    // Pick a simple source file from FsHotWatch itself
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
 
-    // Get script options for the file
     let sourceText = SourceText.ofString source
 
     let projOptions =
@@ -118,7 +109,6 @@ let ``all plugins receive events when checking a file`` () =
 
     pipeline.RegisterProject("FsHotWatch", projOptions)
 
-    // Register all four plugins
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
@@ -132,48 +122,40 @@ let ``all plugins receive events when checking a file`` () =
     host.RegisterHandler(fantomas)
     host.RegisterHandler(analyzers)
 
-    // Check the file via the pipeline
     let result =
         pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
-    // Emit the check result to plugins (triggers lint, analyzers, test-prune)
     match result with
     | Some checkResult -> host.EmitFileChecked(checkResult)
     | None -> failwith "Failed to check file"
 
-    // Verify plugins that listen to OnFileChecked received events
     test <@ host.GetStatus("lint").IsSome @>
     test <@ host.GetStatus("analyzers").IsSome @>
     test <@ host.GetStatus("test-prune").IsSome @>
 
-    // Emit a FileChanged for fantomas (it listens to OnFileChanged, not OnFileChecked)
+    // format-check listens to OnFileChanged, not OnFileChecked.
     host.EmitFileChanged(SourceChanged [ sourceFile ])
     test <@ host.GetStatus("format-check").IsSome @>
 
-    // Run the "diagnostics" command on the analyzers plugin
     let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
     test <@ diagResult.IsSome @>
     test <@ diagResult.Value.Contains("analyzers") @>
     test <@ diagResult.Value.Contains("files") @>
     test <@ diagResult.Value.Contains("diagnostics") @>
 
-    // Run the "warnings" command on the lint plugin
     let warnResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
     test <@ warnResult.IsSome @>
     test <@ warnResult.Value.Contains("files") @>
     test <@ warnResult.Value.Contains("warnings") @>
 
-    // Run the "unformatted" command on the format-check plugin
     let fmtResult = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
     test <@ fmtResult.IsSome @>
     test <@ fmtResult.Value.Contains("count") @>
 
-    // Run the "affected-tests" command on the test-prune plugin
     let testsResult = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
     test <@ testsResult.IsSome @>
     test <@ testsResult.Value.StartsWith("[") @>
 
-    // Run the "changed-files" command on the test-prune plugin
     let filesResult = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
     test <@ filesResult.IsSome @>
     test <@ filesResult.Value.StartsWith("[") @>
@@ -215,7 +197,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let host = PluginHost.create checker repoRoot
     host.RegisterHandler(analyzers)
 
-    // Check Events.fs — it has match expressions the wildcard analyzer might inspect
+    // Events.fs has match expressions the wildcard analyzer can inspect.
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
     let sourceText = SourceText.ofString source
@@ -241,26 +223,20 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
 
     completion.Wait(TimeSpan.FromSeconds 25.0) |> ignore
 
-    // The analyzers plugin should have completed (or failed gracefully)
     let status = host.GetStatus("analyzers")
     test <@ status.IsSome @>
 
-    // Verify it completed rather than failed — real analyzers should work
     match status.Value with
-    | Completed _ -> () // Success — analyzers ran and produced results
+    | Completed _ -> ()
     | PluginStatus.Failed(msg, _, _) ->
-        // G-Research analyzers may fail due to FCS version mismatch, that's OK
-        // as long as the plugin handled it gracefully
+        // G-Research analyzers can fail on an FCS version mismatch; the assertion is
+        // that the plugin handled it rather than crashed.
         let info = sprintf "Analyzers failed gracefully: %s" msg
         Assert.True(true, info)
     | other -> Assert.Fail(sprintf "Unexpected status: %A" other)
 
-// ---------------------------------------------------------------------------
-// Fail-loud guard (DaemonConfig.analyzersLoadFailure): a CONFIGURED analyzer
-// path that loads ≥1 analyzer must NOT fire the guard. Uses the real
-// ExampleAnalyzer bin so this exercises the genuine load path (excluded from
-// coverage in this project because the SDK-reflection load is nondeterministic).
-// ---------------------------------------------------------------------------
+// Uses the real ExampleAnalyzer bin, so this exercises the genuine SDK-reflection
+// load path — which is nondeterministic and therefore excluded from coverage.
 [<Fact(Timeout = 30000)>]
 let ``analyzers load guard does not fire when a real analyzer loads`` () =
     let analyzerPath = exampleAnalyzerPath.Value
@@ -268,21 +244,15 @@ let ``analyzers load guard does not fire when a real analyzer loads`` () =
     let handler =
         AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Hint
 
-    // The real ExampleAnalyzer DLL contributes at least one analyzer.
     test <@ handler.Init.LoadedCount >= 1 @>
 
-    // Per-path guard: the one configured path loaded ≥1 ⇒ no failure (gate stays
-    // green). LoadedByPath is the genuine per-path result from the real load.
+    // LoadedByPath is the genuine per-path result of the real load, not a stub.
     test <@ (FsHotWatch.Cli.DaemonConfig.analyzerPathFailures handler.Init.LoadedByPath).IsNone @>
 
-// ---------------------------------------------------------------------------
-// Per-path strictness end-to-end through registerPlugins, exercising the REAL
-// SDK load: a multi-path config where one path loads ≥1 (the ExampleAnalyzer
-// bin) and the others are empty / missing (load 0) must STILL raise ConfigError,
-// naming the zero-loading paths but NOT the one that loaded. This is the partial
-// silent-skip the earlier aggregate (total==0) guard missed. Lives here (not the
-// coverage-rachet unit suite) because the SDK-reflection load is nondeterministic.
-// ---------------------------------------------------------------------------
+// Pins the partial silent-skip the earlier aggregate (total == 0) guard missed: when
+// one path loads ≥1 and others load 0, registerPlugins must still raise, naming only
+// the zero-loading paths. Lives here rather than the unit suite because it needs the
+// real SDK load.
 [<Fact(Timeout = 30000)>]
 let ``analyzers load guard fires per-path when one of several paths loads zero`` () =
     let goodPath = exampleAnalyzerPath.Value
@@ -307,21 +277,15 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
         let ex =
             Assert.Throws<DaemonConfig.ConfigError>(fun () -> DaemonConfig.registerPlugins daemon tmpDir config)
 
-        // The two zero-loading paths are named …
         Assert.Contains(emptyPath, ex.Message)
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
-        // … but the path that loaded ≥1 analyzer is NOT named.
         test <@ not (ex.Message.Contains(goodPath)) @>
-        // The plugin must NOT have registered.
         test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
 
-// ---------------------------------------------------------------------------
-// Helper: create a temp directory with a single .fs returning (dir, filePath)
-// ---------------------------------------------------------------------------
-/// As `withTempFsFile`, but the caller names the file. FSHW-WAIT-001 is scoped
-/// to TEST sources by file name, so a control for it has to be written to a
-/// `*Tests.fs` — under the default `Temp.fs` the rule is out of scope and every
-/// assertion about it would pass for that reason instead of the intended one.
+/// As `withTempFsFile`, but the caller names the file. FSHW-WAIT-001 is scoped to TEST
+/// sources by file name, so a control for it must be written to a `*Tests.fs` — under
+/// the default `Temp.fs` the rule is out of scope and assertions pass for that reason
+/// rather than the intended one.
 let private withTempFsFileNamed (fileName: string) (content: string) (action: string -> string -> 'a) =
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-test-{Guid.NewGuid():N}")
     Directory.CreateDirectory(dir) |> ignore
@@ -339,9 +303,6 @@ let private withTempFsFileNamed (fileName: string) (content: string) (action: st
 let private withTempFsFile (content: string) (action: string -> string -> 'a) =
     withTempFsFileNamed "Temp.fs" content action
 
-// ---------------------------------------------------------------------------
-// Helper: set up checker + pipeline + project options for a temp file
-// ---------------------------------------------------------------------------
 let private checkTempFile (checker: FSharpChecker) (filePath: string) =
     let source = File.ReadAllText(filePath)
     let sourceText = SourceText.ofString source
@@ -359,14 +320,10 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
 
     result
 
-// ---------------------------------------------------------------------------
-// Helper: run an analyzer test — build analyzer, check a temp file, assert on result
-// ---------------------------------------------------------------------------
-
 // Process-wide gate: AnalyzersPlugin tests share an FSharpChecker and contend on
-// analyzer-DLL loading. Running >1 in parallel (or against a busy CPU from the
-// rest of the suite) triggers >10s waits in `waitForTerminalStatus`. Serialize
-// them so each gets a clean FCS slice.
+// analyzer-DLL loading. Running >1 in parallel (or against a CPU busy with the rest of
+// the suite) triggers >10s waits in `waitForTerminalStatus`. Serialize them so each
+// gets a clean FCS slice.
 let private analyzerCheckGate = new SemaphoreSlim(1, 1)
 
 let private withAnalyzerGate (body: unit -> unit) =
@@ -386,14 +343,11 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
         let host = PluginHost.create checker repoRoot
 
-        // failOnSeverity = Error so the analyzer's RAW severity survives to the
-        // ledger. With the default Hint threshold, `promoteIfFailing` rewrites
-        // every sub-error finding (incl. this wildcard Warning) to Error with a
-        // `[promoted from warning]` prefix — correct production behaviour (it fails the
-        // build), but it masks the raw severity these tests assert on. Error is
-        // the highest threshold, so promotion never fires and a Warning stays a
-        // Warning. The promotion path itself is covered by the dedicated
-        // `promoteIfFailing` unit tests in AnalyzersPluginTests.fs.
+        // failOnSeverity = Error so the analyzer's RAW severity survives to the ledger.
+        // Under the default Hint threshold `promoteIfFailing` rewrites every sub-error
+        // finding to Error — correct in production, but it masks the raw severity these
+        // tests assert on. Error is the highest threshold, so promotion never fires.
+        // Promotion itself is covered by the unit tests in AnalyzersPluginTests.fs.
         let analyzers =
             AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Error
 
@@ -452,12 +406,10 @@ let x = 5
                 // FCS could not check the temp file (version mismatch etc.) — skip
                 Assert.True(true, "Skipped: FCS could not check temp file")
         with ex ->
-            // Graceful skip on FCS version mismatch
             Assert.True(true, $"Skipped due to FCS exception: {ex.Message}"))
 
 [<Fact(Timeout = 5000)>]
 let ``format check plugin detects unformatted code`` () =
-    // Badly formatted F# — extra spaces, wrong indentation
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
     withTempFsFile badlyFormatted (fun _dir filePath ->
@@ -486,7 +438,6 @@ let ``format check plugin detects unformatted code`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``format check plugin passes on well-formatted code`` () =
-    // Use Fantomas to produce a known-good formatted file
     let wellFormatted =
         Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, "module Temp\n\nlet x = 5\n")
         |> Async.RunSynchronously
@@ -527,11 +478,9 @@ let ``plugin status reflects running to completed lifecycle`` () =
         let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
-        // Before any event, plugin status is Idle (initialized on register)
         let beforeStatus = host.GetStatus("format-check")
         test <@ beforeStatus = Some Idle @>
 
-        // Trigger an event
         host.EmitFileChanged(SourceChanged [ filePath ])
 
         waitUntil
@@ -541,27 +490,23 @@ let ``plugin status reflects running to completed lifecycle`` () =
                 | _ -> false)
             5000
 
-        // After event, status should be Completed
         let afterStatus = host.GetStatus("format-check")
         test <@ afterStatus.IsSome @>
 
         match afterStatus.Value with
-        | Completed _ -> () // Expected lifecycle: Idle -> Running -> Completed
+        | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
 
 [<Fact(Timeout = 5000)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
-    // The SourceChanged event accepts a list of files — verify the plugin
-    // processes all files from a single batched event.
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-debounce-{Guid.NewGuid():N}")
     Directory.CreateDirectory(dir) |> ignore
 
     try
-        // Create multiple temp files rapidly
         let files =
             [ for i in 1..5 ->
                   let fp = Path.Combine(dir, $"File{i}.fs")
-                  // Alternate between well-formatted and badly-formatted
+                  // Alternate well-formatted and badly-formatted so the batch is mixed.
                   let content =
                       if i % 2 = 0 then
                           $"module    File{i}\nlet   x   =   {i}\n"
@@ -582,7 +527,6 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
         let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
-        // Emit all files as a single batched SourceChanged event
         host.EmitFileChanged(SourceChanged files)
 
         waitUntil
@@ -752,7 +696,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
-    // Events.fs from FsHotWatch itself should be clean
+    // Events.fs from FsHotWatch itself is known-clean.
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
     let sourceText = SourceText.ofString source
@@ -784,9 +728,9 @@ let ``LintPlugin reports no warnings on clean code`` () =
         test <@ status.IsSome @>
 
         match status.Value with
-        | Completed _ -> () // Clean code, lint completed
+        | Completed _ -> ()
         | PluginStatus.Failed(msg, _, _) ->
-            // FCS version mismatch may cause lint to fail — acceptable
+            // An FCS version mismatch can fail lint; graceful handling is the assertion.
             Assert.True(true, $"Lint failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected lint status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
@@ -869,7 +813,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
             test <@ status.IsSome @>
 
             match status.Value with
-            | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
+            | Completed _ -> ()
             | PluginStatus.Failed(msg, _, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
             | other -> Assert.Fail($"Unexpected status: %A{other}")
         | None -> Assert.True(true, "Skipped: FCS could not check file"))
@@ -957,24 +901,15 @@ let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
         | PluginStatus.Failed(msg, _, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
-// ---------------------------------------------------------------------------
-// Bug C (2026-06-17): a long-lived (warm) daemon loads analyzers ONCE at
-// construction. When a downstream repo ADDS a new analyzer (new .fs + <Compile>
-// entry) and rebuilds, the analyzer DLL on disk changes but the in-memory
-// `client` still holds the OLD set — the new analyzer silently never runs, so
-// the gate reports green without ever inspecting the codebase with it. This was
-// observed twice in thellma/intelligence (a new analyzer reported 0 findings
-// when it actually had 24). Bug A's cache key invalidates stale RESULTS but the
-// loaded assembly stays stale; Bug B fails loud on a 0-analyzer load but a
-// PARTIAL stale load that's merely MISSING the new analyzer slips past it.
+// A warm daemon loads analyzers ONCE at construction. When a downstream repo adds an
+// analyzer and rebuilds, the DLL on disk changes but the in-memory client keeps the OLD
+// set — the new analyzer silently never runs and the gate reports green without ever
+// having inspected the code with it. The neighbouring guards don't catch this: the cache
+// key invalidates stale RESULTS, and the fail-loud guard only fires on a 0-analyzer load,
+// so a partial stale load merely MISSING the new analyzer slips past both.
 //
-// Repro on a genuine warm handler: point it at an analyzer dir that starts
-// EMPTY (loads 0 analyzers), emit FileChecked on a wildcard-DU file → no
-// findings. Then copy a real analyzer DLL into the SAME dir (a downstream "add
-// + rebuild") and re-emit → the analyzer must now fire. Pre-fix the second
-// emission still saw 0 analyzers loaded; post-fix `reloadIfStale` re-scans the
-// changed assembly set before analyzing and the new analyzer runs.
-// ---------------------------------------------------------------------------
+// Repro needs the empty-then-populated dir: a dir that already has the analyzer at
+// construction can't distinguish a fresh load from a stale one.
 [<Fact(Timeout = 60000)>]
 let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to the path`` () =
     withAnalyzerGate (fun () ->
@@ -992,10 +927,9 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
             let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
             let host = PluginHost.create checker repoRoot
 
-            // The handler loads from analyzerDir at construction — currently EMPTY,
-            // so zero analyzers are loaded (the warm daemon's starting state before
-            // the downstream add). failOnSeverity = Error so the raw Warning the
-            // ExampleAnalyzer emits survives to the ledger unpromoted.
+            // analyzerDir is EMPTY at construction, so zero analyzers load — the warm
+            // daemon's state before the downstream add. failOnSeverity = Error keeps the
+            // ExampleAnalyzer's raw Warning unpromoted in the ledger.
             let analyzers =
                 AnalyzersPlugin.create None [ analyzerDir ] None DiagnosticSeverity.Error
 
@@ -1010,23 +944,17 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
                     | Some checkResult -> host.EmitFileChecked(checkResult)
                     | None -> Assert.Fail("FCS failed to check temp file")
 
-                // Cycle 1: empty analyzer dir ⇒ no analyzer ⇒ no findings. The
-                // plugin reaches Completed; assert the ledger stays empty.
                 emit ()
                 waitForTerminalStatus host "analyzers" 15000
                 test <@ List.isEmpty (findings ()) @>
 
-                // Downstream adds a new analyzer to the SAME path and rebuilds:
-                // copy the real ExampleAnalyzer DLL set into the watched dir.
+                // The downstream "add + rebuild": a real analyzer DLL set lands in the
+                // SAME dir the handler already scanned.
                 Directory.GetFiles(exampleBin, "*.dll")
                 |> Array.iter (fun f -> File.Copy(f, Path.Combine(analyzerDir, Path.GetFileName f), true))
 
-                // Cycle 2: the assembly set on disk changed ⇒ reloadIfStale must
-                // re-scan and load the new analyzer BEFORE analyzing this file, so
-                // the wildcard-DU warning now appears. The plugin status lingers at
-                // Completed from cycle 1, so poll the ledger (the real
-                // postcondition) rather than waiting on a status transition that
-                // already happened. Pre-fix the ledger stayed empty (stale load).
+                // Poll the ledger, not the status: the plugin still reads Completed from
+                // cycle 1, so waiting on a status transition would return immediately.
                 emit ()
                 waitUntil (fun () -> not (List.isEmpty (findings ()))) 15000
 
@@ -1035,12 +963,10 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
                 test <@ after |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>)))
 
 // ===========================================================================
-// FsHotWatch.Rules — the repo's own convention analyzers (FSHW-CLAIM-001 /
-// FSHW-CLOCK-001), exercised through the GENUINE load-and-run path (the same
-// AnalyzersPlugin host the gate uses, pointed at the real Rules bin). These
-// are the positive controls: an analyzer that reports nothing and an analyzer
-// that never loaded are indistinguishable, so each rule must be SEEN to fire
-// on a deliberately-violating snippet before its green is worth anything.
+// FsHotWatch.Rules — the repo's own convention analyzers, run through the genuine
+// AnalyzersPlugin load path against the real Rules bin. These are positive controls:
+// an analyzer that reports nothing and an analyzer that never loaded look identical,
+// so each rule must be seen firing on a violating snippet before its green counts.
 // ===========================================================================
 
 let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list =
@@ -1052,8 +978,7 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
     let analyzers =
         AnalyzersPlugin.create None [ rulesBin ] None DiagnosticSeverity.Error
 
-    // The rules DLL must actually LOAD — a zero-load here would make every
-    // assertion below vacuous.
+    // A zero-load would make every assertion below vacuous.
     test <@ analyzers.Init.LoadedCount >= 1 @>
 
     host.RegisterHandler(analyzers)
@@ -1061,11 +986,9 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
     withTempFsFileNamed fileName source (fun _dir tmpFile ->
         match checkTempFile checker tmpFile with
         | Some checkResult ->
-            // The fixture MUST parse. An offside-broken source yields an empty
-            // AST, so every analyzer reports zero findings — and a "the rule
-            // fires" assertion would fail for the wrong reason while a "stays
-            // silent" assertion would PASS for the wrong reason. Refuse the
-            // fixture rather than let it produce a meaningless verdict.
+            // An offside-broken fixture yields an empty AST, so every analyzer reports
+            // zero findings — a "stays silent" assertion would then PASS for the wrong
+            // reason. Refuse the fixture rather than emit a meaningless verdict.
             test <@ not checkResult.ParseResults.ParseHadErrors @>
 
             host.EmitFileChecked(checkResult)
@@ -1073,19 +996,18 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
             host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
         | None -> failwith "FCS failed to check temp file")
 
-/// The default fixture name — deliberately NOT a test source, so FSHW-WAIT-001
-/// is out of scope for every pre-existing control.
+/// Default fixture name — deliberately NOT a test source, so FSHW-WAIT-001 stays out of
+/// scope for every control that uses it.
 let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list = runRulesOnFile "Temp.fs" source
 
-/// Build an F# source file from explicit lines. NOT a `\`-continuation string:
-/// that strips the leading whitespace of each continued line, which silently
-/// produces an offside-broken source that FCS cannot parse — every analyzer
-/// then reports zero findings and a "the rule fires" test passes VACUOUSLY.
-/// (Caught exactly that way while writing these.)
+/// Build a source file from explicit lines. NOT a `\`-continuation string: that strips
+/// leading whitespace per continued line, silently producing an offside-broken source
+/// FCS cannot parse — every analyzer then reports zero findings and the test passes
+/// vacuously.
 let private fsSource (lines: string list) : string = String.concat "\n" lines + "\n"
 
-/// A self-contained, type-correct stand-in for the real PluginCtx.RunExclusive
-/// seam. The rule is name-based, so a structurally identical local reproduces it.
+/// A type-correct stand-in for the real PluginCtx.RunExclusive seam. The rule is
+/// name-based, so a structurally identical local reproduces it.
 let private claimPreamble =
     [ "module Test"
       "type RunClaim ="
@@ -1134,10 +1056,9 @@ let ``FSHW-CLOCK-001 fires on local clock reads`` () =
 [<Fact(Timeout = 60000)>]
 let ``convention rules stay silent on conforming code`` () =
     withAnalyzerGate (fun () ->
-        // UTC clocks and a MATCHED claim — the negative control proving the
-        // positive controls above aren't simply firing on everything (and that
-        // the fixture genuinely PARSES: an unparseable source yields zero
-        // findings too, which would make this pass for the wrong reason).
+        // UTC clocks and a MATCHED claim — proves the controls above aren't firing on
+        // everything. `runRulesOnFile` refuses unparseable fixtures, which would
+        // otherwise make this pass for the wrong reason.
         let source =
             fsSource (
                 claimPreamble
@@ -1155,10 +1076,9 @@ let ``convention rules stay silent on conforming code`` () =
 
         test <@ findings.IsEmpty @>)
 
-/// A self-contained stand-in for the real `TestResult` seam, mirroring the one
-/// fact the rule turns on: `isPassed` is TRUE for the zero-match case. The rule
-/// is name-based, so a structurally identical local reproduces it — and stating
-/// the trap here keeps the fixture honest about WHY the fold is wrong.
+/// Stand-in for the real `TestResult` seam, mirroring the one fact the rule turns on:
+/// `isPassed` is TRUE for the zero-match case. The rule is name-based, so a structurally
+/// identical local reproduces it.
 let private verdictPreamble =
     [ "module Test"
       "type TestResult ="
@@ -1177,10 +1097,8 @@ let private verdictPreamble =
       "        | TestsNoMatch -> true"
       "        | TestsPassed"
       "        | TestsFailed -> false"
-      // The SCOPE predicate, present so the negative control can pin that the
-      // rule does not reach for it. Note the shape the real one has: true for
-      // the zero-match case, deliberately, so a scope fold cannot be fooled by
-      // a project that executed nothing.
+      // The SCOPE predicate, present so the negative control can pin that the rule does
+      // not reach for it. True for the zero-match case, as the real one is.
       "    let wasFiltered r ="
       "        match r with"
       "        | TestsPassed -> false"
@@ -1215,20 +1133,19 @@ let ``FSHW-VERDICT-001 fires on a run verdict folded from isPassed`` () =
 [<Fact(Timeout = 60000)>]
 let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
     withAnalyzerGate (fun () ->
-        // The negative control that decides whether this rule is shippable. Every
-        // shape here is live in TestPrunePlugin, and a rule that fires on any of
-        // them is a rule that gets suppressed rather than obeyed.
+        // Every shape here is live in TestPrunePlugin. A rule that fires on any of them
+        // is a rule that gets suppressed rather than obeyed.
         let source =
             fsSource (
                 verdictPreamble
-                @ [ // Filtering FOR the non-green — `recordRunOutcome`. Correct: it
-                    // selects what to report, it does not infer a green.
+                @ [ // Filtering FOR the non-green (`recordRunOutcome`): selects what to
+                    // report, does not infer a green.
                     "let nonGreen (results: Map<string, TestResult>) ="
                     "    results |> Map.toList |> List.filter (fun (_, r) -> not (TestResult.isPassed r))"
                     // Per-project, on a single result.
                     "let projectPassed (r: TestResult) = TestResult.isPassed r"
-                    // A forall over projects whose predicate is a LOOKUP, not the
-                    // pass predicate — the per-project green-commit fold.
+                    // A forall whose predicate is a LOOKUP, not the pass predicate —
+                    // the per-project green-commit fold.
                     "let covered (results: Map<string, TestResult>) (names: Set<string>) ="
                     "    names"
                     "    |> Set.forall (fun n ->"
@@ -1241,18 +1158,14 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
                     "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
                     "    let allZeroMatchRun = allZeroMatchOf results"
                     "    allPassed && not allZeroMatchRun"
-                    // A bare SCOPE fold. Silence here is a DECISION, not an oversight,
-                    // and this line is what pins it: see `isPassedPredicate` in
-                    // ConventionAnalyzers.fs for why the two folds are different bugs.
-                    // If you are widening the rule to cover scope, this is the
-                    // assertion you have to come and delete on purpose.
+                    // A bare SCOPE fold. Silence here is a decision, not an oversight —
+                    // see `isPassedPredicate` in ConventionAnalyzers.fs for why the two
+                    // folds are different bugs. Widening the rule to cover scope means
+                    // deleting this assertion on purpose.
                     //
-                    // NOT `TestResult.ranFullSuite`'s body, though it was when this
-                    // control was written — AUTOMATION-281 made the real one
-                    // `executedAnything results && Map.forall …`. Deliberately kept as
-                    // the BARE fold: that is the expression a widened rule would flag,
-                    // so it is the one worth pinning. Naming it `ranFullSuite` here is
-                    // just fixture shadowing, not a copy of core.
+                    // Deliberately NOT a copy of the real `ranFullSuite`, which now
+                    // guards with `executedAnything`: the bare fold is the expression a
+                    // widened rule would flag, so it is the one worth pinning.
                     "let ranFullSuite (results: Map<string, TestResult>) ="
                     "    results |> Map.forall (fun _ r -> not (TestResult.wasFiltered r))" ]
             )
@@ -1263,10 +1176,8 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
 
         test <@ findings.IsEmpty @>)
 
-/// A self-contained stand-in for the assertion + polling names FSHW-WAIT-001
-/// keys on. The rule is syntactic, so structurally identical locals reproduce it
-/// — and keeping the fixture type-correct means a "stays silent" assertion
-/// cannot pass because the source failed to parse.
+/// Stand-in for the assertion + polling names FSHW-WAIT-001 keys on. The rule is
+/// syntactic, so structurally identical locals reproduce it.
 let private waitPreamble =
     [ "module Test"
       "open System.Threading"
@@ -1277,8 +1188,8 @@ let private waitPreamble =
       "let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) ="
       "    ignore (write, hasEvent, timeoutMs)" ]
 
-/// The 2026-08-12 flake, reintroduced verbatim. Written to a `*Tests.fs`: the
-/// rule is scoped to test sources, so the file NAME is part of the fixture.
+/// The original flake, reintroduced verbatim. The rule is scoped to test sources, so the
+/// file NAME callers pass is part of the fixture.
 let private flakeShapeSource =
     fsSource (
         waitPreamble
@@ -1304,9 +1215,8 @@ let ``FSHW-WAIT-001 fires on a sleep that synchronises with an event assertion``
         test <@ findings.Length = 2 @>
         test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>
 
-        // The message has to point at the fix and at the escape hatch, or the
-        // rule is just a red light: naming `WriteUntil` (the fixture's only
-        // mutation) and the opt-out marker is what makes it actionable.
+        // The message must name the fix (`WriteUntil`) and the opt-out marker, or the
+        // rule is just a red light with no way past it.
         test
             <@
                 findings
@@ -1316,16 +1226,14 @@ let ``FSHW-WAIT-001 fires on a sleep that synchronises with an event assertion``
 [<Fact(Timeout = 60000)>]
 let ``FSHW-WAIT-001 stays silent on deliberate sleeps`` () =
     withAnalyzerGate (fun () ->
-        // The negative control that decides whether this rule is shippable. Every
-        // shape here is live in the suite, and a rule that fires on any of them is
-        // a rule that gets suppressed rather than obeyed.
+        // Every shape here is live in the suite; a rule that fires on any of them gets
+        // suppressed rather than obeyed.
         let source =
             fsSource (
                 waitPreamble
-                @ [ // A NEGATIVE assertion — nothing may arrive inside the window.
-                    // This one DOES wait on the signal inside an assertion, so only
-                    // the opt-out comment keeps it quiet: it is the escape hatch's
-                    // control, and deleting the comment must turn this red.
+                @ [ // A NEGATIVE assertion — nothing may arrive inside the window. It
+                    // DOES wait on the signal inside an assertion, so only the opt-out
+                    // comment keeps it quiet: deleting that comment must turn this red.
                     "let deliberateNegative () ="
                     "    use signal = new ManualResetEventSlim(false)"
                     "    // FSHW-WAIT-001 ok: negative assertion — nothing may arrive inside 300ms"
@@ -1353,10 +1261,9 @@ let ``FSHW-WAIT-001 stays silent on deliberate sleeps`` () =
 [<Fact(Timeout = 60000)>]
 let ``FSHW-WAIT-001 is scoped to test sources`` () =
     withAnalyzerGate (fun () ->
-        // The SAME source that fires twice as `WaitControlTests.fs` must report
-        // nothing as `Temp.fs`. Production code sleeps for reasons this rule has
-        // no opinion about, and everything its message recommends (probeLoop,
-        // waitUntilTrue, WatchedDir) lives in the test assemblies.
+        // The SAME source that fires twice as `WaitControlTests.fs`. Production code
+        // sleeps for reasons this rule has no opinion about, and everything its message
+        // recommends (probeLoop, waitUntilTrue, WatchedDir) lives in the test assemblies.
         let findings =
             runRulesOn flakeShapeSource
             |> List.filter (fun e -> e.Message.Contains "not synchronisation")
@@ -1625,7 +1532,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // No matching files — poll briefly; will time out at Idle (expected)
+    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
     waitUntil
         (fun () ->
             match host.GetStatus("fsx-runner") with
@@ -1676,12 +1583,11 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
 
     try
         let sentinel = Path.Combine(tmpDir, "counter.txt")
-        // Use `sh -c` with a direct append — avoids writing/chmoding a helper script.
-        // The plugin's command appends a line to the sentinel every time it runs.
+        // `sh -c` with a direct append avoids writing and chmod-ing a helper script.
         let cmd = "sh"
         let args = $"-c \"echo ran >> '{sentinel}'\""
 
-        // Use an in-memory cache so we can observe cache-hit vs cache-miss behavior.
+        // In-memory cache so cache-hit vs cache-miss is observable.
         let taskCache = FsHotWatch.TaskCache.InMemoryTaskCache()
 
         let host =
@@ -1695,8 +1601,8 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         let pattern = "*.ratchet.json"
         let pluginName = "rerun-test"
 
-        // Fix a stable cache key so replays hit the cache (otherwise each event
-        // produces a new key and cache replay never fires — defeating the test).
+        // A stable cache key so replays hit: with a per-event key, cache replay never
+        // fires and the test proves nothing.
         let getCommitId () = Some "stable-commit-for-test"
 
         let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
@@ -1709,21 +1615,17 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         host.RegisterHandler(handler)
         host.RegisterFileCommandPattern(pluginName, parsedPattern)
 
-        // First run: matching file event → plugin runs, sentinel has 1 line.
-        // Wait on the observable SIDE EFFECT, not on `waitForStatusSettled`:
-        // "settled" means "status is not Running", which is also true in the
-        // window before the freshly-dispatched event has flipped the plugin to
-        // Running — so under load the wait can return on the stale/None status
-        // before the command has written the sentinel. Waiting for the file
-        // itself removes that race.
+        // Wait on the side effect, not `waitForStatusSettled`: "settled" means "not
+        // Running", which is also true in the window before the dispatched event has
+        // flipped the plugin to Running, so under load it returns before the command
+        // has written the sentinel.
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
         waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 1) 5000
         waitForStatusSettled host pluginName 5000
         test <@ File.Exists(sentinel) @>
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
-        // Second run with same commit id: cache hit, plugin does NOT run.
-        // Sentinel line count should stay at 1.
+        // Same commit id ⇒ cache hit ⇒ the plugin must not run again.
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
         Thread.Sleep(500) // cache replay is synchronous but give dispatch time to settle
         waitForStatusSettled host pluginName 5000
@@ -1733,8 +1635,8 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         let rerunResult = host.RerunFileCommandPlugin(pluginName)
         test <@ rerunResult = Result.Ok() @>
 
-        // Status already shows Completed from the previous run, so `waitForStatusSettled`
-        // would return immediately. Wait for observable side effect (second line).
+        // Status still reads Completed from the previous run, so `waitForStatusSettled`
+        // would return immediately — wait for the second sentinel line instead.
         waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 2) 5000
         waitForStatusSettled host pluginName 5000
 
@@ -1759,17 +1661,14 @@ let ``Full pipeline: format → build → test`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        // Register FormatPreprocessor
         let preprocessor = FormatPreprocessor()
         host.RegisterPreprocessor(preprocessor)
 
-        // Register BuildPlugin (echo for success)
         let buildHandler =
             BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None
 
         host.RegisterHandler(buildHandler)
 
-        // Register TestPrunePlugin with echo test command
         let testConfigs =
             [ { Project = "PipelineTests"
                 Command = "echo"
@@ -1786,21 +1685,15 @@ let ``Full pipeline: format → build → test`` () =
 
         host.RegisterHandler(testPruneHandler)
 
-        // Create a temp .fs file and run preprocessors on it
         let fsFile = Path.Combine(tmpDir, "Temp.fs")
         File.WriteAllText(fsFile, "module Temp\n\nlet x = 5\n")
         let modified = host.RunPreprocessors([ fsFile ])
-        // Well-formatted file should not be modified
         test <@ modified |> List.contains fsFile |> not @>
 
-        // Emit FileChanged — triggers build plugin
         host.EmitFileChanged(SourceChanged [ fsFile ])
 
-        // Build now runs on thread pool — wait for it to settle
         waitForTerminalStatus host "build" 5000
 
-        // Build should succeed (echo), which triggers test-prune tests,
-        // which emit TestCompleted, which triggers coverage
         let buildStatus = host.GetStatus("build")
         test <@ buildStatus.IsSome @>
 
@@ -1823,7 +1716,6 @@ let ``Full pipeline: format → build → test`` () =
                 | _ -> false
             @>
 
-        // Verify format preprocessor status
         let fmtStatus = host.GetStatus("format")
         test <@ fmtStatus.IsSome @>
 
@@ -1865,17 +1757,16 @@ let ``BuildPlugin does not run concurrent builds`` () =
           CacheKey = None
           Teardown = None }
 
-    // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
+    // A slow build command so the second emit certainly arrives mid-build.
     let handler =
         BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // Emit two FileChanged events — the building guard should prevent the second build
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
 
-    // Wait until first build is running before emitting second event
+    // The first build must be Running before the second event is emitted.
     waitUntil
         (fun () ->
             match host.GetStatus("build") with
@@ -1887,10 +1778,8 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    // Wait for build-counter to process the BuildCompleted event
     waitUntil (fun () -> buildCount >= 1) 2000
 
-    // Only one build should have completed — the guard skipped the second
     test <@ buildCount = 1 @>
 
     let status = host.GetStatus("build")
@@ -1927,10 +1816,9 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 
         host.RegisterHandler(handler)
 
-        // Emit two BuildSucceeded events — the testsRunning guard should queue the second
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait until first test run is active before emitting second event
+        // The first run must be active before the second event is emitted.
         waitUntil
             (fun () ->
                 match host.GetStatus("test-prune") with
@@ -1940,13 +1828,13 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for async test execution to complete (sleep 1 + potential re-run/skip)
+        // 15s covers `sleep 1` plus a possible re-run or skip.
         waitForTerminalStatus host "test-prune" 15000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        // The rerun with 0 affected classes is now correctly skipped (empty results),
-        // or the first cold-start run produces passed results — either is acceptable.
+        // Either outcome is legal: a rerun with 0 affected classes is skipped (empty
+        // results), and a cold-start first run produces passed results.
         let doc = JsonDocument.Parse(cmdResult.Value)
         let projects = doc.RootElement.GetProperty("projects")
 
@@ -1958,7 +1846,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // Status should not be Failed from resource exhaustion — the guard prevents concurrent runs
+        // Failed here would mean resource exhaustion from a concurrent run.
         test
             <@
                 match status.Value with
@@ -1982,18 +1870,16 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
             ()
 
 // ===========================================================================
-// Real-world validation: confirms the DI seams in unit tests reflect
-// actual production behavior. Excluded from coverage on purpose — these
-// exercise OS-level error modes (permission denied, file deletion races)
-// that are flaky enough to make the coverage ratchet jitter.
+// Real-world validation that the DI seams in the unit tests reflect production
+// behaviour. Excluded from coverage: these exercise OS-level error modes
+// (permission denied, deletion races) flaky enough to jitter the ratchet.
 // ===========================================================================
 
 [<Fact(Timeout = 10000)>]
 let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
-    // Validates that hashFileWith's None branch — exercised in unit tests via
-    // an injected throwing reader — actually fires in production when a file
-    // exists but cannot be read (permission denied). If macOS ever stops
-    // throwing here, the unit test's mock would no longer represent reality.
+    // The unit tests reach hashFileWith's None branch through an injected throwing
+    // reader. If the OS ever stops throwing on an unreadable file, that mock no longer
+    // represents reality and the unit test would be green over nothing.
     if
         System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows
@@ -2018,10 +1904,9 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
                 ())
 
 // ===========================================================================
-// ProcessHelper kill-on-timeout tests — moved from FsHotWatch.Tests because
-// the kill/drain race produces nondeterministic line coverage on
-// ProcessHelper.fs (drifts 89-92%). Excluded from coverage on purpose so the
-// auto-ratchet in `mise run check` stays stable.
+// ProcessHelper kill-on-timeout. Lives here, excluded from coverage: the kill/drain
+// race gives nondeterministic line coverage on ProcessHelper.fs (89-92%), which
+// would destabilise the auto-ratchet in `mise run check`.
 // ===========================================================================
 
 [<Fact(Timeout = 10000)>]
@@ -2037,41 +1922,29 @@ let ``runProcess kills child when exceeded`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess reports TimedOut on kill, carrying the child's pre-kill stdout`` () =
-    // AUTOMATION-149. This assertion USED to check that `partial` reached the tail.
-    // It was weakened to `| TimedOut _ -> ()` on the grounds that "capturing pre-kill
-    // stdout races subprocess startup under load". It did not race the subprocess. It
-    // raced the THREAD POOL: the drain's stream pumps were `task {}` continuations, so
-    // on a saturated box the reader was never scheduled, the 2s window expired having
-    // read zero bytes, and `runProcess` handed back "" — and a `string` tail could not
-    // tell "we read nothing" from "the child printed nothing".
-    //
-    // That was AUTOMATION-126. It is fixed: the pumps own dedicated threads, so a
-    // saturated pool cannot starve them, and a drain that still cannot finish says so
-    // by its own name (`DrainTimedOut`) instead of forging an empty measurement. The
-    // weakening was an accommodation made for a TOOL bug, and it is now load-bearing on
-    // nothing — so the assertion goes back to what it should always have been.
+    // Do not weaken this back to `| TimedOut _ -> ()`: that accommodated a thread-pool
+    // starvation bug in the drain (pumps as `task {}` continuations that a saturated
+    // pool never scheduled), which is fixed — the pumps own dedicated threads now.
     //
     // The child prints `partial` and THEN sleeps 10s, so those bytes are on the pipe
-    // long before the 300ms timeout fires. A tail that lacks them is a drain that
-    // failed to measure — the whole bug — and must be RED.
+    // long before the 300ms timeout fires. A tail without them is a drain that failed
+    // to measure, and must be red.
     match
         runProcess "sh" "-c \"echo partial; sleep 10\"" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 300.0))
     with
     | TimedOut(_, tail, _) ->
         // The kill tears the pipes down under the pumps, so whether they end at EOF
-        // (`Drained`) or die mid-read (`DrainTimedOut`) is a genuine OS race: the TAG is
-        // not the contract here, the CAPTURE is. Whichever way it lands, what the child
-        // printed before the kill must be in it. `ProcessOutput.text` is the deliberate,
-        // greppable act of reading a capture without demanding it be complete — and
-        // asserting that a marker is PRESENT can only ever cost a hit, never invent one,
-        // so a starved drain FAILS this test rather than sliding past it.
+        // (`Drained`) or mid-read (`DrainTimedOut`) is a genuine OS race — the tag is not
+        // the contract, the capture is. `ProcessOutput.text` reads a capture without
+        // demanding it be complete, and asserting a marker is PRESENT can only lose a
+        // hit, never invent one, so a starved drain fails rather than slides past.
         Assert.Contains("partial", ProcessOutput.text tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
 let ``ProcessRegistry.killAll terminates tracked live processes`` () =
-    // Per-scope registry isolates this test from concurrent ones — `install`
-    // is AsyncLocal-scoped so killAll only affects this test's tracked PIDs.
+    // `install` is AsyncLocal-scoped, so killAll only reaches this test's tracked PIDs
+    // and cannot reap a concurrent test's children.
     use _ = FsHotWatch.ProcessRegistry.install (FsHotWatch.ProcessRegistry.Registry())
 
     FsHotWatch.Tests.TestHelpers.withTrackedSleep 60 (fun proc ->
@@ -2097,9 +1970,8 @@ let ``ProcessRegistry.killAll kills a child started via runProcess from another 
         System.Threading.Tasks.Task.Run(fun () ->
             runProcess "sleep" "30" "." [] (ProcessBounds.silent System.Threading.Timeout.InfiniteTimeSpan))
 
-    // Wait for the child to register (Process.Start is fast; track is the next line).
-    // 8s deadline tolerates parallel-test thread-pool contention — a Task.Run body
-    // sometimes doesn't reach Process.Start for several seconds under load.
+    // 8s tolerates thread-pool contention from parallel tests — a Task.Run body can take
+    // seconds to reach Process.Start under load.
     let deadline = DateTime.UtcNow.AddSeconds 8.0
 
     while registry.Snapshot().IsEmpty && DateTime.UtcNow < deadline do
@@ -2113,10 +1985,9 @@ let ``ProcessRegistry.killAll kills a child started via runProcess from another 
     Assert.True(completed, "runProcess did not return after killAll")
 
 // ===========================================================================
-// TestPrune timeout test — moved from FsHotWatch.Tests because it spawns a
-// real `sleep 10` subprocess with a 1s timeout, exercising the kill-on-timeout
-// drain race that causes line-coverage drift on TestPrunePlugin.fs (Aborted
-// catch arm) and ProcessHelper.fs (drain branches).
+// Lives here because it spawns a real `sleep 10` under a 1s timeout: the kill-on-
+// timeout drain race drifts line coverage on TestPrunePlugin.fs (Aborted arm) and
+// ProcessHelper.fs (drain branches).
 // ===========================================================================
 
 [<Fact(Timeout = 15000)>]
@@ -2158,17 +2029,11 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
             @>)
 
 // ===========================================================================
-// §1 fcs-signature oracle — regression test
+// fcsCheckSignature: when Foo.fs changes in a way that affects Bar.fs's diagnostics,
+// Bar.fs's signature must differ even though Bar's own bytes are unchanged. That
+// signature feeds the analyzers/lint merkle cache key — if it doesn't move, downstream
+// caches replay stale results.
 // ===========================================================================
-// Doc: docs/plans/2026-04-26-build-system-ideas-design.md §8.5 calls for a
-// "synthetic cross-file test for §1": Bar.fs depends on Foo.fs's signature;
-// edit Foo, verify Bar's downstream cache invalidates correctly.
-//
-// The contract under test is `fcsCheckSignature`: when Foo.fs changes in a way
-// that affects Bar.fs's diagnostics (e.g. removes a symbol Bar uses), Bar.fs's
-// signature must differ — even though Bar.fs's own bytes are unchanged. That
-// signature feeds the analyzers/lint merkle cache key, so when this contract
-// holds, downstream caches invalidate correctly.
 
 [<Fact(Timeout = 30000)>]
 let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature breaks Bar`` () =
@@ -2182,8 +2047,8 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
 
-        // Use Foo as the script-options entry, then override SourceFiles to the
-        // 2-file project view so Bar can resolve Foo.
+        // Foo is the script-options entry; SourceFiles is then overridden to the 2-file
+        // project view so Bar can resolve Foo.
         let fooSource = File.ReadAllText(fooPath)
         let sourceText = SourceText.ofString fooSource
 
@@ -2214,21 +2079,13 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
 
         let sig2 = FsHotWatch.CheckCache.fcsCheckSignature result2.CheckResults
 
-        // Bar.fs's own bytes are identical — only Foo changed. The signature must
-        // still differ, otherwise downstream caches would replay stale results.
+        // Bar.fs's own bytes are identical — only Foo changed.
         test <@ sig1 <> sig2 @>)
 
-// --- IgnoreFilterCache concurrency stress (moved from FsHotWatch.Tests) ---
-//
-// This 16-thread stress test asserts that IgnoreFilterCache is correct under
-// high concurrent contention. It was originally a unit test in PathFilterTests
-// but contributed to flaky branch coverage on src/FsHotWatch/PathFilter.fs:
-// the inner double-checked-lock branch (Some entry when isFresh entry inside
-// the lock) was recorded inconsistently by coverlet under high contention,
-// so the file's branch percentage would flicker between 68.2% and 63.6%.
-// Coverage stability is more important than this test's specific contribution
-// to coverage; the concurrency-correctness assertion still runs as part of
-// `mise run test-integration`.
+// Lives here rather than PathFilterTests: coverlet records the inner double-checked-lock
+// branch inconsistently under this much contention, flickering PathFilter.fs between
+// 68.2% and 63.6% branch coverage. The correctness assertion still runs, just outside the
+// ratchet.
 [<Fact(Timeout = 15000)>]
 let ``IgnoreFilterCache is safe under concurrent Get`` () =
     withTempDir "cache-concurrent" (fun tmpDir ->
@@ -2266,17 +2123,11 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
         test <@ errors.Count = 0 @>)
 
 // ---------------------------------------------------------------------------
-// Moved from FsHotWatch.Tests due to subprocess-timing flakiness under the
-// parallel xUnit collection runner. These tests spawn real `sleep` subprocesses
-// and assert on cross-thread timing windows that are starved by the unit-test
-// suite's parallel scheduler. They live here (where xunit runs less parallel
-// content) and are excluded from coverage.
+// The tests below spawn real `sleep` subprocesses and assert on cross-thread timing
+// windows that the unit suite's parallel scheduler starves. They live here (less
+// parallel content) and are excluded from coverage.
 // ---------------------------------------------------------------------------
 
-// Drop semantics under RunExclusive "build": while a build is in flight,
-// additional FileChanged events must NOT spawn a second concurrent build.
-// Counts BuildCompleted emissions across rapid back-to-back triggers and asserts
-// exactly one fired.
 [<Fact(Timeout = 30000)>]
 let ``concurrent FileChanged events do not start two builds`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2308,14 +2159,14 @@ let ``concurrent FileChanged events do not start two builds`` () =
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    // Tiny delay to ensure RunExclusive has marked the slot Running before the
-    // second dispatch evaluates the policy.
+    // RunExclusive must have marked the slot Running before the second dispatch
+    // evaluates the policy.
     System.Threading.Thread.Sleep(100)
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
     waitForTerminalStatus host "build" 15000
-    // Settle window: any erroneously-spawned second build would also fire its
-    // BuildCompleted within ~1.5s of the first; wait long enough to catch it.
+    // An erroneously-spawned second build would fire its BuildCompleted within ~1.5s of
+    // the first, so this settle window is what makes the count assertion meaningful.
     System.Threading.Thread.Sleep(2000)
 
     test <@ !buildCompletedCount = 1 @>
@@ -2364,12 +2215,9 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
             test <@ not (s.Contains("slowest: FastProj")) @>
         | None -> failwith "expected summary on completed run")
 
-// Moved from FsHotWatch.Tests.IpcTests 2026-04-30: this test registers four
-// plugins, dispatches a FileChanged, and waits up to 5s for handler "d" to
-// reach Failed status. Under contention the 5s wait runs out — observed ~20%
-// flake rate locally under `mise run check` load. Intrinsically it's
-// integration-grade (multi-plugin host + DaemonRpcTarget JSON-serialization
-// roundtrip). Lives here with bumped timeouts.
+// Four plugins plus a DaemonRpcTarget serialization roundtrip: integration-grade. Under
+// unit-suite contention the wait for handler "d" to reach Failed flaked ~20% at 5s,
+// hence the generous timeouts here.
 [<Fact(Timeout = 30000)>]
 let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2449,10 +2297,9 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     | FsHotWatch.Cli.RunOnceOutput.StatusView.Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
 
-// `waitForPluginTerminalIfRunning` tests moved from FsHotWatch.Tests
-// 2026-05-02 — Task.Delay-based timing assertions systematically bust
-// Fact(Timeout=5000) under parallel unit-suite load. Integration suite
-// has looser parallelism so the timing windows hold.
+// The `waitForPluginTerminalIfRunning` tests below make Task.Delay-based timing
+// assertions that systematically bust under the unit suite's parallelism. This suite is
+// looser, so the windows hold.
 
 [<Fact(Timeout = 30000)>]
 let ``waitForPluginTerminalIfRunning returns immediately when plugin not registered`` () =
@@ -2542,42 +2389,12 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
     plugin.Release.TrySetResult() |> ignore
 
 // ===========================================================================
-// FR (docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25):
-// Adding a PackageReference + `dotnet restore` must refresh the affected
-// project's FCS state without restarting the daemon and without forcing the
-// user to save any .fs file.
-//
-// The user-visible symptom ("daemon keeps reporting stale FS0039 until
-// manually stopped+started") decomposes into two daemon contracts that the
-// FR fix has to honor. We test them as two separate integration tests rather
-// than one E2E because the FCS-resolves-new-namespace endpoint relies on
-// Ionide.ProjInfo's design-time MSBuild eval correctly picking up post-
-// restore PackageReferences — a property of the *user's* real project tree,
-// not a daemon contract per se, and minimal synthetic .fsproj test fixtures
-// don't reliably trigger it.
-//
-//   contract 1 (this file, "daemon auto-rechecks ..."): after a .fsproj or
-//   obj/project.assets.json change, the daemon re-evaluates the project's
-//   options *and* re-runs FCS on the project's source files within one
-//   debounce window — without any .fs file being saved. The original bug
-//   was that the daemon would re-evaluate options but never re-check, so
-//   the FCS error ledger stayed stale.
-//
-//   contract 2 (this file, "watcher classifies project.assets.json"):
-//   `Watcher.classifyChange` maps `obj/project.assets.json` paths to
-//   `ProjectChanged`, and the FileSystemWatcher / FSEvents stream actually
-//   delivers events for that file even though it lives in obj/ (otherwise
-//   excluded). This is the new signal the FR added.
-//
-//   contract 3 (this file, "daemon resolves a newly-added PackageReference
-//   ... without restart"): the literal FR acceptance criterion, end to end.
-//   Add a PackageReference, `dotnet restore`, and the FCS error referencing
-//   the new namespace clears with no daemon restart and no .fs save. This
-//   exercises the race the FR hinted at: the `.fsproj` edit fires the watcher
-//   while `dotnet restore` is still writing obj/, so the first eval can see a
-//   stale package graph; the post-restore `project.assets.json` write (now a
-//   watched signal — contract 2) triggers a second eval that picks up the
-//   resolved reference.
+// Auto-refresh on .fsproj changes: adding a PackageReference and restoring must clear
+// the stale FS0039 without a daemon restart and without saving any .fs file. The three
+// tests below split that into separate contracts rather than one E2E, because the
+// end-to-end path depends on Ionide.ProjInfo's MSBuild eval picking up post-restore
+// PackageReferences — a property of a real project tree that synthetic .fsproj fixtures
+// do not reliably reproduce.
 // ===========================================================================
 
 let private runDotnetIn (cwd: string) (args: string) : unit =
@@ -2596,17 +2413,12 @@ let private runDotnetIn (cwd: string) (args: string) : unit =
 
 [<Fact(Timeout = 180000)>]
 let ``daemon auto-rechecks affected project's source files after .fsproj edit`` () =
-    // Contract 1: after a .fsproj change, the daemon must re-run FCS on the
-    // project's source files within one debounce window — *without* any .fs
-    // file being saved. The original bug: invalidate + re-evaluate options
-    // fired, but the per-file re-check never followed, so the FCS error
-    // ledger stayed stale.
+    // Pins the original bug: invalidate + re-evaluate options fired, but the per-file
+    // re-check never followed, so the FCS error ledger stayed stale.
     //
-    // We don't assert anything about *which* FCS errors appear — just that a
-    // second FileChecked cohort lands for the project's source file after the
-    // .fsproj edit. That's the daemon contract; whether the new options
-    // actually contain a new PackageReference is a downstream concern (real
-    // project, real ProjInfo eval).
+    // Deliberately asserts only that a second FileChecked cohort lands, not which errors
+    // appear — whether the new options contain a new PackageReference is a real-ProjInfo
+    // concern, covered end-to-end further down.
     withTempDir "fshw-fr-recheck" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "src", "MyProj")
         Directory.CreateDirectory(projDir) |> ignore
@@ -2632,7 +2444,6 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
 
         runDotnetIn projDir "restore --nologo"
 
-        // Capture FileChecked emissions for Lib.fs so we can count cohorts.
         let libCheckCount = ref 0
 
         let counter: PluginHandler<unit, obj> =
@@ -2665,10 +2476,9 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
             let task = Async.StartAsTask(daemon.Run(cts.Token))
             daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
 
-            // Boot scan: drives the first FileChecked for Lib.fs.
+            // Boot scan drives the first FileChecked for Lib.fs.
             daemon.ScanAll() |> Async.RunSynchronously
 
-            // Give the FileChecked event time to propagate to our handler.
             waitUntil (fun () -> libCheckCount.Value >= 1) 30000
 
             if libCheckCount.Value < 1 then
@@ -2680,12 +2490,9 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
 
             let baseline = libCheckCount.Value
 
-            // Edit .fsproj. The CONTENT of the new project file doesn't matter
-            // for this contract test — only that it triggers a ProjectChanged
-            // event. We use a comment so MSBuild eval still succeeds (and
-            // returns the same options, which is the worst-case for re-check
-            // detection — if our trigger fires even when options are unchanged,
-            // it definitely fires when they change).
+            // A comment-only edit: MSBuild eval still succeeds and returns the SAME
+            // options, which is the worst case for re-check detection. A trigger that
+            // fires here fires a fortiori when the options actually change.
             let fsprojBumped =
                 """<Project Sdk="Microsoft.NET.Sdk">
   <!-- bumped -->
@@ -2701,10 +2508,8 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
 
             File.WriteAllText(fsprojPath, fsprojBumped)
 
-            // FR contract: a ProjectChanged must trigger a fresh FileChecked
-            // cohort for the project's source files within one debounce window
-            // + MSBuild re-eval. Allow a generous timeout for FSEvents
-            // cold-start + 200ms project debounce + 0.5s MSBuild eval + FCS check.
+            // 60s covers FSEvents cold-start + 200ms project debounce + ~0.5s MSBuild
+            // eval + the FCS check.
             waitUntil (fun () -> libCheckCount.Value > baseline) 60000
 
             if libCheckCount.Value <= baseline then
@@ -2726,12 +2531,9 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
 
 [<Fact(Timeout = 120000)>]
 let ``watcher delivers ProjectChanged event when obj/project.assets.json is written`` () =
-    // Contract 2: the daemon's file watcher actually picks up writes to
-    // `obj/project.assets.json` even though `obj/` is otherwise excluded by
-    // `PathFilter.isGeneratedPath`. This is the new post-restore signal —
-    // without it, the only signal the daemon has for a PackageReference
-    // change is the .fsproj edit itself (which can race ahead of the
-    // restore completing).
+    // `obj/` is otherwise excluded by `PathFilter.isGeneratedPath`, so this file needs a
+    // deliberate carve-out. Without it the daemon's only PackageReference signal is the
+    // .fsproj edit, which races ahead of the restore completing.
     withTempDir "fshw-fr-assets" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "src", "MyProj")
         let objDir = Path.Combine(projDir, "obj")
@@ -2776,8 +2578,8 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
             let task = Async.StartAsTask(daemon.Run(cts.Token))
             daemon.Ready.Wait(TimeSpan.FromSeconds(30.0)) |> ignore
 
-            // FSEvents cold-start can be 4-20s on macOS. Probe-loop writes
-            // until at least one ProjectChanged for the assets file lands.
+            // FSEvents cold-start is 4-20s on macOS, so this probe-loops writes rather
+            // than writing once and waiting.
             let hasAssetsProjectChange () =
                 projectChanges
                 |> Seq.exists (fun c ->
@@ -2811,18 +2613,11 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
 
 [<Fact(Timeout = 240000)>]
 let ``daemon resolves a newly-added PackageReference and clears the stale FS0039 without restart`` () =
-    // Contract 3: the literal FR acceptance criterion, end to end with a real
-    // package (Newtonsoft.Json), real `dotnet restore`, real FCS.
-    //
-    // This is the test that motivated the whole change set. Note the ordering
-    // hazard it deliberately exercises: writing the .fsproj fires the watcher
-    // immediately, but `dotnet restore` then takes longer than the 200ms
-    // project debounce — so the daemon's first re-eval can race ahead and read
-    // a stale obj/ package graph (observed: FCS still can't see Newtonsoft).
-    // The fix that makes this test pass is watching `obj/project.assets.json`
-    // (contract 2): restore's final atomic write of that file triggers a
-    // SECOND re-eval after the package graph is coherent, which resolves the
-    // reference and — via the auto re-check (contract 1) — clears the error.
+    // End to end with a real package, real `dotnet restore`, real FCS. It deliberately
+    // exercises the ordering hazard: writing the .fsproj fires the watcher immediately,
+    // but restore outlasts the 200ms project debounce, so the first re-eval reads a stale
+    // obj/ package graph. What makes it pass is watching `obj/project.assets.json` —
+    // restore's final atomic write triggers a second re-eval once the graph is coherent.
     withTempDir "fshw-fr-e2e" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "src", "MyProj")
         Directory.CreateDirectory(projDir) |> ignore
@@ -2884,8 +2679,7 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
             let task = Async.StartAsTask(daemon.Run(cts.Token))
             daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
 
-            // Boot scan: Lib.fs opens Newtonsoft, which isn't referenced yet →
-            // baseline FS0039.
+            // Lib.fs opens Newtonsoft, which isn't referenced yet ⇒ baseline FS0039.
             daemon.ScanAll() |> Async.RunSynchronously
             waitUntil hasNewtonsoftError 90000
 
@@ -2894,9 +2688,8 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
                     "Baseline failed: expected FS0039 (Newtonsoft not defined) after boot scan but none observed."
                 )
 
-            // Add the package + restore. The watcher sees both the .fsproj edit
-            // and (after restore) the obj/project.assets.json write. No .fs save,
-            // no daemon restart.
+            // No .fs save and no daemon restart: the watcher sees only the .fsproj edit
+            // and, after restore, the obj/project.assets.json write.
             File.WriteAllText(fsprojPath, fsprojWithPackage)
             runDotnetIn projDir "restore --nologo --force"
 
@@ -2932,21 +2725,17 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
             (daemon :> IDisposable).Dispose())
 
 // ===========================================================================
-// Scoped invalidation (gap #1): a change to one project must re-check that
-// project AND its transitive dependents, but leave INDEPENDENT projects warm
-// (not re-checked, cache preserved). The earlier "re-check everything" fix
-// was correct but paid full cold-start cost on every project change.
+// Scoped invalidation: a change to one project must re-check that project AND its
+// transitive dependents, while leaving INDEPENDENT projects warm. The earlier
+// "re-check everything" fix was correct but paid full cold-start on every change.
 // ===========================================================================
 
-/// Resolve all symlink components to the canonical real path. macOS temp dirs
-/// live under /var/folders (a symlink to /private/var/folders); FSEvents
-/// reports the canonical /private form while MSBuild/ProjInfo preserve the
-/// as-given /var form. Production repos generally sit at a canonical path, so
-/// the daemon's scoped-invalidation path matches watcher events to project
-/// paths by string equality and falls back to full re-discovery when they
-/// diverge (correct, just not warmth-preserving). These scoped tests
-/// canonicalize the temp root up front so they exercise the common-case
-/// scoped path rather than the symlink-divergence fallback.
+/// Resolve all symlink components to the canonical real path. macOS temp dirs live under
+/// /var/folders (a symlink to /private/var/folders); FSEvents reports the canonical
+/// /private form while MSBuild/ProjInfo keep the as-given /var form. The daemon matches
+/// watcher events to project paths by string equality and falls back to full
+/// re-discovery when they diverge — correct, but not the path these tests mean to
+/// exercise, so they canonicalize the temp root up front.
 let rec private realPath (path: string) : string =
     let full = Path.GetFullPath path
 
@@ -2973,7 +2762,6 @@ let rec private realPath (path: string) : string =
             | t -> t.FullName
         | t -> t.FullName
 
-/// Per-file FileChecked counter handler. Returns (getCount, handler).
 let private fileCheckCounter (name: string) (targetCanonical: string) =
     let count = ref 0
 
@@ -3055,13 +2843,13 @@ let ``scoped: changing one project leaves an independent project warm (not re-ch
             )
 
             let aBefore = getA ()
-            // A must be re-checked.
             waitUntil (fun () -> getA () > aBefore) 60000
 
             if getA () <= aBefore then
                 Assert.Fail(sprintf "A should be re-checked after its .fsproj change (stayed at %d)" (getA ()))
 
-            // Give any erroneous B re-check time to land, then assert B stayed flat.
+            // An erroneous B re-check needs time to land before "B stayed flat" means
+            // anything.
             System.Threading.Thread.Sleep(3000)
 
             if getB () <> baselineB then
@@ -3137,8 +2925,8 @@ let ``scoped: changing a project re-checks its dependent (correctness over warmt
 
             let baselineB = getB ()
 
-            // Touch A's .fsproj (the dependency). B depends on A, so B must
-            // be re-checked even though B's own files/options didn't change.
+            // Only A's .fsproj is touched; B must be re-checked anyway, since B's own
+            // files and options are unchanged.
             File.WriteAllText(
                 aFsproj,
                 "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
@@ -3163,23 +2951,13 @@ let ``scoped: changing a project re-checks its dependent (correctness over warmt
             (daemon :> IDisposable).Dispose())
 
 // ===========================================================================
-// AUTOMATION-15 regression (absorbs AUTOMATION-26): the jj-merge wedge repro.
-//
-// On 2026-06-16 a foreground `scan`/`check` issued WHILE the daemon was mid
-// auto-rebuild (a jj merge landed ~13 files at once, including .fsproj edits)
-// wedged the daemon: `status` and `check` both blocked on the same dead socket
-// ("could not connect to daemon: operation timed out"). This test reproduces
-// the shape deterministically — a real daemon over a real pipe, a multi-file
-// batch (incl. a .fsproj) landing to kick a (slow) auto-rebuild — and asserts
-// the daemon STAYS RESPONSIVE: a concurrent `status`/`scanStatus` over the
-// same pipe returns within a bounded window rather than hanging.
-//
-// Per the ticket: if this shows cancellation did NOT cure the race (status
-// hangs), the test FAILS loudly rather than papering over it.
+// The jj-merge wedge repro (AUTOMATION-15/26). A foreground `scan`/`check` issued
+// while the daemon was mid auto-rebuild — a merge landing ~13 files at once,
+// including .fsproj edits — wedged it: `status` and `check` both blocked on the same
+// dead socket. Reproduced here with a real daemon over a real pipe.
 // ===========================================================================
 
-/// Poll until the IPC server answers a cheap `scanStatus`, or the deadline.
-/// Returns whether the server came up within the budget.
+/// Poll until the IPC server answers a cheap `scanStatus`; false if it never came up.
 let private waitForIpcServer (pipeName: string) (timeoutMs: int) : bool =
     let serverUp () =
         try
@@ -3222,10 +3000,9 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
         let cts = new CancellationTokenSource()
         let pipeName = Program.computePipeName tmpDir
 
-        // A build plugin whose build is a slow `sleep` — models the long auto
-        // rebuild in flight. A DEFAULT timeout is wired (Some 30) so an
-        // unbounded hang would instead fail fast; here the sleep finishes well
-        // within it, but the point is the daemon must not be wedged WHILE it runs.
+        // The build is a slow `sleep`, modelling the long auto-rebuild in flight. The
+        // `Some 30` timeout means an unbounded hang fails fast instead of stalling the
+        // suite; the sleep finishes well inside it.
         let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
 
         try
@@ -3239,8 +3016,8 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
             // Let the boot scan settle.
             IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously |> ignore
 
-            // Land the multi-file batch incl. the .fsproj — kicks re-discovery +
-            // the (slow) auto-rebuild. Bump the .fsproj and rewrite every source.
+            // Land the batch — bumping the .fsproj and rewriting every source kicks
+            // re-discovery plus the slow auto-rebuild.
             File.WriteAllText(fsprojPath, fsprojBody "v2")
 
             for i, name in List.indexed fileNames do
@@ -3249,16 +3026,10 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                     sprintf "module M%d\nlet v%d = %d\n" (i + 1) (i + 1) (i + 100)
                 )
 
-            // Give the watcher debounce + build-kick a moment to put a build in
-            // flight, then HAMMER status concurrently. Each call MUST return
-            // within a bounded window — a wedged daemon would block here, which
-            // is exactly the 2026-06-16 symptom.
-            //
-            // FSHW-WAIT-001 ok: this sleep opens the window the test measures
-            // INSIDE (status stays responsive WHILE a rebuild runs) — it is not a
-            // wait for an event to arrive, and every probe below carries its own
-            // 8s budget. The `build` here is a literal `sleep 5`, so 1.5s lands
-            // mid-build with 3.5s of margin.
+            // FSHW-WAIT-001 ok: this sleep opens the window the test measures INSIDE
+            // (status stays responsive WHILE a rebuild runs) — it is not a wait for an
+            // event to arrive, and every probe below carries its own 8s budget. The build
+            // is a literal `sleep 5`, so 1.5s lands mid-build with 3.5s of margin.
             Thread.Sleep(1500)
 
             let statusReturnedWithin (ms: int) =
@@ -3273,9 +3044,8 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
 
                 t.Wait(TimeSpan.FromMilliseconds(float ms)) && t.IsCompletedSuccessfully
 
-            // Several probes across the in-flight-build window. Responsive ==
-            // every probe returns inside the budget (8s is generous; production
-            // status is sub-second).
+            // 8s is generous — production status is sub-second — so a probe that misses
+            // it is a wedge, not slowness.
             let mutable allResponsive = true
 
             for _ in 1..5 do
@@ -3293,8 +3063,7 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                      dedicated fix (do not paper over). See AUTOMATION-15/26."
                 )
 
-            // And it must still drive work to completion: the rebuild settles and
-            // the next scan completes (not stuck forever).
+            // Responsive is not enough — the daemon must still drive work to completion.
             let settled =
                 Async.StartAsTask(
                     async {

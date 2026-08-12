@@ -2,19 +2,14 @@
 /// runs fshw.
 ///
 /// ONE VERDICT, TWO TRANSPORTS. Everything that DECIDES anything here is shared with
-/// the daemon path, not re-implemented beside it:
+/// the daemon path, not re-implemented beside it: the scope commands and their parser
+/// (`IpcParsing`), the completeness signal (`Daemon.LiveCoverage`, the same computation
+/// the IPC `GetUncheckedCount` closure serves), the verdict (`CheckVerdict.verdict` /
+/// `converge`), and the verdict FILE (`IpcOutput.publishVerdict`).
 ///
-///   * the scope commands and their parser — `IpcParsing` (`SetScopeCommand`,
-///     `TestScopeCommand`, `parseTestRunReport`);
-///   * the completeness signal — `Daemon.LiveCoverage`, the same computation the IPC
-///     `GetUncheckedCount` closure serves;
-///   * the verdict — `CheckVerdict.verdict` / `converge`;
-///   * the verdict FILE — `IpcOutput.publishVerdict`.
-///
-/// The only thing that differs is the transport: `PluginHost.RunCommand` in-process
-/// instead of a socket. A second verdict computation is a second thing that can go
-/// green while the first goes red, and the entire point of `.fshw/verdict.json` is
-/// that its answer and the exit code cannot disagree.
+/// Only the transport differs: `PluginHost.RunCommand` in-process instead of a socket.
+/// A second verdict computation would be a second thing that can go green while the
+/// first goes red.
 module FsHotWatch.Cli.RunOnceCheck
 
 open CommandTree
@@ -34,17 +29,15 @@ let private runHostCommand (host: PluginHost.PluginHost) (name: string) (args: s
 
 /// Ask the host what the last completed run ACTUALLY covered.
 ///
-/// No way of not getting a straight answer can round UP to `FullSuite` — `confirm` can
-/// only go green on a scope it positively established, BY CONSTRUCTION. But the ways
-/// are not all the same FACT, and are not all reported as one:
+/// No way of not getting a straight answer can round UP to `FullSuite`, so `confirm` can
+/// only go green on a scope it positively established. But the ways are different FACTS
+/// and are reported as such:
 ///
 ///   * NO SUCH COMMAND — the test-prune plugin is not registered, i.e. no test projects
 ///     are configured. A provable "there is no scope to report, and there never will
-///     be": `ScopeUnknown`, which the inner loop tolerates (punishing a repo for having
-///     no tests would be nonsense) and `confirm` refuses.
+///     be": `ScopeUnknown`, which the inner loop tolerates and `confirm` refuses.
 ///   * A THROW — we asked and could not find out. `ScopeUnreadable`, which BOTH modes
-///     refuse: the state it is hiding may be `NoTestsRun`, and answering a ledger you
-///     could not read with its most convenient reading is the AUTOMATION-150 bug.
+///     refuse: the state it hides may be `NoTestsRun`.
 ///
 /// Never SILENT about either.
 let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
@@ -69,9 +62,9 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
 
 /// Turn impact filtering OFF for this process, BEFORE anything runs.
 ///
-/// The ordering is load-bearing and is the same rule the daemon path follows: the scan
-/// below provokes the test run, and that run must ALREADY be unfiltered. Asking
-/// afterwards would only learn that it wasn't.
+/// The ordering matters, and is the same rule the daemon path follows: the scan below
+/// provokes the test run, and that run must ALREADY be unfiltered. Asking afterwards
+/// would only learn that it wasn't.
 ///
 /// A failure here is not fatal on its own — `confirm` does not trust this call's return
 /// value. It trusts `readTestRun`, which reports what actually ran. The request is not
@@ -111,10 +104,9 @@ let internal requestFullRun (host: PluginHost.PluginHost) : unit =
 ///
 /// The wait is the authoritative bound, not the command's own budget: a `run-tests` whose
 /// `waitSec` expires leaves the run going, and reading the scope at that moment would
-/// report a run still in flight (`ScopeUnknown`) — a refusal caused not by the evidence but by not
-/// having waited long enough for the answer it asked for. Settling (never re-scanning: a second
-/// scan would rebuild the world just to wait for a run already in progress) means the
-/// scope is read from what the run actually DID.
+/// report a run still in flight (`ScopeUnknown`) — a refusal caused by not having waited,
+/// not by the evidence. Settle rather than re-scan (a second scan would rebuild the world
+/// just to wait for a run already in progress), so the scope reflects what the run DID.
 let internal forceFullRun (daemon: Daemon.Daemon) : unit =
     requestFullRun daemon.Host
 
@@ -126,8 +118,8 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
 /// The plugins' failing-diagnostic count — HALF of "did this run find real
 /// problems". The other half is `CheckVerdict.CheckInputs.anyPluginFailed`: a plugin
 /// can reach `Failed` without writing a single `ErrorEntry` (the framework's
-/// crash-nets force exactly that), so both terms are needed. Never used alone now;
-/// see `checkInputs` below.
+/// crash-nets force exactly that), so both terms are needed. Never used alone; see
+/// `reread` below.
 let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
     let allErrors =
         match pluginName with
@@ -211,10 +203,8 @@ let runOnceAndVerdict
         /// Read the current state of the host. NO scan — the caller decides when work
         /// happens, so a read can never be mistaken for one.
         ///
-        /// The in-process HALF of the "one verdict, two transports" contract (the daemon's
-        /// half is `IpcOutput.checkInputs`). It OBSERVES; it decides nothing. Every term
-        /// `CheckVerdict.verdict` needs is a field of the record it hands over, so a
-        /// transport that forgets one no longer compiles.
+        /// The in-process half of "one verdict, two transports" (the daemon's half is
+        /// `IpcOutput.checkInputs`). It OBSERVES; it decides nothing.
         let reread () : CheckVerdict.CheckInputs =
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             finalRun.Value <- readTestRun daemon.Host
@@ -229,13 +219,11 @@ let runOnceAndVerdict
         /// IS the re-scan.
         let rescan () : unit = runOnceWithProgress daemon |> ignore
 
-        // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune
-        // launch chokepoint (build → BuildCompleted), where full-suite scope has already
-        // forced every project in full — so in the common case the scope is ALREADY
-        // `FullSuite` here and nothing more runs. This is the backstop for every case
-        // where it is not (a replayed cache entry, a skipped launch): `confirm` goes and
-        // produces the evidence rather than refusing for want of evidence it declined to
-        // get. It is a backstop, not the mechanism — hence it costs nothing when the
+        // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune launch
+        // chokepoint (build → BuildCompleted), where full-suite scope has already forced
+        // every project in full, so in the common case the scope is ALREADY `FullSuite`
+        // here and nothing more runs. This is the backstop for the cases where it is not
+        // (a replayed cache entry, a skipped launch) — it costs nothing when the
         // mechanism worked.
         let initialRead =
             if CheckVerdict.confirmNeedsFullRun checkMode finalRun.Value.Scope then
@@ -268,9 +256,7 @@ let runOnceAndVerdict
 
         eprintfn "%s" (formatErrors allErrors)
 
-        // Defense-in-depth: warn if any FileCommand plugin's args reference a file
-        // modified after the plugin's last run started. Catches cache-key gaps in
-        // plugins whose salt doesn't fully cover their inputs.
+        // Defense-in-depth against cache-key gaps — see `detectStalePluginInputs`.
         let staleInputs =
             config.FileCommands
             |> List.choose (fun fc ->
@@ -308,22 +294,21 @@ let runOnceAndVerdict
 
             UI.fail $"Check incomplete: %s{detail}"
         | CheckVerdict.CheckOutcome.WaitingOnBuild ->
-            // Non-green, but "could not complete", never a red — distinct exit 2.
+            // Non-green, but "could not complete", never a red — see `CheckOutcome`.
             UI.fail
                 "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
                  tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
                  the build settles."
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
-            // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
-            // "the run was too narrow", it is "we could not see what the run was".
+            // Its own words, not `confirm`'s: not "the run was too narrow" but "we could
+            // not see what the run was".
             UI.fail
                 $"NO VERDICT — the test scope could not be read (%s{reason}).\nThat is not the same as \"no tests were \
                    needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
                    may never mean. Nothing is reported broken, and nothing is reported sound either."
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
-            // Nothing failed — and that is the point. `confirm` was asked for a claim
-            // about the whole suite; the tests that ran do not support one; so it has no
-            // verdict to give. Say so. Never launder it into a green.
+            // Nothing failed, and that is the point: the tests that ran do not support a
+            // whole-suite claim, so there is no verdict to give. Never a green.
             UI.fail
                 $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
                    not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \

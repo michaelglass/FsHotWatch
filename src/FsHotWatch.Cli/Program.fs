@@ -112,12 +112,12 @@ type DeadCodeFlag =
 /// listing (two spaces, then the name padded to 17). A description is emitted VERBATIM
 /// on both surfaces, so a multi-line one must carry its own continuation indent — an
 /// un-indented second line starts at column 0 in the listing and reads as if it were
-/// another COMMAND, which is worse than no formatting at all (measured, not assumed).
+/// another COMMAND.
 ///
 /// The cost is that `fshw confirm --help`, which prints the description as a left-aligned
-/// block, shows those continuation lines indented. Readable, but ragged. The real fix is
-/// for CommandTree to re-indent a description per surface rather than making the caller
-/// pick one; until then the LISTING wins, because that is where the verb is discovered.
+/// block, shows those continuation lines indented: readable but ragged. The fix would be
+/// for CommandTree to re-indent per surface; until then the LISTING wins, because that is
+/// where the verb is discovered.
 [<Literal>]
 let private HelpIndent = "                   "
 
@@ -129,21 +129,19 @@ type Command =
         RunFlag list
     /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH. Same checks as
     /// `check`, but the tests run UNFILTERED — and the verdict is refused unless they
-    /// actually did. `check` is the inner loop and keeps impact filtering, which is a
-    /// latency optimization; a merge is a correctness claim and cannot be built on a
+    /// actually did, because a merge is a correctness claim and cannot rest on a
     /// heuristic selection.
     ///
-    /// Running the whole suite next to an impact-filtered `check` is a COMPARISON, and
-    /// every disagreement between the two is a BUG in one of them:
+    /// Every disagreement between the two is a BUG in one of them:
     ///
     ///   * failed here, never selected by `check` → the SELECTOR missed a test. A
     ///     TestPrune bug, not a test bug.
     ///   * passed here, but `check` says failed → a stale ledger entry, a flake, or a
-    ///     test-isolation defect — one that only passes because another test set up the
-    ///     state it depends on. There, `check` is the honest one and the full suite lies.
+    ///     test-isolation defect that only passes because another test set up the state
+    ///     it depends on. There, `check` is the honest one.
     ///
-    /// `--run-once` runs it WITHOUT a daemon — which is how CI must invoke it. A merge
-    /// verdict that is only reachable over a socket is a merge verdict CI cannot ask for.
+    /// `--run-once` runs it WITHOUT a daemon, which is how CI must invoke it: a merge
+    /// verdict reachable only over a socket is one CI cannot ask for.
     | [<CmdExample("", "--run-once");
         Cmd("Run the FULL suite and confirm `check` told the truth.\n"
             + HelpIndent
@@ -157,16 +155,12 @@ type Command =
             + HelpIndent
             + "Refuses a green verdict from anything less than the full suite (exit 3).")>] Confirm of RunFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
-    /// disk.
+    /// disk. Touches NO socket, starts no daemon, triggers no run, so reading cannot
+    /// perturb what it measures (see the `Verdict` module).
     ///
-    /// Touches NO socket, starts no daemon, triggers no run: reading cannot perturb.
-    /// That is the whole point — an extra measurement (a `check`/`test-rerun` spawned
-    /// to double-check a verdict) can itself corrupt the daemon's accounting and
-    /// produce the next content-free green. A read cannot.
-    ///
-    /// This verb is a CONVENIENCE over the file, not a second source of truth: it
-    /// prints the same verdict the check wrote, plus the one judgement a consumer must
-    /// not get wrong — does this verdict describe the tree I have?
+    /// A CONVENIENCE over the file, not a second source of truth: it prints the same
+    /// verdict the check wrote, plus the one judgement a consumer must not get wrong —
+    /// does this verdict describe the tree I have?
     | [<Cmd("Report the last check's verdict and whether it still applies to the current tree (reads .fshw/verdict.json; never contacts the daemon)")>] Verdict
     | [<CmdExample("--filter-class *CryptoTests*", "--filter-trait Category=Browser");
         Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
@@ -219,27 +213,16 @@ let private renderLines mode warningsAreFailures statuses =
 let private renderBlock mode warningsAreFailures statuses =
     renderLines mode warningsAreFailures statuses |> String.concat "\n"
 
-/// Compute the launch command for re-starting the daemon.
-/// Returns (exe, argPrefix) where argPrefix is prepended to "start" when launching
-/// (i.e. the daemon spawn becomes `exe argPrefix start`).
+/// Compute the launch command for re-starting the daemon. Returns (exe, argPrefix),
+/// where argPrefix is prepended to "start" — the spawn becomes `exe argPrefix start`.
 ///
 /// `processPath` is `Environment.ProcessPath` and `entryAssemblyDll` is
 /// `Assembly.GetEntryAssembly().Location` (passed in so this stays pure/testable).
 ///
-/// Three cases:
-///   1. Native single-file exe (processPath is not `dotnet`): launch it directly.
-///   2. `dotnet <local-dll>` (processPath is `dotnet`, entry-assembly location is
-///      a real `.dll` path): spawn THAT SAME DLL — `dotnet "<dll>" start`. This
-///      makes a local dev build dogfood itself; reconstructing `tool run fshw`
-///      here would silently launch the PINNED tool instead of the running build.
-///      The dll path is quoted because it may contain spaces, and the caller
-///      appends `start` after a space.
-///      The published dotnet tool ALSO resolves a real dll path
-///      (`~/.nuget/packages/fshotwatch.cli/<ver>/.../FsHotWatch.Cli.dll`), so this
-///      branch spawns that dll directly for the tool too — equivalent to and more
-///      precise than `tool run fshw` (no tool-resolution indirection).
-///   3. `dotnet` but no usable entry-assembly path (single-file/tool-shim where
-///      `GetEntryAssembly().Location` is empty): fall back to `tool run fshw`.
+/// The `dotnet <dll>` case spawns THAT SAME dll rather than reconstructing
+/// `tool run fshw`, which would silently launch the PINNED tool instead of the running
+/// build. The published tool also resolves a real dll path, so it takes the same branch
+/// — equivalent, with no tool-resolution indirection.
 let computeLaunchCommand (processPath: string) (entryAssemblyDll: string option) : string * string =
     let lowerPath = processPath.ToLowerInvariant()
     let isDotnet = lowerPath.EndsWith("dotnet") || lowerPath.EndsWith("dotnet.exe")
@@ -254,8 +237,7 @@ let computeLaunchCommand (processPath: string) (entryAssemblyDll: string option)
             && dll.ToLowerInvariant().EndsWith(".dll")
             && File.Exists dll
             ->
-            // `dotnet <dll>` — spawn that same dll so a local build dogfoods itself
-            // (and the published tool spawns its own resolved dll, not a re-resolve).
+            // Quoted: the path may contain spaces, and the caller appends `start`.
             (processPath, $"\"%s{dll}\" ")
         | _ ->
             // No usable entry-assembly path (single-file / shim) — fall back to the
@@ -370,16 +352,14 @@ let rec unwrapIpcException (ex: exn) : exn =
     | :? AggregateException as agg when agg.InnerException <> null -> unwrapIpcException agg.InnerException
     | _ -> ex
 
-/// The corrupted-pipe fault family (AUTOMATION-147). StreamJsonRpc reads a
-/// Content-Length header then allocates a buffer of that size; garbage framing
-/// (commonly: two daemons sharing the same pipe, or a leaky daemon emitting
-/// malformed frames) makes the length nonsensical and surfaces as either
-/// `OutOfMemoryException` (the buffer alloc — misleading, the machine isn't
-/// out of memory) or `OverflowException` (Content-Length overflowing Int32
-/// arithmetic — observed in production, fshw 0.10.0-stresstest4, on a daemon
-/// at ~7.8 GB RSS). Both lie about themselves; both are cured by a forced
-/// daemon restart, which `runIpcWithSelfHeal` performs automatically instead
-/// of handing the `fshw stop`/`fshw start` ritual to the operator.
+/// The corrupted-pipe fault family. StreamJsonRpc reads a Content-Length header then
+/// allocates a buffer of that size; garbage framing (commonly two daemons sharing the
+/// same pipe, or a leaky daemon emitting malformed frames) makes the length nonsensical
+/// and surfaces as either `OutOfMemoryException` (the buffer alloc — misleading, the
+/// machine isn't out of memory) or `OverflowException` (Content-Length overflowing Int32
+/// arithmetic — observed in production, fshw 0.10.0-stresstest4, on a daemon at ~7.8 GB
+/// RSS). Both lie about themselves; both are cured by a forced daemon restart, which
+/// `runIpcWithSelfHeal` performs automatically.
 let isCorruptedPipeFault (inner: exn) : bool =
     match inner with
     | :? OutOfMemoryException
@@ -496,21 +476,15 @@ let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : in
             2)
         action
 
-/// Ask the test-prune plugin what the last completed run actually covered.
+/// Ask the test-prune plugin what the last completed run actually covered — the daemon
+/// twin of `RunOnceCheck.readTestRun`, which documents why the two ways of not getting
+/// an answer are kept apart:
 ///
-/// No failure to get a straight answer can round UP to `FullSuite`, so `confirm` can
-/// only ever go green on a scope it positively established. But the failures are not
-/// one fact and are not reported as one (the daemon twin of `RunOnceCheck.readTestRun`):
+///   * an UNKNOWN-COMMAND reply → `ScopeUnknown` (no test projects configured);
+///   * a TRANSPORT FAULT → `ScopeUnreadable`, refused in BOTH modes.
 ///
-///   * an UNKNOWN-COMMAND reply — the daemon has no test projects configured, so no run
-///     of its will ever produce a scope. `ScopeUnknown`: a provable absence, which the
-///     inner loop tolerates and `confirm` refuses.
-///   * a TRANSPORT FAULT — we asked and could not find out. `ScopeUnreadable`, refused
-///     in BOTH modes: it may be concealing a `NoTestsRun`, which is the state that must
-///     never read as green, and collapsing the two is how a broken read became a pass.
-///
-/// Both are WARNED about rather than folded silently in. Safe-by-default is right;
-/// safe-and-mute is how a broken check stays broken.
+/// Nothing here can round UP to `FullSuite`, and both failures are WARNED about rather
+/// than folded in silently.
 let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     try
         let reply = ipc.RunCommand pipeName TestScopeCommand "" |> Async.RunSynchronously
@@ -538,9 +512,9 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
 /// is already unfiltered and `confirm` never pays for two runs.
 ///
 /// A failure here is NOT fatal on its own — `confirm` does not trust this call's return
-/// value anyway. It trusts `readTestScope`, which reports what actually ran. If the
-/// scope could not be set, the run will come back impact-filtered and the verdict will
-/// be `UnearnedScope`. The request is not the evidence.
+/// value anyway. It trusts `readTestRun`, which reports what actually ran. If the scope
+/// could not be set, the run comes back impact-filtered and the verdict is
+/// `UnearnedScope`. The request is not the evidence.
 let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
     try
         let reply =
@@ -558,25 +532,12 @@ let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
             $"fshw confirm: could not put the daemon in full-suite scope (%s{ex.Message}). \
                The tests will run impact-filtered, and the verdict will be refused."
 
-/// Run EVERY configured test project on the daemon, now, and wait for it — `run-tests`
-/// with no filter and no project selection.
-///
-/// This is how `fshw confirm` FORCES the run it demands (AUTOMATION-117). `set-scope
-/// full` only makes the NEXT run unfiltered; on a warm daemon whose impact DB says
-/// nothing changed there is no next run, and `confirm` would refuse for want of evidence
-/// it was never willing to go and get. `CheckVerdict.confirmNeedsFullRun` decides when
-/// this fires — never in the inner loop, and never when the scan already produced a full
-/// suite.
-///
-/// Sends no `waitSec`, so the plugin's own default budget applies. An expired budget
-/// does NOT cancel the run (it was already launched; only the wait gave up), and the
-/// caller's `settle` is the authoritative bound.
-/// Tell the build plugin the next build must be REAL, not a cache replay
-/// (AUTOMATION-224). Best-effort and non-fatal by design, exactly like
-/// `forceFullSuiteRun`: a daemon without the command (no build plugin configured)
-/// must not turn a verdict into an error. The verdict still refuses anything less
-/// than a full, complete run on its own evidence, so a missed force degrades to
-/// today's behaviour rather than to a false green.
+/// Tell the build plugin the next build must be REAL, not a cache replay (see
+/// `IpcParsing.ForceRebuildCommand`). Best-effort and non-fatal by design, exactly like
+/// `forceFullSuiteRun`: a daemon without the command (no build plugin configured) must
+/// not turn a verdict into an error. The verdict still refuses anything less than a
+/// full, complete run on its own evidence, so a missed force degrades to the previous
+/// behaviour rather than to a false green.
 let internal forceRealBuild (ipc: IpcOps) (pipeName: string) : unit =
     try
         let reply =
@@ -591,6 +552,16 @@ let internal forceRealBuild (ipc: IpcOps) (pipeName: string) : unit =
     with ex ->
         FsHotWatch.Logging.warn "cli-confirm" $"the forced rebuild request failed: %s{ex.Message}"
 
+/// Run EVERY configured test project on the daemon, now — `run-tests` with no filter
+/// and no project selection. This is how `fshw confirm` FORCES the run it demands:
+/// `set-scope full` only makes the NEXT run unfiltered, and on a warm daemon whose
+/// impact DB says nothing changed there is no next run.
+/// `CheckVerdict.confirmNeedsFullRun` decides when this fires — never in the inner
+/// loop, and never when the scan already produced a full suite.
+///
+/// Sends no `waitSec`, so the plugin's own default budget applies. An expired budget
+/// does NOT cancel the run (it was already launched; only the wait gave up), and the
+/// caller's `settle` is the authoritative bound.
 let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
     try
         let reply = ipc.RunCommand pipeName RunTestsCommand "{}" |> Async.RunSynchronously
@@ -605,17 +576,18 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
         FsHotWatch.Logging.warn "cli-confirm" $"the forced full-suite run failed: %s{ex.Message}"
 
 /// Force a fresh from-disk scan, then ride the daemon's next scan completion.
-/// This is what makes `check`/`confirm` trust DISK rather than the watcher: on a
-/// warm daemon `WaitForScan` ALONE returns the last completed scan's generation
-/// immediately (`WaitForScanGeneration(-1L)` is already-satisfied once any scan
-/// has ever run), so an idle edit the file-watcher missed would never be re-read
-/// and the verdict replays a stale content-addressed result (the 221/224 disease).
-/// `Scan` calls `RequestScan` → `performScan`, which re-reads every registered
-/// file from disk; the `-1L` wait then hands off to the caller's authoritative
-/// `settle`. Shared by BOTH the initial pre-verdict scan AND the convergence
-/// re-scan so there is ONE definition of "make the tree fresh" — `dotnet fshw
-/// scan` is no longer a required manual pre-step for a correct verdict; the
-/// watcher is an optimization, never the source of truth.
+///
+/// This is what makes `check`/`confirm` trust DISK rather than the watcher: on a warm
+/// daemon `WaitForScan` ALONE returns the last completed scan's generation immediately
+/// (`WaitForScanGeneration(-1L)` is already-satisfied once any scan has ever run), so an
+/// idle edit the file-watcher missed would never be re-read and the verdict would replay
+/// a stale content-addressed result. `Scan` calls `RequestScan` → `performScan`, which
+/// re-reads every registered file from disk; the `-1L` wait then hands off to the
+/// caller's authoritative `settle`.
+///
+/// Shared by BOTH the initial pre-verdict scan AND the convergence re-scan, so there is
+/// ONE definition of "make the tree fresh": the watcher is an optimization, never the
+/// source of truth, and `fshw scan` is not a required manual pre-step.
 let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
     ipc.Scan pipeName |> Async.RunSynchronously |> ignore
     ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
@@ -658,16 +630,15 @@ let private ensureAndQueryErrors
 
             2
         | DaemonReadiness.Ready ->
-            // `confirm` declares its scope BEFORE anything runs. Ordering is
-            // load-bearing: the scan below provokes the test run, and that run must
-            // already be unfiltered — asking afterwards would only learn that it wasn't.
+            // `confirm` declares its scope BEFORE anything runs: the scan below provokes
+            // the test run, and that run must already be unfiltered — asking afterwards
+            // would only learn that it wasn't.
             if checkMode = CheckVerdict.Confirmation then
                 requestFullSuiteScope ipc pipeName
-                // AUTOMATION-224. Ordered BEFORE the forced scan below: the scan is
-                // what triggers the build, so the flag has to be set by the time the
-                // build plugin computes its cache key. A forced scan alone does not
-                // help — it re-reads the same bytes, so the source merkle is
-                // unchanged and the cache hits again.
+                // Ordered BEFORE the forced scan below: the scan is what triggers the
+                // build, so the flag has to be set by the time the build plugin computes
+                // its cache key. A forced scan alone does not help — it re-reads the same
+                // bytes, so the source merkle is unchanged and the cache hits again.
                 forceRealBuild ipc pipeName
 
             withCheckIpc forceRestart (fun () ->
@@ -678,25 +649,16 @@ let private ensureAndQueryErrors
                     excludePatterns
                     (renderLines mode (not noWarnFail))
                     noWarnFail
-                    // Force a fresh from-disk scan up front — do NOT merely WAIT
-                    // for one. On a warm daemon a wait-only returns the last
-                    // scan's generation immediately, replaying a stale verdict for
-                    // any idle edit the watcher missed (221/224). `forceScanAndWait`
-                    // re-reads disk first; the convergence re-scan below reuses the
-                    // same helper, so incompleteness is still handled downstream and
-                    // the common path pays for exactly one forced scan.
+                    // Force a fresh from-disk scan up front — do NOT merely WAIT for one;
+                    // see `forceScanAndWait`.
                     (fun () -> forceScanAndWait ipc pipeName)
                     // Authoritative settle: block until the daemon reports its sound
-                    // verdict (`waitForVerdict`, which gates on plugin busy/inflight
-                    // state + generation advancement + quiescence). This is what
-                    // closes the false-green hole — `WaitForScan` alone only waits
-                    // for the SCAN generation to be signalled, which can race ahead
-                    // of the test-prune run launched by the build's BuildCompleted.
-                    // `-1` = no client-imposed timeout; the daemon bounds the
-                    // wait with its hard verdict deadline (`resolveVerdictDeadline`,
-                    // FSHW_VERDICT_DEADLINE_SEC, default 60 min) so this can never
-                    // block forever — a breach surfaces via `isVerdictWaitTimeout`
-                    // as a diagnostic exit 2 naming the wedged plugin.
+                    // verdict (`waitForVerdict`). `-1` = no client-imposed timeout; the
+                    // daemon bounds the wait with its hard verdict deadline
+                    // (`resolveVerdictDeadline`, FSHW_VERDICT_DEADLINE_SEC, default 60
+                    // min) so this can never block forever — a breach surfaces via
+                    // `isVerdictWaitTimeout` as a diagnostic exit 2 naming the wedged
+                    // plugin.
                     (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
                     (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
                     (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
@@ -705,13 +667,10 @@ let private ensureAndQueryErrors
                     // for. The inner loop reads it too — and ignores it — so there is one
                     // verdict path, not two that can drift.
                     (fun () -> readTestRun ipc pipeName)
-                    // `confirm`'s teeth: run the whole suite when the scan did not.
-                    // Invoked only in Confirmation, only when the scope is not already
-                    // full — see `CheckVerdict.confirmNeedsFullRun`.
+                    // `confirm`'s teeth — see `CheckVerdict.confirmNeedsFullRun`.
                     (fun () -> forceFullSuiteRun ipc pipeName)
-                    // Convergence re-scan: start a fresh from-disk scan so the next
-                    // GetDiagnostics read reflects it. Same helper as the initial
-                    // scan above — ONE definition of "make the tree fresh".
+                    // Convergence re-scan: the same helper as the initial scan above, so
+                    // there is ONE definition of "make the tree fresh".
                     (fun () -> forceScanAndWait ipc pipeName))
 
 /// Compute a hash of the `.fshw.json` config content for restart-on-config-change
@@ -741,10 +700,9 @@ let private computeConfigHash (repoRoot: string) =
 /// always starts fresh in that case, so there is no decision to encode.
 type RunningDaemonAction =
     | Reuse
-    /// The running daemon's recorded binary identity is not this CLI's —
-    /// a different binary, or no record at all (a build that predates the
-    /// handshake). Restart it with THIS binary. (AUTOMATION-147: a new CLI
-    /// must never silently talk to an old daemon.)
+    /// The running daemon's recorded binary identity is not this CLI's — a different
+    /// binary, or no record at all (a build that predates the handshake). Restart it
+    /// with THIS binary: a new CLI must never silently talk to an old daemon.
     | RestartStaleBinary of DaemonIdentity.StaleReason
     /// `.fshw.json` changed since the daemon started — restart to load it.
     | RestartConfigChanged
@@ -871,13 +829,12 @@ let private ensureDaemon
             else
                 ""
 
-        // The identity handshake (AUTOMATION-147): compare the running daemon's
-        // recorded binary identity (assembly version + content hash, written by
-        // the daemon at startup) against this CLI's own. The comparison is
-        // UNILATERAL — an old daemon that never recorded an identity needs no
-        // cooperation to be found stale; it simply reads as `NotRecorded`,
-        // which restarts it. This is what protects the very next repin: a new
-        // CLI can never silently "verify" anything through an old daemon.
+        // The identity handshake: compare the running daemon's recorded binary identity
+        // (assembly version + content hash, written by the daemon at startup) against
+        // this CLI's own. The comparison is UNILATERAL — an old daemon that never
+        // recorded an identity needs no cooperation to be found stale; it reads as
+        // `NotRecorded`, which restarts it. So a new CLI can never silently "verify"
+        // anything through an old daemon.
         match decideRunningDaemonAction (DaemonIdentity.verdictFor repoRoot) storedHash currentHash with
         | Reuse -> true
         | restart ->
@@ -893,35 +850,28 @@ let private ensureDaemon
             startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
-// Daemon readiness gate (AUTOMATION-66).
+// Daemon readiness gate.
 //
-// `ensureDaemon` returns as soon as the named pipe is *listening* (`IsRunning` —
-// a 500 ms probe connect). But a daemon that just (re)started is often still
-// mid cold-scan (analyzer reflection load pegging cores), so the FIRST real RPC
-// issued by a check — `ConnectAsync(5000)` inside `IpcClient.invoke` — can time
-// out because the acceptor is starved, or hit a pipe endpoint that was briefly
-// torn down during a stop→start. Such a transient fault must not surface as exit 1
-// ("failures found"), which would poison an autonomous loop's verdict. The gate below
-// RETRIES such transient connect faults against a startup deadline (distinct
-// from the per-RPC connect timeout) until the daemon answers, fails FAST (exit
-// 2) if the daemon process is provably gone, and gives up (exit 2) if it never
-// becomes responsive.
+// `ensureDaemon` returns as soon as the named pipe is *listening* (`IsRunning` — a
+// 500 ms probe connect). But a daemon that just (re)started is often still mid
+// cold-scan (analyzer reflection load pegging cores), so the FIRST real RPC issued by
+// a check — `ConnectAsync(5000)` inside `IpcClient.invoke` — can time out because the
+// acceptor is starved, or hit a pipe endpoint briefly torn down during a stop→start.
+// Such a transient fault must not surface as exit 1 ("failures found"), which would
+// poison an autonomous loop's verdict. The gate below RETRIES transient connect faults
+// against a startup deadline (distinct from the per-RPC connect timeout) until the
+// daemon answers, fails FAST (exit 2) if the daemon process is provably gone, and
+// gives up (exit 2) if it never becomes responsive.
 // ----------------------------------------------------------------------------
 
-/// True when `ex` is a connect-phase transient — the daemon is reachable-in-
-/// principle but not yet answering because it is mid-startup (cold scan /
-/// analyzer load) or briefly tore down a pipe endpoint during a restart. These
-/// are RETRIED by the readiness gate rather than surfaced as a hard failure:
-///  - `TimeoutException` — a `NamedPipeClientStream.ConnectAsync` connect timeout
-///    ("The operation has timed out") while the acceptor is starved by scan work.
-///  - StreamJsonRpc `ConnectionLostException` (matched by type-name substring so
-///    there is no compile-time dependency on the transport assembly) — the pipe
-///    dropped before the request completed.
-///  - `IOException` / `EndOfStreamException` (an `IOException` subtype) /
-///    `ObjectDisposedException` — a raw pipe teardown (an old daemon endpoint
-///    disposed during a stop→start).
-/// Walks `InnerException` so an `AggregateException` from `Async.RunSynchronously`
-/// is seen through.
+/// True when `ex` is a connect-phase transient — the daemon is reachable-in-principle
+/// but not yet answering because it is mid-startup (cold scan / analyzer load) or
+/// briefly tore down a pipe endpoint during a restart. These are RETRIED by the
+/// readiness gate rather than surfaced as a hard failure.
+///
+/// `ConnectionLostException` is matched by type-name substring so there is no
+/// compile-time dependency on the transport assembly. Walks `InnerException` so an
+/// `AggregateException` from `Async.RunSynchronously` is seen through.
 let rec isTransientConnectFault (ex: exn) : bool =
     match ex with
     | null -> false
@@ -977,13 +927,12 @@ let daemonProcessAliveWith (fileOps: FileOps) (repoRoot: string) : bool =
             | :? ArgumentException -> false // no process with that id — proven dead
             | _ -> true // any other probe error — assume alive rather than false-crash
 
-/// Stale pidfile hygiene (AUTOMATION-147): delete `.fshw/daemon.pid` when the
-/// process it names is PROVABLY dead — cleaned up on the next command, not
-/// left for an external reaper. Uses the SAME liveness read as the readiness
-/// gate (`daemonProcessAliveWith`), whose unknowns all lean ALIVE — so a
-/// missing, unparseable, or undecidable pidfile is never deleted (it might
-/// belong to a live daemon). Returns true iff a stale pidfile was removed,
-/// and says so on stderr: hygiene the user can see, not infer.
+/// Stale pidfile hygiene: delete `.fshw/daemon.pid` when the process it names is
+/// PROVABLY dead — cleaned up on the next command, not left for an external reaper.
+/// Uses the SAME liveness read as the readiness gate (`daemonProcessAliveWith`), whose
+/// unknowns all lean ALIVE, so a missing, unparseable, or undecidable pidfile is never
+/// deleted (it might belong to a live daemon). Returns true iff a stale pidfile was
+/// removed, and says so on stderr: hygiene the user can see, not infer.
 let cleanStalePidfileWith (fileOps: FileOps) (repoRoot: string) : bool =
     let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
 
@@ -1004,11 +953,10 @@ let cleanStalePidfileWith (fileOps: FileOps) (repoRoot: string) : bool =
 let private cleanStalePidfile (repoRoot: string) : unit =
     cleanStalePidfileWith defaultFileOps repoRoot |> ignore
 
-/// The words `fshw status` prints when the running daemon's binary is not this
-/// CLI's (AUTOMATION-147): the fault is NAMED — status output computed by the
-/// wrong binary must never be presented silently as current. Status itself
-/// does not restart (it is a read-only observer and a fresh daemon would have
-/// nothing to report); the work-triggering verbs do, automatically.
+/// The words `fshw status` prints when the running daemon's binary is not this CLI's:
+/// status output computed by the wrong binary must never be presented silently as
+/// current. Status itself does not restart (it is a read-only observer and a fresh
+/// daemon would have nothing to report); the work-triggering verbs do, automatically.
 let staleIdentityStatusWarning (reason: DaemonIdentity.StaleReason) : string =
     let what =
         match reason with
@@ -1109,10 +1057,9 @@ let defaultGlobalOptions =
       Verbose = false
       DaemonExtraArgs = "" }
 
-/// Delete a file, swallowing any exception. In a bulk cleanup loop one bad item
-/// shouldn't halt the rest; the exception class is logged at debug so a future
-/// reader sees this isn't load-bearing and so failures are diagnosable on
-/// `--verbose`.
+/// Delete a file, swallowing any exception: in a bulk cleanup loop one bad item
+/// shouldn't halt the rest. The exception class is logged at debug so failures are
+/// still diagnosable on `--verbose`.
 let tryDeleteForCleanup (path: string) : string option =
     try
         File.Delete(path)
@@ -1141,13 +1088,12 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
             |> List.choose tryDeleteForCleanup)
 
 // ----------------------------------------------------------------------------
-// Run-level hooks (AUTOMATION-188).
+// Run-level hooks.
 //
 // A `beforeRun`/`afterRun` pair that brackets a WHOLE `check`/`confirm` run —
 // distinct from `tests.beforeRun`, which the daemon runs per test run inside its
-// tests slot. The first consumer (intelligence) uses them to acquire and release
-// a box-wide gate-lock so two concurrent runs serialize with zero manual lock
-// commands, replacing a hand-rolled bracket in its own CI glue.
+// tests slot. The first consumer uses them to acquire and release a box-wide
+// gate-lock so two concurrent runs serialize.
 //
 //   * `beforeRun` is a FAIL-CLOSED preflight: it runs BEFORE the daemon is
 //     contacted (it IS the lock acquire), and a non-zero exit aborts with exit 2
@@ -1158,9 +1104,8 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
 //     runs EXACTLY once. Its own exit code is best-effort: a failing afterRun is
 //     logged loudly but never flips the run's verdict.
 //
-// SIGKILL is explicitly OUT OF SCOPE — it cannot be trapped, so a lock leaked by
-// a `kill -9` is the consumer's TTL problem to reclaim, not something a signal
-// handler here can help with.
+// SIGKILL is OUT OF SCOPE — it cannot be trapped, so a lock leaked by `kill -9` is
+// the consumer's TTL problem to reclaim.
 // ----------------------------------------------------------------------------
 
 /// The timeout (seconds) bounding each run-level hook: `runHookTimeoutSec` →
@@ -1184,27 +1129,25 @@ let internal makeRunOnce (run: unit -> unit) : unit -> unit =
         if Interlocked.Exchange(latch, 1) = 0 then
             run ()
 
-/// What a run-level signal handler does: run `afterRun` (once, via the shared
-/// latch the caller wove into it) then `exitWith code`. Extracted from the
-/// registration lambdas so the "fire afterRun then exit" contract — and the
-/// exactly-once sharing with the `finally` — is unit-testable WITHOUT delivering a
-/// real OS signal (which in a test host could trip the runner's own signal
-/// handling). `128 + signum` is the shell convention for "killed by signal N".
+/// What a run-level signal handler does: run `afterRun` (once, via the shared latch the
+/// caller wove into it) then `exitWith code`. Extracted from the registration lambdas so
+/// the contract is unit-testable WITHOUT delivering a real OS signal, which in a test
+/// host could trip the runner's own signal handling. `128 + signum` is the shell
+/// convention for "killed by signal N".
 let internal onRunSignal (afterRun: unit -> unit) (exitWith: int -> unit) (code: int) : unit =
     afterRun ()
     exitWith code
 
 /// Install SIGINT (via `Console.CancelKeyPress`) and SIGTERM (via POSIX
-/// `PosixSignalRegistration`) handlers that run `onRunSignal afterRun exitWith` —
-/// a plain `finally` does NOT run when the process is signalled, so without this
-/// afterRun would be skipped on exactly the abort path a gate-lock release cannot
-/// afford to miss. Each handler cancels the default terminate
-/// (`e.Cancel`/`ctx.Cancel <- true`) so the process stays alive long enough to run
-/// afterRun. Returns a disposable that unregisters both.
+/// `PosixSignalRegistration`) handlers that run `onRunSignal afterRun exitWith` — a
+/// plain `finally` does NOT run when the process is signalled, so without this afterRun
+/// would be skipped on exactly the abort path a gate-lock release cannot afford to miss.
+/// Each handler cancels the default terminate (`e.Cancel`/`ctx.Cancel <- true`) so the
+/// process stays alive long enough to run afterRun. Returns a disposable that
+/// unregisters both.
 ///
-/// `exitWith` is INJECTED so a test can send a real signal to itself, observe
-/// afterRun fire, and record the intended exit code WITHOUT the handler
-/// terminating the test process; production passes `exit`.
+/// `exitWith` is INJECTED so a test can signal itself and observe afterRun fire without
+/// the handler terminating the test process; production passes `exit`.
 let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int -> unit) : IDisposable =
     let onCancelKey =
         ConsoleCancelEventHandler(fun _ (e: ConsoleCancelEventArgs) ->
@@ -1226,18 +1169,16 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
             Console.CancelKeyPress.RemoveHandler onCancelKey
             sigterm.Dispose() }
 
-/// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun`
-/// hooks (AUTOMATION-188). See the section header above for the full contract.
+/// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun` hooks.
+/// See the section header above for the full contract.
 ///
 /// When NEITHER hook is configured this is a straight `action ()` — no latch, no
 /// signal handlers, no shell machinery. Otherwise the hooks reuse `.fshw.json`'s
-/// existing bounded-child spawn (`makeShellHookWithResult`, `/bin/sh -c`); no new
-/// spawn machinery is introduced.
+/// existing bounded-child spawn (`makeShellHookWithResult`, `/bin/sh -c`).
 ///
 /// Works for BOTH transports because it wraps the ACTION, whatever it is: the
 /// daemon path (`queryPluginIn`) and `--run-once` (`RunOnceCheck.runOnceAndVerdict`)
-/// are the same `action ()` from here, so the hook logic is transport-agnostic by
-/// construction.
+/// are the same `action ()` from here.
 let withRunHooks (repoRoot: string) (config: DaemonConfiguration) (action: unit -> int) : int =
     match config.BeforeRun, config.AfterRun with
     | None, None -> action ()
@@ -1309,20 +1250,14 @@ let internal runHooksApplyTo (config: DaemonConfiguration) (verb: RunHookCommand
 
 /// Bracket `action` with the run-level hooks IFF `runHookCommands` selects `verb`.
 ///
-/// A verb the config does not select is a straight `action ()` — no latch, no
-/// signal handlers, no shell-out — indistinguishable from the no-hooks-configured
-/// path. That is the point: a consumer gating only `confirm` must pay nothing at
-/// all on the `check` inner loop it runs constantly.
+/// A verb the config does not select is a straight `action ()` — no latch, no signal
+/// handlers, no shell-out — so a consumer gating only `confirm` pays nothing on the
+/// `check` inner loop it runs constantly. Sits OUTSIDE `withRunHooks` so the bracket
+/// mechanics and the verb policy stay separately testable.
 ///
-/// Sits OUTSIDE `withRunHooks` rather than inside it, so the bracket mechanics and
-/// the verb policy stay separately testable and the existing `withRunHooks`
-/// contract is untouched.
-///
-/// Transport-agnostic by construction, exactly as `withRunHooks` is: this wraps
-/// the ACTION, so `--run-once` and the daemon path get the identical decision with
-/// no per-transport code. A run-once `confirm` still brackets; a run-once `check`
-/// does not. The rule is purely "which verb was invoked" — there is no cheapness
-/// heuristic through which CI could silently lose the gate.
+/// The rule is purely "which verb was invoked": `--run-once` and the daemon path get
+/// the identical decision, and there is no cheapness heuristic through which CI could
+/// silently lose the gate.
 let withRunHooksFor
     (verb: RunHookCommand)
     (repoRoot: string)
@@ -1348,7 +1283,7 @@ let executeCommand
     let mode = pickMode opts.AgentMode opts.CompactMode
     let noWarnFail = opts.NoWarnFail
 
-    // State-dir hygiene BEFORE any daemon decision (AUTOMATION-147):
+    // State-dir hygiene BEFORE any daemon decision:
     //   1. A `daemon.pid` whose process is provably dead is deleted NOW — the
     //      leftover of a crash or a kill, cleaned on the next command instead
     //      of accumulating for an external reaper.
@@ -1361,15 +1296,12 @@ let executeCommand
     | Some message -> eprintfn "⚠ %s" message
     | None -> ()
 
-    // Fail-fast on misconfiguration BEFORE starting (or polling for) a daemon
-    // for any project-requiring command. The daemon's `start` path performs
-    // the same check internally and exits 2; if we reached `ensureDaemon`
-    // without checking here, the freshly-launched daemon would exit 2, the
-    // CLI's `IsRunning` poll would never observe a live daemon, and the user
-    // would see "Failed to start daemon" + exit 1 instead of the structured
-    // "no projects discovered" + exit 2 contract. Status/Stop/Scan/Init/etc.
-    // either tolerate or aren't relevant to a zero-projects workspace, so
-    // they skip this check.
+    // Fail-fast on misconfiguration BEFORE starting (or polling for) a daemon. The
+    // daemon's `start` path checks the same thing and exits 2, so without this check
+    // the freshly-launched daemon would exit 2, the CLI's `IsRunning` poll would never
+    // observe a live daemon, and the user would see "Failed to start daemon" + exit 1
+    // instead of the structured "no projects discovered" + exit 2. Status/Stop/Scan/
+    // Init/etc. tolerate or don't care about a zero-projects workspace and skip it.
     let needsProjects =
         match command with
         | Start
@@ -1414,11 +1346,11 @@ let executeCommand
         let waitReadyFn () =
             waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
 
-        // Forced restart for corrupted-pipe self-healing (AUTOMATION-147): stop
-        // EVERYTHING answering on the pipe (a corrupted reply usually means two
-        // daemons share it, so one Shutdown is not enough), reap the pidfile,
-        // start fresh. Unlike `ensureDaemonFn` this never reuses — the whole
-        // point is that the current pipe occupant is emitting garbage.
+        // Forced restart for corrupted-pipe self-healing: stop EVERYTHING answering on
+        // the pipe (a corrupted reply usually means two daemons share it, so one
+        // Shutdown is not enough), reap the pidfile, start fresh. Unlike
+        // `ensureDaemonFn` this never reuses — the current pipe occupant is emitting
+        // garbage.
         let forceRestartDaemon () : bool =
             let sw = System.Diagnostics.Stopwatch.StartNew()
 
@@ -1504,12 +1436,8 @@ let executeCommand
 
         match command with
         | Start ->
-            // Fail-fast on misconfiguration BEFORE acquiring the lockfile,
-            // writing the pidfile, or creating the daemon. Same contract as
-            // the run-once paths so every entry point behaves consistently:
-            // zero projects almost always means a wrong cwd or an over-eager
-            // `.fshw.json` exclude pattern, and there is no useful behaviour
-            // the daemon can provide.
+            // Fail-fast on misconfiguration BEFORE acquiring the lockfile, writing the
+            // pidfile, or creating the daemon — the same contract as the run-once paths.
             match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
             | Some exitCode -> exitCode
             | None ->
@@ -1521,8 +1449,8 @@ let executeCommand
 
                 // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
                 // daemon's lifetime. Two concurrent `start` invocations cannot both
-                // acquire it; the second exits cleanly. Replaces the earlier probe-based
-                // guard which had a TOCTOU window between IsRunning check and pipe claim.
+                // acquire it; the second exits cleanly. Not a probe-based guard — that
+                // has a TOCTOU window between the IsRunning check and the pipe claim.
                 let acquired =
                     try
                         Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
@@ -1548,10 +1476,10 @@ let executeCommand
                     // not the nohup wrapper that launched us.
                     File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
 
-                    // Record THIS binary's identity (AUTOMATION-147) BEFORE the
-                    // IPC pipe starts listening, so a CLI that observes a live
-                    // pipe always finds the record. Any daemon that never wrote
-                    // one reads as `NotRecorded` — and is restarted.
+                    // Record THIS binary's identity BEFORE the IPC pipe starts
+                    // listening, so a CLI that observes a live pipe always finds the
+                    // record. Any daemon that never wrote one reads as `NotRecorded`
+                    // — and is restarted.
                     DaemonIdentity.recordCurrent repoRoot
 
                     let daemon = createDaemon repoRoot
@@ -1585,11 +1513,10 @@ let executeCommand
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.
             withIpcNoHeal (fun () ->
-                // Multiple daemons may be listening on the same pipe (historically the
-                // start command spawned duplicates); iterate Shutdown until the pipe
-                // has been quiet for two consecutive probes so we don't leave orphans
-                // behind and don't misreport "No daemon running" while the OS is still
-                // tearing down the last pipe endpoint.
+                // Multiple daemons may be listening on the same pipe, so iterate Shutdown
+                // until it has been quiet for two consecutive probes: that leaves no
+                // orphans behind and does not misreport "No daemon running" while the OS
+                // is still tearing down the last pipe endpoint.
                 let overallTimeout = TimeSpan.FromSeconds(30.0)
                 let sw = System.Diagnostics.Stopwatch.StartNew()
                 let mutable stopped = 0
@@ -1634,9 +1561,8 @@ let executeCommand
                 UI.success $"Scan: %s{result}"
                 0)
         | Status pluginName ->
-            // Say it in words (AUTOMATION-147): a status computed by a daemon
-            // built from different code than this CLI is never presented
-            // silently as current.
+            // Say it in words: a status computed by a daemon built from different code
+            // than this CLI is never presented silently as current.
             if ipc.IsRunning pipeName then
                 match DaemonIdentity.verdictFor repoRoot with
                 | DaemonIdentity.IdentityVerdict.Stale reason -> eprintfn "%s" (staleIdentityStatusWarning reason)
@@ -1682,11 +1608,9 @@ let executeCommand
             // `beforeRun` chain can't defeat an explicit rerun.
             let waitSec = RerunFilter.waitSec flags
 
-            // `projects` selects WHICH test projects the daemon invokes; the daemon has
-            // read this field all along (`run-tests`), but nothing ever sent it, so a
-            // `--filter-class` was always fanned out across every configured project.
-            // That is how a filter naming a real class could run only the wrong project
-            // and report that nothing matched.
+            // `projects` selects WHICH test projects the daemon invokes. Without it a
+            // `--filter-class` is fanned out across every configured project, so a filter
+            // naming a real class can run only the wrong project and report no match.
             let projects = RerunFilter.projects flags
 
             let runArgsJson =
@@ -1763,69 +1687,49 @@ let executeCommand
             with :? IOException ->
                 eprintfn "%s already exists" configPath
                 1
-        // Both `check` arms bracket the run with the run-level hooks (AUTOMATION-188),
-        // but only if `runHookCommands` selects `check` — a consumer gating only the
-        // merge verdict leaves the inner loop completely unwrapped. Wrapping at the
-        // ACTION means both transports — `--run-once` and the daemon path — get the
-        // identical decision with no per-transport code.
+        // Both `check` arms bracket the run with the run-level hooks, but only if
+        // `runHookCommands` selects `check` — a consumer gating only the merge verdict
+        // leaves the inner loop completely unwrapped.
         | Check flags when isRunOnce flags ->
             withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> runOnceIn CheckVerdict.InnerLoop)
         | Check flags -> withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> queryPluginWith (mode) "")
         | Confirm flags ->
-            // AUTOMATION-161 — the evidence may ALREADY have been earned.
-            //
-            // `confirm` is the verb you run before a merge, which means you run it more
-            // than once, and on a tree that has not moved the honest answer to "is the
-            // suite green?" was settled the first time. Asking again is not a fresh
-            // question; it is the SAME question about the SAME bytes.
-            //
-            // So look before you run — and look at the ONE artifact entitled to answer:
-            // `.fshw/verdict.json`, content-addressed to the tree it verified AND to the
-            // binary that verified it (see `Verdict.priorConfirmation`). Both must match,
-            // byte for byte, and the recorded verdict must be a full-suite green. Anything
-            // else — a moved tree, a different fshw, a filtered green, a red — is not an
-            // answer, and `confirm` goes and earns one.
-            //
-            // This is the ONLY thing in fshw allowed to carry a green across a process
-            // boundary. A cached PLUGIN result explicitly may not (its key does not pin
-            // the tree; see `TestPrunePlugin.cacheKeyFor`), and that asymmetry is the
-            // whole point: the fast path runs through the artifact BUILT to be trusted,
-            // not through one that merely happens to be lying around.
+            // The evidence may ALREADY have been earned. `confirm` is run repeatedly
+            // before a merge, and on a tree that has not moved, asking again is the SAME
+            // question about the SAME bytes. So look at `.fshw/verdict.json` first: both
+            // the tree hash and the producing binary must match byte for byte, and the
+            // recorded verdict must be a full-suite green. Anything else — a moved tree, a
+            // different fshw, a filtered green, a red — is not an answer, and `confirm`
+            // goes and earns one. See `Verdict.priorConfirmation` for why this is the only
+            // green in fshw allowed to cross a process boundary.
             match Verdict.priorConfirmation repoRoot config.Exclude with
             | Verdict.PriorConfirmation.StillApplies v ->
-                // DELIBERATELY UNWRAPPED by run-level hooks (AUTOMATION-188): this
-                // fast path starts no daemon, sets no scope, runs no test — it only
-                // reads `.fshw/verdict.json` and re-checks it against the tree. There
-                // is no heavy work to serialize, so there is nothing for a gate-lock
-                // to guard; bracketing it would acquire and release the lock for a
-                // pure read. Only the `MustEarn` arm below, which actually runs the
-                // suite, is wrapped.
+                // DELIBERATELY UNWRAPPED by the run-level hooks: this fast path starts no
+                // daemon, sets no scope and runs no test — it only reads
+                // `.fshw/verdict.json` and re-checks it against the tree, so there is no
+                // heavy work for a gate-lock to guard. Only the `MustEarn` arm below,
+                // which actually runs the suite, is wrapped.
                 UI.success $"confirm — %s{Verdict.describeStillApplies v}"
                 eprintfn ""
                 eprintfn "  AGENTS: don't parse this output. Machine-readable results:"
                 eprintfn $"    verdict  %s{Verdict.RelativePath}   (this verdict, re-checked against the tree on disk)"
                 0
             | Verdict.PriorConfirmation.MustEarn ->
-                // Same pipeline as `check` — build, format, lint, analyzers, coverage — but
-                // full-suite scope is set FIRST, so the test run the scan provokes is
-                // unfiltered; the suite is FORCED if the scan did not produce one; and the
-                // verdict is computed in `Confirmation` mode, which has no path to a green
-                // that does not go through a full-suite run.
+                // Same pipeline as `check`, but full-suite scope is set FIRST (so the test
+                // run the scan provokes is unfiltered), the suite is FORCED if the scan
+                // did not produce one, and the verdict is computed in `Confirmation` mode,
+                // which has no path to a green that skips a full-suite run.
                 //
-                // Both transports, one verdict. `--run-once` needs no daemon — which is the
-                // only reason CI can invoke `confirm` at all (AUTOMATION-117).
-                //
-                // Bracketed with the run-level hooks (AUTOMATION-188): this arm does the
-                // heavy work, so it is the one a gate-lock must guard. The `StillApplies`
-                // fast path above is deliberately left unwrapped.
+                // `--run-once` needs no daemon, which is the only reason CI can invoke
+                // `confirm` at all. This arm does the heavy work, so it is the one the
+                // gate-lock must guard.
                 withRunHooksFor RunHookCommand.Confirm repoRoot config (fun () ->
                     if isRunOnce flags then
                         runOnceIn CheckVerdict.Confirmation
                     else
                         queryPluginIn CheckVerdict.Confirmation mode "")
         | Verdict ->
-            // Pure read. No daemon, no IPC, no run — so it cannot perturb the thing it
-            // is measuring, and it costs nothing to call in a loop.
+            // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
             let report = Verdict.report repoRoot config.Exclude
 
             // STDOUT IS THE MACHINE SURFACE, and nothing else may touch it: an agent
@@ -1848,15 +1752,12 @@ let executeCommand
                 | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
                 | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
             | Verdict.Report.Stale(v, reason) ->
-                // A green from a different tree — or from a different BINARY — is still a
-                // green, which is exactly why it may never be REPORTED as one. It is not
-                // an answer.
+                // A green from a different tree — or a different BINARY — is still a green,
+                // which is exactly why it may never be REPORTED as one.
                 //
-                // `Report.Stale`'s second field is the REASON (it says which provenance
-                // link broke: a different tree, or a different fshw). It already names
-                // the fault precisely (and begins "stale: ..."), so it is printed as-is
-                // — exactly like the `NoVerdict` arm below. Say what the reason
-                // supports, and nothing it doesn't.
+                // `Report.Stale`'s second field already names the fault precisely (which
+                // provenance link broke) and begins "stale: ...", so it is printed as-is,
+                // like the `NoVerdict` arm below.
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
                 say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."
@@ -1938,12 +1839,11 @@ let executePluginCommand
         reportDaemonError ex
         DaemonUnavailable
 
-/// Resolve a ROOT-level unknown command to an exit code: forward it to the daemon
-/// as a dynamic plugin command, and FAIL HARD with the canonical parse error + help
-/// if the daemon doesn't recognize it (the strict-CLI contract — garbage input never
-/// silently succeeds). `renderErr` re-renders the original parse error on the
-/// not-recognized path. Pure wrt. its injected `ipc`, so it's unit-testable without
-/// the `[<EntryPoint>]` and repo-root plumbing.
+/// Resolve a ROOT-level unknown command to an exit code: forward it to the daemon as a
+/// dynamic plugin command, and FAIL HARD with the canonical parse error + help if the
+/// daemon doesn't recognize it — the strict-CLI contract, where garbage input never
+/// silently succeeds. Pure wrt. its injected `ipc`, so it's unit-testable without the
+/// `[<EntryPoint>]` and repo-root plumbing.
 let forwardRootUnknownCommand
     (ipc: IpcOps)
     (pipeName: string)
@@ -1992,25 +1892,22 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
         DaemonExtraArgs = extraArgs }
 
 /// Render a genuine (non-Help/Version) parse error to stderr using CommandTree's
-/// uniform renderer — a clear one-line message plus the nearest subcommand/group
-/// help — and return the exit code. `CommandTree.isError` is the source of truth
-/// for the code (true → non-zero). Help/Version are handled by the caller before
-/// this and never reach here.
+/// uniform renderer — a one-line message plus the nearest subcommand/group help — and
+/// return the exit code. `CommandTree.isError` is the source of truth for the code.
+/// Help/Version are handled by the caller and never reach here.
 let reportParseError (err: ParseError) : int =
     eprintfn "%s" (CommandTree.renderParseError commandTree err cliName)
     if CommandTree.isError err then 1 else 0
 
 /// Classification of a parse result with respect to what `main` must do next.
-/// Separates the repo-INDEPENDENT decisions (help, version, and every genuine
-/// flag/arg error — plus a NESTED unknown command, which is a real typo against a
-/// known group with no daemon passthrough) from the two paths that need the repo
-/// root: running a successfully-parsed command, and forwarding a ROOT-level unknown
-/// command to the per-repo daemon. Pure and total, so it's unit-testable without
-/// the `[<EntryPoint>]` plumbing — which is where the strict-CLI ordering lives.
+/// Separates the repo-INDEPENDENT decisions (help, version, and every genuine flag/arg
+/// error — plus a NESTED unknown command, which is a typo against a known group with no
+/// daemon passthrough) from the two paths that need the repo root. Pure and total, so
+/// the strict-CLI ordering is unit-testable without the `[<EntryPoint>]` plumbing.
 type ParseDispatch =
     /// Repo-independent: print the canonical help/error to the right stream and exit
     /// with this code. Covers Help (0), Version (0), and all genuine input errors
-    /// except a root-level unknown command. Fixes the out-of-repo masking bug.
+    /// except a root-level unknown command.
     | RepoIndependent of int
     /// A successfully-parsed command — needs the repo root + daemon to execute.
     | RunCommand of globals: GlobalFlag list * command: Command
@@ -2030,15 +1927,13 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
         RepoIndependent 0
     | Error VersionRequested ->
         printfn "%s" (CommandTree.renderVersion cliName)
-        // AUTOMATION-123: name the source ref this binary was built from — the
-        // human-readable complement to the binary-identity handshake. "Is my
-        // gate running my fix?" is answered by `fshw --version`, not by
-        // strings-probing a cached DLL.
+        // Name the source ref this binary was built from — the human-readable complement
+        // to the binary-identity handshake. See `SourceRef`.
         printfn "%s" (SourceRef.line (CommandTree.entryAssemblyVersion ()))
         RepoIndependent 0
-    // ROOT-level unknown command (empty groupPath) is the only error that defers to
-    // the daemon; everything else fails hard here, BEFORE any repo-root lookup, so
-    // running outside a jj/git checkout no longer masks flag/arg errors.
+    // ROOT-level unknown command (empty groupPath) is the only error that defers to the
+    // daemon; everything else fails hard here, BEFORE any repo-root lookup, so running
+    // outside a jj/git checkout does not mask flag/arg errors.
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
@@ -2133,10 +2028,9 @@ let main args =
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
-            // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the
-            // raw remaining args (`rest`) straight to the daemon. If the daemon doesn't
-            // recognize it, fail hard with the canonical error + help instead of today's
-            // confusing daemon echo/timeout — garbage CLI input fails uniformly.
+            // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
+            // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
+            // error + help, so garbage CLI input fails uniformly.
             | RootUnknownCommand(input, rest, err) ->
                 let argsStr = rest |> String.concat " "
 

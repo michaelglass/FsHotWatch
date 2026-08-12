@@ -23,10 +23,9 @@ let private severityToString = DiagnosticSeverity.toString
 
 /// Distinctive prefix marking the `RunCommand` reply as "the plugin host did not
 /// recognize this command" (host `RunCommand` returned `None`). A fixed sentinel
-/// rather than free-form JSON so the CLI can detect it with a cheap, total
-/// `String.StartsWith` check (no JSON-parse / exception-filter branch to leave
-/// half-covered). Real plugin commands return their own textual or JSON payloads
-/// and never emit this `fshw-`-namespaced control reply.
+/// rather than free-form JSON so the CLI can detect it with a total
+/// `String.StartsWith` check. Real plugin commands return their own textual or
+/// JSON payloads and never emit this `fshw-`-namespaced control reply.
 [<Literal>]
 let UnknownCommandSentinelPrefix = "fshw-unknown-command:"
 
@@ -44,8 +43,7 @@ let isUnknownCommandReply (reply: string) : bool =
 /// Default hard bound on a `WaitForComplete` verdict wait when the client
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
 /// full-suite check (build + every test project) finishes well inside an hour,
-/// so this only ever trips on a genuinely-wedged plugin. Bounded-and-legible beats
-/// unbounded-and-silent.
+/// so this only ever trips on a genuinely-wedged plugin.
 let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
 
 /// Resolve the verdict-wait deadline from an optional override string (the
@@ -71,24 +69,19 @@ let internal ambientRpcDeadline () =
 /// Grace added to the deadline at the tracking SEAM, on top of whatever an RPC
 /// bounds itself by.
 ///
-/// The seam (`trackedTask`) is a BACKSTOP, not the primary bound. An RPC that
+/// The seam (`trackedTask`) is a backstop, not the primary bound. An RPC that
 /// bounds its own wait — `WaitForComplete` does, and names the still-running
-/// plugins when it fires — produces a far better diagnostic than a generic
-/// "RPC exceeded its deadline", so it must win the race. The grace guarantees it
-/// does. What the seam guarantees in exchange is that an RPC which bounds itself
-/// by NOTHING (as `WaitForScan` did — an unbounded `Task` that could sit inside
-/// `performScan` forever, and it is `check`'s FIRST step) still cannot wait
-/// forever, and that the same is true of every RPC written from here on WITHOUT
-/// anyone having to remember to bound it.
+/// plugins when it fires — gives a far better diagnostic than a generic "RPC
+/// exceeded its deadline", so it must win the race; the grace guarantees it does.
+/// In exchange the seam guarantees that an RPC bounding itself by NOTHING still
+/// cannot wait forever, without anyone having to remember to bound it.
 let internal RpcDeadlineGrace = TimeSpan.FromSeconds 30.0
 
 /// Serialize PluginStatus as a tagged JSON variant so consumers can parse the
-/// state without string matching. Deliberately carries the state tag,
-/// timestamps, and the failure diagnosis ONLY — the verdict (summary +
-/// elapsed) travels exclusively in `lastRun`, which the host derives from the
-/// same verdict at the terminal transition. One channel on the wire, so the
-/// status line and the run record can never disagree (and the CLI never has
-/// to construct a `RunVerdict` from untrusted input).
+/// state without string matching. Carries the state tag, timestamps, and the
+/// failure diagnosis ONLY — the verdict (summary + elapsed) travels exclusively in
+/// `lastRun`. One channel on the wire, so the status line and the run record cannot
+/// disagree.
 let private statusPayload (status: PluginStatus) : obj =
     match status with
     | Idle -> {| tag = "idle" |} :> obj
@@ -187,12 +180,12 @@ let WedgeStatusKey = "fshw-wedge"
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 ///
-/// `watchdog` (AUTOMATION-15): each RPC method that does real work brackets
-/// itself with `watchdog.Begin`/`End` so the watchdog always knows the single
-/// in-flight daemon operation. When ONE op wedges, a `status` call lands on a
-/// FREE accept task (the IPC server keeps several acceptors running) and reads
-/// the watchdog — so `GetStatus`/`ScanStatus` report the wedge + stuck op +
-/// inline recovery instead of the consumer blindly timing out on the socket.
+/// `watchdog` (AUTOMATION-15): each RPC method that does real work brackets itself
+/// with `watchdog.Begin`/`End` so the watchdog always knows the single in-flight
+/// daemon operation. When one op wedges, a `status` call lands on a free accept task
+/// (the IPC server keeps several acceptors running) and reads the watchdog, so
+/// `GetStatus`/`ScanStatus` report the wedge + stuck op + recovery instead of the
+/// consumer blindly timing out on the socket.
 type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog, ?deadline: TimeSpan) =
 
     /// The seam deadline. A caller-supplied one is honoured only when it is a
@@ -207,21 +200,17 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// Bracket a unit of RPC work: the watchdog tracks it, AND it is bounded.
     ///
     /// The bound lives HERE — at the seam every real RPC already passes through —
-    /// rather than being retrofitted method by method. A per-method bound leaves
-    /// gaps: one method gets a deadline, the next does not and can hang forever (a
-    /// `performScan` stuck in a Fantomas preprocessor, an Ionide design-time
-    /// evaluation, or an FCS check means "Scanning…" forever, with no timeout, no
-    /// error, and no verdict). Bounding the BRACKET means an unbounded RPC cannot be
-    /// WRITTEN without deliberately stepping outside it.
+    /// rather than method by method, because a per-method bound leaves gaps that hang
+    /// forever with no timeout, no error and no verdict. Bounding the bracket means an
+    /// unbounded RPC cannot be written without deliberately stepping outside it.
     ///
-    /// A timed-out RPC faults with `TimeoutException`, which StreamJsonRpc carries
-    /// to the client as an error — bounded-and-legible beats unbounded-and-silent.
-    /// The orphaned work is not force-killed (in-process work cannot be), but the
-    /// client is released and the daemon stays answerable.
+    /// A timed-out RPC faults with `TimeoutException`, which StreamJsonRpc carries to
+    /// the client as an error. The orphaned work is not force-killed (in-process work
+    /// cannot be), but the client is released and the daemon stays answerable.
     ///
-    /// `status`/`scanStatus`/`cache-clear` are intentionally NOT bracketed — they
-    /// must stay cheap and readable even while another op is wedged, and reading
-    /// the wedge report is how a consumer LEARNS about the wedge.
+    /// `status`/`scanStatus`/`cache-clear` are intentionally NOT bracketed — they must
+    /// stay cheap and readable even while another op is wedged, and reading the wedge
+    /// report is how a consumer learns about the wedge.
     let trackedTask (name: string) (f: unit -> Task<'a>) : Task<'a> =
         let token = watchdog |> Option.map (fun w -> w.Begin name)
 
@@ -361,11 +350,10 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             config.Host.GetAllStatuses()
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
-        // `unchecked` is the request-time completeness signal: registered files
-        // that currently lack a valid full-check result. The CLI parses it into
-        // a `Coverage` verdict (0 -> Complete, n>0 -> Incomplete n, absent ->
-        // Unknown). Carried structurally (a number, not a parsed string) so the
-        // verdict can never be misread.
+        // `unchecked` is the request-time completeness signal: registered files that
+        // currently lack a valid full-check result. The CLI parses it into a `Coverage`
+        // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
+        // not a parsed string, so the verdict cannot be misread.
         let result =
             {| count = count
                files = allErrors
@@ -377,11 +365,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
     /// Wait for scan generation to advance past afterGeneration, then return the final status.
     /// Negative afterGeneration means "wait for any scan completion" (legacy path).
     ///
-    /// The wait itself (`WaitForScanGeneration`) races only daemon SHUTDOWN, never a
-    /// clock — deliberately, because the scan has no meaningful per-scan budget of
-    /// its own. Its boundedness comes from the `trackedTask` seam, which is the
-    /// point of putting the deadline there: this method needs no timeout code and
-    /// still cannot wait forever.
+    /// The wait itself (`WaitForScanGeneration`) races only daemon shutdown, never a
+    /// clock — the scan has no meaningful per-scan budget of its own. Its boundedness
+    /// comes from the `trackedTask` seam instead.
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         trackedTask "WaitForScan" (fun () ->
             task {
@@ -391,10 +377,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             })
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
-    /// timeoutMs <= 0 means no CLIENT-imposed timeout — the daemon then applies
-    /// its own hard bound (`resolveVerdictDeadline`), so the wait is NEVER
-    /// unbounded: a wedged plugin surfaces as a TimeoutException naming the
-    /// still-running plugin, which the CLI renders as a diagnostic non-green exit.
+    /// timeoutMs <= 0 means no CLIENT-imposed timeout — the daemon then applies its own
+    /// hard bound (`resolveVerdictDeadline`), so the wait is never unbounded: a wedged
+    /// plugin surfaces as a TimeoutException naming the still-running plugin.
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
         trackedTask "WaitForComplete" (fun () ->
             task {
@@ -503,9 +488,8 @@ module IpcServer =
                 // waiting for a client. Quiet by design.
                 pipeServer.Dispose()
             | ex ->
-                // A single bad connection (client vanished mid-handshake, broken
-                // pipe, RPC wiring failure) must not kill the server — but it
-                // must not vanish silently either.
+                // A single bad connection (client vanished mid-handshake, broken pipe,
+                // RPC wiring failure) must not kill the server, nor vanish silently.
                 pipeServer.Dispose()
                 Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
         }
@@ -513,12 +497,9 @@ module IpcServer =
     /// Start the IPC server. Keeps multiple accept tasks running concurrently
     /// so clients don't have to wait for the accept loop to cycle.
     ///
-    /// Creates an `OperationWatchdog.Watchdog` (item 3/4/5 of AUTOMATION-15):
-    /// each RPC method that does real work brackets itself so the watchdog
-    /// always knows the single in-flight op; a background timer logs the
-    /// structured "operation exceeded Ns" record + periodic heartbeat, and
-    /// `status`/`scanStatus` surface the wedge inline. The watchdog is disposed
-    /// when the server loop exits (daemon shutdown).
+    /// Owns the `OperationWatchdog.Watchdog` (see `DaemonRpcTarget`): a background
+    /// timer logs the structured "operation exceeded Ns" record plus a periodic
+    /// heartbeat. Disposed when the server loop exits (daemon shutdown).
     let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
         async {
             use watchdog =
@@ -537,28 +518,22 @@ module IpcServer =
             let startAccept () =
                 Async.StartAsTask(acceptOne pipeName target cts.Token) :> Task
 
-            // Seed with 3 concurrent acceptors
             acceptTasks <- [ startAccept (); startAccept (); startAccept () ]
 
             while not cts.Token.IsCancellationRequested do
                 try
-                    // Wait for any accept to complete
                     let! completed = Task.WhenAny(acceptTasks |> List.toArray) |> Async.AwaitTask
 
-                    // Task.WhenAny hands a faulted acceptor back WITHOUT
-                    // throwing, so its exception must be observed here or it
-                    // vanishes. A fault at this level means the acceptor died
-                    // before serving (NamedPipeServerStream creation/bind
-                    // failed) — per-connection failures are already caught and
-                    // logged inside acceptOne. Log loudly and back off before
-                    // respawning: a persistent bind failure (pipe path invalid,
-                    // permissions, name collision) would otherwise busy-spin
-                    // the loop with instantly-faulting acceptors.
+                    // Task.WhenAny hands a faulted acceptor back WITHOUT throwing, so
+                    // its exception must be observed here or it vanishes. A fault at
+                    // this level means the acceptor died before serving (pipe
+                    // creation/bind failed); per-connection failures are handled inside
+                    // acceptOne. Back off before respawning, or a persistent bind
+                    // failure busy-spins the loop with instantly-faulting acceptors.
                     if completed.IsFaulted then
                         Logging.error "ipc" $"IPC accept task faulted: %s{completed.Exception.ToString()}"
                         do! Task.Delay(1000, cts.Token) |> Async.AwaitTask
 
-                    // Replace completed task with a new accept
                     acceptTasks <-
                         acceptTasks
                         |> List.map (fun t ->
@@ -571,10 +546,8 @@ module IpcServer =
                     // Normal shutdown signal — the while condition exits the loop.
                     ()
                 | ex ->
-                    // Never silently swallow: anything else here is a real
-                    // server-loop fault. Log it and keep serving — killing the
-                    // daemon's IPC over one bad cycle would be a worse failure
-                    // mode than a logged retry.
+                    // A real server-loop fault. Log and keep serving: killing the
+                    // daemon's IPC over one bad cycle is worse than a logged retry.
                     Logging.error "ipc" $"IPC accept loop error: %s{ex.ToString()}"
         }
 
@@ -611,7 +584,7 @@ module IpcClient =
     /// Shut down the daemon gracefully.
     let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
 
-    /// Trigger a full scan of all registered files. When force=true, bypasses jj guard.
+    /// Trigger a full scan of all registered files.
     let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
 
     /// Get current scan progress.
@@ -647,7 +620,7 @@ module IpcClient =
 
         invoke pipeName "cache-clear" [| plugin; file |]
 
-    /// Invalidate cache for a file and re-check it.
+    /// Force a named plugin to re-run, then return the full status.
     let rerunPlugin (pipeName: string) (name: string) : Async<string> =
         invoke pipeName "RerunPlugin" [| name |]
 
