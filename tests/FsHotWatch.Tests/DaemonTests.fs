@@ -123,7 +123,7 @@ let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
 /// Probe the watched directory until the daemon processes an event (proves watcher is live).
-/// Uses repeated file writes so FSEvents cold-start latency (4-20s) doesn't cause timeouts.
+/// Uses repeated file writes so however long watcher setup takes doesn't cause timeouts.
 /// Then waits for events to stabilize before returning.
 let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
     probeUntilEvent srcDir (fun () -> changeCount () > 0) 60000
@@ -256,8 +256,8 @@ let ``daemon dispatches file change events to plugins`` () =
 
         let newFile = Path.Combine(tmpDir, "src", "New.fs")
         // Probe-loop: keep writing New.fs until a FileChanged event fires.
-        // After a large probe batch in waitForDaemonReady, fseventsd may batch
-        // subsequent events for 15-30s; repeated writes handle that delay.
+        // After a large probe batch in waitForDaemonReady, events can lag;
+        // repeated writes handle that.
         probeLoop
             (fun n -> File.WriteAllText(newFile, $"module New // v{n}"))
             (fun () -> receivedChanges.Length >= 1)

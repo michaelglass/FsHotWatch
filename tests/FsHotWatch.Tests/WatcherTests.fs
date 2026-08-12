@@ -235,7 +235,7 @@ let ``watcher detects file changes in src directory`` () =
 
     use watcher = FileWatcher.create tmpDir onChange None [] 0.05
 
-    // Probe until the watcher is delivering events (FSEvents cold-start can be 4-20s).
+    // Probe until the watcher is delivering events (setup lag can be an unbounded window).
     probeUntilEvent srcDir (fun () -> changes.Length >= 1) 60000
     test <@ changes.Length >= 1 @>
     Directory.Delete(tmpDir, true)

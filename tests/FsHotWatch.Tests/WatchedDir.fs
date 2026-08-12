@@ -1,11 +1,9 @@
 /// A temp directory that something is WATCHING — and the only write shape a
 /// test is allowed to perform while it is watched.
 ///
-/// On macOS a brand-new temp directory carries 4-20s of FSEvents cold-start
-/// latency, and after a large initial batch fseventsd may coalesce for 15-30s
-/// regardless of `kFSEventStreamCreateFlagNoDefer`. So "sleep briefly, write
-/// once, wait a fixed budget" can miss the one write that mattered and fail
-/// having proven nothing about the watcher.
+/// A single write can land before the watcher is live and never be reported, so
+/// "sleep briefly, write once, wait a fixed budget" can miss the one write that
+/// mattered and fail having proven nothing about the watcher.
 ///
 /// While the directory is watched the only mutation in scope is `WriteUntil`,
 /// which writes REPEATEDLY (via `TestHelpers.probeLoop`) until the event is seen

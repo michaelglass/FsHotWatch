@@ -128,7 +128,6 @@ let ``a green verdict goes STALE the moment a source file is edited — it is ne
     withTempDir "verdict-stale" (fun root ->
         makeRepo root
 
-        // A green, earned over THIS tree.
         let before = TreeHash.compute root []
         writeSpec root (greenVerdict before.Hash before.FileCount)
 
@@ -819,8 +818,8 @@ let ``a plugin that never ran is OMITTED, never invented as a pass`` () =
 
 [<Fact>]
 let ``the verdict file and the agent status line resolve a plugin identically`` () =
-    // They are the SAME function. This pins that they stay so: a plugin cannot
-    // report `ok` on one surface and `fail` on the other.
+    // One function behind both, so a plugin cannot report `ok` on one surface and `fail` on
+    // the other.
     let failed =
         status (StatusView.Failed("boom", DateTime.UtcNow)) (TimeSpan.FromSeconds 1.0) (Events.FailedRun "boom") None
 

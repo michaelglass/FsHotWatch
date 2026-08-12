@@ -232,7 +232,6 @@ let ``preprocessor status is tracked`` () =
 
     host.RegisterPreprocessor(preprocessor)
 
-    // Before running, status should be Idle
     let statusBefore = host.GetStatus("status-pp")
     test <@ statusBefore = Some Idle @>
 
@@ -369,7 +368,6 @@ let ``plugin ClearErrors removes errors from ledger`` () =
 let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // Use direct ledger reporting via host for simplicity
     host.ReportErrors(
         "pluginA",
         "/src/A.fs",
@@ -443,12 +441,10 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     test <@ ref2.Value @>
 
 // ----------------------------------------------------------------------------
-// Live "checked files" coverage set. The choke point both the cold scan and the
-// incremental path flow through is `EmitFileChecked`; a FULL check adds the file
-// to the set, ParseOnly does not, and a `EmitFileChanged` removes the changed
-// file (an edited-but-not-yet-rechecked file correctly counts as unchecked).
-// `GetUncheckedCount` in Daemon.fs is `registered minus checked` using
-// `IsFileChecked`.
+// Live "checked files" coverage set. `EmitFileChecked` is the choke point both the cold scan
+// and the incremental path flow through: a FULL check adds the file, ParseOnly does not, and
+// `EmitFileChanged` removes it (an edited-but-not-yet-rechecked file correctly counts as
+// unchecked). Daemon.fs's `GetUncheckedCount` is `registered minus checked`.
 // ----------------------------------------------------------------------------
 
 let private fullCheckResult (file: string) : FileCheckResult =
@@ -502,8 +498,8 @@ let ``ProjectChanged removes the changed file from the checked set`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``SolutionChanged clears the entire checked set`` () =
-    // A solution-level change can retarget every file's options, so nothing is
-    // known-checked afterward (and removed files must not linger in the set).
+    // A solution-level change can retarget every file's options, so nothing is known-checked
+    // afterward and removed files must not linger in the set.
     let host = PluginHost.create nullChecker "/tmp/test"
     let a = AbsFilePath.create "/tmp/cov/S1.fs"
     let b = AbsFilePath.create "/tmp/cov/S2.fs"
@@ -548,7 +544,6 @@ let ``preprocessor exception sets Failed status`` () =
     host.RegisterPreprocessor(preprocessor)
     let modified = host.RunPreprocessors([ "src/Lib.fs" ])
 
-    // No modified files returned from a failing preprocessor
     test <@ modified |> List.isEmpty @>
 
     let status = host.GetStatus("boom-pp")
@@ -563,9 +558,8 @@ let ``preprocessor exception sets Failed status`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``preprocessor exception sets Failed with ex.ToString() (type+stack), not just ex.Message`` () =
-    // Item D: same invariant as PluginFramework.safeUpdate. The preprocessor
-    // failure path must record the full exception string so the user can
-    // diagnose without grepping daemon.log.
+    // Same invariant as PluginFramework.safeUpdate: the preprocessor failure path records
+    // the full exception string, so diagnosing does not mean grepping daemon.log.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let preprocessor =
@@ -606,7 +600,7 @@ let ``ReportErrors with version passes through to ledger`` () =
         version = 2L
     )
 
-    // Stale version should be ignored
+    // A report at an older version is ignored, so the v2 entry survives.
     host.ReportErrors(
         "fcs",
         "/src/A.fs",
@@ -644,11 +638,10 @@ let ``ClearErrors with version passes through to ledger`` () =
         version = 2L
     )
 
-    // Stale clear should be ignored
+    // A clear at an older version than the report is ignored; one at a newer version lands.
     host.ClearErrors("fcs", "/src/A.fs", version = 1L)
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-    // Current version clear should work
     host.ClearErrors("fcs", "/src/A.fs", version = 3L)
     test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
@@ -680,8 +673,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Status agent dispatches asynchronously — wait for events
-    // Initial Idle from RegisterHandler + Running + Completed = at least 3
+    // At least 3: the initial Idle from RegisterHandler, plus Running and Completed.
     waitUntil (fun () -> statusEvents.Length >= 3) 12000
     test <@ statusEvents.Length >= 3 @>
 
@@ -707,11 +699,8 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``work-cycle generation bumps once across consecutive Running reports`` () =
-    // bumpGenerationIfStarting bumps the per-plugin generation only on a
-    // non-Running ▸ Running EDGE: a plugin that reports Running again while
-    // already Running (no terminal status in between) must NOT bump a second
-    // time (the `Some(Running _) -> false` arm). Drives two Running reports with
-    // no Completed/Failed between them and asserts the generation advanced once.
+    // `bumpGenerationIfStarting` bumps only on a non-Running ▸ Running EDGE, so a plugin
+    // that reports Running again with no terminal status in between must NOT bump twice.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
@@ -721,8 +710,7 @@ let ``work-cycle generation bumps once across consecutive Running reports`` () =
             fun ctx state event ->
                 async {
                     match event with
-                    // Report ONLY Running (no terminal status) so the next
-                    // FileChanged finds prev = Some(Running _).
+                    // ONLY Running, so the next FileChanged finds prev = Some(Running _).
                     | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
                     | _ -> ()
 
@@ -743,31 +731,25 @@ let ``work-cycle generation bumps once across consecutive Running reports`` () =
     // Second report while already Running → NO second bump (stays at 1).
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
     waitForQuiescent host 12000
-    // Give the status agent a beat to apply any (non-)mutation, then assert it
-    // did not advance — Running ▸ Running is not a new work cycle.
+    // Give the status agent a beat to apply any (non-)mutation before asserting.
     Thread.Sleep(150)
     test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
 
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //
-// The daemon-side `WaitForComplete` path (`waitForVerdict` →
-// `waitForAllTerminalCore requireVerdict=true` → `allPluginsAtRest`). On a cold
-// daemon every registered plugin is Idle and nothing has run, yet the
-// quiescence leg of allPluginsAtRest ("no plugin Running + quiet window") would
-// resolve the wait immediately — the `WaitForComplete` RPC behind a foreground
-// `check`/`errors --wait` then renders an empty ledger as a vacuous exit-0 "No
-// errors". The verdict guard requires at least one plugin to have reached a
-// real terminal state (Completed/Failed) before the host is considered at rest.
-// With no plugin ever running, the verdict wait must NOT resolve via quiescence;
-// it must time out instead. The Idle-tolerant scan-settling path
-// (`waitForAllTerminal`, requireVerdict=false) keeps the original behavior and
-// is covered by `waitForAllTerminal returns within quiescence window ...`.
+// On a cold daemon every registered plugin is Idle and nothing has run, yet the quiescence
+// leg of `allPluginsAtRest` ("no plugin Running + quiet window") resolved the wait
+// immediately — so the `WaitForComplete` behind a foreground `check`/`errors --wait`
+// rendered an empty ledger as a vacuous exit-0 "No errors". The verdict guard now requires
+// at least one plugin to have reached Completed/Failed, so with nothing ever running the
+// verdict wait must TIME OUT rather than resolve. The Idle-tolerant scan-settling path
+// (`waitForAllTerminal`, requireVerdict=false) keeps the original behaviour and is covered
+// by `waitForAllTerminal returns within quiescence window ...`.
 [<Fact(Timeout = 20000)>]
 let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing verified)`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // Register a plugin but never trigger it: it stays Idle forever. This is the
-    // exact cold-start shape — registered, never run, nothing verified.
+    // Registered, never run, nothing verified — the exact cold-start shape.
     let handler =
         { Name = PluginName.create "never-runs"
           Init = ()
@@ -780,9 +762,8 @@ let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing v
     host.RegisterHandler(handler)
     test <@ host.GetAllStatuses() |> Map.forall (fun _ s -> s = Idle) @>
 
-    // A short timeout: if the bug is present, this resolves (completes) almost
-    // immediately via the quiescence leg. With the fix, no terminal plugin
-    // exists, so the only exit is the timeout — the task must fault.
+    // A short timeout: with the bug this resolves almost immediately via the quiescence leg;
+    // with no terminal plugin the only exit is the timeout, so the task must fault.
     let waitTask =
         waitForVerdict host (TimeSpan.FromSeconds(1.0)) System.Threading.CancellationToken.None
 
@@ -798,10 +779,9 @@ let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing v
 
 [<Fact(Timeout = 20000)>]
 let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not deadlock`` () =
-    // Pins the invariant that statusChanged.Trigger fires OUTSIDE the status agent's
-    // serialization boundary. If the trigger fired inside the agent's loop, a
-    // subscriber doing PostAndReply (GetAllStatuses) would block waiting for the
-    // agent that is itself blocked inside the trigger.
+    // `statusChanged.Trigger` must fire OUTSIDE the status agent's serialization boundary:
+    // fired inside the agent's loop, a subscriber doing PostAndReply (GetAllStatuses) blocks
+    // waiting on the agent that is itself blocked inside the trigger.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let observedFromHandler = ref None
@@ -869,34 +849,25 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
 
     host.RegisterHandler(handler)
 
-    // Start waitForAllTerminal — this subscribes to OnStatusChanged and calls
-    // GetAllStatuses() inside the handler. If OnStatusChanged fires synchronously
-    // inside a MailboxProcessor, GetAllStatuses (which would do PostAndReply to
-    // the same agent) will deadlock.
+    // `waitForAllTerminal` subscribes to OnStatusChanged and calls GetAllStatuses() inside
+    // the handler. If OnStatusChanged fired synchronously inside the MailboxProcessor, that
+    // PostAndReply would deadlock and the wait below times out.
     let waitTask =
         waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
-    // Trigger a status change
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // If deadlocked, this will time out
     let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
     test <@ completed @>
 
-// Item 2: setStatus must not block the calling (plugin agent) thread on a TCS
-// round-trip to the status agent. The visibility invariant — that an
-// OnStatusChanged subscriber observes the just-applied status via GetAllStatuses
-// (re-entrantly, without deadlock) — is pinned by the two tests below
-// (`OnStatusChanged subscriber re-entrantly ...` and `waitForAllTerminal does
-// not deadlock when OnStatusChanged subscriber calls GetAllStatuses`), which the
-// non-blocking implementation must keep green.
+// `setStatus` must not block the calling plugin-agent thread on a TCS round-trip to the
+// status agent, while still keeping the two deadlock-freedom tests above green.
 [<Fact(Timeout = 20000)>]
 let ``OnStatusChanged subscriber observes the newly-applied status via GetAllStatuses`` () =
-    // The trigger must fire only AFTER the status agent has applied the
-    // mutation: a subscriber reading GetAllStatuses inside the handler must see
-    // the new value, never a stale one. The non-blocking setStatus achieves this
-    // by firing the trigger from the agent's post-mutation continuation (off the
-    // agent loop, so the re-entrant GetAllStatuses cannot deadlock).
+    // The trigger fires only AFTER the agent has applied the mutation, so a subscriber
+    // reading GetAllStatuses inside the handler sees the new value and never a stale one.
+    // The non-blocking setStatus does this from the agent's post-mutation continuation —
+    // off the agent loop, so the re-entrant GetAllStatuses cannot deadlock.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let observed = ref None
@@ -931,8 +902,7 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     test <@ seen.Wait(TimeSpan.FromSeconds(5.0)) @>
-    // The subscriber saw the status the trigger was reporting — i.e. the agent
-    // had applied it before the trigger fired (no stale read).
+
     test
         <@
             match observed.Value with
@@ -942,10 +912,8 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
 
 [<Fact(Timeout = 20000)>]
 let ``a throwing OnStatusChanged subscriber is logged and does not kill status notifications`` () =
-    // The trigger agent must survive a faulting subscriber: the exception is
-    // logged at error level and the NEXT status notification is still
-    // delivered. If the fault escaped, the MailboxProcessor loop would die and
-    // every future OnStatusChanged notification would be silently dropped.
+    // If the fault escaped, the MailboxProcessor loop would die and every future
+    // OnStatusChanged notification would be silently dropped.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let sawCompleted = new ManualResetEventSlim(false)
@@ -991,14 +959,13 @@ let ``a throwing OnStatusChanged subscriber is logged and does not kill status n
         host.RegisterHandler(handler)
         host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-        // The Completed notification (posted after the Running one whose
-        // subscriber threw) must still arrive — the trigger loop survived.
+        // Completed is posted after the Running whose subscriber threw, so its arrival is
+        // what proves the trigger loop survived.
         test <@ sawCompleted.Wait(TimeSpan.FromSeconds(5.0)) @>
         test <@ threwOnRunning @>
 
-        // And the fault was logged, not swallowed. The trigger agent is FIFO,
-        // so by the time Completed was delivered the Running fault had already
-        // been written to stderr.
+        // The trigger agent is FIFO, so by the time Completed was delivered the Running
+        // fault had already been written to stderr.
         writer.Flush()
         test <@ sb.ToString().Contains("OnStatusChanged subscriber failed") @>
     finally
@@ -1041,14 +1008,10 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
 
 [<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up its event`` () =
-    // Repro: plugin A is subscribed to FileChanged, emits BuildCompleted then
-    // transitions Completed. Plugin B is subscribed to BuildCompleted but
-    // delays its Idle->Running transition by longer than the legacy 1s
-    // stability window, so there is a wide window where:
-    //   - A is Completed (terminal)
-    //   - B is still Idle (mailbox not yet processed BuildCompleted)
-    //   - allTerminal=true, but B is about to start work
-    // Today's wait returns prematurely; the fix must wait until B is terminal.
+    // B delays its Idle->Running transition past the legacy 1s stability window, opening a
+    // wide window where A is Completed, B is still Idle with BuildCompleted unprocessed in
+    // its mailbox, and `allTerminal` is therefore true while B is about to start work. The
+    // wait must stay pending until B is terminal.
     let host = PluginHost.create nullChecker "/tmp/test"
     let bDelay = TimeSpan.FromMilliseconds(1500.0)
     let mutable bReachedRunning = false
@@ -1082,9 +1045,8 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
                 async {
                     match event with
                     | BuildCompleted _ ->
-                        // Simulate slow handler entry: wait long enough that any
-                        // sub-1s stability window in the waiter would expire while
-                        // B is still Idle.
+                        // Slow handler entry: long enough that any sub-1s stability window
+                        // in the waiter expires while B is still Idle.
                         do! Async.Sleep(int bDelay.TotalMilliseconds)
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         bReachedRunning <- true
@@ -1105,19 +1067,16 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // No internal deadline (MaxValue): the regression this guards is the wait
-    // returning EARLY (caught below by bReachedRunning/bReachedCompleted), and a
-    // genuine hang is bounded by the outer `.Wait(20s)` + `Fact(Timeout=30000)`.
-    // A finite internal timeout (was 15s) only added a wall-clock magic number
-    // that could fire spuriously under heavy parallel CPU load while the cascade
-    // was still legitimately draining — a flake, not a real failure.
+    // No internal deadline (MaxValue): the regression guarded here is the wait returning
+    // EARLY, caught by bReachedRunning/bReachedCompleted, and a genuine hang is bounded by
+    // the outer `.Wait(20s)` + `Fact(Timeout=30000)`. A finite internal timeout only adds a
+    // wall-clock number that fires spuriously under load while the cascade is still draining.
     let waitTask =
         waitForAllTerminal host TimeSpan.MaxValue System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
-    // Both plugins must have completed their actual work cycle. The bug:
-    // waitForAllTerminal returns before B even started.
+    // Both plugins must have completed a real work cycle; the bug returns before B started.
     test <@ bReachedRunning @>
     test <@ bReachedCompleted @>
 
@@ -1134,26 +1093,12 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
 let ``waitForAllTerminal does not return while a downstream plugin still has events queued in its mailbox after it has already advanced a generation``
     ()
     =
-    // Repro of the BuildCompleted -> Pending -> Running edge race.
-    //
-    // Plugin B subscribes to BOTH FileChanged and BuildCompleted.
-    //   - On FileChanged: Running -> Completed (advances B's generation to 1)
-    //   - On BuildCompleted: long delay before transitioning to Running, then
-    //     Completed.
-    //
-    // Plugin A emits BuildCompleted some time after FileChanged. By that time, B
-    // has already transitioned to Completed (gen=1) for its first cycle.
-    //
-    // Bug window: between A.Completed (gen 1>0) emitting BuildCompleted and
-    // B's handler picking it up,
-    //   - A is Completed, gen advanced past snapshot
-    //   - B is Completed, gen advanced past snapshot
-    //   - B has a BuildCompleted queued in its mailbox (inflight=1)
-    //
-    // The legacy `allPluginsAdvancedToTerminal` predicate returns true here
-    // even though B has not yet started its second cycle, so WaitForComplete
-    // returns prematurely. The fix must keep the wait pending until B's queued
-    // event has been drained.
+    // The BuildCompleted -> Pending -> Running edge race. B subscribes to both FileChanged
+    // and BuildCompleted, and A emits BuildCompleted late enough that B has already finished
+    // its FileChanged cycle. In the window before B's handler picks the event up, both
+    // plugins are Completed with their generations advanced past the snapshot, yet B still
+    // has a queued event — so the legacy `allPluginsAdvancedToTerminal` returned true and
+    // WaitForComplete resolved before B's second cycle even started.
     let host = PluginHost.create nullChecker "/tmp/test"
     let bRunningCount = ref 0
 
@@ -1166,8 +1111,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                     match event with
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                        // Long enough for B to finish its FileChanged cycle and
-                        // settle into Completed before BuildCompleted is emitted.
+                        // Long enough for B to settle into Completed before BuildCompleted.
                         do! Async.Sleep(300)
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.ReportStatus(completedAt DateTime.UtcNow)
@@ -1192,10 +1136,8 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
                         do! Async.Sleep(50)
                         ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | BuildCompleted _ ->
-                        // Sleep before transitioning to Running. This widens the
-                        // race window: B is in Completed (from the prior
-                        // FileChanged cycle) with the BuildCompleted event sitting
-                        // in its mailbox / handler.
+                        // Widens the race window: B sits in Completed from the prior
+                        // FileChanged cycle with BuildCompleted still in its mailbox.
                         do! Async.Sleep(500)
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
@@ -1217,33 +1159,26 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // No internal deadline (MaxValue): the regression this guards is the wait
-    // returning EARLY (caught below by `observed = 1`), and a genuine hang is
-    // bounded by the outer `.Wait(20s)` + `Fact(Timeout=30000)`. A finite
-    // internal timeout (was 15s) only added a wall-clock magic number that could
-    // fire spuriously under heavy parallel CPU load while B's queued event was
-    // still legitimately draining — a flake, not a real failure.
+    // No internal deadline (MaxValue): the regression guarded here is the wait returning
+    // EARLY, caught by `observed = 1`, and a genuine hang is bounded by the outer
+    // `.Wait(20s)` + `Fact(Timeout=30000)`. A finite internal timeout only adds a wall-clock
+    // number that fires spuriously under load while B's queued event is still draining.
     let waitTask =
         waitForAllTerminal host TimeSpan.MaxValue System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
-    // The wait must not have returned before B picked up its second event and
-    // ran through its second cycle. With the bug, the wait returns while B's
-    // BuildCompleted is still queued in its mailbox and bRunningCount=1.
+    // 1 means B drained its queued BuildCompleted and ran the second cycle to terminal. With
+    // the bug the wait returns while the event is still queued (or B is in its pre-Running
+    // sleep), giving 0.
     let observed = Volatile.Read(&bRunningCount.contents)
-    // bRunningCount=1 means B drained its queued BuildCompleted and ran the
-    // second cycle to its terminal Completed. With the bug, the wait returns
-    // while BuildCompleted is still queued / handler is still in its
-    // pre-Running sleep, so bRunningCount=0.
     test <@ observed = 1 @>
 
 [<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
-    // Cascade: A (FileChanged -> emits BuildCompleted), B (BuildCompleted ->
-    // emits TestRunCompleted), C (TestRunCompleted -> terminal). Calling
-    // waitForAllTerminal at the start must wait for the full chain even though
-    // each downstream plugin starts in Idle.
+    // A (FileChanged -> BuildCompleted), B (BuildCompleted -> TestRunCompleted), C
+    // (TestRunCompleted -> terminal). The wait starts before any of it and must cover the
+    // whole chain even though each downstream plugin begins Idle.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let aHandler =
@@ -1335,8 +1270,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
-    // Crash recovery: a plugin that throws/reports Failed must still satisfy
-    // the wait — Failed is a terminal status.
+    // Failed is a terminal status, so a crashed plugin still satisfies the wait.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
@@ -1380,9 +1314,8 @@ let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal returns within quiescence window when no work is pending`` () =
-    // Edge case: a plugin that is Idle and stays Idle (never receives an event)
-    // must not cause WaitForComplete to hang forever. With nothing happening,
-    // the quiescence window should fire and the wait should return.
+    // A plugin that stays Idle (never receives an event) must not hang WaitForComplete: with
+    // nothing happening the quiescence window fires and the wait returns.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
@@ -1404,21 +1337,19 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
     let completed = waitTask.Wait(TimeSpan.FromSeconds(10.0))
     let elapsed = DateTime.UtcNow - started
     test <@ completed @>
-    // Should be much faster than the 5s wait timeout — quiescence should fire
-    // quickly when nothing is happening. Allow up to 4.9s for slow CI machines.
+    // Well under the 5s wait timeout — the 4.9s bound leaves room for slow CI machines while
+    // still failing if the wait ran to its timeout instead of settling on quiescence.
     test <@ elapsed < TimeSpan.FromSeconds(4.9) @>
 
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal faults with OperationCanceledException when shutdown token fires mid-wait`` () =
-    // Repro: foreground client is blocked in WaitForComplete while the daemon
-    // is closed in the background. The wait must fault so the client exits
-    // non-zero — without this, the RPC could resolve cleanly during teardown
-    // and the foreground process would mistakenly report success.
+    // A foreground client blocked in WaitForComplete while the daemon shuts down: the wait
+    // must fault so the client exits non-zero, or the RPC resolves cleanly during teardown
+    // and the foreground process reports success.
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // A plugin that goes Running on FileChanged and never reaches terminal,
-    // so the quiescence window can't fire and the wait stays blocked until
-    // cancellation.
+    // Goes Running and never reaches terminal, so the quiescence window cannot fire and the
+    // wait stays blocked until cancellation.
     let handler =
         { Name = PluginName.create "blocked"
           Init = ()
@@ -1472,7 +1403,6 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
 let ``HasFailingReasons distinguishes warnings from errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // Report only warnings
     host.ReportErrors(
         "linter",
         "/src/A.fs",
@@ -1483,21 +1413,15 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
             Detail = None } ]
     )
 
-    // With warningsAreFailures=true, warnings count as failures
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
-
-    // With warningsAreFailures=false, only errors count as failures
     test <@ not (host.HasFailingReasons(warningsAreFailures = false)) @>
 
-    // FailingReasons with warningsAreFailures=true includes the warning
     let withWarnings = host.FailingReasons(warningsAreFailures = true)
     test <@ withWarnings.Count = 1 @>
 
-    // FailingReasons with warningsAreFailures=false excludes the warning
     let withoutWarnings = host.FailingReasons(warningsAreFailures = false)
     test <@ withoutWarnings.Count = 0 @>
 
-    // Now add an actual error
     host.ReportErrors(
         "fcs",
         "/src/B.fs",
@@ -1508,15 +1432,14 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
             Detail = None } ]
     )
 
-    // Both modes should now report failures
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
     test <@ host.HasFailingReasons(warningsAreFailures = false) @>
 
-    // warningsAreFailures=true: 2 files (warning + error)
+    // 2 files: the warning and the error.
     let allFailing = host.FailingReasons(warningsAreFailures = true)
     test <@ allFailing.Count = 2 @>
 
-    // warningsAreFailures=false: 1 file (only error)
+    // 1 file: only the error.
     let errorsOnly = host.FailingReasons(warningsAreFailures = false)
     test <@ errorsOnly.Count = 1 @>
     test <@ errorsOnly.ContainsKey "/src/B.fs" @>
@@ -1560,10 +1483,9 @@ let ``RerunFileCommandPlugin returns Ok for registered plugin`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
-    // F14: plugin Teardown is a third-party-extension boundary; the catch
-    // keeps cleanup going across other plugins. Previously logged ex.Message
-    // only, stripping the stack trace just when a misbehaving plugin needed
-    // diagnosing. Verify the log now includes the exception type name.
+    // F14: plugin Teardown is a third-party-extension boundary, so the catch keeps cleanup
+    // going across other plugins. Logging only `ex.Message` stripped the stack trace exactly
+    // when a misbehaving plugin needed diagnosing, hence the exception-type assertion.
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
@@ -1595,17 +1517,15 @@ let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
         FsHotWatch.Logging.setLogLevel original
 
 // ---------------------------------------------------------------------------
-// Task-cache clearing: BOTH arms of every `match taskCache with` — a host built
-// WITH a cache forwards the clear, and a host built WITHOUT one is a safe no-op
-// rather than a crash.
+// Task-cache clearing: BOTH arms of every `match taskCache with` — a host built WITH a cache
+// forwards the clear, and a host built WITHOUT one is a safe no-op rather than a crash.
 // ---------------------------------------------------------------------------
 
 let private cacheEntry (summary: string) : FsHotWatch.TaskCache.TaskCacheResult =
     { CacheKey = ContentHash.create "k"
       Errors = []
-      // This fixture feeds a cache-CLEARING test only (entries are never
-      // replayed), so the CachedStatus content is immaterial — a run verdict
-      // keeps the distinguishing `summary` meaningful.
+      // These entries are only ever CLEARED, never replayed, so the CachedStatus content is
+      // immaterial beyond keeping `summary` distinguishing.
       Status = FsHotWatch.TaskCache.CachedRunCompleted(RunVerdict.create summary TimeSpan.Zero)
       EmittedEvents = [] }
 
@@ -1619,23 +1539,19 @@ let ``ClearTaskCache variants forward to the cache when the host has one`` () =
 
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp/test", taskCache = c)
 
-    // plugin+file entry → ClearTaskCachePluginFile
     c.Set (ckOf "p" (Some "/a.fs")) key (cacheEntry "a")
     test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsSome @>
     host.ClearTaskCachePluginFile("p", "/a.fs")
     test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsNone @>
 
-    // by file → ClearTaskCacheFile
     c.Set (ckOf "p" (Some "/b.fs")) key (cacheEntry "b")
     host.ClearTaskCacheFile("/b.fs")
     test <@ (c.TryGet (ckOf "p" (Some "/b.fs")) key).IsNone @>
 
-    // by plugin → ClearTaskCachePlugin
     c.Set (ckOf "p" (Some "/c.fs")) key (cacheEntry "c")
     host.ClearTaskCachePlugin("p")
     test <@ (c.TryGet (ckOf "p" (Some "/c.fs")) key).IsNone @>
 
-    // everything → ClearTaskCache
     c.Set (ckOf "p" (Some "/d.fs")) key (cacheEntry "d")
     c.Set (ckOf "q" None) key (cacheEntry "q")
     host.ClearTaskCache()
@@ -1644,9 +1560,8 @@ let ``ClearTaskCache variants forward to the cache when the host has one`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ClearTaskCache variants are safe no-ops on a host with no cache`` () =
-    // The `None` arm: a cacheless host (the default) must absorb every clear
-    // without throwing — these are called from IPC verbs that don't know
-    // whether a cache was configured.
+    // A cacheless host (the default) must absorb every clear without throwing — these are
+    // called from IPC verbs that don't know whether a cache was configured.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp/test"
 
     host.ClearTaskCache()
@@ -1654,15 +1569,13 @@ let ``ClearTaskCache variants are safe no-ops on a host with no cache`` () =
     host.ClearTaskCacheFile("/a.fs")
     host.ClearTaskCachePluginFile("p", "/a.fs")
 
-    // Still functioning afterwards.
     test <@ host.GetAllStatuses() = Map.empty @>
 
 [<Fact(Timeout = 15000)>]
 let ``RerunFileCommandPlugin fails with a named reason when the plugin has no pattern`` () =
-    // The error arm: every non-FileCommand plugin (and any FileCommand plugin
-    // configured only with `afterTests`) has no registered pattern, so there is
-    // no synthetic file event to fire. That must be an explicit, named Error —
-    // never a silent Ok that reports success for a rerun that never happened.
+    // Every non-FileCommand plugin (and any configured only with `afterTests`) has no
+    // registered pattern, so there is no synthetic file event to fire. That must be a named
+    // Error, never a silent Ok reporting success for a rerun that never happened.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp/test"
 
     match host.RerunFileCommandPlugin("no-such-plugin") with

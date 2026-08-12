@@ -205,11 +205,11 @@ type MacFsEventsTests() =
 
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
-                // Probe until the stream is live: FSEvents cold-start is 4-20s for a new dir.
+                // Probe until the stream is live: FSEvents cold-start is an unbounded window for a new dir.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
 
-                // Probe-write until the event fires: fseventsd may batch subsequent events
-                // for 15-30s after a large cold-start batch.
+                // Probe-write until the event fires: delivery can lag
+                // for an unbounded window after a large cold-start batch.
                 let testFile = Path.Combine(tmpDir, "Test.fs")
 
                 probeLoop
@@ -270,7 +270,7 @@ type MacFsEventsTests() =
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
 
                 // Each iteration deletes (and if needed re-creates) Del.fs, because
-                // fseventsd may batch the delete event.
+                // Delivery of the delete event can lag.
                 probeLoop
                     (fun _ ->
                         if not (File.Exists testFile) then

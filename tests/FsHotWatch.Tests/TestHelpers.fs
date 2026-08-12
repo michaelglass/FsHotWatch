@@ -85,10 +85,14 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     waitUntilTrue condition timeoutMs |> ignore
 
-/// Run `write` every 2s until `hasEvent` returns true or timeout expires. For FSEvents
-/// tests: brand-new temp dirs have 4-20s cold-start latency, and fseventsd may batch
-/// events for 15-30s regardless of kFSEventStreamCreateFlagNoDefer. Repeated writes fire
-/// the event as soon as fseventsd is ready instead of relying on a fixed timeout.
+/// Run `write` every 2s until `hasEvent` returns true or timeout expires.
+/// Repeated writes mean a write that races watcher setup cannot lose the event,
+/// so the test never depends on one fixed delay being long enough. The timeout
+/// bounds only the failure case — the loop returns the moment the event lands.
+///
+/// A caller's budget is not a statement about how fast the filesystem is. The
+/// large ones absorb stalls seen only under full-suite load; the same tests
+/// finish in about a second on their own.
 let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
     let overall = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable probe = 0
