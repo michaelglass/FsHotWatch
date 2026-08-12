@@ -52,8 +52,8 @@ module ``Coverage is symbol-relative`` =
 
             test <@ db.GetFileCoverage "Foo.fs" = [ (15, 3) ] @>)
 
-    // Bug A — THE KEY TEST. The stored offset (15 - 10 = 5) is unchanged when the symbol
-    // moves; the absolute line is re-derived from the new line_start (18 + 5 = 23).
+    // The stored offset (15 - 10 = 5) is unchanged when the symbol moves; the absolute
+    // line is re-derived from the new line_start (18 + 5 = 23).
     [<Fact>]
     let ``Bug A — moved symbol: coverage follows`` () =
         withDbPath (fun path db ->
@@ -194,9 +194,9 @@ module ``Cobertura emit`` =
 
             test <@ emitted = ingested @>)
 
-    // (b) THE PAYOFF — edit-resilience end-to-end through emit. Mirrors the Phase 1 Bug A
-    //     test but the assertion runs against emitted+parsed cobertura, proving the DB emits
-    //     current, non-stale lines after an edit with zero remap code.
+    // (b) Edit-resilience end-to-end through emit: the same move as the offset test above,
+    //     asserted against emitted+parsed cobertura, so the DB emits current, non-stale
+    //     lines after an edit with no remap code.
     [<Fact>]
     let ``emit reports current lines after a symbol moves`` () =
         withDbPath (fun path db ->
@@ -244,14 +244,14 @@ module ``Coverage summary`` =
             let summary = fileCoverageSummary db "Foo.fs"
             test <@ summary = { Covered = 3; Total = 5 } @>)
 
-// Phase 4 — edit-aware lifecycle wired into RebuildProjects (the live re-index path).
-// Each test re-indexes through RebuildProjects (NOT a raw UPDATE), proving the real
-// path purges stale coverage on a content change while preserving it on a pure move.
+// Edit-aware lifecycle through RebuildProjects (the live re-index path). Each test
+// re-indexes through RebuildProjects, NOT a raw UPDATE, so the real path is what proves
+// stale coverage is purged on a content change and preserved on a pure move.
 module ``Re-index lifecycle`` =
 
     // (a) MOVED keeps coverage. Same content_hash, shifted line_start: the offset is
-    //     stable and the absolute line follows the new line_start (Bug A). Critically,
-    //     a same-hash move must NOT trigger a purge.
+    //     stable and the absolute line follows the new line_start. A same-hash move must
+    //     NOT trigger a purge.
     [<Fact>]
     let ``moved symbol (same hash) keeps coverage through RebuildProjects`` () =
         withDb (fun db ->
@@ -265,8 +265,8 @@ module ``Re-index lifecycle`` =
             test <@ db.GetFileCoverage "Foo.fs" = [ (23, 3) ] @>)
 
     // (b) CHANGED purges. Different content_hash for the same full_name: the stored
-    //     offsets are computed against the old body, so they're invalid and dropped,
-    //     awaiting fresh re-ingest from the impact re-run.
+    //     offsets were computed against the old body, so they are dropped and re-ingested
+    //     by the impact re-run.
     [<Fact>]
     let ``changed symbol (new hash) purges coverage through RebuildProjects`` () =
         withDb (fun db ->

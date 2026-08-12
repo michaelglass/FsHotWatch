@@ -361,7 +361,7 @@ module ``SqlExtension auto-discovery`` =
         let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
         test <@ edges.IsEmpty @>
 
-    /// AUDIT (issue #2): the FalcoRoute cross-product bug is NOT present here.
+    /// The FalcoRoute cross-product bug is NOT present here.
     /// SQL facts are keyed by the SYMBOL the attribute sits on and coupled per
     /// (table, column) — the source file never enters the computation, so three
     /// symbols sharing one file stay independent. A file-level cross-product would

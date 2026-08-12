@@ -227,11 +227,10 @@ module ``Namespace handling`` =
 
     [<Fact>]
     let ``namespace declarations are not extracted as Type symbols`` () =
-        // Regression: tryClassifyEntity used to fall through to the `else Some(Type, fullName)`
-        // branch for FSharpEntity values where IsNamespace = true, which produced phantom
-        // Type-kind symbols for the namespace. Combined with `symbols.full_name UNIQUE` and
-        // UPSERT-on-conflict semantics, every file under `namespace Foo` would re-extract
-        // the namespace symbol on each diff and report a phantom "+1 added" change.
+        // Classifying an `IsNamespace` entity as a Type produces a phantom Type-kind symbol
+        // for the namespace. With `symbols.full_name UNIQUE` and UPSERT-on-conflict, every
+        // file under `namespace Foo` then re-extracts it on each diff and reports a phantom
+        // "+1 added" change.
         let result =
             analyze
                 """
@@ -1124,13 +1123,12 @@ let moduleLevel = 42
 
     [<Fact>]
     let ``shadowing parameters and locals are not extracted as queryable symbols`` () =
-        // Regression test for the symbol-qualification defect. `isTrackedSymbol` admitted a
-        // Value/Function by SHORT name, so a parameter or local binding whose name happened
-        // to collide with any module-level binding in the same file passed the gate and was
-        // persisted as a global, unqualified symbol. Because `symbols.full_name` is UNIQUE,
-        // every unresolved reference to that bare name across the whole repo then unified
-        // onto one node — turning ordinary parameter names (`name`, `kind`, `question`) into
-        // hubs that select thousands of unrelated tests.
+        // Admitting a Value/Function by SHORT name alone lets a parameter or local whose
+        // name collides with a module-level binding in the same file through, persisted as
+        // a global, unqualified symbol. `symbols.full_name` is UNIQUE, so every unresolved
+        // reference to that bare name across the repo unifies onto one node — turning
+        // ordinary parameter names (`name`, `kind`, `question`) into hubs that select
+        // thousands of unrelated tests.
         //
         // The fixture below deliberately shadows: `kebab` takes a parameter `name` while the
         // module also binds `name`; `question` takes a parameter `question` shadowing its own
@@ -1185,11 +1183,10 @@ let render x =
 
     [<Fact>]
     let ``every module-level and type-member binding form stays tracked`` () =
-        // Guard against OVER-correction. The fix above rejects a symbol when FCS reports
-        // `IsModuleValueOrMember = false`; this pins the declaration forms that must keep
-        // passing that gate. Under-selection is the dangerous direction for a test-impact
-        // tool — a symbol silently dropped here means edits to it select no tests — so
-        // each of these is asserted by exact fully-qualified name rather than by count.
+        // Guard against OVER-correction of the check above: these are the declaration forms
+        // that must keep passing the `IsModuleValueOrMember` gate. A symbol silently dropped
+        // here means edits to it select no tests, so each is asserted by exact
+        // fully-qualified name rather than by count.
         let result =
             analyze
                 """
@@ -2524,19 +2521,17 @@ let normalTest () = ()
 [<Collection("FCS-AstAnalyzer")>]
 module ``Un-nameable symbols do not abort analysis`` =
 
-    // Regression: some FCS symbols (e.g. anonymous-record projections, generic
-    // type args over anonymous records) throw NullReferenceException from
-    // FSharpEntity.get_TryFullName()/get_FullName() rather than returning None.
-    // The AST walk used to let that NRE propagate and abort the whole impact
-    // pass, producing zero edges. The analyzer must skip such symbols and still
-    // return Ok (possibly with fewer edges). See AstAnalyzer.tryName.
-    // `analyze` (module top) already asserts Ok-or-failwith, which is exactly the
-    // "must not abort" guarantee these tests need.
+    // Some FCS symbols (anonymous-record projections, generic type args over anonymous
+    // records) throw NullReferenceException from
+    // FSharpEntity.get_TryFullName()/get_FullName() rather than returning None. Letting
+    // that propagate aborts the whole impact pass and produces zero edges; the analyzer
+    // must skip such symbols and still return Ok. See AstAnalyzer.tryName. `analyze`
+    // (module top) already asserts Ok-or-failwith, which is the "must not abort"
+    // guarantee these tests need.
 
     [<Fact>]
     let ``anonymous-record projection does not throw`` () =
-        // `{| Year = d.Year; Month = d.Month |}` — the exact shape that aborted
-        // impact analysis downstream.
+        // `{| Year = d.Year; Month = d.Month |}` — the shape that aborts impact analysis.
         let analysis =
             analyze
                 """
@@ -2616,22 +2611,20 @@ let pull () =
 
     [<Fact>]
     let ``tryName swallows NullReferenceException (regression for the FCS NRE)`` () =
-        // This is the exact exception class from the stack trace:
+        // The exception class FCS actually throws:
         //   FSharp.Compiler.Symbols.FSharpEntity.get_TryFullName() -> NullReferenceException
-        // Before the fix the accessor caught only InvalidOperationException, so this
-        // threw straight through and aborted analysis.
+        // An `InvalidOperationException`-only catch lets it through and aborts analysis.
         test <@ TestHelpers.testTryName (fun () -> raise (NullReferenceException())) = None @>
 
     [<Fact>]
     let ``tryName swallows InvalidOperationException`` () =
         test <@ TestHelpers.testTryName (fun () -> raise (InvalidOperationException())) = None @>
 
-// Soundness regression: two bindings sharing a short name in one file (legal in
-// sibling nested modules) must each keep their own dependency edges. The bug was
-// that `definitionsByName` / `allBindingRangeMap` / `typeDefnRangeMap` were built
-// with `Map.ofList`, which is last-write-wins on the short name, so the earlier
-// binding's SymbolInfo was silently dropped and uses inside it were mis-attributed
-// or dropped. That severs dependency edges → affected tests are not selected.
+// Two bindings sharing a short name in one file (legal in sibling nested modules) must
+// each keep their own dependency edges. `definitionsByName` / `allBindingRangeMap` /
+// `typeDefnRangeMap` must therefore hold LISTS: `Map.ofList` is last-write-wins on the
+// short name, silently dropping the earlier binding's SymbolInfo so uses inside it are
+// mis-attributed or lost — severed edges, unselected tests.
 [<Collection("FCS-AstAnalyzer")>]
 module ``Short-name collisions across sibling modules`` =
 

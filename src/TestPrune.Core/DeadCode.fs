@@ -55,14 +55,10 @@ let findDeadCode
     : DeadCodeResult * AnalysisEvent list =
     let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
-    // Find unreachable symbol names
     let unreachableNames = allNames - reachable
 
-    // Filter to unreachable symbols, excluding:
-    // - Test methods (they're test entry points)
-    // - Module declarations (containers)
-    // - DU cases (part of parent type)
-    // - Symbols in test files (anything under tests/)
+    // Excluded because they are not independently dead: test methods are themselves
+    // entry points, modules are containers, and a DU case belongs to its parent type.
     let unreachableSymbols =
         allSymbols
         |> List.filter (fun s ->
@@ -74,10 +70,8 @@ let findDeadCode
                 || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal)))
             && not s.IsExtern)
 
-    // Filter out local bindings and parameters — symbols without a dot in their
-    // name are locals that aren't independently actionable. Also filter symbols
-    // whose line range is contained within another symbol's range (for cases where
-    // full body ranges are available).
+    // A name without a dot is a local binding or parameter: not independently
+    // actionable, and neither is a symbol nested inside another symbol's line range.
     let isLocal (s: SymbolInfo) = not (s.FullName.Contains('.'))
 
     let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList

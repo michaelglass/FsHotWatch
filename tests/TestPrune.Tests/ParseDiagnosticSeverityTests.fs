@@ -1,22 +1,17 @@
 /// A file must never vanish from the symbol graph because of a diagnostic that
 /// does not actually break its AST.
 ///
-/// Regression cover. `extractResults` used to refuse a file
-/// whenever `FSharpParseFileResults.ParseHadErrors` was set. Under the
-/// TransparentCompiler — which is how FsHotWatch's daemon creates its checker
-/// (`FSharpChecker.Create(useTransparentCompiler = true)`) — FCS sets that flag
-/// for a file whose ONLY parse diagnostic is INFORMATIONAL, e.g. FS3520
-/// "XML comment is not placed on a valid language element" (severity `Info`).
-/// The legacy compiler leaves it unset for the very same file.
-///
-/// The consequence was silent and total: such a file compiled fine, but TestPrune
-/// refused it, so it contributed NO symbols, so an edit to it selected NO tests
-/// and the gate went green having run nothing relevant. Under-selection is the
-/// one failure mode a test-impact tool must not have (see `EdgeEmission`).
+/// `FSharpParseFileResults.ParseHadErrors` is not that predicate. Under the
+/// TransparentCompiler — how FsHotWatch's daemon creates its checker
+/// (`FSharpChecker.Create(useTransparentCompiler = true)`) — FCS sets the flag for a file
+/// whose ONLY parse diagnostic is INFORMATIONAL, e.g. FS3520 "XML comment is not placed
+/// on a valid language element" (severity `Info`); the legacy compiler leaves it unset for
+/// the very same file. Refusing such a file is silent and total: it compiles fine but
+/// contributes NO symbols, so an edit to it selects NO tests and the gate goes green
+/// having run nothing relevant (see `EdgeEmission`).
 ///
 /// These tests therefore drive the REAL configuration (TransparentCompiler +
-/// command-line project options), not the legacy checker, because the legacy
-/// checker cannot reproduce the bug.
+/// command-line project options); the legacy checker cannot reproduce the bug.
 module TestPrune.Tests.ParseDiagnosticSeverityTests
 
 open System

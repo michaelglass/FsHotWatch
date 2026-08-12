@@ -162,58 +162,42 @@ let private openConnection (dbPath: string) =
 /// Increment this whenever the schema changes in a backwards-incompatible way.
 /// A mismatch causes the database file to be deleted and recreated.
 ///
-/// v1..v2 — pre-extern cross-project schema
-/// v3     — added ExternRef + extern symbols (2.0.0)
-/// v4     — added `dependencies.source`, `symbol_attributes`, and `is_extern`
-///          column on symbols (3.0.0). Must bump so DBs written by 2.0.0 get
-///          recreated; a 2.0.0 DB stamped v3 but missing these columns would
-///          otherwise survive open and blow up on first INSERT with
-///          "table dependencies has no column named source".
-/// v5     — added `symbols.parent_symbol_id` (self-referential nullable FK) to support
-///          aggregate-type invalidation: a change to any member of a type lifts the
-///          "changed" set to include the type and its sibling members, so tests that
-///          touched any part of the type are selected. Bump forces recreate — legacy
-///          v4 DBs don't have the column and UPDATEs would throw "no column named
-///          parent_symbol_id". Consumers that care about upgrade-in-place can do a
-///          full re-index after upgrade.
-/// v6     — added `coverage_points` table (edit-aware coverage storage keyed by
-///          `(symbol_id, line_offset)` so coverage survives source edits — a moved
-///          symbol's coverage follows via the derived `line_start + line_offset`,
-///          a changed symbol's coverage is purged). Bump forces recreate — legacy
-///          v5 DBs don't have the table and INSERTs would throw "no such table".
-/// v7     — added nullable `route_handlers.handler_function` so route edges can be
-///          scoped to the specific handler function serving each route (function-
-///          scoped Falco edges) instead of the whole handler file. Bump forces
-///          recreate — a legacy v6 DB has the 3-column table and reads/writes of
-///          the new column would throw "no such column: handler_function".
-/// v8     — removed `route_handlers` from the core schema. HTTP routes are not a
-///          core concept: the table (and the `RouteHandlerEntry` type that shaped
-///          it) now belong to TestPrune.Falco, which creates and owns them through
-///          the `PluginStore` seam (`Ports.toPluginStore`). Nothing about a legacy
-///          v7 DB is unreadable by this schema, but the bump keeps `user_version` an
-///          honest description of what core manages, and the recreate is free: a
-///          plugin table is re-created on demand by its owner (and Falco's routes
-///          are re-seeded every run).
-/// v9     — added `CHECK (kind = 'Module' OR full_name LIKE '%.%')` on `symbols`
-///          An unqualified `full_name` is never a real symbol, and
-///          because `full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, every
-///          same-named thing in the repo UPSERTs onto that ONE row: a single row named
-///          `name` acquired 413 dependents and selected 2,837 tests per run. The table
-///          had no CHECK constraints at all, so nothing said so. SQLite has no
-///          `ALTER TABLE ADD CONSTRAINT`, so the constraint can only arrive by
-///          rebuilding the table — which is what a `SchemaVersion` bump does here
-///          (delete + recreate). Nothing durable is lost: the index is regenerated on
-///          scan.
+/// Every added column or table needs a bump: `CREATE TABLE IF NOT EXISTS` does not
+/// migrate an existing table, so without one a stale DB survives open and throws
+/// "no such column"/"no such table" on the first write. A recreate loses nothing
+/// durable — the index is regenerated on the next scan.
 ///
-///          `kind = 'Module'` is a scoping the constraint needs, not a loophole. A
-///          top-level single-segment module (`module Alpha`) has NO qualifier to
-///          have — FCS reports its `FullName` as `Alpha` — so an unconditional
-///          constraint would hard-fail indexing on any project containing one. That
-///          is the ONLY unqualified category: every other classifier either requires
-///          a declaring entity or qualifies explicitly, which is why the extern
-///          placeholder pass labels an unqualified target `Module` too (see
-///          `AstAnalyzer.extractResults`). `ExternRef` — where all 750 unqualified
-///          rows in TestPrune's own index were found — is fully covered.
+/// v1..v2 — pre-extern cross-project schema
+/// v3     — ExternRef + extern symbols (2.0.0)
+/// v4     — `dependencies.source`, `symbol_attributes`, `symbols.is_extern` (3.0.0)
+/// v5     — `symbols.parent_symbol_id` (self-referential nullable FK) for aggregate-type
+///          invalidation: a change to any member of a type lifts the "changed" set to
+///          include the type and its sibling members, so tests that touched any part of
+///          the type are selected.
+/// v6     — `coverage_points` table, keyed by `(symbol_id, line_offset)` so coverage
+///          survives source edits: a moved symbol's coverage follows via the derived
+///          `line_start + line_offset`, a changed symbol's coverage is purged.
+/// v7     — nullable `route_handlers.handler_function`, scoping route edges to the
+///          specific handler function serving each route instead of the whole file.
+/// v8     — removed `route_handlers` from the core schema. HTTP routes are not a core
+///          concept: the table (and the `RouteHandlerEntry` type that shaped it) belong
+///          to TestPrune.Falco, which owns them through the `PluginStore` seam
+///          (`Ports.toPluginStore`). A v7 DB is still readable by this schema, but the
+///          bump keeps `user_version` an honest description of what core manages, and
+///          the recreate is free: the plugin re-creates and re-seeds its table.
+/// v9     — `CHECK (kind = 'Module' OR full_name LIKE '%.%')` on `symbols`. An
+///          unqualified `full_name` is never a real symbol, and because `full_name` is
+///          UNIQUE with `ON CONFLICT DO UPDATE`, every same-named thing in the repo
+///          UPSERTs onto that ONE row: a single row named `name` acquired 413 dependents
+///          and selected 2,837 tests per run. SQLite has no `ALTER TABLE ADD
+///          CONSTRAINT`, so the constraint can only arrive by rebuilding the table.
+///
+///          `kind = 'Module'` is scoping the constraint needs, not a loophole: a
+///          top-level single-segment module (`module Alpha`) has NO qualifier to have —
+///          FCS reports its `FullName` as `Alpha` — so an unconditional constraint would
+///          hard-fail indexing on any project containing one. That is the ONLY
+///          unqualified category, which is why the extern placeholder pass labels an
+///          unqualified target `Module` too (see `AstAnalyzer.extractResults`).
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -221,12 +205,12 @@ let private openConnection (dbPath: string) =
 /// `CREATE TABLE IF NOT EXISTS` (see `Ports.PluginStore`), and its contents must be
 /// derivable again (seeded per run), never the sole copy of anything.
 ///
-/// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`)
-/// can probe a live DB's `PRAGMA user_version` for compatibility BEFORE opening
-/// via `Database.create` — whose recreate-on-mismatch self-healing would wipe a
-/// daemon's symbol graph. A consumer hardcoding this value instead would have its
-/// protection silently invert when this constant bumps: an old-version DB would
-/// pass the stale probe and then be recreated by the newer open path.
+/// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`) can probe
+/// a live DB's `PRAGMA user_version` for compatibility BEFORE opening via
+/// `Database.create`, whose recreate-on-mismatch would wipe a daemon's symbol graph. A
+/// consumer hardcoding this value instead would have its protection silently invert on
+/// the next bump: an old-version DB would pass the stale probe and then be recreated by
+/// the newer open path.
 [<Literal>]
 let SchemaVersion = 9
 
@@ -253,13 +237,9 @@ let private hasUserTables (conn: SqliteConnection) =
 
     cmd.ExecuteScalar() :?> int64 > 0L
 
-/// Open a connection, deleting and recreating the database if the schema
-/// version is incompatible. Returns `(connection, wasFresh)` where `wasFresh`
-/// is true when the database had no usable prior state this open — either the
-/// file did not exist, or an incompatible schema forced a delete+recreate. A
-/// consumer that derives its own state from this DB's contents (e.g. a separate
-/// FCS check cache) can use `wasFresh` to invalidate that state, since a fresh
-/// DB has lost all symbols a stale sibling cache would assume are still indexed.
+/// Open a connection, deleting and recreating the database if the schema version is
+/// incompatible. Returns `(connection, wasFresh)`; see `Database.WasRecreated` for what
+/// `wasFresh` obliges a caller with a derived cache to do.
 let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
@@ -444,15 +424,13 @@ type Database(dbPath: string) =
                 cmd.Parameters["@isExtern"].Value <- if sym.IsExtern then 1 else 0
                 cmd.Parameters["@indexedAt"].Value <- now
 
-            // Coverage invalidation (Phase 4): BEFORE the upsert overwrites each symbol's
-            // stored content_hash, compare the incoming hash to the existing one. If a row
-            // already exists for this full_name and its content CHANGED (hash differs), its
-            // stored coverage offsets are computed against the old body and are now invalid,
-            // so purge them — the impact re-run re-ingests fresh coverage. A MOVED symbol
-            // (same content_hash, shifted line_start) keeps its coverage: offsets are stable
-            // and GetFileCoverage re-derives the absolute line from the new line_start
-            // (Bug A). New symbols (no stored row) and removed symbols (CASCADE via the
-            // coverage_points FK on the orphan DELETE below) need nothing here.
+            // Must run BEFORE the upsert overwrites each symbol's stored content_hash. A
+            // changed hash means the stored coverage offsets were computed against the old
+            // body and are now invalid, so purge them; the impact re-run re-ingests fresh
+            // coverage. A MOVED symbol (same hash, shifted line_start) keeps its coverage —
+            // offsets are stable and GetFileCoverage re-derives the absolute line. New
+            // symbols and removed ones (CASCADE via the coverage_points FK on the orphan
+            // DELETE below) need nothing here.
             use purgeCovCmd = conn.CreateCommand()
             purgeCovCmd.Transaction <- txn
 
@@ -480,12 +458,10 @@ type Database(dbPath: string) =
                     let cmd = if sym.IsExtern then externCmd else insCmd
                     setSymbolParams cmd sym
 
-                    // `symbols_full_name_is_qualified` names the CONSTRAINT but not the row
-                    // that broke it, and SQLite reports nothing else — so an indexing run
-                    // that trips it would abort with a message that identifies neither the
-                    // symbol nor the file it came from. Since the whole point of the
-                    // constraint is to surface a bad name, the failure has to carry that
-                    // name.
+                    // SQLite reports only the constraint name
+                    // (`symbols_full_name_is_qualified`), never the offending row. Since the
+                    // whole point of the constraint is to surface a bad name, the failure
+                    // has to carry that name and its file.
                     try
                         cmd.ExecuteNonQuery() |> ignore
                     with :? SqliteException as ex ->
@@ -621,7 +597,8 @@ type Database(dbPath: string) =
                     pArgsJson.Value <- attr.ArgsJson
                     attrCmd.ExecuteNonQuery() |> ignore
 
-            // Write cache keys in the same transaction
+            // Cache keys go in this same transaction, so they can never claim a file is
+            // indexed when its symbols rolled back.
             match fileKeys with
             | Some keys when not keys.IsEmpty ->
                 use fkCmd = conn.CreateCommand()
@@ -667,14 +644,15 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            // Build parameter placeholders
             let placeholders = buildPlaceholders changedSymbolNames
 
             use cmd = conn.CreateCommand()
 
             // Aggregate-type invalidation: before the transitive walk, expand the set of
             // "changed" symbol ids in both directions along the containment relation, but
-            // ONLY when the containing entity is a Type (never a Module).
+            // ONLY when the containing entity is a Type (never a Module). The two phases
+            // must be ordered — the lift has to happen first for a lone-member change to
+            // reach its siblings through the type it lifted to.
             //
             //   member → parent type:  a lone-member edit lifts to the type, so tests that
             //                          touched the type itself or sibling members are hit.
@@ -686,11 +664,6 @@ type Database(dbPath: string) =
             // Module members deliberately do not have parent_symbol_id set (see
             // AstAnalyzer.fs parentLinks logic), so the expansion can't fan out across
             // unrelated module siblings.
-            // Two-phase expansion:
-            //   after_lift = changed ∪ (parent types of changed members, parent.kind='Type')
-            //   expanded   = after_lift ∪ (members of every Type in after_lift)
-            // This makes a lone-member change reach sibling members via the lifted type,
-            // which otherwise wouldn't be in the seed set if only the member changed.
             let typeKindStr = symbolKindToString Type
 
             cmd.CommandText <-

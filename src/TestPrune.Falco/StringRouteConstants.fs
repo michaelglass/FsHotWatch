@@ -8,7 +8,7 @@ open FSharp.Compiler.Text
 /// Resolves plain STRING-route navigation through a NAMED URL CONSTANT — a test that calls
 /// `navigateTo Routes.settingsUrl` where `let settingsUrl = "/settings"` lives in ANOTHER file —
 /// to the same URL literal the matcher already keys on. The test's own span holds no "/settings"
-/// substring, so before this it was silently dropped (under-selection), the string-route analogue
+/// substring, so a purely textual matcher drops it (under-selection) — the string-route analogue
 /// of the `Route.link` symbolic-navigation hole `UnionRouteLinks` closes.
 ///
 /// This is ADDITIVE, has NOTHING to do with Falco.UnionRoutes, and helps plain string-route repos.
@@ -18,10 +18,9 @@ open FSharp.Compiler.Text
 /// route URL, so `let apiBase = "/api"` fires only when `/api` is itself the changed route: no
 /// blanket over-selection.
 ///
-/// Scope (honest): only DIRECT string literals are resolved. A URL built dynamically —
-/// interpolated (`$"/users/{id}"`), concatenated (`apiBase + "/x"`), or computed — stays
-/// unmatched and falls back to the pre-existing literal-URL behaviour: never a regression, never
-/// over-selection.
+/// Scope: only DIRECT string literals are resolved. A URL built dynamically — interpolated
+/// (`$"/users/{id}"`), concatenated (`apiBase + "/x"`), or computed — stays unmatched and falls
+/// back to plain literal-URL matching.
 module StringRouteConstants =
 
     let private checker = lazy (FSharpChecker.Create())

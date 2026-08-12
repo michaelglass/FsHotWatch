@@ -385,10 +385,8 @@ module ``Aggregate-type invalidation`` =
         // Editing m2 must not reach Cons.uses_m1 (which only calls m1).
         let store = fromAnalysisResults [ fixtureGraph ]
         let affected = store.QueryAffectedTests [ "ModHelpers.m2" ]
-        // No test methods depend on Cons; the check here is that expansion didn't
-        // silently lift to ModHelpers (which would pull in m1 and then uses_m1).
-        // To make that observable, we can check GetReachableSymbols isn't involved —
-        // but QueryAffectedTests returning empty is the direct proof.
+        // Empty proves the expansion did not lift to ModHelpers, which would have pulled
+        // in m1 and then Cons.uses_m1.
         test <@ affected |> List.isEmpty @>
 
     [<Fact>]

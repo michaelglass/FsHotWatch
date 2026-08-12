@@ -1,6 +1,6 @@
 module TestPrune.Tests.SoundnessHarnessTests
 
-// make "impact selection is reliable" a MEASURED property.
+// Makes "impact selection is reliable" a MEASURED property.
 //
 // The dangerous direction is UNDER-selection: a green impact-filtered run that
 // skipped the one test which would have caught the bug. Over-selection only
@@ -25,11 +25,8 @@ module TestPrune.Tests.SoundnessHarnessTests
 // narrowing a conservative fallback, which would be a soundness REGRESSION
 // dressed up as an improvement.
 //
-// SCOPE, honestly. This covers the symbol-graph layer: seeds, the transitive
-// walk, and the plumbing in `selectTests`. It does NOT yet cover the route-URL
-// heuristic named in the ticket's "current state" (a test navigating via a
-// `Route.link` value rather than a literal string). That needs the Falco layer
-// and a real-suite sweep; see "Not covered yet" at the bottom of this file.
+// Scope: the symbol-graph layer — seeds, the transitive walk, and the plumbing
+// in `selectTests`. See "Not covered yet" at the bottom of this file.
 
 open System
 open Xunit
@@ -267,8 +264,7 @@ let ``soundness: selection never drops a truly-affected test`` () =
 /// under-selecting heuristic.
 ///
 /// Without this, `soundness` above could pass because it never really looks —
-/// a harness that cannot fail measures nothing. This is the seeded known-gap
-/// case the ticket asks for.
+/// a harness that cannot fail measures nothing.
 let private underSelectingStore (drop: string) (inner: SymbolStore) : SymbolStore =
     { inner with
         QueryAffectedTests =
@@ -323,13 +319,10 @@ let ``soundness: RunAll is always sound`` () =
 // Not covered yet — deliberately recorded rather than implied
 // ---------------------------------------------------------------------------
 //
-// - The ROUTE-URL heuristic (TestPrune.Falco). The ticket's named failure — a
-//   test navigating via a `Route.link` value instead of a literal URL — lives
-//   there, not in the symbol graph. TestPrune.Falco 3.1.0 addressed that
-//   specific case; this harness does not yet PROVE it, and the two should not be
-//   confused.
+// - The ROUTE-URL heuristic (TestPrune.Falco): a test navigating via a
+//   `Route.link` value instead of a literal URL lives there, not in the symbol
+//   graph. TestPrune.Falco handles that case; this harness does not prove it.
 // - Fixture edges and `[<DependsOnFile>]`/`[<DependsOnGlob>]` seeds: exercised
 //   incidentally by `selectTests`, but not generated adversarially here.
-// - The real-suite sweep against intelligence (mutate real code, run the full
-//   suite, diff against selection). That is the other half of the ticket and is
-//   a separate, much slower job.
+// - The real-suite sweep (mutate real code, run the full suite, diff against
+//   selection) — a separate, much slower job.

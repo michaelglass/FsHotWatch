@@ -216,14 +216,11 @@ module ``runFilteredTestsWith`` =
 
 module ``runProcessWith`` =
 
-    // regression: the default runner used an unbounded WaitForExit, so a
-    // wedged `dotnet exec <testdll>` hung the CLI forever with no diagnostic. The wait is
-    // now a hang detector — a process that outlives the (injected, short) timeout must be
-    // killed and reported as a timeout, NOT silently waited out.
-    //
-    // Confirmed RED before the fix by reverting runProcessWith to `proc.WaitForExit()`:
-    // this test then blocks for the child's full sleep and returns ExitCode 0 (not
-    // timeoutExitCode) with no "wedged" diagnostic, so both asserts fail.
+    // The wait is a hang detector: a wedged `dotnet exec <testdll>` under an unbounded
+    // `WaitForExit` hangs the CLI forever with no diagnostic, so a process that outlives
+    // the (injected, short) timeout must be killed and reported as a timeout, NOT silently
+    // waited out. Revert `runProcessWith` to `proc.WaitForExit()` and this test blocks for
+    // the child's full sleep, then returns ExitCode 0 with no "wedged" diagnostic.
     [<Fact>]
     let ``bounds a wedged process: kills it and returns a timeout result`` () =
         let sw = System.Diagnostics.Stopwatch.StartNew()
@@ -247,8 +244,8 @@ module ``drainOutputWithin`` =
 
     open System.Diagnostics
 
-    // regression: `WaitForExit` returns when the DIRECT child exits, but an
-    // unbounded read of its redirected stdout blocks until every grandchild that inherited
+    // `WaitForExit` returns when the DIRECT child exits, but an unbounded
+    // read of its redirected stdout blocks until every grandchild that inherited
     // the write handle closes it. This spawns exactly that shape without MSBuild: a shell
     // that backgrounds a long `sleep` (which inherits stdout) and then exits, so the stdout
     // read task cannot complete until the sleep dies. `sleep`'s stderr is sent to /dev/null
@@ -257,9 +254,8 @@ module ``drainOutputWithin`` =
     // the give-up branch.
     //
     // The drain is run off-thread and given far longer (10s) than its own 500ms bound: a
-    // correctly-bounded drain returns almost immediately, so `.Wait(10s)` is true. The old
-    // unbounded drain blocks on the 30s grandchild sleep and never returns inside 10s, so
-    // `.Wait(10s)` is false and this test fails — the verbatim RED before the bound landed.
+    // correctly-bounded drain returns almost immediately, so `.Wait(10s)` is true. An
+    // unbounded drain blocks on the 30s grandchild sleep and never returns inside 10s.
     [<Fact>]
     let ``bounds a drain wedged by a grandchild holding the stdout pipe open`` () =
         let psi = ProcessStartInfo("/bin/sh")

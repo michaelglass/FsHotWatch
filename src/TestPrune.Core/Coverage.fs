@@ -6,10 +6,9 @@
 /// and feed each into `Database.RecordCoverage`, which resolves the containing
 /// symbol and stores the hit symbol-relative (so it survives source edits).
 ///
-/// This lives in TestPrune.Core (NOT FsHotWatch) so the DB and its ingest stay
-/// in one place; it deliberately does NOT depend on FsHotWatch.TestPrune's
-/// `CoverageMerge` — that is a plugin-local, line-keyed merge being retired by
-/// this design.
+/// This lives in TestPrune.Core (NOT FsHotWatch) so the DB and its ingest stay in one
+/// place, and deliberately does not depend on FsHotWatch.TestPrune's `CoverageMerge`,
+/// which is plugin-local and line-keyed.
 module TestPrune.Coverage
 
 open System

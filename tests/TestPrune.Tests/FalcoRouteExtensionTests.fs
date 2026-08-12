@@ -769,12 +769,10 @@ type UsersIndirectTests(output: ITestOutputHelper) =
 
 module ``fixture classes are not test classes`` =
 
-    /// THE REGRESSION: a fixture-shaped class carries no test attribute, so it
-    /// holds no runnable test — yet before this change EVERY class was
-    /// selectable, and the consumer's `IntegrationTestFixture` (whose span holds
-    /// the login URL every authenticated test goes through) was returned as an
-    /// "affected test class". This test FAILS pre-change (result has two entries)
-    /// and PASSES post-change.
+    /// A fixture-shaped class carries no test attribute, so it holds no runnable
+    /// test and must not be returned as an "affected test class" — the shape of
+    /// the consumer's `IntegrationTestFixture`, whose span holds the login URL
+    /// every authenticated test goes through.
     [<Fact>]
     let ``fixture class without test attributes is not selected while the real test class is`` () =
         let testContent =
@@ -904,9 +902,10 @@ type UsersTests(fixture: IntegrationTestFixture) =
                                      TestClass = "UsersTests" } ]
                     @>)
 
-    /// A `FactAttribute` SUBCLASS (`[<SkippableFact>]`) declares real tests. Now
-    /// that an unmarked class is dropped, failing to recognise it would silently
-    /// lose those tests, so the marker match admits a prefix before `Fact`.
+    /// A `FactAttribute` SUBCLASS (`[<SkippableFact>]`) declares real tests. An
+    /// unmarked class is dropped, so failing to recognise the subclass would
+    /// silently lose those tests — hence the marker match admits a prefix
+    /// before `Fact`.
     [<Fact>]
     let ``custom Fact subclass attribute counts as a test marker`` () =
         let testContent =
@@ -933,10 +932,10 @@ type UsersTests(fixture: IntegrationTestFixture) =
                                      TestClass = "UsersTests" } ]
                     @>)
 
-    /// FALLBACK PRESERVED: with fixtures now non-selectable, a URL that lives
-    /// only in the fixture's span is an OUT-OF-SPAN match, so the conservative
-    /// fallback fires and every test-bearing declaration in the file is selected
-    /// — including the one that reaches the route only through the fixture.
+    /// Fixtures are not selectable, so a URL living only in a fixture's span is an
+    /// OUT-OF-SPAN match: the conservative fallback fires and every test-bearing
+    /// declaration in the file is selected — including the one that reaches the
+    /// route only through the fixture.
     [<Fact>]
     let ``URL only in a fixture span still falls back to the file's test classes`` () =
         let testContent =
@@ -1036,18 +1035,15 @@ type Route =
     | [<Route(Path = "admin")>] Admin of PreCondition<AdminUserId> * AdminPages
 """
 
-    /// THE FIX. A test that navigates to the route by its SYMBOLIC identifier
-    /// instead of a URL literal —
+    /// A test that navigates to the route by its SYMBOLIC identifier —
     ///
     ///     Route.link (Route.Admin(NoPreCondition, AdminPages.Settings))
     ///
-    /// the pattern the app ENCOURAGES over hard-coding "/admin/settings" — carries no
-    /// "/admin/settings" substring in its span. Before this change the purely-textual URL
-    /// matcher selected nothing and the covering test was silently dropped (under-selection).
-    ///
-    /// Now the extension derives `AdminPages.Settings → /admin/settings` from the route DU's
-    /// `[<Route(Path=...)>]` attributes and matches the qualified case reference, so a change to
-    /// the /admin/settings handler selects the symbolic-nav test — resolved down to the SAME URL
+    /// the spelling the app encourages over hard-coding "/admin/settings" — carries no
+    /// "/admin/settings" substring in its span, so a purely-textual URL matcher drops the
+    /// covering test (under-selection). The extension instead derives
+    /// `AdminPages.Settings → /admin/settings` from the route DU's `[<Route(Path=...)>]`
+    /// attributes and matches the qualified case reference, resolving down to the SAME URL
     /// the literal matcher uses. Models the intelligence consumer, where this `Route.link`
     /// spelling is real (`SystemHealth.fs`).
     [<Fact>]
@@ -1215,11 +1211,9 @@ let private ordersTestFile =
 
 module ``AnalyzeEdges function-scoped routes`` =
 
-    /// THE FIX: a change to a multi-route handler file, with each route mapped to
-    /// its own handler function, links each route's tests ONLY to that route's
-    /// function. Before the function-scoping change this asserted set contained the
-    /// full cross-product (UsersTests -> getOrder, OrdersTests -> getUser too), so
-    /// this test FAILS pre-change and PASSES post-change.
+    /// A change to a multi-route handler file, with each route mapped to its own
+    /// handler function, links each route's tests ONLY to that route's function —
+    /// not the file-level cross-product (UsersTests -> getOrder and back).
     [<Fact>]
     let ``one-function-per-route change scopes edges to that route's function`` () =
         let symbols =
@@ -1251,7 +1245,7 @@ module ``AnalyzeEdges function-scoped routes`` =
                               "App.Tests.OrdersTests.GetOrder", "App.Handlers.Multi.getOrder" ]
                     @>
 
-                // The cross-route edges the old file-level product emitted are gone.
+                // No cross-route edges.
                 test <@ not (pairs.Contains("App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getOrder")) @>
                 test <@ not (pairs.Contains("App.Tests.OrdersTests.GetOrder", "App.Handlers.Multi.getUser")) @>
 
@@ -1288,23 +1282,16 @@ module ``AnalyzeEdges function-scoped routes`` =
 
 module ``run selection and edge participation are different questions`` =
 
-    /// THE DISTINCTION, pinned in one test. The same file, the same route, the
-    /// same scan — two different right answers:
+    /// The same file, the same route, the same scan — two different right answers
+    /// (see `RouteMatch` in FalcoRouteAnalysis.fs):
     ///
     ///   * `FindAffectedTestClasses` must NOT return the fixture. It holds no
     ///     test method, so filtering to it would run nothing.
     ///   * `AnalyzeEdges` MUST emit the fixture's symbols. The fixture is what
-    ///     calls the endpoint, and it is what the tests in every other file
-    ///     depend on; core's `QueryAffectedTests` is a transitive reverse-walk
-    ///     that reports only rows joined to `test_methods`, so the fixture
-    ///     symbol is a conduit to real tests and can never be run as one.
+    ///     calls the endpoint, and what the tests in every other file depend on.
     ///
-    /// Answering the edge question with the run-selection set drops truly
-    /// affected tests — in the intelligence consumer, every test that
-    /// authenticates through `IntegrationTestFixture`.
-    ///
-    /// Note the test class here reaches the route ONLY through the fixture: its
-    /// own span carries no URL literal, exactly like a real integration test.
+    /// The test class here reaches the route ONLY through the fixture: its own
+    /// span carries no URL literal, exactly like a real integration test.
     [<Fact>]
     let ``fixture is excluded from the test-class list but included in the route's edges`` () =
         let fixtureAndTest =
@@ -1427,7 +1414,7 @@ type BrowserErrorTracker() =
 
     /// Edge participation stays scoped to the route: a fixture that mentions a
     /// DIFFERENT route contributes nothing to this one. Widening the edge path
-    /// must not resurrect the file-level cross-product the tracked issue removed.
+    /// must not reintroduce the file-level cross-product.
     [<Fact>]
     let ``fixture matching a different route contributes no edges to this one`` () =
         let fixtureAndTest =
@@ -1464,8 +1451,8 @@ type UsersTests(fixture: OrdersFixture) =
 
 module ``AnalyzeEdges fallback`` =
 
-    /// FALLBACK PROOF: with HandlerFunction = None the route keeps the legacy
-    /// file-level cross-product — every symbol in the changed file linked to the
+    /// With HandlerFunction = None the route falls back to the coarse file-level
+    /// cross-product — every symbol in the changed file linked to the
     /// route-matched test's methods.
     [<Fact>]
     let ``None handler function keeps file-level cross-product`` () =
@@ -1762,9 +1749,9 @@ module Routes =
     let dashboardUrl = "/dashboard"
 """
 
-    /// THE FIX. A test navigates via a CROSS-FILE named URL constant, so its own span holds no
-    /// "/settings" literal. Before this change the purely-textual matcher dropped it; now the
-    /// constant is resolved to its literal value and the reference is matched.
+    /// A test navigates via a CROSS-FILE named URL constant, so its own span holds no
+    /// "/settings" literal. The constant is resolved to its literal value and the
+    /// reference matched; a purely-textual matcher would drop the test.
     [<Fact>]
     let ``a test referencing a cross-file url constant for an affected route is selected`` () =
         let testContent =

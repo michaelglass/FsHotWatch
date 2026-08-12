@@ -1921,9 +1921,9 @@ module ``runBoundedDiff`` =
     // `jjDiffProvider` delegates to
     // `runBoundedDiff jjDiffTimeoutMs drainOutputTimeoutMs "jj" "diff --git"`.
     // The command, the WaitForExit bound, AND the post-exit drain bound are injectable so
-    // both wedge paths (a hung `jj` and a grandchild-held stdout pipe) are
-    // testable with stub commands instead of a real `jj` (which is absent on CI runners).
-    // Stubs mirror the sibling TestRunner.runProcessWith `sleep` tests.
+    // both wedge paths (a hung `jj` and a grandchild-held stdout pipe) are testable with
+    // stub commands instead of a real `jj`, which is absent on CI runners. Stubs mirror
+    // the sibling TestRunner.runProcessWith `sleep` tests.
 
     // Happy path: a command that exits 0 within the bound returns Ok with its stdout.
     // `sleep 0` exits 0 immediately with empty stdout, so Ok "" exercises the normal
@@ -1932,8 +1932,8 @@ module ``runBoundedDiff`` =
     let ``a command that exits 0 within the bound returns Ok with its stdout`` () =
         test <@ runBoundedDiff 30_000 drainOutputTimeoutMs "sleep" "0" = Ok "" @>
 
-    // Timeout branch (the fix): a process that outlives the bound is killed
-    // and reported as a timeout, NOT waited out. Mirrors the TestRunner `sleep 30` test.
+    // A process that outlives the bound is killed and reported as a timeout, NOT waited
+    // out. Mirrors the TestRunner `sleep 30` test.
     [<Fact>]
     let ``bounds a wedged diff: kills it and returns a timeout Error`` () =
         let sw = System.Diagnostics.Stopwatch.StartNew()
@@ -1963,14 +1963,13 @@ module ``runBoundedDiff`` =
         | Error msg -> test <@ msg.Contains "Failed to run jj" @>
         | Ok _ -> failwith "expected a caught Error"
 
-    // round-2: the process exits 0 but a grandchild keeps the stdout pipe
-    // open, so the post-exit drain never reaches EOF and times out with a NON-empty-but-
-    // unclosed stream ("done\n" is buffered, EOF never arrives). Round-1 returned that as
-    // Ok "" — a wedged `jj diff` then flowed as "zero changed files", silently under-selecting
-    // and running ZERO tests green. The drain wedge is the same wedge as a WaitForExit hang and
-    // must be equally loud: this asserts Error, NOT a silent empty Ok. The grandchild shape is
-    // driven from a temp script so `/bin/sh <path>` needs no arguments-string quoting, and the
-    // drain bound is injected small (500ms) so the wedge surfaces fast instead of at 30s.
+    // The process exits 0 but a grandchild keeps the stdout pipe open, so the post-exit
+    // drain never reaches EOF and times out with a non-empty-but-unclosed stream ("done\n"
+    // is buffered, EOF never arrives). Returning that as Ok "" would flow on as "zero
+    // changed files" and run ZERO tests green, so this asserts Error, not a silent empty
+    // Ok. The grandchild shape is driven from a temp script so `/bin/sh <path>` needs no
+    // arguments-string quoting, and the drain bound is injected small (500ms) so the wedge
+    // surfaces fast instead of at 30s.
     [<Fact>]
     let ``a grandchild-wedged drain surfaces as Error, never a silent empty Ok`` () =
         let script = Path.GetTempFileName()

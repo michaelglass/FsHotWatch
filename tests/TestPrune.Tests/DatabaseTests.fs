@@ -368,7 +368,8 @@ module ``Cross-project dependencies`` =
                   ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
-            // Pass B before A — the old API would silently drop the edge
+            // Pass B before A: a dependent indexed ahead of its dependency must not
+            // lose the edge.
             db.RebuildProjects([ projectB; projectA ])
 
             let affected = db.QueryAffectedTests [ "LibModule.helper" ]
@@ -1297,11 +1298,10 @@ module ``Cross-project extern symbol dependencies`` =
             let affected = db.QueryAffectedTests [ "Lib.MyType" ]
             test <@ affected.Length = 1 @>)
 
-    // Regression: re-indexing a library file without re-indexing dependents used to
-    // cascade-delete the test→library edge via `DELETE FROM symbols WHERE source_file IN (...)`
-    // combined with `ON DELETE CASCADE` on `dependencies.to_symbol_id`. QueryAffectedTests
-    // would then return zero even though the changed library symbol had dependent tests.
-    // Fixed by UPSERT (preserve row id on conflict) + targeted orphan cleanup.
+    // Re-indexing a library file must not cascade-delete the test→library edge, which a
+    // `DELETE FROM symbols WHERE source_file IN (...)` plus `ON DELETE CASCADE` on
+    // `dependencies.to_symbol_id` would do, leaving QueryAffectedTests at zero. Hence
+    // UPSERT (preserving row id on conflict) plus targeted orphan cleanup.
     [<Fact>]
     let ``re-indexing library file preserves incoming edges from non-re-indexed tests`` () =
         withDb (fun db ->
@@ -1964,9 +1964,8 @@ module ``Schema version migration`` =
 
         cmd.ExecuteNonQuery() |> ignore
 
-    // Regression: a pre-versioning DB reads `user_version = 0`. The old check
-    // treated that as a fresh-DB signal and left the stale schema intact; see
-    // `hasUserTables` in Database.fs.
+    // A pre-versioning DB reads `user_version = 0`, which is indistinguishable from a
+    // fresh DB without also checking for existing tables; see `hasUserTables`.
     [<Fact>]
     let ``recreates database with user_version=0 and legacy tables`` () =
         let path = tempDbPath ()
@@ -2332,13 +2331,10 @@ module ``Schema v5: ParentLinks integration`` =
 
 module ``Cache file cleanup`` =
 
-    /// Regression: `tryRepairSchemaDrift` in downstream consumers used to
-    /// `File.Delete dbPath` only, leaving stale `-wal` / `-shm` sidecars on
-    /// disk. SQLite in WAL mode ties sidecars to the main DB file; the next
-    /// connection opening a fresh empty DB with stale sidecars produces a
-    /// 0-byte main DB with no tables — every subsequent INSERT then hits
-    /// "no such column: parent_symbol_id". Provide a reusable helper so
-    /// consumers can't get the delete sequence wrong.
+    /// `File.Delete dbPath` alone leaves stale `-wal` / `-shm` sidecars behind. SQLite
+    /// in WAL mode ties sidecars to the main DB file, so the next connection opening a
+    /// fresh empty DB alongside stale sidecars produces a 0-byte main DB with no tables,
+    /// and every subsequent INSERT hits "no such column". Hence the reusable helper.
 
     [<Fact>]
     let ``deleteCacheFiles removes main DB plus -wal and -shm sidecars`` () =
@@ -2440,11 +2436,10 @@ module ``Schema forward compatibility`` =
             if Directory.Exists tmpDir then
                 Directory.Delete(tmpDir, true)
 
-/// `symbols.full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so two
-/// different things sharing a name silently become ONE row. An unqualified name is
-/// never one real thing: it is whatever every file in the repo happened to call `name`,
-/// merged. One such row was measured with 413 dependents, selecting 2,837 tests per run.
-/// The table had zero CHECK constraints, so nothing said any of this out loud.
+/// `symbols.full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so two different things
+/// sharing a name silently become ONE row. An unqualified name is never one real thing:
+/// it is whatever every file in the repo happened to call `name`, merged. One such row
+/// was measured with 413 dependents, selecting 2,837 tests per run.
 module ``Unqualified symbol names are rejected`` =
 
     let private symbol name kind =

@@ -234,12 +234,11 @@ module ``Module symbols excluded`` =
 
 module ``Only shallowest unreachable reported`` =
 
-    // Fed to `findDeadCode` directly rather than through the database, because
-    // `symbols_full_name_is_qualified` means an unqualified row can no
-    // longer BE stored — an unqualified `full_name` is a repo-wide hub under a UNIQUE
-    // key, so the DB now rejects it outright. `findDeadCode` is a pure function that
-    // still has to hold the line for callers reading a graph it did not build (e.g.
-    // `fshw dead-code` against an older index), so the filter keeps its own test.
+    // Fed to `findDeadCode` directly rather than through the database: the
+    // `symbols_full_name_is_qualified` CHECK rejects an unqualified row outright, so one
+    // cannot be stored. `findDeadCode` is a pure function that still has to hold the line
+    // for callers reading a graph it did not build (e.g. `fshw dead-code` against an
+    // older index), so the filter keeps its own test.
     let private deadCodeOf (allSymbols: SymbolInfo list) (entryPatterns: string list) =
         let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
         let reachable = findEntryPoints allNames entryPatterns |> Set.ofList

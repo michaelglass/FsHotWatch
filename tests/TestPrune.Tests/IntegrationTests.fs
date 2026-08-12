@@ -99,14 +99,11 @@ let ``counter starts at zero`` () =
                   ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
-            // Store both in DB
             db.RebuildProjects([ libAnalysis; testAnalysis ])
 
-            // Verify test methods were detected
             let allSymbols = db.GetAllSymbolNames()
             test <@ allSymbols.Count > 0 @>
 
-            // Check that test methods were found
             test <@ testAnalysis.TestMethods.Length >= 1 @>
 
             // Find the "add" symbol and simulate a change by shifting its line range
@@ -1656,12 +1653,11 @@ type BrowserTests(fixture: TestServerFixture) =
 
     [<Fact>]
     let ``test that receives fixture but never accesses it is still selected`` () =
-        // Layer 1 gap: with aggregate-type invalidation, editing a fixture member
-        // selects tests that accessed ANY member of the fixture. But a test method
-        // whose body never references the fixture at all has no direct edge into
-        // the fixture's member set — only its enclosing class does (via ctor-param).
-        // Layer 2a.1 closes this by emitting a direct testMethod → fixtureType edge
-        // for every ctor-param type of the test's declaring class.
+        // Aggregate-type invalidation alone selects tests that accessed ANY member of the
+        // fixture, but a test method whose body never references the fixture has no direct
+        // edge into its member set — only the enclosing class does, via the ctor param.
+        // Hence the direct testMethod → fixtureType edge for every ctor-param type of the
+        // test's declaring class.
         withDb (fun db ->
             let source =
                 """

@@ -2,20 +2,18 @@
 /// every "files under this root" job in TestPrune (test-project discovery,
 /// test-source scanning, project-file discovery).
 ///
-/// Why this exists (2026-07-13 RCA): `SearchOption.AllDirectories` FOLLOWS
-/// DIRECTORY SYMLINKS. In a devenv/nix repo the reachable tree contains
-/// self-loop symlinks (e.g. ncurses-6.6-dev/include/{ncurses,ncursesw} -> `.`),
-/// and each such loop DOUBLES the path count per level, so an `AllDirectories`
-/// walk that reaches one is effectively non-terminating. TestPrune's route
-/// extension hit exactly this and hung `fshw check` indefinitely (observed
-/// 8h36m, silent — no timeout, no error, no test ever launched).
+/// Why this exists: `SearchOption.AllDirectories` FOLLOWS DIRECTORY SYMLINKS. In a
+/// devenv/nix repo the reachable tree contains self-loop symlinks (e.g.
+/// ncurses-6.6-dev/include/{ncurses,ncursesw} -> `.`), and each such loop DOUBLES
+/// the path count per level, so an `AllDirectories` walk that reaches one is
+/// effectively non-terminating. TestPrune's route extension hit exactly this and hung
+/// `fshw check` for 8h36m — silent, no timeout, no error, no test ever launched.
 ///
-/// Scoping the walk to a narrower root is NOT a fix, and the old comment on
-/// `discoverTestProjects` ("Only scans tests/ directory to avoid .devenv/
-/// symlink issues") is exactly the trap: `tests/*/bin/` holds Playwright's
-/// Nix-provisioned browser symlinks, so the walk escapes into /nix/store from
-/// inside `tests/` regardless. A portal anywhere under the root defeats a
-/// narrower root; only refusing to traverse symlinked directories terminates.
+/// Scoping the walk to a narrower root is NOT a fix, and "only scan tests/ to avoid
+/// .devenv symlinks" is exactly the trap: `tests/*/bin/` holds Playwright's
+/// Nix-provisioned browser symlinks, so the walk escapes into /nix/store from inside
+/// `tests/` regardless. A portal anywhere under the root defeats a narrower root; only
+/// refusing to traverse symlinked directories terminates.
 ///
 /// Guarantee: never descends a symlinked (reparse-point) directory. The real
 /// filesystem tree is acyclic, so termination is structural, not heuristic.
@@ -49,11 +47,8 @@ let ExcludedDirs =
 /// Full paths of every file matching `searchPattern` under `root` (recursive,
 /// root included), skipping `ExcludedDirs` by leaf name and NEVER entering a
 /// symlinked directory. Empty for a missing root. `searchPattern` has the same
-/// glob semantics as `Directory.GetFiles` but is applied per-directory — the
-/// pattern behaves as before while WE own the recursion.
-///
-/// Replaces every `Directory.GetFiles(root, pattern, SearchOption.AllDirectories)`
-/// in this codebase. Do not reintroduce `AllDirectories`.
+/// glob semantics as `Directory.GetFiles` but is applied per-directory, since we
+/// own the recursion. Do not reintroduce `AllDirectories`.
 let enumerateFiles (searchPattern: string) (root: string) : string list =
     let rec walk (dir: DirectoryInfo) (depth: int) : seq<string> =
         seq {
@@ -71,9 +66,8 @@ let enumerateFiles (searchPattern: string) (root: string) : string list =
                     dir.GetDirectories()
                     |> Array.filter (fun d ->
                         not (ExcludedDirs.Contains d.Name)
-                        // The load-bearing guard: a symlinked directory is a
-                        // portal out of the tree, and possibly into a cycle.
-                        // Every caller wants the REAL tree under the root.
+                        // A symlinked directory is a portal out of the tree, and
+                        // possibly into a cycle. Every caller wants the REAL tree.
                         && (d.Attributes &&& FileAttributes.ReparsePoint) = enum<FileAttributes> 0)
                 with
                 | :? IOException

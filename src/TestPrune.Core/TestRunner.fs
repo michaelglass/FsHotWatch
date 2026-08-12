@@ -68,25 +68,24 @@ let drainOutputTimeoutMs = 30_000
 
 /// Bound the post-exit drain of a process's redirected stdout/stderr.
 ///
-/// Call this AFTER a successful `WaitForExit`, passing the two `ReadToEndAsync` tasks.
-/// An unbounded `.Result` / `awaitOutput` here is the wedge: a grandchild
-/// that outlived the direct child keeps the stdout/stderr pipe open, so the read never
-/// completes and the caller blocks forever, silently (the 16h grandchild-pipe hang).
-/// You cannot kill your way out — the direct child has already exited, so there is no
-/// live process-tree root to signal; give-up-with-diagnostic IS the fix.
+/// Call this AFTER a successful `WaitForExit`, passing the two `ReadToEndAsync` tasks. An
+/// unbounded `.Result` / `awaitOutput` here wedges: a grandchild that outlived the direct
+/// child keeps the stdout/stderr pipe open, so the read never completes and the caller
+/// blocks forever, silently (observed as a 16h hang). You cannot kill your way out — the
+/// direct child has already exited, so there is no live process-tree root to signal;
+/// give-up-with-diagnostic IS the fix.
 ///
 /// If the drain completes within `drainTimeoutMs` the captured stdout/stderr are returned
 /// exactly as an unbounded read would (each task's ORIGINAL exception surfaces via
 /// `awaitOutput`, not the `AggregateException` `.Result` would wrap). If it expires, a
-/// diagnostic naming the command and the bound is written to stderr (mirroring the
-/// timeout-branch voice) and the output captured so far is returned — never blocking.
+/// diagnostic naming the command and the bound goes to stderr and the output captured so
+/// far is returned — never blocking.
 ///
-/// The `Completed` flag is the load-bearing signal: on timeout the returned text is only a
-/// PARTIAL capture, so a caller that treats the drained text as AUTHORITATIVE DATA (rather
-/// than as diagnostic output alongside an exit-code verdict) MUST branch on `Completed` and
-/// refuse the partial read. Without it a wedged drain masquerades as an empty-but-complete
-/// read — the silent under-selection (a truncated `jj diff` read as "no
-/// changed files"). See `TestPrune.Program.runBoundedDiff`.
+/// On timeout the returned text is only a PARTIAL capture, so a caller that treats the
+/// drained text as AUTHORITATIVE DATA (rather than as diagnostic output alongside an
+/// exit-code verdict) MUST branch on `Completed` and refuse the partial read. Otherwise a
+/// wedged drain masquerades as an empty-but-complete read — a truncated `jj diff` read as
+/// "no changed files", i.e. silent under-selection. See `TestPrune.Program.runBoundedDiff`.
 [<Struct>]
 type internal DrainResult =
     { Completed: bool

@@ -24,9 +24,6 @@ type private DeclarationSpan =
 /// The two DIFFERENT answers a route match has to give, kept apart because
 /// conflating them is a bug in one direction or the other.
 ///
-/// The extension asks two questions of the same scan, and they are not the same
-/// question:
-///
 ///   1. "Which classes should I RUN as test classes?" — a fixture holds no test
 ///      method, so naming it runs nothing; it belongs in `TestClasses` only if
 ///      `isTestBearing` says it can hold a runnable test.
@@ -37,11 +34,11 @@ type private DeclarationSpan =
 ///      `test_methods`. So a fixture symbol on this path can never make a
 ///      non-test run: it can only widen the set of real tests reached.
 ///
-/// Answering (2) with (1)'s set drops truly-affected tests. In the intelligence
+/// Answering (2) with (1)'s set drops truly-affected tests: in the intelligence
 /// consumer `IntegrationTestFixture` authenticates via `/login/verify`, and the
 /// reverse-walk through its members reaches 37 test classes / 324 test methods
-/// (of 50 / 520) — every test that logs in. Answering (1) with (2)'s set is the
-/// original over-selection: fixtures returned as "test classes".
+/// (of 50 / 520) — every test that logs in. Answering (1) with (2)'s set
+/// over-selects, returning fixtures as "test classes".
 type private RouteMatch =
     {
         /// Declarations to run as test classes. Test-bearing spans only.
@@ -132,9 +129,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     //
     // The `\w*` before `Fact`/`Theory` also admits the xUnit convention of
     // SUBCLASSING `FactAttribute` (`[<SkippableFact>]`, `[<WindowsTheory>]`):
-    // those declare real tests, and a span with no recognised marker is now
-    // DROPPED rather than kept, so failing to recognise one would lose tests.
-    // The alternatives are capitalised, so `[<Artifact>]` does not match.
+    // those declare real tests, and a span with no recognised marker is DROPPED,
+    // so failing to recognise one loses tests. The alternatives are capitalised,
+    // so `[<Artifact>]` does not match.
     let testAttributeNamePattern =
         Regex(
             @"(?:^|;)\s*(?:[\w.]+\.)?(?:\w*(?:Fact|Theory)|TestCaseSource|TestCase|TestMethod|DataTestMethod|Test)(?:Attribute)?\s*(?:[(;]|$)",
@@ -176,24 +173,20 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         hasTestAttribute span.Text
         || (span.IsClass && inheritPattern.IsMatch(span.Text))
 
-    // Selection is per-declaration, not per-file: a URL match is attributed to
-    // the top-level declaration whose textual span contains it. A declaration
-    // starts at a `classPattern`/`modulePattern` match (both anchor at column 0)
-    // and its span runs to the next such match or EOF. Each span's OWN text is
-    // matched (never global match positions: a `{param}` wildcard is greedy, so
-    // a whole-file scan can swallow the text between two URL occurrences and
-    // hide the second declaration's match). Classes and modules alike are
-    // selectable only when `isTestBearing` says their span can hold a runnable
-    // test — a fixture or helper without tests can never run anything. When the
-    // file matches anywhere OUTSIDE the selectable spans (file header, helper
-    // module or fixture, top-level lets), we cannot tell which tests exercise
-    // the route through that shared text — a helper constant may feed test
-    // classes that never mention the URL — so we select every selectable
-    // declaration in the file, even when some other span also matched directly:
-    // over-selection wastes time, under-selection silently skips affected tests.
-    // A file whose ONLY declarations are non-selectable therefore contributes no
-    // TEST CLASS: there is no test in it to run. It can still contribute EDGE
-    // PARTICIPANTS — see `RouteMatch`.
+    // Selection is per-declaration, not per-file: a URL match is attributed to the
+    // top-level declaration whose textual span contains it. A declaration starts at a
+    // `classPattern`/`modulePattern` match (both anchor at column 0) and runs to the
+    // next such match or EOF. Match each span's OWN text, never global match positions
+    // — a `{param}` wildcard is greedy, so a whole-file scan can swallow the text
+    // between two URL occurrences and hide the second declaration's match.
+    //
+    // When the file matches anywhere OUTSIDE the selectable spans (header, helper module
+    // or fixture, top-level lets) we cannot tell which tests reach the route through that
+    // shared text — a helper constant may feed test classes that never mention the URL —
+    // so every selectable declaration in the file is selected: over-selection wastes time,
+    // under-selection silently skips affected tests. A file whose ONLY declarations are
+    // non-selectable therefore contributes no TEST CLASS, though it can still contribute
+    // EDGE PARTICIPANTS — see `RouteMatch`.
     let matchDeclarationsInFiles (testFiles: string list) (regexes: Regex list) : RouteMatch =
         let perFile =
             testFiles
@@ -288,13 +281,11 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             SafeWalk.enumerateFiles "*.fs" testDir
 
     /// Find affected test classes using route-based matching.
-    /// Returns AffectedTest list for backward compatibility.
     ///
-    /// This is the RUN-SELECTION question, so it reads `RouteMatch.TestClasses`
-    /// and nothing else: every name returned here is meant to be turned into a
-    /// test filter, and a fixture would filter to zero tests. `AnalyzeEdges`
-    /// deliberately reads the OTHER field — see `RouteMatch` before merging the
-    /// two call sites back together.
+    /// This is the RUN-SELECTION question, so it reads `RouteMatch.TestClasses` and
+    /// nothing else: every name returned here becomes a test filter, and a fixture would
+    /// filter to zero tests. `AnalyzeEdges` deliberately reads the OTHER field — read
+    /// `RouteMatch` before merging the two call sites back together.
     member _.FindAffectedTestClasses(changedFiles: string list, repoRoot: string) : AffectedTest list =
         let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
 
@@ -363,18 +354,12 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 // Edges for one route served by a changed handler file. Tests are matched by
                 // THIS route's URL only (per-route regex), so an unrelated route in the same
                 // file contributes no edges — and each route's tests are scoped to the handler
-                // function serving it, via core's shared edge-emission helper. `None` (a seed
-                // that cannot name the function) falls back to the whole file's symbols; so
-                // does a name that no longer resolves, since dropping the route's tests
-                // entirely would under-select.
+                // function serving it, via core's shared edge-emission helper. A seed that
+                // cannot name the function, or names one that no longer resolves, falls back
+                // to the whole file's symbols; dropping the route's tests would under-select.
                 //
                 // This is the EDGE question, so it reads `RouteMatch.EdgeParticipants`, NOT
-                // `TestClasses` — a fixture that calls the endpoint must contribute its
-                // symbols even though it is not a test class, or every test that reaches the
-                // route through that fixture is silently dropped. Emitting a non-test symbol
-                // here is safe by construction: `QueryAffectedTests` reports only rows joined
-                // to `test_methods`, so a fixture symbol can only ever be a conduit to real
-                // tests, never a selected test itself. See `RouteMatch`.
+                // `TestClasses` — see `RouteMatch`.
                 let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
                     let regex = urlPatternToRegex entry.UrlPattern
                     let affectedUrls = Set.singleton entry.UrlPattern

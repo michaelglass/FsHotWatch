@@ -1,6 +1,6 @@
-/// an audit of which F# binding forms actually reach the symbol graph.
+/// An audit of which F# binding forms actually reach the symbol graph.
 ///
-/// Why this exists. A symbol is only tracked when the name FCS reports (`FullName`,
+/// A symbol is only tracked when the name FCS reports (`FullName`,
 /// last segment) agrees with the name the AST collector records (`Ident.idText`).
 /// Where an identifier has special syntax the two disagree, the lookup in
 /// `allBindingRangeMap` misses, and the binding is dropped WITHOUT A DIAGNOSTIC.
@@ -158,7 +158,7 @@ let consume () = Lit + 1
       // --- active patterns -------------------------------------------------
       // FCS names the group `M.(|Even|Odd|)` (WITH parens); the AST records
       // `idText` = `|Even|Odd|` (WITHOUT). Consumers reference the group through
-      // an `FSharpActivePatternCase`, a symbol type classification did not handle.
+      // an `FSharpActivePatternCase`, which classification must handle explicitly.
       { Name = "active pattern single-case"
         Symbol = "M.(|Wrapped|)"
         Kind = Function
@@ -328,8 +328,8 @@ type Base() =
 let consume (b: Base) = b.Describe()
 """   }
 
-      // No `default`, so the ONLY syntax carrying the name is the abstract slot,
-      // which `collectTypeMemberRanges` did not walk.
+      // No `default`, so the ONLY syntax carrying the name is the abstract slot —
+      // `collectTypeMemberRanges` has to walk it.
       { Name = "abstract member without default"
         Symbol = "M.Shape.Area"
         Kind = Function
@@ -384,7 +384,7 @@ let consume () = (Thing() :> IThing).Do 1
 """   }
 
       // Nothing in this file implements `IThing`, so the abstract slot is the ONLY
-      // syntax carrying the name `Do`. The fixture above masks this gap: its
+      // syntax carrying the name `Do` — the fixture above masks that, because its
       // `interface IThing with member _.Do` supplies the same name from elsewhere.
       { Name = "interface member declared alone"
         Symbol = "M.IThing.Do"
@@ -582,8 +582,8 @@ let ``binding form is indexed under its exact qualified name`` (formName: string
         $"'%s{formName}': '%s{form.Symbol}' is present but not as an indexed %A{form.Kind} definition — %A{matching |> List.map (fun s -> s.Kind, s.SourceFile, s.ContentHash)}"
     )
 
-    // Feeds the tracked issue: an unqualified `full_name` is a repo-wide hub, because
-    // `symbols.full_name` is UNIQUE and every same-named thing UPSERTs onto one row.
+    // An unqualified `full_name` is a repo-wide hub: `symbols.full_name` is UNIQUE and
+    // every same-named thing UPSERTs onto the one row.
     Assert.True(
         form.Symbol.Contains '.',
         $"'%s{formName}': '%s{form.Symbol}' is unqualified and would merge with every other symbol of that name"

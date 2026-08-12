@@ -126,11 +126,11 @@ let dotnetBuildRunner: BuildRunner =
         else
             // Bound the post-exit drain: `dotnet build` spawns MSBuild-worker / VBCSCompiler
             // grandchildren that inherit stdout and can outlive the direct build process,
-            // wedging an unbounded read forever. Verdict here is the EXIT CODE,
-            // so a drain-timeout keeps the same exit-code path with the partial output (the
-            // helper already emits its own loud diagnostic naming `dotnet build`) — it must NOT
-            // turn a successful build into a failure. Only the diff path treats the drained TEXT
-            // as authoritative and maps a wedge to Error; see runBoundedDiff.
+            // wedging an unbounded read forever. The verdict here is the EXIT CODE, so a
+            // drain-timeout keeps the same exit-code path with the partial output (the helper
+            // emits its own diagnostic) — it must NOT turn a successful build into a failure.
+            // Only the diff path treats the drained TEXT as authoritative and maps a wedge to
+            // Error; see runBoundedDiff.
             let drain =
                 TestRunner.drainOutputWithin TestRunner.drainOutputTimeoutMs "dotnet build" stdoutTask stderrTask
 
@@ -166,13 +166,12 @@ let runIndex (repoRoot: string) (parallelism: int) : int =
 
 /// Run a `jj diff`-style command, capturing stdout, bounded by a hang-detector `timeoutMs`.
 ///
-/// The command name and arguments are parameters (rather than hard-coded `jj diff --git`)
-/// solely so the bounded-wait path added for the tracked issue is unit-testable with a stub
-/// command: a hanging stub proves the timeout branch kills the process tree instead of
-/// hanging the CLI, and a fast stub proves the normal read/exit-code path. The post-exit
-/// `drainTimeoutMs` is injectable for the same reason: a stub that leaves a grandchild
-/// holding the stdout pipe proves the drain-wedge maps to `Error`, not a silent empty diff.
-/// `jjDiffProvider` is the only production caller and always passes `"jj" "diff --git"`.
+/// The command name, arguments and `drainTimeoutMs` are parameters (rather than hard-coded
+/// `jj diff --git`) solely so the bounded-wait paths are unit-testable with stub commands:
+/// a hanging stub proves the timeout branch kills the process tree instead of hanging the
+/// CLI, and a stub that leaves a grandchild holding the stdout pipe proves the drain-wedge
+/// maps to `Error` rather than a silent empty diff. `jjDiffProvider` is the only production
+/// caller and always passes `"jj" "diff --git"`.
 let runBoundedDiff
     (timeoutMs: int)
     (drainTimeoutMs: int)
@@ -203,12 +202,10 @@ let runBoundedDiff
             let drain =
                 TestRunner.drainOutputWithin drainTimeoutMs $"%s{fileName} %s{arguments}" stdoutTask stderrTask
 
-            // A drain wedge is the SAME wedge as a WaitForExit hang and must be equally loud:
-            // here the drained TEXT is authoritative data (it becomes the changed-file set), so a
-            // truncated read must NOT surface as a valid diff. Round-1 returned the partial "" as
-            // Ok (exit code was 0), which flowed as "no changed files" → zero tests run green:
-            // silent under-selection. Checked BEFORE the exit code precisely because a wedged jj
-            // still exits 0.
+            // Here the drained TEXT is authoritative data — it becomes the changed-file set —
+            // so a truncated read must NOT surface as a valid diff: the partial "" would flow
+            // on as "no changed files" and zero tests would run green. Checked BEFORE the exit
+            // code precisely because a wedged jj still exits 0.
             if not drain.Completed then
                 Error
                     $"jj diff output drain exceeded {drainTimeoutMs / 1000}s — a grandchild is still holding jj's stdout pipe open; jj appears wedged and the diff is truncated"

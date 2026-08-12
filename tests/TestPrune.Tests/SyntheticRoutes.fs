@@ -3,7 +3,7 @@ namespace TestPrune.Tests.SyntheticRoutes
 open Falco.UnionRoutes
 
 // A synthetic Falco.UnionRoutes route DU exercising the hard patterns for the AST-vs-reflection
-// head-to-head (spike). Compiled here for the reflection resolver; the IDENTICAL
+// head-to-head. Compiled here for the reflection resolver; the IDENTICAL
 // source text is read back off disk (copied next to the test dll) for the AST resolver, so there
 // is zero drift between the two inputs.
 //

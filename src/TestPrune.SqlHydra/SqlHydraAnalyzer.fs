@@ -67,12 +67,11 @@ type SqlHydraExtension(generatedModulePrefix: string) =
             //
             // A `Dependency` carries no source range and `GetDependenciesFromFile` has no
             // ORDER BY, so we cannot pair a given DSL call with the table it operates on.
-            // Keeping only the FIRST access (the old `List.tryHead`) therefore silently
-            // discarded every other access, and which one survived was decided by SQLite's
-            // row order. An upsert-style symbol that selects and then inserts was recorded
-            // as a pure READER: `articles` had no writer at all, so readers of `articles`
-            // got no edge to it and their tests were never selected when it changed —
-            // under-selection, the one failure mode a test-impact tool must not have.
+            // Keeping only the FIRST access would discard the rest, with SQLite's row order
+            // deciding which survived: an upsert-style symbol that selects and then inserts
+            // is recorded as a pure READER, its table ends up with no writer at all, and
+            // readers of that table get no edge — under-selection, the one failure mode a
+            // test-impact tool must not have.
             //
             // Keeping them all is exact for the common single-access symbol and degrades to
             // a conservative (access x table) product only for a symbol that genuinely mixes

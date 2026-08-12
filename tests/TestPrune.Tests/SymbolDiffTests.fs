@@ -140,11 +140,10 @@ module ``Comment shift does not produce false Modified`` =
 
 module ``Extern filtering`` =
 
-    /// Regression: previously, callers had to pre-filter externs out of the `current`
-    /// argument before calling `detectChanges`, or they'd see phantom diffs equal to the
-    /// file's extern count (because stored never holds externs but current did). The
-    /// invariant "externs are never compared" now lives inside detectChanges itself, so
-    /// no caller can violate it by forgetting.
+    /// "Externs are never compared" lives inside `detectChanges` rather than at each
+    /// caller, so no caller can violate it by forgetting: stored never holds externs while
+    /// a fresh AnalysisResult does, and comparing them yields phantom diffs equal to the
+    /// file's extern count.
     [<Fact>]
     let ``externs in current are filtered out (no phantom diffs vs stored without externs)`` () =
         let externSym =
@@ -153,8 +152,8 @@ module ``Extern filtering`` =
 
         let regularSym = mkSymbol "Lib.regularFn" Function 5 10
 
-        // current has externs+regular (as a fresh AnalysisResult would); stored only
-        // has the regular symbol (because indexing previously dropped externs).
+        // current has externs+regular (as a fresh AnalysisResult does); stored has only
+        // the regular symbol, since indexing does not persist externs.
         let current = [ externSym; regularSym ]
         let stored = [ regularSym ]
 
@@ -163,8 +162,7 @@ module ``Extern filtering`` =
 
     [<Fact>]
     let ``externs in stored are filtered out (no phantom Removed diffs)`` () =
-        // Symmetric guard: if a stored DB ever held an extern (e.g. legacy data), it
-        // shouldn't surface as a Removed change once the indexer stops persisting it.
+        // Symmetric guard: an extern in a stored DB must not surface as a Removed change.
         let externSym =
             { mkSymbol "Lib.legacyExtern" Function 1 3 with
                 IsExtern = true }

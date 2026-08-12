@@ -251,8 +251,8 @@ module ``SqlHydraExtension graph analysis`` =
         test <@ facts.IsEmpty @>
 
 // -----------------------------------------------------------------------------
-// Edge scoping (issue #2): audit for the cross-product over-selection bug fixed
-// in FalcoRoute, plus the access-collapse under-selection bug it turned up.
+// Edge scoping: audit against the cross-product over-selection FalcoRoute suffered from,
+// and the access-collapse under-selection it turned up.
 // -----------------------------------------------------------------------------
 
 /// Terse builders for a symbol graph — the ceremony above obscures the shape.
@@ -297,7 +297,7 @@ let private usesType (source: string) (dest: string) : Dependency =
 
 module ``SqlHydra edge scoping`` =
 
-    /// AUDIT (issue #2): the FalcoRoute cross-product bug is NOT present here.
+    /// The FalcoRoute cross-product bug is NOT present here.
     /// `extractFacts` filters each symbol's dependencies to `d.FromSymbol = sym.FullName`,
     /// and the AST attributes a `Calls`/`UsesType` edge to the *enclosing function*, not to
     /// the file. So two queries sharing one source file stay independent: a change to
@@ -335,13 +335,10 @@ module ``SqlHydra edge scoping`` =
                       "Queries.createBrief", "briefs", Write ]
             @>
 
-    /// REGRESSION (issue #2): a symbol that BOTH reads and writes must keep both accesses.
-    ///
-    /// The old `List.tryHead` kept only the first DSL access it happened to see. With the
-    /// select listed first, an upsert was recorded as a pure READER and its WRITE vanished:
-    /// `articles` then had no writer at all, `buildEdges` produced ZERO edges, and a change
-    /// to the upsert selected none of the tests that read the table. This test FAILS on the
-    /// old code (`accesses = set [ Read ]`, `pairs = empty`) and PASSES on the fix.
+    /// A symbol that BOTH reads and writes must keep both accesses. Keeping only the first
+    /// DSL access records an upsert (select listed first) as a pure READER, its table ends
+    /// up with no writer, `buildEdges` produces ZERO edges, and a change to the upsert
+    /// selects none of the tests that read the table.
     [<Fact>]
     let ``symbol that both reads and writes keeps both accesses`` () =
         let result =
@@ -430,8 +427,8 @@ module ``SqlHydra under-selection`` =
     ///
     ///     upsertArticle ←(SharedState)← listArticles ←(Calls)← testListsArticles
     ///
-    /// On the old code the write was dropped, no SharedState edge existed, and this
-    /// selected ZERO tests — a genuinely-affected test silently skipped.
+    /// Drop the write and there is no SharedState edge, so this selects ZERO tests — a
+    /// genuinely-affected test silently skipped.
     [<Fact>]
     let ``changing a read-write symbol still selects tests that read the table`` () =
         withDb (fun db ->

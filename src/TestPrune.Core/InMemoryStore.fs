@@ -46,7 +46,6 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
         |> List.groupBy (fun l -> symbolFileMap |> Map.tryFind l.Child |> Option.defaultValue "")
         |> Map.ofList
 
-    // Build adjacency list for transitive queries
     let forwardEdges = // from -> [to]
         allDeps
         |> List.groupBy (fun d -> d.FromSymbol)
@@ -62,7 +61,6 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let testMethodNames = allTests |> List.map (fun t -> t.SymbolFullName) |> Set.ofList
     let allSymbolNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
-    // Transitive closure: follow edges from seeds
     let transitiveClosure (edges: Map<string, Set<string>>) (seeds: string list) : Set<string> =
         let rec walk visited frontier =
             match frontier with
@@ -123,7 +121,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
       GetAllSymbolNames = fun () -> allSymbolNames
       GetReachableSymbols =
         fun entryPoints ->
-            // Forward reachability from entry points
+            // Forward reachability, unlike QueryAffectedTests' reverse walk.
             transitiveClosure forwardEdges entryPoints
       GetTestMethodSymbolNames = fun () -> testMethodNames
       GetIncomingEdgesBatch =

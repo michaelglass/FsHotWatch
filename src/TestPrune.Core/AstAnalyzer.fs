@@ -96,10 +96,8 @@ let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
         { s with
             SourceFile = System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
 
-/// The combined output of analyzing a source file: symbols, dependencies, and test methods.
-/// Diagnostic counters for observability into the analysis pipeline.
-/// These track how many symbols/edges were dropped during analysis
-/// to help diagnose missing dependency edges.
+/// Counters for how many symbols/edges the analysis dropped, for diagnosing
+/// missing dependency edges.
 type AnalysisDiagnostics =
     {
         /// Symbol uses where findEnclosing returned None (edge dropped)
@@ -134,7 +132,6 @@ type AnalysisResult =
       Diagnostics: AnalysisDiagnostics }
 
     /// Create an AnalysisResult with default (zero) diagnostics.
-    /// Useful for tests and manual construction where diagnostics aren't relevant.
     static member Create(symbols, dependencies, testMethods) =
         { Symbols = symbols
           Dependencies = dependencies
@@ -145,71 +142,38 @@ type AnalysisResult =
 
 /// Defensive accessor for fallible FCS symbol-name reads.
 ///
-/// `FSharpEntity.FullName`/`TryFullName` (and similar name/type accessors on FCS
-/// symbols) are NOT total: for some un-nameable symbols — e.g. an anonymous-record
-/// projection `{| Year = d.Year |}` or a generic type arg over one —
-/// `FSharpEntity.get_TryFullName()` itself THROWS rather than returning None. The
-/// thrown type is environment-dependent: a `NullReferenceException` in compiled
-/// projects (the observed downstream crash) and an `InvalidOperationException` in
-/// script/`fsx` checking. A single un-nameable symbol used to abort the entire
-/// impact pass, producing zero edges.
+/// FCS name accessors are NOT total: for un-nameable symbols — an anonymous-record
+/// projection `{| Year = d.Year |}`, or a generic arg over one —
+/// `FSharpEntity.get_TryFullName()` THROWS rather than returning None, and the type
+/// thrown is environment-dependent (`NullReferenceException` in compiled projects,
+/// `InvalidOperationException` under script checking). Hence the catch-all: one
+/// un-nameable symbol would otherwise abort the whole impact pass.
 ///
-/// `tryName` wraps the access and swallows ANY exception, returning None so the
-/// caller SKIPS that edge/symbol and the pass degrades gracefully (slightly more
-/// conservative impact selection) instead of crashing. Use it for the
-/// name-returning accessors; the side-effecting walk regions guard the same
-/// fallible reads with local `try … with _ -> ()` for the identical reason.
+/// Skip rather than fall back to another identifier. `CompiledName`/`LogicalName`
+/// yield synthesized names (`<>f__AnonymousType...`) that vary by compilation order,
+/// so persisting one churns the `symbols.full_name UNIQUE` key into phantom diffs;
+/// a structural key has no declaration symbol to diff against, so its edge points at
+/// a node nothing else references. Both are worse than one dropped edge.
 ///
-/// Why skip rather than fall back to a different identifier? The symbols that
-/// throw here are precisely the ones with no stable, cross-compilation name to
-/// key the graph on. An anonymous-record projection (and a generic arg over one)
-/// is structural and anonymous: FCS has no `FullName` for it, and the available
-/// alternatives don't help:
-///   - `CompiledName`/`LogicalName`/`DisplayName` give synthesized,
-///     non-deterministic strings (e.g. `<>f__AnonymousType...`) that vary by
-///     compilation order and across builds. Persisting one as the symbol's
-///     `full_name` would churn the `symbols.full_name UNIQUE` key from run to
-///     run, manufacturing phantom add/remove diffs on every re-index — the exact
-///     class of false-positive selection 4.0.1 worked to eliminate.
-///   - Even a structurally-derived key (field names/types) wouldn't correlate
-///     the *use site* with a *declaration* anywhere, because an anon record has
-///     no declaration symbol to diff against — so the edge would point at a node
-///     nothing else references and never trigger a test. It costs index churn
-///     for zero added precision.
-/// So the only edge we could synthesize is one that is either unstable (harmful)
-/// or inert (useless). Skipping the single un-nameable symbol loses at most one
-/// edge; the consuming/declaring symbols around it are still nameable and still
-/// produce their own edges, so real impact coverage is essentially unaffected.
+/// The side-effecting walk regions guard the same reads with local
+/// `try … with _ -> ()` for the same reason.
 let internal tryName (access: unit -> string) : string option =
     try
         Some(access ())
     with _ ->
-        // Intentionally catch-all: FCS name accessors throw NRE in compiled
-        // projects and IOE in scripts; both (and any future variant) must be
-        // treated as "un-nameable, skip" rather than aborting the pass.
-        // Skip (not fall back to CompiledName/LogicalName/a structural key): see
-        // the doc comment above — every alternative identifier for these symbols
-        // is either unstable (phantom diffs vs `full_name UNIQUE`) or inert (an
-        // edge to a node nothing else references). Dropping the edge is strictly
-        // safer than fabricating a misleading one.
         None
 
-/// Internal classification logic that can be tested with injected symbolClassifier.
-/// This separation allows test code to provide mock symbols that throw exceptions.
 let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) option =
     try
         let fullName = entity.FullName
 
-        // Namespaces are not trackable per-file dependencies: they aren't owned by any
-        // single file, and consumers reach types *through* a namespace rather than
-        // depending on it. Persisting them collides with `symbols.full_name UNIQUE`
-        // (UPSERT attributes the row to whichever file last extracted it), which then
-        // produces phantom "+1 added" diffs on every other file in the namespace.
-        // Explicit per-flavor branches. The previous `else Some(Type, fullName)`
-        // catch-all silently mis-classified namespaces (and any future kind FCS adds)
-        // as Type, which collided with `symbols.full_name UNIQUE` and produced
-        // phantom diffs. Each legitimate entity flavor is listed here, and the
-        // final `else None` surfaces unrecognized kinds (caller emits a debug log).
+        // Every entity flavor is listed explicitly, with `else None` for the rest, rather
+        // than a `Some(Type, fullName)` catch-all. Namespaces in particular are not
+        // trackable per-file dependencies — no single file owns one, and consumers reach
+        // types *through* a namespace rather than depending on it — so classifying one as
+        // Type collides with `symbols.full_name UNIQUE` (UPSERT attributes the row to
+        // whichever file last extracted it) and yields a phantom "+1 added" diff on every
+        // other file in the namespace. The same applies to any kind FCS adds later.
         if entity.IsNamespace then
             None
         elif entity.IsFSharpModule then
@@ -238,16 +202,11 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
         elif entity.IsMeasure then
             Some(Type, fullName)
         else
-            // Unknown entity kind — likely a new FCS flavor we haven't seen yet.
-            // Returning None keeps it out of the symbol graph (the safe default)
-            // rather than silently labelling it `Type` and risking a UNIQUE collision.
-            // If this fires in the wild we'll see it via missing-symbol regressions
-            // and add an explicit branch.
+            // Unrecognized FCS entity kind. None keeps it out of the symbol graph rather
+            // than labelling it `Type` and risking a UNIQUE collision; the caller logs it.
             None
     with _ ->
-        // Catch-all (was InvalidOperationException-only): `entity.FullName` reads
-        // FSharpEntity.get_TryFullName(), which throws NullReferenceException — not
-        // just IOE — on un-nameable symbols (anonymous records). Skip the symbol.
+        // `entity.FullName` throws (not just IOE) on un-nameable symbols — see `tryName`.
         None
 
 let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
@@ -258,20 +217,16 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
         // parameter or a local `let` as the BARE identifier (`name`, `question`, `kind`),
         // and `symbols.full_name` is UNIQUE — so one such row is a single repo-wide node
         // that every unresolved reference to that identifier, in any file, unifies onto.
-        // Observed in a ~620-test-class consumer repo: seven such junk nodes (`name`,
+        // Measured in a ~620-test-class consumer repo: seven such junk nodes (`name`,
         // `kind`, `source`, `status`, `question`, `tryStr`, `call`) selected ~3,000 tests
-        // per run, swamping the genuinely changed symbols. It is also self-sustaining —
-        // a junk seed that never verifies stays in `pending-verification.json` and
-        // re-seeds every subsequent run.
+        // per run. It is also self-sustaining — a junk seed that never verifies stays in
+        // `pending-verification.json` and re-seeds every subsequent run.
         //
-        // `IsModuleValueOrMember` is the exact discriminator. Verified empirically against
-        // the FCS version this repo references (43.12.204), not just its one-line doc
-        // comment: it is TRUE for every module-level binding — including `private`,
+        // `IsModuleValueOrMember` is the exact discriminator, verified empirically against
+        // FCS 43.12.204: TRUE for every module-level binding — including `private`,
         // nested-module, `inline`, `mutable` and active-pattern ones — and for every type
-        // member (instance, static, constructor, extension member); it is FALSE for every
-        // parameter and local `let`, for which `DeclaringEntity` is also None and
-        // `FullName` is unqualified. Note `IsMember` is NOT usable here: it is false for
-        // plain module-level functions.
+        // member; FALSE for every parameter and local `let`. `IsMember` is NOT usable
+        // here: it is false for plain module-level functions.
         if not mfv.IsModuleValueOrMember then
             None
         elif mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
@@ -296,22 +251,15 @@ let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) o
     with _ ->
         None
 
-/// A USE of an active pattern is reported as an
-/// `FSharpActivePatternCase`, a symbol type nothing here handled — so
-/// `classifySymbol` returned None and the consumer's edge was never emitted. A
-/// module that pattern-matches on `(|Even|Odd|)` had NO dependency on it at all:
-/// editing the pattern selected none of the tests that exercise it.
+/// A USE of an active pattern is reported as an `FSharpActivePatternCase` whose
+/// `FullName` is `<group>.<case>` — `M.(|Even|Odd|).Even` — but the thing that is
+/// declared, hashed and diffed is the GROUP function `M.(|Even|Odd|)`, so the edge has
+/// to point there. Stripping the `.<Name>` suffix is what recovers it.
 ///
-/// The case's `FullName` is `<group>.<case>` — `M.(|Even|Odd|).Even` — but the thing
-/// that is declared, hashed and diffed is the GROUP function `M.(|Even|Odd|)`, so the
-/// edge has to point there. Stripping the `.<Name>` suffix is what recovers it.
-///
-/// The suffix test doubles as the safety gate. FCS reports each case's DEFINITION
-/// with a BARE `FullName` (just `Even`), which does not carry the suffix and so
-/// yields None — exactly right, because persisting `Even` would create an
-/// unqualified row, and `symbols.full_name` being UNIQUE makes any unqualified row a
-/// repo-wide hub that every same-named thing merges onto. The explicit
-/// qualification check below states that invariant rather than leaving it implied.
+/// The suffix test doubles as the safety gate: FCS reports each case's DEFINITION with
+/// a BARE `FullName` (just `Even`), which fails the test and yields None. That is the
+/// wanted outcome — `symbols.full_name` is UNIQUE, so an unqualified row becomes a
+/// repo-wide hub that every same-named thing merges onto.
 let private tryClassifyActivePatternCase (apc: FSharpActivePatternCase) : (SymbolKind * string) option =
     try
         let fullName = apc.FullName
@@ -346,9 +294,7 @@ module internal TestHelpers =
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
-    // `uc.ReturnType.TypeDefinition.FullName` is a fallible FCS name read (see
-    // `tryName`): it can throw NRE on un-nameable parent types. Route it through
-    // the shared defensive accessor so a single bad case skips the edge.
+    // `TypeDefinition.FullName` can throw on un-nameable parent types — see `tryName`.
     | :? FSharpUnionCase as uc -> tryName (fun () -> uc.ReturnType.TypeDefinition.FullName)
     | _ -> None
 
@@ -405,8 +351,7 @@ let private classifyDependency (symbol: FSharpSymbol) : DependencyKind =
     | :? FSharpEntity -> UsesType
     | :? FSharpUnionCase -> PatternMatches
     // An active-pattern case only ever appears in pattern position, so it is the same
-    // relationship a DU case use describes. Without this branch it fell to the
-    // `References` catch-all and the edge lied about why it existed.
+    // relationship a DU case use describes — not the `References` catch-all.
     | :? FSharpActivePatternCase -> PatternMatches
     | :? FSharpMemberOrFunctionOrValue -> Calls
     | _ -> References
@@ -553,28 +498,26 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
                     match memberDefn with
                     | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
 
-                    // `interface I with member _.Do x = ...` is a NESTED
-                    // member list, not a `Member`, so not recursing here left `Do` with no
-                    // AST-side name at all. FCS still reported `M.Thing.Do`, the short-name
-                    // lookup missed, and the implementation was dropped from the graph
-                    // without a diagnostic — the silent kind of miss, which under-selects.
+                    // `interface I with member _.Do x = ...` nests its members in their own
+                    // list rather than as `Member`s. Without this recursion `Do` gets no
+                    // AST-side name, the short-name lookup against FCS's `M.Thing.Do`
+                    // misses, and the implementation drops out of the graph with no
+                    // diagnostic — a silent under-selection.
                     | SynMemberDefn.Interface(members = Some members) ->
                         for m in members do
                             walkMember m
 
-                    // Same class of miss for `abstract member Do: int -> int`. When a type
-                    // in the same file implements the slot, the implementation happens to
-                    // supply the name and the slot is tracked by luck; an interface declared
-                    // on its own (the normal case) had no name-bearing syntax whatsoever, so
-                    // every consumer's edge pointed at a synthesized hash-less `ExternRef`
-                    // that no edit could ever change.
+                    // Same for `abstract member Do: int -> int`. A slot implemented in the
+                    // same file gets its name from the implementation by luck; an interface
+                    // declared on its own has no other name-bearing syntax, so without this
+                    // every consumer's edge points at a hash-less `ExternRef` that no edit
+                    // can change.
                     | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
                         results.Add(id.idText, slotRange)
 
-                    // INT-WILDCARD-001:ok — SynMemberDefn has many cases. Local `let`
-                    // bindings and implicit constructors deliberately do NOT contribute
-                    // names: a local is not a symbol, and a constructor's content is
-                    // already covered by its declaring type's hash range.
+                    // INT-WILDCARD-001:ok — local `let` bindings and implicit constructors
+                    // deliberately do NOT contribute names: a local is not a symbol, and a
+                    // constructor's content is covered by its declaring type's hash range.
                     | _ -> ()
 
                 for m in extraMembers do
@@ -609,8 +552,8 @@ let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
 /// identifier, either of which may contain dots of its own.
 ///
 /// A plain `LastIndexOf('.')` returns `)` for `M.(+.)` and ``ctor`` `` for
-/// ``M.T.``.ctor`` ``. Neither is any real binding's name, so the lookups keyed on it
-/// simply never hit — which is how the whole class of bug here stays silent.
+/// ``M.T.``.ctor`` ``. Neither is any real binding's name, so lookups keyed on it never
+/// hit — which is how this class of bug stays silent.
 let private lastNameSegment (n: string) : string =
     if n.EndsWith(")", StringComparison.Ordinal) then
         // Operator and active-pattern names contain no parentheses of their own
@@ -640,15 +583,12 @@ let private lastNameSegment (n: string) : string =
 /// | `let (\|Even\|Odd\|) n` | `M.(\|Even\|Odd\|)`  | `\|Even\|Odd\|`      |
 /// | ``let ``a b`` x``     | ``M.``a b`` ``         | `a b`                |
 ///
-/// A symbol is only tracked when the two agree, so every row where they did not was
-/// a binding dropped from the graph with no diagnostic: a change
-/// to it selected no tests, and a green run that skipped the relevant test looked
-/// exactly like one that ran it.
+/// A symbol is only tracked when the two agree, so any mismatch is a binding silently
+/// dropped from the graph: a change to it selects no tests, and a green run that
+/// skipped the relevant test looks exactly like one that ran it.
 ///
-/// Normalisation happens HERE, on the FCS side, and only here — the AST collector
-/// stays a plain `idText` reader with nothing to keep in sync. This extends the
-/// backtick-stripping that already lived at this point rather than adding a second,
-/// competing notion of a symbol's name.
+/// Normalise on the FCS side, and only here — the AST collector stays a plain `idText`
+/// reader with nothing to keep in sync, and there is one notion of a symbol's name.
 ///
 /// The operator/active-pattern split is F#'s own, not a heuristic: `(|||)` is a
 /// bitwise-or OPERATOR whose display name has the same outer shape as an active
@@ -800,33 +740,24 @@ let private hashSourceLines (lines: string array) (startLine: int) (endLine: int
 /// The parse diagnostics that actually make an AST unusable: Error severity, and
 /// nothing else.
 ///
-/// `FSharpParseFileResults.ParseHadErrors` is NOT that predicate, and refusing a
-/// file on it silently drops the file from the symbol graph — under-selection,
-/// "the one failure mode a test-impact tool must not have" (see `EdgeEmission`).
-/// Under the TransparentCompiler (`FSharpChecker.Create(useTransparentCompiler = true)`,
-/// which is how FsHotWatch's daemon builds its checker) FCS reports
-/// `ParseHadErrors = true` for a file whose ONLY parse diagnostic is
-/// INFORMATIONAL — e.g. FS3520 "XML comment is not placed on a valid language
-/// element", severity `Info`. The legacy compiler reports `false` for the same
-/// file. Such a file compiles cleanly, its ParseTree is complete, and every
-/// symbol in it is extractable — yet the whole file was being refused, so an
-/// edit to it selected NO tests and the gate went green having run nothing
-/// relevant.
+/// Do NOT gate on `FSharpParseFileResults.ParseHadErrors`: its meaning varies by
+/// compiler backend. Under the TransparentCompiler
+/// (`FSharpChecker.Create(useTransparentCompiler = true)`, which is how FsHotWatch's
+/// daemon builds its checker) FCS reports `ParseHadErrors = true` for a file whose ONLY
+/// parse diagnostic is INFORMATIONAL — e.g. FS3520 "XML comment is not placed on a
+/// valid language element" — where the legacy compiler reports `false`. Such a file
+/// compiles cleanly, its ParseTree is complete and every symbol in it is extractable,
+/// so refusing it drops the whole file from the symbol graph and an edit to it selects
+/// NO tests: under-selection, the one failure mode a test-impact tool must not have
+/// (see `EdgeEmission`).
 ///
-/// So: gate on the diagnostics' SEVERITY, which is the honest question ("is the
-/// tree trustworthy?"), not on a flag whose meaning varies by compiler backend.
-/// A real syntax error still yields Error-severity diagnostics and is still
-/// refused — but a refusal is now always a refusal for cause, and callers are
-/// expected to treat it as owed work (over-select), never as "nothing to do".
+/// A real syntax error still yields Error-severity diagnostics and is still refused;
+/// callers must treat a refusal as owed work (over-select), never as "nothing to do".
 let internal parseErrorDiagnostics (parseResults: FSharpParseFileResults) : FSharpDiagnostic array =
     parseResults.Diagnostics
     |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
 /// Extract analysis results from parse and type-check results.
-/// Note: Some branches (Aborted case, exception handlers in tryClassify* functions,
-/// and catch-all cases in classifyDependency) are defensive against rare FCS edge cases
-/// and are difficult to test without malformed symbol mocks. These paths are present
-/// for robustness but rarely exercised in normal usage.
 let private extractResults
     (sourceFileName: string)
     (source: string)
@@ -851,22 +782,15 @@ let private extractResults
             let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
             let typeDefnRanges = collectTypeDefnRanges parseResults.ParseTree
 
-            // Module-level and type member binding ranges are used for:
-            // - isTrackedSymbol: deciding which Function/Value symbols are queryable
-            // - definitionsByName: mapping short names to SymbolInfo for findEnclosing
-            // - Hash range selection for Function/Value content hashing
-            // Type definition ranges are NOT included here to avoid shadowing
-            // binding names (e.g. type Config vs let config) in the map.
+            // Type definition ranges are deliberately NOT merged in here: they would shadow
+            // binding names (e.g. `type Config` vs `let config`) in the maps built below.
             let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
 
-            // Pre-build Maps keyed by simple (unqualified) name for O(log M) range lookup
-            // rather than O(M) List.tryFind scans per symbol.
-            //
-            // A single short name can legitimately occur more than once in one file
-            // (e.g. `let f` in two sibling nested modules), so each name maps to a LIST
-            // of ranges. Using `Map.ofList` here would be last-write-wins and silently
-            // drop the earlier binding, severing its dependency edges. Callers that need
-            // a single range disambiguate by which range contains the use in question.
+            // Keyed by simple (unqualified) name for O(log M) lookup rather than an O(M)
+            // scan per symbol. Each name maps to a LIST because one short name can occur
+            // more than once in a file (`let f` in two sibling nested modules); `Map.ofList`
+            // would be last-write-wins and silently sever the earlier binding's edges.
+            // Callers disambiguate by which range contains the use in question.
             let groupRangesByName (ranges: (string * range) list) : Map<string, range list> =
                 ranges
                 |> List.groupBy fst
@@ -877,9 +801,8 @@ let private extractResults
             let typeDefnRangeMap = groupRangesByName typeDefnRanges
 
             // From the candidate ranges sharing a short name, pick the narrowest one that
-            // contains the given use range. Falls back to the first candidate when none
-            // contains it (defensive: preserves prior single-entry behavior for the rare
-            // case where the FCS use range sits just outside every AST binding range).
+            // contains the given use range, falling back to the first candidate for the
+            // rare case where the FCS use range sits just outside every AST binding range.
             let pickRangeFor (useRange: range) (candidates: range list) : range option =
                 let containing =
                     candidates
@@ -889,8 +812,6 @@ let private extractResults
                 | [] -> List.tryHead candidates
                 | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
 
-            // Reduce a fully-qualified FCS name to the identifier the AST collector
-            // recorded for the same binding. See `canonicalShortName`.
             let inline shortName (n: string) = canonicalShortName n
 
             let definitions =
@@ -904,10 +825,9 @@ let private extractResults
                                 | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
                                 | _ -> false
 
-                            // Use AST-derived ranges for hashing when available:
-                            // - Type symbols: use full SynTypeDefn range (includes all DU cases, record fields)
-                            // - Function/Value symbols: use binding range (includes attributes)
-                            // - Fallback: use FCS's u.Range
+                            // Prefer the AST range over FCS's `u.Range`: for a Type it spans
+                            // all DU cases and record fields, for a Function/Value it
+                            // includes the attributes, so both affect the hash.
                             let hashStart, hashEnd =
                                 let sn = shortName fullName
 
@@ -939,9 +859,6 @@ let private extractResults
                         None)
 
             let isTrackedSymbol (symbolInfo: SymbolInfo) =
-                // A symbol is tracked if:
-                // 1. It's a Type, Module, DuCase, or Property (these are always queryable), OR
-                // 2. It's a Value/Function that's a module-level binding or type member (by name).
                 match symbolInfo.Kind with
                 | Type
                 | Module
@@ -950,17 +867,14 @@ let private extractResults
                 | Function
                 | Value ->
                     // Defence in depth behind `tryClassifyMemberOrFunction`'s
-                    // `IsModuleValueOrMember` gate. The short-name test ALONE was the
-                    // original defect: a parameter or local whose name collided with any
-                    // module-level binding in the same file (`let private kebab (name:
-                    // string)` in a file that also binds `name`) passed it, and was
-                    // persisted under the bare name `name` — a repo-wide hub, because
-                    // `symbols.full_name` is UNIQUE.
-                    //
-                    // A module-level binding or type member is ALWAYS dot-qualified
-                    // (`M.f`, `M.T.Member`), so an unqualified Function/Value is by
-                    // definition a local that slipped through classification. This is a
-                    // cheap standing invariant, not the fix — see Site B above.
+                    // `IsModuleValueOrMember` gate, which is the real discriminator. The
+                    // short-name test alone is not enough: a parameter or local whose name
+                    // collides with a module-level binding in the same file (`let private
+                    // kebab (name: string)` in a file that also binds `name`) passes it and
+                    // is persisted under the bare name `name` — a repo-wide hub, because
+                    // `symbols.full_name` is UNIQUE. A module-level binding or type member
+                    // is ALWAYS dot-qualified (`M.f`, `M.T.Member`), so an unqualified
+                    // Function/Value is by definition a local.
                     symbolInfo.FullName.Contains('.')
                     && allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
                 | ExternRef -> false
@@ -975,15 +889,11 @@ let private extractResults
             // outside any member body.
             let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
 
-            // Pre-build a map from binding short name to its SymbolInfo(s) for O(log N)
-            // lookup. Includes symbols from both binding ranges and type definition ranges
-            // so findEnclosing can resolve both member-level and type-level enclosures.
-            //
-            // A short name can map to more than one SymbolInfo (e.g. `let f` in two sibling
-            // nested modules), so values are LISTS. Collapsing to a single entry (as
-            // `Map.ofList` would) silently drops the earlier definition and mis-attributes
-            // or loses dependency edges originating inside it. findEnclosing disambiguates
-            // by the definition's own line range, which sits inside the enclosing binding.
+            // Covers binding ranges and type definition ranges so findEnclosing can resolve
+            // both member-level and type-level enclosures. Values are LISTS for the same
+            // reason as `groupRangesByName`: collapsing colliding short names to a single
+            // entry loses or mis-attributes the earlier definition's edges. findEnclosing
+            // disambiguates by the definition's own line range.
             let definitionsByName =
                 definitions
                 |> List.choose (fun (si, _) ->
@@ -1001,9 +911,7 @@ let private extractResults
                 |> Map.ofList
 
             // Resolve a (name, enclosing binding range) pair to the SymbolInfo whose own
-            // definition range sits inside that binding range. Disambiguates colliding
-            // short names; falls back to the single candidate (or the first) when the
-            // definition range can't be matched against the binding range.
+            // definition range sits inside that binding range.
             let resolveEnclosing (name: string) (bindingRange: range) : SymbolInfo option =
                 match definitionsByName |> Map.tryFind name with
                 | None -> None
@@ -1051,8 +959,8 @@ let private extractResults
                     if u.IsFromDefinition then
                         []
                     else
-                        // Handle FSharpField uses (e.g. record construction { Name = "Alice" })
-                        // which are not covered by classifySymbol
+                        // `FSharpField` uses (record construction `{ Name = "Alice" }`) are
+                        // not covered by classifySymbol.
                         let fieldRecordEdge =
                             match u.Symbol with
                             | :? FSharpField ->
@@ -1138,9 +1046,7 @@ let private extractResults
                 with _ ->
                     None
 
-            // Render an attribute's constructor arguments as the JSON-ish payload
-            // stored in `symbol_attributes.args_json` (e.g. `["name", 42]`). Reused
-            // by both the entity-attribute pass and the MFV-attribute pass below.
+            // The JSON-ish payload stored in `symbol_attributes.args_json`, e.g. `["name", 42]`.
             let serializeAttributeArgs (attr: FSharpAttribute) : string =
                 let inner =
                     try
@@ -1232,7 +1138,7 @@ let private extractResults
                     result
 
             // Resolve the single ICollectionFixture<T> arg of a [<CollectionDefinition>]
-            // class to T's full name. Thin wrapper over fixtureInterfaceArg.
+            // class to T's full name.
             let collectionFixtureFromInterfaces (entity: FSharpEntity) : string option =
                 try
                     entity.DeclaredInterfaces
@@ -1326,9 +1232,7 @@ let private extractResults
                             ()
 
                         if isTestAttribute mfv then
-                            // mfv.FullName can itself throw on un-nameable symbols (the
-                            // same FCS NRE/IOE guarded elsewhere); skip the test-method
-                            // edge instead of letting it abort the whole pass.
+                            // `mfv.FullName` can throw on un-nameable symbols — see `tryName`.
                             try
                                 let fallbackClass, testMethod = extractTestClass mfv.FullName
 
@@ -1444,22 +1348,18 @@ let private extractResults
                     let name = d.ToSymbol
 
                     if seen.Add(name) && not (Set.contains name localSymbolNames) then
-                        // An edge target with NO dot can only be a top-level
-                        // single-segment module (`module Alpha`, whose FCS `FullName` is
-                        // just `Alpha` because it has no qualifier to have). Every other
-                        // classifier that feeds an edge either requires a declaring entity
-                        // — `tryClassifyMemberOrFunction`'s `IsModuleValueOrMember` gate —
-                        // or qualifies explicitly: `tryClassifyUnionCase` yields
-                        // `Type.Case`, `tryClassifyActivePatternCase` checks for a dot.
+                        // An edge target with NO dot can only be a top-level single-segment
+                        // module (`module Alpha`, whose FCS `FullName` is just `Alpha`).
+                        // Every other classifier that feeds an edge either requires a
+                        // declaring entity — `tryClassifyMemberOrFunction`'s
+                        // `IsModuleValueOrMember` gate — or qualifies explicitly.
                         //
-                        // Label it what it is. `symbols` carries
-                        // `CHECK (kind = 'Module' OR full_name LIKE '%.%')` because an
-                        // unqualified row is a repo-wide hub under a UNIQUE `full_name`
-                        // (one row named `name` collected 413 dependents and pulled in
-                        // 2,837 tests). Calling this placeholder `ExternRef` would trip
-                        // that constraint on the first consuming file indexed ahead of the
-                        // module's own — and the only way to keep it would be to exempt
-                        // `ExternRef` wholesale, which is exactly the kind the hubs were.
+                        // It must be labelled `Module`, not `ExternRef`: `symbols` carries
+                        // `CHECK (kind = 'Module' OR full_name LIKE '%.%')` to keep out
+                        // unqualified rows, which under a UNIQUE `full_name` become
+                        // repo-wide hubs (one row named `name` collected 413 dependents and
+                        // pulled in 2,837 tests). `ExternRef` here would trip that check on
+                        // the first consuming file indexed ahead of the module's own.
                         let kind = if name.Contains '.' then ExternRef else Module
 
                         Some
@@ -1475,12 +1375,11 @@ let private extractResults
 
             let allSymbols = symbols @ externSymbols
 
-            // Locals and parameters no longer reach `definitions` at all: they are rejected
-            // in `tryClassifyMemberOrFunction` by the `IsModuleValueOrMember` gate, which is
-            // earlier than the `isTrackedSymbol` filter this diagnostic used to derive its
-            // count from. Counting them here keeps "Filtered N/M local symbol(s)" reporting
-            // the same fact it always reported — how much of the file was discarded as local
-            // — rather than silently reading zero because the discard moved upstream.
+            // Counted from `allUses`, not from the `isTrackedSymbol` filter: locals and
+            // parameters are rejected earlier, by `tryClassifyMemberOrFunction`'s
+            // `IsModuleValueOrMember` gate, so they never reach `definitions`. Deriving the
+            // count downstream would report zero instead of how much of the file was
+            // discarded as local.
             let localDefinitionCount =
                 allUses
                 |> List.sumBy (fun u ->
@@ -1598,15 +1497,14 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
                 else
                     []
 
-            // Actual files found on disk
             let foundFiles =
                 availableFiles
                 |> List.filter (fun f ->
                     let fileName = Path.GetFileNameWithoutExtension(f)
                     openedModules |> List.exists (fun m -> m = fileName))
 
-            // Also construct hypothetical paths for opened modules in case files don't exist yet
-            // This handles test cases where files are analyzed in memory
+            // Paths for opened modules whose files don't exist on disk — sources analyzed
+            // in memory.
             let hypotheticalFiles =
                 openedModules
                 |> List.map (fun m -> Path.Combine(dirPath, m + ".fsx"))
@@ -1657,11 +1555,9 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
             finally
                 scriptSemaphore.Release() |> ignore
 
-        // Detect opened modules and find related script files
         let openedModules = detectOpenedModules source
         let relatedFiles = findRelatedScriptFiles sourceFileName openedModules
 
-        // Include related files in the project options
         let enhancedSourceFiles =
             if List.isEmpty relatedFiles then
                 projOptions.SourceFiles
