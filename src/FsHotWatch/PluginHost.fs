@@ -421,6 +421,22 @@ type PluginHost
     member _.AnyPluginBusy() : bool =
         registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
 
+    /// WHICH plugins report work in flight. Same predicate as `AnyPluginBusy`,
+    /// but naming the offenders.
+    ///
+    /// This exists because a `WaitForComplete` that times out on the busy leg
+    /// could previously only say "all terminal but quiescence check failed" —
+    /// one sentence covering three unrelated failures (a plugin still busy, a
+    /// quiescence window that never closes, an unmet verdict guard), with no way
+    /// to tell them apart from the outside. A wait that hangs for an hour and
+    /// cannot say what it is waiting on is a diagnosis someone has to do by
+    /// reading the source, which is exactly what happened.
+    member _.BusyPluginNames() : string list =
+        registeredPlugins
+        |> Seq.filter (fun p -> p.IsBusy())
+        |> Seq.map (fun p -> PluginFramework.PluginName.value p.Name)
+        |> List.ofSeq
+
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)
 
