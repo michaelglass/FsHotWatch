@@ -42,8 +42,7 @@ let runFullPipeline (repoRoot: string) =
 
     // Read-only format check (reports unformatted files).
     daemon.RegisterHandler(
-        FormatCheckPlugin.createFormatCheck
-            None // timeoutSec
+        FormatCheckPlugin.createFormatCheck None // timeoutSec
     )
 
     // FSharpLint, using the warm checker's results.
