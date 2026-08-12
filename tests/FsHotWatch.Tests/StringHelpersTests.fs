@@ -1,9 +1,7 @@
 /// `describeMany` — the non-truncating replacement for `%A` in diagnostic logs.
-///
-/// The defect it exists to kill: `%A` caps a sequence at 100 elements, so a log
-/// line built with it renders a 1,500-element collection identically to a
-/// 101-element one. Any measurement of BREADTH taken from such a line is
-/// therefore worthless. These tests pin the count as the load-bearing part.
+/// `%A` caps a sequence at 100 elements, so a log line renders a 1,500-element
+/// collection identically to a 101-element one, and any measurement of BREADTH
+/// taken from that line is worthless. These tests pin the count.
 module FsHotWatch.Tests.StringHelpersTests
 
 open Xunit
@@ -12,8 +10,8 @@ open FsHotWatch.StringHelpers
 
 [<Fact>]
 let ``the exact count survives past the sample size`` () =
-    // THE property. Two collections that `%A` renders identically (both capped
-    // at 100 elements plus an ellipsis) must be distinguishable here.
+    // Two collections `%A` renders identically (both capped at 100 plus an
+    // ellipsis) must be distinguishable here.
     let small = List.init 101 (fun i -> $"c%d{i}")
     let huge = List.init 1500 (fun i -> $"c%d{i}")
 
@@ -26,8 +24,8 @@ let ``the exact count survives past the sample size`` () =
 
 [<Fact>]
 let ``an empty collection renders as a distinguishable zero`` () =
-    // Load-bearing for TestPrune: a project present with NO affected classes
-    // means "run it in full", which must never look like an absent project.
+    // TestPrune reads these logs: a project present with NO affected classes means
+    // "run it in full", which must never look like an absent project.
     test <@ describeMany ([]: string list) = "0 []" @>
 
 [<Fact>]
@@ -68,8 +66,7 @@ let ``the rendering is a single line`` () =
 [<Fact>]
 let ``describeAll never truncates`` () =
     // For diagnostics where the FULL membership is the point — an impact query's
-    // seed set, where the one bad entry is what is being hunted and a sample that
-    // omits it costs hours.
+    // seed set, where a sample that omits the one bad entry hides it entirely.
     let huge = List.init 5000 (fun i -> $"s%d{i}")
     let rendered = describeAll huge
 

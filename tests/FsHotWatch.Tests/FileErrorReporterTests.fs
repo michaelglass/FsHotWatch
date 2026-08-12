@@ -81,16 +81,15 @@ let ``sanitizeFileName replaces slashes and angle brackets`` () =
 let ``Report caps oversized message and detail (guards transcode overflow)`` () =
     withTempDir "fer-truncate" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
-        // A plugin dumping full test output into a diagnostic can exceed System.Text.Json's
-        // UTF-8 transcoder limit and crash serialization, wedging the daemon. The reporter
-        // must cap such fields rather than serialize them whole.
+        // A plugin dumping full test output into a diagnostic can exceed
+        // System.Text.Json's UTF-8 transcoder limit and crash serialization, wedging
+        // the daemon. The reporter must cap such fields, not serialize them whole.
         let oversized = String.replicate (maxFieldChars + 5000) "x"
         let entry = ErrorEntry.errorWithDetail oversized oversized
 
         (reporter :> IErrorReporter).Report "build" "<build>" [ entry ]
 
         let content = File.ReadAllText(Path.Combine(tmpDir, "build--_build_.json"))
-        // both oversized fields are capped and marked, never written in full
         test <@ content.Contains("[truncated 5000 chars]") @>
         test <@ not (content.Contains(oversized)) @>)
 

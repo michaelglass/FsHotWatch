@@ -3,12 +3,8 @@ module FullPipelineExample
 // The region below is the single source of truth for the pipeline example shown
 // in examples/FullPipelineExample/README.md. SyncDocs copies everything between
 // the markers into the README's fenced code block, and CI compiles this file —
-// so the snippet can never silently drift from the live FsHotWatch API.
-//
-// It had drifted, which is why this project exists: the README taught
-// `Daemon.create repoRoot` (it takes a `DaemonOptions` too), and a
-// `LintPlugin.create` / `AnalyzersPlugin.create` without the leading `repoRoot`
-// argument they now take. Nothing compiled it, so nothing noticed.
+// so the snippet can never silently drift from the live FsHotWatch API, as a
+// hand-maintained README does.
 
 // sync:full-pipeline:start
 open FsHotWatch.Daemon

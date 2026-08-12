@@ -134,10 +134,9 @@ let ``TimestampCacheKeyProvider returns Some lowercase hex hash for readable fil
 
 [<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns None for unreadable file (F7: cache miss + retry)`` () =
-    // F7 — see docs/plans/2026-05-02-error-handling-audit.md.
-    // Pre-fix code synthesized a "unreadable:<path>" key that lived forever
-    // in downstream caches; a transient lock that resolved on retry would
-    // serve stale data. Returning None forces a cache miss + retry.
+    // F7 (docs/plans/2026-05-02-error-handling-audit.md): a synthesized
+    // "unreadable:<path>" key lived forever in downstream caches, so a transient
+    // lock that cleared on retry kept serving stale data. None forces a miss.
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let result = provider.GetFileHash("/nonexistent/test-f7.fs")
     Assert.True(result.IsNone, $"expected None for unreadable file, got %A{result}")
@@ -221,7 +220,6 @@ let ``InMemoryCheckCache evicts LRU on overflow`` () =
 
     cache.Set key1 (makeTestResult "a.fs" 1L)
     cache.Set key2 (makeTestResult "b.fs" 2L)
-    // This should evict key1 (oldest)
     cache.Set key3 (makeTestResult "c.fs" 3L)
 
     Assert.True(cache.TryGet(key1).IsNone)
@@ -237,9 +235,8 @@ let ``InMemoryCheckCache LRU access refreshes entry`` () =
 
     cache.Set key1 (makeTestResult "a.fs" 1L)
     cache.Set key2 (makeTestResult "b.fs" 2L)
-    // Access key1 to refresh it — key2 is now the LRU
+    // Access key1 to refresh it — key2 is now the LRU, so it loses the eviction.
     cache.TryGet key1 |> ignore
-    // This should evict key2 (now the oldest)
     cache.Set key3 (makeTestResult "c.fs" 3L)
 
     Assert.True(cache.TryGet(key1).IsSome)
@@ -285,7 +282,7 @@ let ``InMemoryCheckCache clear removes all entries`` () =
     Assert.True(cache.TryGet(key2).IsNone)
     Assert.True(cache.TryGet(key3).IsNone)
 
-// --- §1: fcsCheckSignature ---
+// --- fcsCheckSignature ---
 
 [<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
@@ -296,9 +293,8 @@ let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
-    // §1 oracle requires distinguishing the two states so plugin caches
-    // invalidate when FCS transitions from parse-only to full-check (or vice
-    // versa) — the lint result depends on whether type info was available.
+    // Plugin caches must invalidate when FCS moves between parse-only and
+    // full-check: the lint result depends on whether type info was available.
     let parseOnly = fcsCheckSignature ParseOnly
     let fullCheckNull = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
     Assert.NotEqual<string>(parseOnly, fullCheckNull)
@@ -361,11 +357,9 @@ let ``hashDiagnosticSignatures stable when same diagnostic list given twice`` ()
 
 [<Fact(Timeout = 2000)>]
 let ``hashDiagnosticsOrFailure folds exception class so distinct failures don't collide`` () =
-    // F1 — see docs/plans/2026-05-02-error-handling-audit.md.
-    // The pre-fix code returned the literal "full-check-error" for every
-    // failure mode, so two distinct exceptions inside the diagnostic-hash
-    // path produced the same downstream cache key. The fix folds the
-    // exception class and message into the synthesized payload.
+    // F1 (docs/plans/2026-05-02-error-handling-audit.md): returning the literal
+    // "full-check-error" for every failure mode gave two distinct exceptions the
+    // same downstream cache key. The payload now folds in the exception class.
     let throwInvalidOp () : DiagnosticSignature seq =
         raise (System.InvalidOperationException "boom-1")
 
@@ -375,7 +369,6 @@ let ``hashDiagnosticsOrFailure folds exception class so distinct failures don't 
     let h1 = hashDiagnosticsOrFailure throwInvalidOp
     let h2 = hashDiagnosticsOrFailure throwArg
     Assert.NotEqual<string>(h1, h2)
-    // The pre-fix literal must no longer surface as the cache key.
     Assert.NotEqual<string>("full-check-error", h1)
     Assert.NotEqual<string>("full-check-error", h2)
 

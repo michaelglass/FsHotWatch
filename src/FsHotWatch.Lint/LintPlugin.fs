@@ -37,7 +37,7 @@ let private pluginCacheSalt = "lint-merkle-v1"
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
 /// content-merkle (file source + tool/config hashes); jj commit_id is not
-/// consulted. See design doc §2a.
+/// consulted.
 let create
     (repoRoot: string option)
     (lintConfigPath: string option)
@@ -58,11 +58,9 @@ let create
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
         | FileChecked r ->
-            // §1: include FCS check signature so cross-file changes that shift
-            // FCS's view of this file invalidate the cache, even when the file's
-            // own source bytes are unchanged. Without this, a change to an
-            // upstream symbol's signature would let stale lint results serve
-            // through cache hits keyed on source-only.
+            // the FCS check signature, so a change to an upstream symbol's
+            // signature invalidates this file's entry even though its own source
+            // bytes are unchanged — a source-only key serves stale lint results.
             let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
 
             Some(

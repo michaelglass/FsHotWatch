@@ -6,13 +6,11 @@ type DiagnosticSeverity =
     | Warning
     | Info
     | Hint
-    /// NOT a defect and NOT a pass: the work this entry describes DID NOT RUN
-    /// (a test project deferred because its build artifact wasn't produced yet —
-    /// the "waiting on build" build-ordering case). It must DENY a green verdict
-    /// (nothing was verified) WITHOUT being counted as a failure: the verdict
-    /// routes it to `Incomplete`/exit 2, never `FailuresFound`/exit 1. Distinct
-    /// from `Info`/`Hint` (which are green-compatible) precisely because it is
-    /// non-green, and distinct from `Error`/`Warning` because nothing failed.
+    /// NOT a defect and NOT a pass: the work this entry describes DID NOT RUN (a test
+    /// project deferred because its build artifact wasn't produced yet — the "waiting
+    /// on build" case). It denies a green verdict without counting as a failure: the
+    /// verdict routes it to `Incomplete`/exit 2, never `FailuresFound`/exit 1. Hence
+    /// distinct from green-compatible `Info`/`Hint` and from `Error`/`Warning`.
     | Deferred
 
 /// A single diagnostic entry from a plugin.
@@ -63,8 +61,7 @@ module DiagnosticSeverity =
 
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
-    /// `Deferred` is NEVER a failure — it is "waiting on build / did not run",
-    /// routed to `Incomplete` (exit 2) by the verdict, never a red.
+    /// `Deferred` is never a failure — see the DU case.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
         match e.Severity with
         | Error -> true
@@ -73,9 +70,8 @@ module ErrorEntry =
         | Hint
         | Deferred -> false
 
-    /// True iff this entry is a "waiting on build" deferral — the signal the
-    /// verdict maps to `Incomplete`/exit 2 (tests did not run because a build
-    /// artifact wasn't ready). NOT a failure; see `isFailing`.
+    /// True iff this entry is a "waiting on build" deferral: tests did not run because
+    /// a build artifact wasn't ready. Not a failure; see `isFailing`.
     let isWaitingOnBuild (e: ErrorEntry) : bool = e.Severity = Deferred
 
     /// Create an Error-severity entry with no source location.
@@ -105,10 +101,8 @@ module ErrorEntry =
           Column = 0
           Detail = Some detail }
 
-    /// Create a `Deferred`-severity entry with detail. For the "waiting on build"
-    /// case: a test project whose build artifact wasn't ready, so its tests did
-    /// NOT run. Non-green (nothing was verified) but NOT a failure — the verdict
-    /// routes it to `Incomplete`/exit 2, distinct from a red.
+    /// Create a `Deferred`-severity entry with detail — a test project whose build
+    /// artifact wasn't ready, so its tests did NOT run.
     let deferredWithDetail (message: string) (detail: string) : ErrorEntry =
         { Message = message
           Severity = Deferred
@@ -160,10 +154,7 @@ type private LedgerMsg =
     | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
     /// Test seam: the only path that can deterministically raise inside the typed
-    /// match. Production messages don't have a natural failure mode (Map/list/Reply
-    /// ops don't throw on valid state), so without this seam the "agent surfaces
-    /// programming bugs" contract is unobservable. Posted only by
-    /// `ErrorLedger.RaiseFaultForTest`, which is itself internal.
+    /// match. See `ErrorLedger.RaiseFaultForTest`, its only poster.
     | RaiseFaultForTest of exn
 
 /// Plugin name under which the ledger self-reports its own reporter failures.
@@ -207,24 +198,17 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
 type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string -> unit) =
     let reporters = defaultArg reporters []
 
-    // Reporter-failure log sink: defaults to the process-global `Logging.error`
-    // (stderr), but is injectable so callers — notably tests asserting the
-    // failure is logged — can capture it WITHOUT redirecting process-global
-    // `System.Console.Error`. The emission happens on the MailboxProcessor agent
-    // thread (during `Report` processing), so a `Console.Error` capture would
-    // race any concurrent `Console.SetError`; an injected sink removes that
-    // global-state dependency entirely.
+    // Reporter-failure log sink. Injectable so a test can capture it without
+    // redirecting process-global `System.Console.Error`: emission happens on the
+    // MailboxProcessor agent thread, so a `Console.Error` capture would race any
+    // concurrent `Console.SetError`.
     let logError = defaultArg logError Logging.error
 
-    // IErrorReporter is a third-party-extension boundary — implementations are
-    // user-supplied and may raise anything. The broad catch keeps a misbehaving
-    // reporter from taking down the ledger agent; log ex.ToString() (not
-    // ex.Message) so the type and stack trace are preserved for diagnosing the
-    // offending reporter. Surviving the crash must not erase the verdict either,
-    // so callers also receive the exceptions — a failed *persist* of a diagnostic
-    // is self-reported as a synthetic error the aggregate verdict / exit code
-    // observes (see syntheticReporterFailure). Returns the exceptions raised by
-    // reporters (empty when all succeeded).
+    // IErrorReporter is a third-party-extension boundary, so the broad catch keeps a
+    // misbehaving reporter from taking down the ledger agent. Logs ex.ToString(), not
+    // ex.Message, to preserve the stack trace. Surviving must not erase the verdict, so
+    // the exceptions are returned (empty when all succeeded) and the caller
+    // self-reports them — see `syntheticReporterFailure`.
     let notifyReporters action : exn list =
         let mutable failures = []
 
@@ -244,12 +228,10 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
                     let! msg = inbox.Receive()
 
                     let newState =
-                        // No inner try/with here — the body is a typed match over
-                        // messages we own and field operations that don't throw on
-                        // valid state. Anything that throws is a programming bug;
-                        // swallowing it would let the bug recur forever silently.
-                        // Unhandled exceptions surface through `agent.Error`
-                        // (exposed publicly as `AgentCrashed`).
+                        // No inner try/with: anything that throws here is a programming
+                        // bug, and swallowing it would let the bug recur silently.
+                        // Unhandled exceptions surface through `agent.Error` (exposed
+                        // as `AgentCrashed`).
                         match msg with
                         | Report(plugin, file, entries, version) ->
                             let key = struct (plugin, file)
@@ -453,9 +435,8 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// `do agent.Error.Add ...`) logs with the full stack.
     member _.AgentCrashed: IEvent<exn> = agent.Error
 
-    /// Test seam: deterministically raise inside the agent loop. Used by tests to
-    /// verify the "agent surfaces programming bugs" contract; the production
-    /// messages don't have a natural failure mode (Map/list/Reply ops don't throw
-    /// on valid state). Internal — only `FsHotWatch.Tests` can call this via
-    /// `InternalsVisibleTo`.
+    /// Test seam: deterministically raise inside the agent loop, to verify the "agent
+    /// surfaces programming bugs" contract. Production messages have no natural failure
+    /// mode (Map/list/Reply ops don't throw on valid state), so without this the
+    /// contract is unobservable. Internal, via `InternalsVisibleTo`.
     member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)

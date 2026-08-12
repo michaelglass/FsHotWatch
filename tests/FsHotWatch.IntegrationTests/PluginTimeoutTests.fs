@@ -8,17 +8,13 @@ open FsHotWatch.ProjectGraph
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
-// Moved here from FsHotWatch.Tests/{BuildPluginTests,FileCommandPluginTests}.fs.
-// Both tests spawn a real `sleep 10` subprocess with a 1s timeout to force the
-// plugin's TimedOut outcome. That drives ProcessHelper.runProcessWithTimeout's
-// kill-on-timeout + bounded post-kill drain (ProcessHelper.fs ~lines 196-224:
-// the Kill catch arm, the Task.WaitAll(500ms) drain catch, and the
-// stdoutTask/stderrTask IsCompletedSuccessfully else-branches). Whether the
-// drain beats 500ms is OS scheduling, so those lines were SOMETIMES-covered in
-// the unit metric and made ProcessHelper.fs / BuildPlugin.fs / FileCommandPlugin.fs
-// line coverage jitter run-to-run under CPU load. Living in the integration
-// suite (no coverage package) keeps the TimedOut behavior tested but out of the
-// metric, so the unit coverage of those files is deterministic.
+// Both tests spawn a real `sleep 10` with a 1s timeout to force the plugin's
+// TimedOut outcome, driving runProcessWithTimeout's kill + bounded post-kill drain
+// (the Kill catch arm, the Task.WaitAll(500ms) drain catch, and the
+// stdoutTask/stderrTask IsCompletedSuccessfully else-branches). Whether the drain
+// beats 500ms is OS scheduling, so in the unit suite these made ProcessHelper.fs /
+// BuildPlugin.fs / FileCommandPlugin.fs coverage jitter under CPU load. They live
+// here (no coverage package) to keep that metric deterministic.
 
 [<Fact(Timeout = 15000)>]
 let ``build plugin honors timeoutSec and records TimedOut outcome`` () =

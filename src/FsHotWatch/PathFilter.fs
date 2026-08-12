@@ -11,15 +11,12 @@ let isGeneratedPath (path: string) =
     let n = normalize path
     n.Contains("/obj/") || n.Contains("/bin/")
 
-/// True if `path` resolves OUTSIDE `repoRoot` — a rooted or `..`-prefixed
-/// relative path (a different drive root, or a file above/beside the repo).
-/// The canonical case is a NuGet-cache compile item a package injects into a
-/// consumer via `contentFiles`/`_content` (e.g. `xunit.v3.core.mtp-v1`'s
-/// `_content/DefaultRunnerReporters.fs` under `~/.nuget/packages/...`). Such
-/// files are third-party — compiled into the project, but never the repo's own
-/// source. The analyze/lint hosts use this to skip inspecting them (running
-/// FSharpLint over xunit's `_content` crashed the analyzer host);
-/// `isExcludedPath` also uses it for its out-of-repo test.
+/// True if `path` resolves OUTSIDE `repoRoot` — a rooted or `..`-prefixed relative
+/// path. The canonical case is a NuGet-cache compile item a package injects via
+/// `contentFiles`/`_content` (e.g. `xunit.v3.core.mtp-v1`'s
+/// `_content/DefaultRunnerReporters.fs`): compiled into the project, but never the
+/// repo's own source. The analyze/lint hosts skip inspecting these — running
+/// FSharpLint over xunit's `_content` crashed the analyzer host.
 let isOutsideRepo (repoRoot: string) (path: string) : bool =
     let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
     Path.IsPathRooted(rel) || rel.StartsWith("..", System.StringComparison.Ordinal)
@@ -46,9 +43,6 @@ let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -
         let ig = (Ignore(), patterns) ||> List.fold (fun ig pat -> ig.Add(pat))
 
         let toRepoRelative (path: string) : string option =
-            // Files outside repoRoot (rooted / `..`-prefixed) aren't
-            // repo-relative, so user excludes don't apply — shared with
-            // `isOutsideRepo`.
             if isOutsideRepo repoRoot path then
                 None
             else
@@ -110,11 +104,9 @@ type IgnoreFilterCache() =
     // before rebuilding.
     let mutable cached: CacheEntry option = None
     let syncRoot = obj ()
-    // Test seam: invoked after the outer Volatile.Read miss but before the
-    // lock is acquired. Tests use this to deterministically pin two threads
-    // into the lock-contention path so the inner "isFresh" branch is hit
-    // every run (otherwise its coverage flickers under coverlet).
-    // Defaults to no-op; production overhead is one indirection per cache miss.
+    // Test seam: invoked after the outer Volatile.Read miss but before the lock is
+    // acquired, so a test can deterministically pin two threads into the
+    // lock-contention path and hit the inner "isFresh" branch.
     let mutable testHookAfterOuterMiss: unit -> unit = ignore
 
     member internal _.SetTestHookAfterOuterMiss(hook: unit -> unit) = testHookAfterOuterMiss <- hook

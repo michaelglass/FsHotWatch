@@ -27,12 +27,10 @@ let private evaluate (store: ConcurrentDictionary<string, byte[]>) (path: string
     | :? IOException -> true
     | :? UnauthorizedAccessException -> true
 
-/// Per-daemon content-hash store. Scoped per instance (like
-/// `ProcessRegistry.Registry`) so a hash written by one daemon never suppresses
-/// a genuine first-observation change event in another daemon sharing the same
-/// process. The dictionary key is the absolute file path, so a stale entry from
-/// daemon A would otherwise collide exactly with daemon B's first read of the
-/// same path.
+/// Per-daemon content-hash store. Scoped per instance (like `ProcessRegistry.Registry`)
+/// so a hash written by one daemon never suppresses a genuine first-observation change
+/// event in another daemon sharing the process — the key is the absolute file path, so
+/// daemon A's stale entry would collide exactly with daemon B's first read.
 type Tracker() =
     let fileHashes = ConcurrentDictionary<string, byte[]>()
 
@@ -42,13 +40,9 @@ type Tracker() =
     member _.HasContentChanged(path: string) = evaluate fileHashes path
 
 /// Process-global fallback tracker backing the module-level `hasContentChanged`.
-/// Daemons own their own per-instance `Tracker` (threaded through the daemon's
-/// batch context); this default exists only for direct callers (e.g. unit
-/// tests) that invoke the module function without a daemon.
 let private defaultTracker = Tracker()
 
-/// Returns true if the file content actually changed since the process-global
-/// default tracker last checked it. Returns true for new/deleted files.
-/// Daemons do NOT use this path — they hold a per-instance `Tracker` so cross-
-/// daemon hashes never collide.
+/// Returns true if the file content actually changed since the process-global default
+/// tracker last checked it. Returns true for new/deleted files. Daemons do NOT use this
+/// path — they hold a per-instance `Tracker` so cross-daemon hashes never collide.
 let hasContentChanged (path: string) = defaultTracker.HasContentChanged(path)

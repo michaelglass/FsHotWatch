@@ -10,15 +10,11 @@ open FsHotWatch.Tests.TestHelpers
 
 let private entry msg sev line = { errorEntry msg sev with Line = line }
 
-/// F12 (audit 2026-05-02): the ledger agent's mailbox loop previously
-/// wrapped its typed pattern-match in `with ex -> log; loop state`,
-/// silently swallowing programming bugs. The fix dropped that catch and
-/// surfaces unhandled exceptions through the agent's MailboxProcessor
-/// `Error` event, exposed publicly as `AgentCrashed`. This test injects
-/// a synthetic fault via the internal `RaiseFaultForTest` seam (the only
-/// realistic way to throw inside a typed-match over messages we own —
-/// production messages don't have a natural failure mode) and asserts
-/// the event fires instead of being swallowed.
+/// The trap: wrapping the agent's mailbox loop in `with ex -> log; loop state`
+/// swallows programming bugs silently. Unhandled exceptions must reach the
+/// MailboxProcessor `Error` event, published as `AgentCrashed`. The fault is
+/// injected through the internal `RaiseFaultForTest` seam because production
+/// messages have no natural failure mode inside a typed match.
 [<Fact(Timeout = 5000)>]
 let ``F12: programming-bug exception in agent loop surfaces via AgentCrashed instead of being swallowed`` () =
     let ledger = ErrorLedger()
@@ -187,7 +183,6 @@ let ``Report accepts newer version after initial versioned report`` () =
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
-    // This hits the update factory branch where v >= last (2 >= 1)
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ], version = 2L)
 
     let errors = ledger.GetAll()
@@ -214,7 +209,7 @@ let ``Report accepts equal version as update`` () =
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 3L)
-    // Same version should still be accepted (v >= last, 3 >= 3)
+    // The guard is v >= last, not v > last: an equal version is still an update.
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ], version = 3L)
 
     let errors = ledger.GetAll()
@@ -234,7 +229,6 @@ let ``Clear accepts newer version after initial versioned report`` () =
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
-    // Clear with higher version should succeed (hits update branch where v >= last)
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 2L)
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
@@ -358,18 +352,14 @@ let ``ErrorLedger does not notify reporters on stale version`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
-    // F11: IErrorReporter is a third-party-shaped boundary; the broad catch is
-    // justified, but the previous \`ex.Message\` log stripped the stack trace
-    // exactly when we'd want to debug a misbehaving reporter. After the fix,
-    // the log includes the exception type name (and stack-trace text from
-    // ToString()), so the reporter is debuggable from logs alone.
+    // IErrorReporter is a third-party-shaped boundary, so the broad catch is
+    // justified — but logging only `ex.Message` strips the stack trace exactly when
+    // a misbehaving reporter needs debugging. The log must carry the exception type
+    // and ToString() text, so the reporter is debuggable from logs alone.
     //
-    // De-flake (2026-06-07): the ledger emits this log on its MailboxProcessor
-    // agent thread, so the previous `Console.SetError` capture raced any
-    // concurrent `Console.SetError` in the suite (the redirect could land
-    // between this test's set and the agent's emit, stealing the line). We now
-    // inject a log sink into the ledger and assert on it directly — no
-    // process-global state, no race.
+    // The ledger emits this on its MailboxProcessor thread, so a `Console.SetError`
+    // capture raced any concurrent redirect in the suite and lost the line. Assert on
+    // an injected log sink instead: no process-global state, no race.
     let logged = System.Collections.Concurrent.ConcurrentQueue<string * string>()
 
     let throwingReporter =
@@ -395,10 +385,10 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synthetic error`` () =
-    // Regression guard (2026-06-01): a reporter that throws while persisting a
-    // diagnostic must NOT collapse "there were errors" into a clean pass. The
-    // CLI verdict/exit code reads ErrorLedger.GetAll()/FailingReasons, so a
-    // reporter failure must land a synthetic Error entry in that same path.
+    // A reporter that throws while persisting a diagnostic must NOT collapse "there
+    // were errors" into a clean pass. The CLI verdict and exit code read
+    // GetAll()/FailingReasons, so the failure must land a synthetic Error entry in
+    // that same path.
     let throwingReporter =
         { new IErrorReporter with
             member _.Report _ _ _ =
@@ -412,14 +402,13 @@ let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synt
     ledger.Report("lint", "/src/A.fs", [ entry "real error" DiagnosticSeverity.Error 1 ])
     ledger.GetAll() |> ignore // sync barrier
 
-    // The verdict the CLI consumes must be non-clean.
     test <@ ledger.HasFailingReasons(warningsAreFailures = false) @>
 
     let all = ledger.GetAll()
     let allEntries = all |> Map.toSeq |> Seq.collect snd |> Seq.toList
 
-    // A descriptive synthetic error must be present (not silently empty), and it
-    // must name the failing plugin so the daemon log + verdict agree.
+    // The synthetic error must name the failing plugin, so the daemon log and the
+    // verdict agree about which one broke.
     test
         <@
             allEntries
@@ -430,7 +419,7 @@ let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synt
                 && e.Message.Contains("InvalidOperationException"))
         @>
 
-    // The failing reasons (what the exit code is computed from) must be non-empty.
+    // FailingReasons is what the exit code is computed from.
     let failing = ledger.FailingReasons(warningsAreFailures = false)
     test <@ not failing.IsEmpty @>
 
@@ -444,10 +433,9 @@ let ``DiagnosticSeverity order is hint lt info lt warning lt error`` () =
 let ``DiagnosticSeverity: every severity round-trips through its wire name, and Deferred ranks between Info and Warning``
     ()
     =
-    // The wire name is how a severity survives the IPC hop, so a severity that does not
-    // round-trip is one the CLI silently loses — `Deferred` losing its name would route a
-    // "waiting on build" back to a plain failure, which is the exact confusion it exists
-    // to end. Every case, both directions, in one assertion.
+    // The wire name is how a severity survives the IPC hop, so one that does not
+    // round-trip is one the CLI silently loses: `Deferred` losing its name routes a
+    // "waiting on build" back to a plain failure. Every case, both directions.
     let all = [ Hint; Info; Deferred; Warning; Error ]
 
     test
@@ -456,8 +444,8 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
             |> List.forall (fun s -> DiagnosticSeverity.fromString (DiagnosticSeverity.toString s) = Some s)
         @>
 
-    // A name from no severity is `None`, never a default — an unrecognised tag from a
-    // newer peer must not be silently read as one of ours.
+    // Never a default: an unrecognised tag from a newer peer must not be read as
+    // one of ours.
     test <@ DiagnosticSeverity.fromString "not-a-severity" = None @>
 
     // Deferred is louder than informational (it denies a green) but is not a defect.

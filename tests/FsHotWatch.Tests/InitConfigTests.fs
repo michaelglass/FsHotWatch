@@ -279,8 +279,6 @@ let ``serializeConfig with empty test projects omits tests section`` () =
     let json = serializeConfig config
     test <@ not (json.Contains("\"tests\"")) @>
 
-// coverage serialization tests removed — Coverage config block no longer exists
-
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig test project without filterTemplate omits it`` () =
     let config =
@@ -399,10 +397,9 @@ let ``discoverProjects returns empty list on permission error`` () =
     let projects = discoverProjects "/some/path" (Some failEnumerate)
     test <@ List.isEmpty projects @>
 
-// The DirectoryNotFoundException arm now only guards INJECTED enumerators: the
+// The DirectoryNotFoundException arm only guards INJECTED enumerators: the
 // SafeWalk default returns an empty sequence for a missing root rather than
-// throwing (see `discoverProjects returns empty list for missing directory`),
-// so a throwing enumerator is the only way in.
+// throwing, so a throwing enumerator is the only way to reach it.
 [<Fact(Timeout = 15000)>]
 let ``discoverProjects returns empty list when an injected enumerator reports a missing directory`` () =
     let failEnumerate _ _ =

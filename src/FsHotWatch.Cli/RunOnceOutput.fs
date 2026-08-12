@@ -28,10 +28,9 @@ type StatusView =
     /// altogether, and a verdict over a clean ledger goes green. Dropping the plugin
     /// from the map is worse still.
     ///
-    /// This is a LIVE cross-version hazard, not a hypothetical: an "old CLI, new
-    /// daemon" pairing can carry status tags the CLI has no name for. `Verdict.read`
-    /// already states the policy for exactly this — "an unknown state is not a passing
-    /// state" — and the wire parser obeys the same one.
+    /// A live cross-version hazard: an "old CLI, new daemon" pairing can carry status
+    /// tags the CLI has no name for. Same policy as `Verdict.read` — an unknown state
+    /// is not a passing state.
     | Unreadable of reason: string
 
 module StatusView =
@@ -50,10 +49,10 @@ module StatusView =
     // Idle counts as quiescent for status-aggregation callers that query after
     // WaitForScan: Idle there means "not triggered by this scan", not "pending".
     //
-    // `Unreadable` is quiescent too — and that is not a concession. There is nothing
-    // to WAIT for: a status we cannot read will not become readable by polling it
-    // again, and blocking on one would hang the check instead of failing it. It is
-    // terminal AND failing (see `Verdict.pluginOutcomeOf`), which is the honest pair.
+    // `Unreadable` is quiescent too: there is nothing to WAIT for — a status we cannot
+    // read will not become readable by polling it again, and blocking on one would hang
+    // the check instead of failing it. It is terminal AND failing (see
+    // `Verdict.pluginOutcomeOf`).
     let isQuiescent (status: StatusView) =
         match status with
         | StatusView.Running _ -> false
@@ -181,11 +180,10 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
 /// `None` when at least one project would be picked up.
 ///
 /// Used by both daemon-mode startup (`fshw start`) and the run-once paths
-/// (`fshw check --run-once`, `fshw build --run-once`, etc.) so every
-/// entry point fails fast on misconfiguration. The user's preference is
-/// loud failure over silent passing: zero projects almost always means a
-/// wrong working directory or an over-eager `.fshw.json` exclude pattern,
-/// and the daemon has no useful behavior to provide in that state.
+/// (`fshw check --run-once`, `fshw build --run-once`, etc.) so every entry point
+/// fails fast on misconfiguration. Zero projects almost always means a wrong working
+/// directory or an over-eager `.fshw.json` exclude pattern, and the daemon has no
+/// useful behavior to provide in that state.
 let failIfNoProjects (repoRoot: string) (excludePatterns: string list) : int option =
     let isExcluded = FsHotWatch.PathFilter.isExcludedPath repoRoot excludePatterns
 
@@ -269,9 +267,7 @@ let runOnceAndReport
 
         eprintfn "%s" (formatErrors allErrors)
 
-        // Defense-in-depth: warn if any FileCommand plugin's args reference a file
-        // modified after the plugin's last run started. Catches cache-key gaps in
-        // plugins whose salt doesn't fully cover their inputs.
+        // Defense-in-depth against cache-key gaps — see `detectStalePluginInputs`.
         let staleInputs =
             config.FileCommands
             |> List.choose (fun fc ->

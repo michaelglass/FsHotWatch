@@ -13,13 +13,8 @@ open FsHotWatch.Tests.TestHelpers
 // A plugin whose handler never returns keeps its inflight count above zero
 // forever, so `AnyPluginBusy` stays true and BOTH satisfaction paths in
 // `waitForAllTerminalCore` are blocked — nothing is Running, yet the wait can
-// never resolve.
-//
-// Before the stall detector that state was indistinguishable from "still
-// working": the wait sat there for the full hour-long timeout emitting
-// "All plugins terminal, waiting for quiescence..." and then reported "all
-// terminal but quiescence check failed". Three of those cost an hour each and
-// blocked every deploy behind them, because `check` gates the deploy preflight.
+// never resolve. Before the stall detector that state was indistinguishable from
+// "still working": the wait sat there for the full hour-long timeout.
 //
 // What separates stuck from slow is PROGRESS, not the busy set. A plugin
 // draining a long `FileChecked` backlog is busy continuously with nothing
@@ -28,16 +23,14 @@ open FsHotWatch.Tests.TestHelpers
 // counts events finished (`CompletedDispatches`); a drain moves it constantly,
 // a stopped agent never does.
 
-/// A handler subscribed to BuildCompleted whose Update blocks until the test
-/// releases it. Models the real shape: an event whose handler never returns.
+/// Blocks until the test releases it — the real shape: a handler that never returns.
 let private stuckHandler (name: string) (release: ManualResetEventSlim) =
     { Name = PluginName.create name
       Init = ()
       Update =
         fun _ctx state _event ->
             async {
-                // Blocks the plugin's mailbox: the event is counted in flight
-                // until this returns, which the test controls.
+                // The event stays counted in flight until the test releases this.
                 release.Wait()
                 return state
             }
@@ -54,8 +47,6 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
     try
         host.RegisterHandler(stuckHandler "wedged-plugin" release)
 
-        // Dispatch an event the handler subscribes to; its handler will block,
-        // so the plugin reports busy from here until the test releases it.
         host.EmitBuildCompleted(BuildSucceeded)
 
         // Let the mailbox pick the event up so the inflight count is non-zero.
@@ -64,9 +55,9 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
         test <@ host.AnyPluginBusy() @>
         test <@ host.BusyPluginNames() |> List.contains "wedged-plugin" @>
 
-        // A generous overall timeout with a TINY stall threshold: if the wait
-        // resolved on the timeout rather than the stall detector, this test
-        // would take 60s and the message would not name the plugin.
+        // Generous overall timeout, TINY stall threshold: if the wait resolved on
+        // the timeout instead of the stall detector this would take 60s and the
+        // message would not name the plugin.
         let ex =
             Assert.Throws<TimeoutException>(fun () ->
                 Daemon.waitForAllTerminalCore
@@ -77,31 +68,18 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
                     CancellationToken.None
                 |> fun t -> t.GetAwaiter().GetResult())
 
-        // The message must identify the culprit — the whole point is that a
-        // human reading it knows where to look without reading the source.
+        // The message must name the culprit, so a human knows where to look.
         test <@ ex.Message.Contains "WEDGED" @>
         test <@ ex.Message.Contains "wedged-plugin" @>
     finally
         // Release the handler so the blocked mailbox thread can unwind.
         release.Set()
 
-// A handler whose CACHE-KEY function throws. This is not a contrived fault: the
-// dispatch loop computes `handler.CacheKey event` BEFORE entering the
-// `try/finally` that decrements the inflight count (PluginFramework, dispatch
-// loop). TestPrune's `dependsOnHash` hashes every file matched by the
-// `dependsOn` globs, and its per-file arm runs `fcsCheckSignature` over raw FCS
-// results — I/O and third-party data shapes, on the dispatch thread. A throw
-// there escapes the loop entirely.
-//
-// Field evidence (thellma-intelligence daemon.log): test-prune logged
-// "TestPrune DB was recreated (schema change) — cleared 0 FCS check-cache
-// entries so every file re-indexes on this scan", then went COMPLETELY silent
-// for 61.6 minutes while the host reported it busy and `WaitForComplete` ran to
-// 3584s. A plugin doing work logs; a plugin draining a backlog logs as it
-// drains. An hour of silence while counted busy is a dead agent. The recreate
-// forces every file to re-index, so the per-file key arm is dispatched over the
-// whole repo at once — which is why the wedge tracks schema bumps rather than
-// trees.
+// A handler whose CACHE-KEY function throws. Not contrived: the dispatch loop
+// computes `handler.CacheKey event` BEFORE entering the `try/finally` that
+// decrements the inflight count, and real key functions do I/O on the dispatch
+// thread (TestPrune's `dependsOnHash` hashes every file matched by the `dependsOn`
+// globs). A throw there escapes the loop entirely.
 //
 // Two things then go wrong at once, and the second is the one that wedges:
 //   1. the increment `post` already took is never decremented — leaked;
@@ -113,10 +91,6 @@ let ``a plugin stuck busy fails the wait fast, naming it`` () =
 // `IsBusy` is `inflightCount > 0`, so a dead agent is indistinguishable from a
 // busy one — permanently. Both satisfaction paths in `waitForAllTerminalCore`
 // require `not (AnyPluginBusy())`, so the wait can never resolve.
-//
-// `ErrorLedger` and the scan-signal agent both subscribe to `agent.Error` for
-// exactly this reason ("a programming bug ... log loudly"). The plugin agent —
-// the one that owns the counter the wait consults — is the one that does not.
 let private throwingCacheKeyHandler (name: string) =
     { Name = PluginName.create name
       Init = ()
@@ -153,10 +127,9 @@ let ``a fault in the dispatch loop must not leave the plugin busy forever`` () =
 
 [<Fact(Timeout = 60_000)>]
 let ``a second event after a dispatch fault must still be counted correctly`` () =
-    // The leak is MONOTONIC, which is what makes it unrecoverable in the field:
+    // The leak is MONOTONIC, which is what made it unrecoverable in the field:
     // once the agent is dead, every later dispatch adds another phantom unit of
-    // in-flight work. This pins the property the counter must keep — a plugin
-    // that faulted once must not accumulate busy-ness from later events.
+    // in-flight work.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     host.RegisterHandler(throwingCacheKeyHandler "faulting-plugin")
 
@@ -170,14 +143,12 @@ let ``a second event after a dispatch fault must still be counted correctly`` ()
 
 [<Fact(Timeout = 60_000)>]
 let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
-    // The forced `Failed` a dispatch fault reports follows the SAME ownership
-    // rule as `safeUpdate`'s: a live exclusive run reported `Running` when it
-    // claimed, and its completion path is guaranteed to deliver a terminal. If
-    // an unrelated dispatch fault could overwrite that with `Failed`, the
-    // framework would manufacture a terminal verdict for a run still executing
-    // — which is exactly how a crashing per-file handler once produced a
-    // terminal mid-test-run. So the fault is logged and accounted for, but the
-    // status is left to its owner.
+    // The forced `Failed` a dispatch fault reports follows the SAME ownership rule
+    // as `safeUpdate`'s: a live exclusive run reported `Running` when it claimed and
+    // is guaranteed to deliver a terminal. Letting an unrelated fault overwrite that
+    // would manufacture a terminal verdict for a run still executing — how a crashing
+    // per-file handler once produced a terminal mid-test-run. So the fault is logged
+    // and accounted for, but the status is left to its owner.
     use release = new ManualResetEventSlim(false)
 
     let handler =
@@ -188,11 +159,10 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
                 async {
                     match event with
                     | BuildCompleted _ ->
-                        // Claim the slot: the framework reports Running and holds
-                        // the work token until this returns. The claim must be
-                        // MATCHED — a dropped `SlotBusy` is dropped work, and here
-                        // it would also mean the test quietly stopped testing what
-                        // it claims to (no live run left to own the status).
+                        // The framework reports Running and holds the work token
+                        // until this returns. An unmatched `SlotBusy` would leave no
+                        // live run to own the status — the test would quietly stop
+                        // testing anything.
                         match
                             ctx.RunExclusive
                                 "k"
@@ -224,7 +194,6 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait until the run has actually claimed and published Running.
         let running =
             waitUntilTrue
                 (fun () ->
@@ -252,10 +221,9 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
 
 [<Fact(Timeout = 60_000)>]
 let ``a host with no busy plugins resolves instead of reporting a wedge`` () =
-    // The positive control for the detector above: same wait, same tiny stall
-    // threshold, over a host where nothing is stuck. If this ALSO raised, the
-    // detector would be firing on healthy hosts and the test above would prove
-    // nothing.
+    // Positive control for the detector above: same wait, same tiny stall threshold,
+    // over a host where nothing is stuck. If this ALSO raised, the detector would be
+    // firing on healthy hosts and the test above would prove nothing.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
 
     use release = new ManualResetEventSlim(true) // pre-released: never blocks
@@ -271,9 +239,9 @@ let ``a host with no busy plugins resolves instead of reporting a wedge`` () =
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
 
-/// A handler that takes a little time per event but always finishes. Models the
-/// shape that matters: a plugin working through a QUEUE, busy the whole time,
-/// never `Running` (it reports no status), with an unchanging busy set.
+/// Takes time per event but always finishes. The shape that matters: a plugin
+/// working through a QUEUE — busy the whole time, never `Running` (it reports no
+/// status), with an unchanging busy set.
 let private slowDrainingHandler (name: string) =
     { Name = PluginName.create name
       Init = ()
@@ -290,15 +258,12 @@ let private slowDrainingHandler (name: string) =
 
 [<Fact(Timeout = 60_000)>]
 let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
-    // The false positive that a busy-set-identity detector produces, and the
-    // reason this is measured as progress instead.
-    //
     // Queue far more work than the stall threshold allows: the busy set is
-    // ["draining-plugin"] and NEVER changes, nothing is ever Running, and the
-    // drain runs many times longer than the threshold. A detector keyed on the
-    // busy set not changing would fail here — and would therefore fail every
-    // real check of a large repo, where one plugin drains thousands of
-    // FileChecked events. Keyed on events finished, this is plainly progress.
+    // ["draining-plugin"] and NEVER changes, nothing is ever Running, and the drain
+    // runs many times longer than the threshold. A detector keyed on the busy set not
+    // changing would fail here — and would therefore fail every real check of a large
+    // repo, where one plugin drains thousands of FileChecked events. Keyed on events
+    // finished, this is plainly progress.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     host.RegisterHandler(slowDrainingHandler "draining-plugin")
 
@@ -308,7 +273,7 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
 
     test <@ host.AnyPluginBusy() @>
 
-    // Must RESOLVE, not raise. The drain finishes and the wait returns.
+    // Must RESOLVE, not raise.
     Daemon.waitForAllTerminalCore
         host
         (TimeSpan.FromSeconds 30.0)
@@ -319,9 +284,9 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
 
 [<Fact(Timeout = 60_000)>]
 let ``a plugin whose loop died fails the wait immediately, naming it`` () =
-    // A dead agent no longer has to be inferred from silence over a threshold —
-    // the plugin publishes the fault, so the wait can refuse at once and say
-    // that fshw itself broke rather than blaming the tree under check.
+    // A dead agent no longer has to be inferred from silence over a threshold: the
+    // plugin publishes the fault, so the wait can refuse at once and say fshw itself
+    // broke rather than blaming the tree under check.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     host.RegisterHandler(throwingCacheKeyHandler "faulting-plugin")
 
@@ -334,10 +299,9 @@ let ``a plugin whose loop died fails the wait immediately, naming it`` () =
 
 [<Fact(Timeout = 60_000)>]
 let ``CompletedDispatches counts events finished, not events posted`` () =
-    // The distinction the stall detector depends on. If this counted POSTS it
-    // would move while a plugin was wedged (posts still arrive at a dead
-    // mailbox), and the detector would call a wedge healthy — the exact failure
-    // it exists to catch, inverted.
+    // The distinction the stall detector depends on. If this counted POSTS it would
+    // move while a plugin was wedged (posts still arrive at a dead mailbox), and the
+    // detector would call a wedge healthy.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
 
     use release = new ManualResetEventSlim(false)
@@ -359,9 +323,8 @@ let ``CompletedDispatches counts events finished, not events posted`` () =
 
 [<Fact(Timeout = 60_000)>]
 let ``CompletedDispatches keeps moving while a plugin drains a queue`` () =
-    // What makes a drain distinguishable from a stall: the count must advance
-    // repeatedly, not once. A detector sampling it twice across the threshold
-    // sees motion and cannot mistake this for stuck.
+    // What distinguishes a drain from a stall: the count must advance repeatedly, not
+    // once, so a detector sampling it twice across the threshold sees motion.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     host.RegisterHandler(slowDrainingHandler "draining-plugin")
 

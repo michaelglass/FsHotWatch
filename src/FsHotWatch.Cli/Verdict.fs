@@ -1,11 +1,10 @@
 /// The verdict as a FILE — `.fshw/verdict.json`.
 ///
-/// An agent should learn the verdict by READING STATE, not by spawning a
-/// CLI, not by grepping a progress display written for a human, and above all not
-/// by an act of measurement that can corrupt the thing being measured — an extra
-/// `check`/`test-rerun` spawned to double-check a verdict can itself perturb the
-/// daemon's busy accounting and produce the next content-free green. A file read
-/// cannot do that. It also costs nothing — no ~1-3s dotnet spawn per poll.
+/// An agent should learn the verdict by READING STATE, not by spawning a CLI and not
+/// by grepping a progress display written for a human. An extra `check`/`test-rerun`
+/// spawned to double-check a verdict perturbs the daemon's busy accounting and can
+/// produce the next content-free green; a file read cannot, and costs no ~1-3s dotnet
+/// spawn per poll.
 ///
 /// THE PROPERTY THAT MAKES IT SAFE. A file that exists can be read when it does
 /// not answer the question being asked, and a green from a different tree is still
@@ -17,13 +16,10 @@
 ///
 /// Stale becomes DETECTABLE instead of silently reusable.
 ///
-/// ONE TRUTH, TWO SURFACES. The exit code the CLI returns and the `outcome` in
-/// this file are computed from the SAME `CheckVerdict.CheckOutcome` value — the
-/// human surface and the agent surface cannot disagree, because there is only one
-/// of them, rendered twice. There is deliberately NO "agent mode" that changes
-/// what a check MEANS: semantics never depend on who the tool thinks is calling
-/// (detection is a guess, and guesses fail open). Presentation may adapt to the
-/// caller; semantics may not.
+/// ONE TRUTH, TWO SURFACES. The exit code and this file's `outcome` are computed from
+/// the SAME `CheckVerdict.CheckOutcome`, so they cannot disagree. There is deliberately
+/// NO "agent mode" that changes what a check MEANS — detecting the caller is a guess,
+/// and guesses fail open. Presentation may adapt to the caller; semantics may not.
 module FsHotWatch.Cli.Verdict
 
 open System
@@ -39,10 +35,9 @@ open FsHotWatch.Cli.IpcParsing
 [<Literal>]
 let Schema = "fshw-verdict-v1"
 
-/// What one plugin contributed to the verdict.
-///
-/// The SAME value drives the agent-mode status line (`ProgressRenderer`) — a
-/// plugin cannot report `ok` on one surface and `fail` on the other.
+/// What one plugin contributed to the verdict. The SAME value drives the agent-mode
+/// status line (`ProgressRenderer`), so a plugin cannot report `ok` on one surface
+/// and `fail` on the other.
 [<RequireQualifiedAccess>]
 type PluginOutcome =
     | Ok
@@ -52,8 +47,7 @@ type PluginOutcome =
     | Running
     /// Running past the wedge bound with no completion posted — by definition wedged.
     /// Its OWN token, because a wedge read as mere "running" is how a long silence
-    /// gets waited out. The verdict file inherits this for free: one value, rendered
-    /// on both surfaces.
+    /// gets waited out.
     | Wedged
 
 module PluginOutcome =
@@ -86,14 +80,13 @@ module PluginOutcome =
 /// report" — idle, never run — and such a plugin is omitted rather than being
 /// invented as a pass.
 ///
-/// THE one implementation. It drives the agent-mode status line (`ProgressRenderer`)
-/// AND `plugins[]` in `.fshw/verdict.json`, so a plugin cannot report `ok` on one
-/// surface and `wedged` on the other. Both fail-closed rules therefore protect the
-/// verdict file too, for free:
+/// THE one implementation: it drives both the agent-mode status line
+/// (`ProgressRenderer`) and `plugins[]` in `.fshw/verdict.json`. Two fail-closed
+/// rules, which the verdict file therefore inherits:
 ///
 ///   * a plugin Running past the wedge bound is `Wedged`, never merely `running`;
-///   * a `Completed` carrying NO run record can never token as `ok` — a content-free
-///     ✓ with no `elapsed:` is not evidence. No record ⇒ no green.
+///   * a `Completed` carrying NO run record can never token as `ok` — a ✓ with no
+///     `elapsed:` is not evidence. No record ⇒ no green.
 let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : PluginOutcome option =
     let okOrDiag () =
         if ErrorLedger.DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
@@ -117,10 +110,10 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         match PluginWedge.classifyRunning (PluginWedge.ambientBound ()) now since with
         | PluginWedge.RunningHealth.Wedged _ -> Some PluginOutcome.Wedged
         | PluginWedge.RunningHealth.StillRunning _ -> Some PluginOutcome.Running
-    // A status this build could not read is `Fail`, and — crucially — it is `Some`: the
-    // plugin STAYS IN the verdict. Rounding it down to `Idle` would omit it, and a
-    // plugin nobody could read vanishing from `plugins[]` is how the verdict goes green
-    // over a check that never reported.
+    // A status this build could not read is `Fail`, and `Some`: the plugin STAYS IN the
+    // verdict. Rounding it down to `Idle` would omit it, and a plugin nobody could read
+    // vanishing from `plugins[]` is how the verdict goes green over a check that never
+    // reported.
     | StatusView.Unreadable _ -> Some PluginOutcome.Fail
     | StatusView.Failed _ when timedOutLastRun () -> Some PluginOutcome.TimedOut
     | StatusView.Failed _ -> Some PluginOutcome.Fail
@@ -141,19 +134,18 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
 
 /// One plugin's line in the verdict.
 ///
-/// `ElapsedMs` is an OPTION, and that is load-bearing. **A missing number is not
-/// zero.** `0` is a measurement — "this ran instantaneously"; absence is the absence
-/// of one, and a reader must be able to tell them apart. Serialized as `null`.
+/// `ElapsedMs` is an OPTION: **a missing number is not zero.** `0` is a measurement
+/// ("this ran instantaneously"); absence is the absence of one, and a reader must be
+/// able to tell them apart. Serialized as `null`.
 type PluginVerdict =
     { Name: string
       Outcome: PluginOutcome
       ElapsedMs: int64 option
       Summary: string option }
 
-/// A pointer to one test project's CTRF report, plus the counts it carries — so
-/// the common questions ("how many ran? how many failed?") are answered without
-/// opening a second file, and the deeper ones (which test, what message, what
-/// stack) have somewhere to go.
+/// A pointer to one test project's CTRF report, plus the counts it carries, so "how
+/// many ran? how many failed?" is answered without opening a second file while the
+/// deeper questions still have somewhere to go.
 type SuiteVerdict =
     {
         Project: string
@@ -165,10 +157,9 @@ type SuiteVerdict =
         Skipped: int
     }
 
-/// The verdict itself. `Incomplete` is the honest third answer: nothing is known
-/// to be broken, and nothing is known to be sound either — a `confirm` that ran
-/// impact-filtered tests lands here, and so does a check whose coverage could not
-/// be confirmed. It is NEVER laundered into a green.
+/// The verdict itself. `Incomplete` is the third answer: nothing is known to be broken,
+/// and nothing is known to be sound either — a `confirm` that ran impact-filtered tests
+/// lands here, and so does a check whose coverage could not be confirmed. NEVER a green.
 type Outcome =
     | Green
     | Red
@@ -200,9 +191,8 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         Incomplete
             "waiting on build — a test project's build artifact was not produced, so its tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once the build settles."
     | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
-        // The emptiest evidence gets the loudest words. "0 projects selected" is an
-        // INCOMPLETE check, never a pass, and it must not be renderable as a green on
-        // any surface.
+        // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
+        // renderable as a green on any surface.
         Incomplete "NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence."
     | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
         // Not "the scope was too narrow" — the scope is UNKNOWN because reading it
@@ -216,13 +206,12 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         Incomplete
             $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
 
-/// The identity of the fshw that produced a verdict.
+/// The identity of the fshw that produced a verdict — `DaemonIdentity.BinaryIdentity`
+/// reused, not a fourth identity type.
 ///
-/// This IS `DaemonIdentity.BinaryIdentity`, reused, not a fourth identity type.
 /// `treeHash` content-addresses the verdict's SUBJECT; this content-addresses its
-/// PRODUCER. Both halves are needed or the provenance chain has a hole in the middle:
-/// a stale daemon writes a verdict for an UNCHANGED tree, the `treeHash` matches, and
-/// the verdict reads as current.
+/// PRODUCER. Both halves are needed, or a stale daemon writes a verdict for an UNCHANGED
+/// tree, the `treeHash` matches, and the verdict reads as current.
 type Producer = DaemonIdentity.BinaryIdentity
 
 module Producer =
@@ -231,18 +220,13 @@ module Producer =
 
     /// Do two producers refer to the same binary — as far as a VERDICT is concerned?
     ///
-    /// FAIL CLOSED. This deliberately differs from `DaemonIdentity.compareIdentity`,
-    /// which treats two UNHASHABLE binaries as a match. Both use the same hash and the
-    /// same sentinel; they answer different questions:
-    ///
-    ///   * "restart the daemon?" — refusing on an unhashable binary would restart it
-    ///     on every command and thrash the FCS cache forever. Fail open.
-    ///
-    ///   * "does this claim apply?" — accepting on an unhashable binary would let a
-    ///     verdict of UNESTABLISHED provenance read as current. Fail closed.
-    ///
-    /// So an unhashable producer never matches — not even itself. Two binaries we
-    /// could not read are not thereby the same binary.
+    /// FAIL CLOSED. Deliberately differs from `DaemonIdentity.compareIdentity`, which
+    /// treats two UNHASHABLE binaries as a match. Same hash, same sentinel, different
+    /// questions: "restart the daemon?" must fail OPEN (refusing on an unhashable binary
+    /// would restart it every command and thrash the FCS cache), while "does this claim
+    /// apply?" must fail CLOSED (accepting would let a verdict of unestablished
+    /// provenance read as current). So an unhashable producer never matches — not even
+    /// itself.
     let same (a: Producer) (b: Producer) : bool =
         ContentHash.isReadable a.ContentHash
         && ContentHash.isReadable b.ContentHash
@@ -276,8 +260,8 @@ module Command =
 ///     {"outcome": "green", "plugins": [{"outcome": "fail"}]}
 ///
 /// So `outcome` is not merely CORRELATED with `plugins`; it is CHECKED against them,
-/// once, at the only place a `Verdict` can come into existence — if a state is a lie,
-/// make it unconstructible rather than documenting that it must not be constructed.
+/// once, at the only place a `Verdict` can come into existence. A state that is a lie
+/// is made unconstructible rather than documented as forbidden.
 [<NoComparison>]
 type Verdict =
     private
@@ -342,9 +326,9 @@ let private validate (v: Verdict) : Result<Verdict, string> =
                 $"a GREEN verdict cannot contain failing plugins — %s{named}. A check that says green on one \
                    surface and fail on another has not checked anything; it has produced two answers."
 
-/// The ONLY constructor. Throws on the contradiction `validate` names: a verdict that
-/// says green while one of its own plugins says fail is not a verdict, it is a bug
-/// wearing one. It cannot be written to disk, because it cannot be built.
+/// The ONLY constructor. Throws on the contradiction `validate` names, so a verdict
+/// that says green while one of its own plugins says fail cannot be written to disk,
+/// because it cannot be built.
 ///
 /// `producedAt` and `producer` are stamped HERE, not passed: they are facts about the
 /// process doing the constructing, and a caller that could supply them is a caller that
@@ -380,8 +364,8 @@ let create
 let path (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "verdict.json")
 
-/// Repo-relative path to the verdict file — what the CLI PRINTS, because a
-/// pointer you have to translate before you can use it is a pointer you ignore.
+/// Repo-relative path to the verdict file — what the CLI PRINTS, so a reader does not
+/// have to translate it before using it.
 [<Literal>]
 let RelativePath = ".fshw/verdict.json"
 
@@ -390,9 +374,8 @@ let RelativePath = ".fshw/verdict.json"
 // ---------------------------------------------------------------------------
 
 /// Scope on the wire. UNIFORMLY TAGGED (`kind` always present) rather than
-/// "sometimes a string, sometimes an object": a consumer that must first
-/// discriminate a JSON string from a JSON object before it can read a field is a
-/// consumer that will reach for a regex.
+/// "sometimes a string, sometimes an object", so a consumer never has to
+/// discriminate a JSON string from a JSON object before it can read a field.
 let private scopeJson (scope: TestScope) : obj =
     match scope with
     | FullSuite n ->
@@ -406,16 +389,14 @@ let private scopeJson (scope: TestScope) : obj =
            totalProjects = total |}
         :> obj
     | NoTestsRun ->
-        // NO counts. `TestScope.NoTestsRun` carries none, and writing `ranProjects: 0,
+        // NO counts. `TestScope.NoTestsRun` carries none, and `ranProjects: 0,
         // totalProjects: 0` would state, of a repo with six test projects, that it has
-        // none — a fabricated number, which is the very thing this file refuses to do
-        // elsewhere. `kind: "none"` already says the load-bearing part: nothing ran.
+        // none. `kind: "none"` already says the only thing that matters: nothing ran.
         {| kind = "none" |} :> obj
     | ScopeUnknown -> {| kind = "unknown" |} :> obj
-    // A DISTINCT kind, not folded into "unknown": the file is the machine-readable
-    // answer, and "the daemon reported no scope" and "the scope read faulted" are the
-    // two facts a consumer most needs to tell apart — one is an ordinary tests-less
-    // repo, the other is a check that could not see what it was judging.
+    // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
+    // ordinary tests-less repo, while "the scope read faulted" is a check that could not
+    // see what it was judging, and a consumer must be able to tell them apart.
     | ScopeUnreadable reason ->
         {| kind = "unreadable"
            reason = reason |}
@@ -485,13 +466,10 @@ let write (repoRoot: string) (v: Verdict) : unit =
 // Reading it back — the CLI reads the same file it writes. No second truth.
 // ---------------------------------------------------------------------------
 
-/// `JsonElement.TryGetProperty` THROWS on a non-object element rather than
-/// returning false — so a verdict whose `scope` is a bare string (an older shape,
-/// a hand edit, a future schema) would raise `InvalidOperationException` out of
-/// `read`, past its `JsonException` handler, and crash the caller.
-///
-/// A reader of a state file must not have to reason about exceptions to learn that
-/// there is no usable state. Ask a non-object for a field and the answer is simply
+/// `JsonElement.TryGetProperty` THROWS on a non-object element rather than returning
+/// false, so a verdict whose `scope` is a bare string (a hand edit, a future schema)
+/// would raise `InvalidOperationException` out of `read`, past its `JsonException`
+/// handler, and crash the caller. Here, asking a non-object for a field simply answers
 /// "it hasn't got one".
 let private tryProp (el: JsonElement) (name: string) : JsonElement option =
     if el.ValueKind <> JsonValueKind.Object then
@@ -533,9 +511,8 @@ let private parseScope (el: JsonElement) : TestScope =
     | Some "unknown", _, _ -> ScopeUnknown
     // Everything else — a kind from another version, a self-contradicting "full",
     // outright garbage. The file said something about its scope and this build cannot
-    // read it; that is `ScopeUnreadable`, and it round-trips the reason when there is
-    // one. Fail-closed either way (neither is full-suite), but the two are still
-    // different facts and a reader must not have them merged for it.
+    // read it: `ScopeUnreadable`, round-tripping the reason when there is one. Distinct
+    // from `ScopeUnknown` even though both fail closed — see the `ScopeUnreadable` docs.
     | _ ->
         ScopeUnreadable(
             tryString el "reason"
@@ -585,10 +562,10 @@ let private parsePlugins (root: JsonElement) : Result<PluginVerdict list, string
     | _ -> Ok []
 
 /// A suite entry is EVIDENCE — its counts are the whole reason it exists. A missing
-/// count is not a zero: `total: 0, failed: 0` reads as "this suite ran cleanly", and
-/// manufacturing that from an absent field is the vacuous green in miniature. So a
-/// suite whose numbers cannot be read makes the whole verdict UNREADABLE, exactly as
-/// a missing `treeHash` does. Fail closed, or do not bother having a verdict file.
+/// count is not a zero: `total: 0, failed: 0` reads as "this suite ran cleanly", so
+/// manufacturing it from an absent field would be a vacuous green. A suite whose
+/// numbers cannot be read makes the whole verdict UNREADABLE, exactly as a missing
+/// `treeHash` does.
 let private parseSuites (root: JsonElement) : Result<SuiteVerdict list, string> =
     let required (el: JsonElement) (project: string) (name: string) =
         match tryInt el name with
@@ -670,10 +647,9 @@ let read (repoRoot: string) : Reading =
                 | _, _, Error e, _ -> Reading.Unreadable e
                 | _, _, _, Error e -> Reading.Unreadable e
                 | Some treeHash, Some outcome, Ok plugins, Ok suites ->
-                    // Rehydrated through the SAME invariant `create` enforces. A verdict
-                    // file that says green while one of its plugins says fail is not a
-                    // green we happen to distrust — it is not a verdict at all, and a
-                    // reader must not be able to lift the green out of it.
+                    // Rehydrated through the SAME invariant `create` enforces (see
+                    // `validate`), so a hand-edited green over a failing plugin is
+                    // refused on the way in.
                     let rehydrated =
                         { producedAt =
                             tryString root "producedAt"
@@ -820,22 +796,16 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
 ///
 /// A GREEN outcome earned by a run that covered the FULL SUITE. Nothing else: an
 /// impact-filtered green is not the claim a merge needs, and `NoTestsRun` is not
-/// evidence at all. Exhaustive on both axes, so a new outcome or a new scope must be
-/// classified here by an explicit edit rather than defaulting into "good enough".
+/// evidence at all.
 ///
 /// Deliberately BLIND to which verb produced it. `check` and `confirm` differ in exactly
 /// one thing — whether a non-full scope may reach `Clean` (`CheckVerdict.verdict`) — so a
-/// `check` that RECORDS `FullSuite` + `Green` has, by construction, the identical
-/// evidence: complete coverage, no failing plugin, no failing diagnostic, and every
-/// configured project run in full. The EVIDENCE is what a merge rests on, not the name of
-/// the command that happened to produce it.
+/// `check` that RECORDS `FullSuite` + `Green` has, by construction, identical evidence.
+/// A merge rests on the EVIDENCE, not the name of the command that produced it.
 let isFullSuiteGreen (v: Verdict) : bool =
     match v.Outcome with
     | Red
     | Incomplete _ -> false
-    // `TestScope.isFullSuite` documents itself as "The ONE predicate"; this held a
-    // verbatim second copy, which made that claim false and every new scope case a
-    // two-file edit — `ScopeUnreadable` had to be added to both.
     | Green -> TestScope.isFullSuite v.Scope
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
@@ -853,12 +823,10 @@ type PriorConfirmation =
 ///
 /// A cached PLUGIN RESULT may not do this (see `TestPrunePlugin.cacheKeyFor`): its key is
 /// a merkle of changed symbols and build outcome, which does not pin the tree, so a hit
-/// proves nothing about what is on disk. The verdict file is the artifact built to answer
-/// exactly this question and nothing else — content-addressed to its SUBJECT (`treeHash`)
-/// and to its PRODUCER (the binary's content hash), both compared for byte equality, with
-/// no mtime, no heuristic, and no way to fail open (`applicability`). That is what
-/// content-addressing is FOR, and it is why `confirm` can be honest and fast at the same
-/// time instead of choosing.
+/// proves nothing about what is on disk. The verdict file is content-addressed to its
+/// SUBJECT (`treeHash`) and to its PRODUCER (the binary's content hash), both compared
+/// for byte equality, with no mtime, no heuristic, and no way to fail open
+/// (`applicability`).
 ///
 /// Everything that is not an exact match is `MustEarn` — a stale tree, a stale producer, a
 /// filtered green, a red, an incomplete, an unreadable file, no file. Total, and every
@@ -872,9 +840,8 @@ let priorConfirmation (repoRoot: string) (excludePatterns: string list) : PriorC
 
 /// One line for a human: WHAT still applies, WHEN it was earned, and on WHAT evidence.
 ///
-/// It names the two things that had to match — and it names them because a green a reader
-/// cannot audit is a green a reader has to take on trust, which is the habit this whole
-/// release exists to break.
+/// It names the two things that had to match, so the green is auditable rather than
+/// taken on trust.
 let describeStillApplies (v: Verdict) : string =
     let earnedAt = v.ProducedAt.ToLocalTime().ToString("HH:mm")
 
@@ -952,10 +919,9 @@ let pluginVerdicts
 /// The CTRF reports THIS RUN produced — the files in the run's own directory.
 ///
 /// Membership is DECLARED (the daemon told us the run id; the reports are the files
-/// in `.fshw/test-runs/<runId>/`), never inferred from mtimes. That is the whole
-/// point: a shared pile with no manifest is unreadable in both directions — you
-/// cannot tell which files are yours, and you cannot tell an empty listing apart
-/// from a cleaned-up one.
+/// in `.fshw/test-runs/<runId>/`), never inferred from mtimes: in a shared pile with
+/// no manifest you cannot tell which files are yours, nor an empty listing apart from
+/// a cleaned-up one.
 ///
 /// No run id ⇒ no run happened ⇒ no suites. Not "we couldn't find any".
 ///

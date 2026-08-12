@@ -25,8 +25,8 @@ let ``isGeneratedPath returns false for normal source file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isOutsideRepo true for NuGet-cache _content compile item`` () =
-    // A package injects source into the consumer from the ~/.nuget cache
-    // (xunit.v3's _content) — outside the repo, so never ours to lint.
+    // A package injects source from the ~/.nuget cache (xunit.v3's _content):
+    // outside the repo, so never ours to lint.
     test
         <@
             isOutsideRepo
@@ -80,15 +80,12 @@ let ``isExcludedPath always excludes obj and bin`` () =
     test <@ isExcludedPath "/repo" [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
 
 // --- isExcludedPath: gitignore patterns must be matched against repo-relative paths ---
-// Regression: previously matched against absolute paths, so a pattern like
-// `.workspaces/` would match every absolute path that contains that segment,
-// even when the repo root was inside `.workspaces/` itself.
+// Regression: matching against absolute paths made a pattern like `.workspaces/`
+// hit every absolute path containing that segment, even when the repo root was
+// inside `.workspaces/` itself.
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath does not match files outside repo root`` () =
-    // File lives at /somewhere/elsewhere/.workspaces/foo/bar.fsproj, but the
-    // repo root is /somewhere/myrepo. Pattern .workspaces/ is repo-relative and
-    // must not match files outside the repo.
     test
         <@ not (isExcludedPath "/somewhere/myrepo" [ ".workspaces/" ] "/somewhere/elsewhere/.workspaces/foo/bar.fsproj") @>
 
@@ -104,8 +101,8 @@ let ``isExcludedPath does not match the repo-root parent directory`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath does not match when repo root is inside the excluded directory`` () =
-    // Stress-test scenario: repo IS the workspace, so paths relative to it
-    // do not contain `.workspaces/`. Pattern must not match anything in here.
+    // The repo IS the workspace, so paths relative to it do not contain
+    // `.workspaces/` and the pattern must match nothing.
     test
         <@
             not (
@@ -247,27 +244,20 @@ let ``IgnoreFilterCache returns cached result when files unchanged`` () =
         // Same object reference — cache hit, not reloaded
         test <@ obj.ReferenceEquals(filter1, filter2) @>)
 
-// Note: a 16-thread "is safe under concurrent Get" stress test lives in
-// FsHotWatch.IntegrationTests (excluded from coverage). It validates the
-// double-checked-lock contention path under high contention. Keeping it here
-// caused PathFilter.fs branch coverage to flicker run-to-run because the
-// inner-lock-fresh branch (line 90) was recorded inconsistently under
-// coverlet instrumentation when threads happened to serialize.
-//
-// The deterministic cousin below (`IgnoreFilterCache double-checked lock
-// returns cached entry on contended populate`) drives the same inner branch
-// from a barrier-coordinated 2-thread setup using the internal test hook,
-// so coverage stays stable.
+// The 16-thread contention stress test lives in FsHotWatch.IntegrationTests
+// (excluded from coverage) — here it made PathFilter.fs branch coverage flicker,
+// because coverlet recorded the inner-lock-fresh branch inconsistently when the
+// threads happened to serialize. The barrier-coordinated 2-thread test below
+// drives that same branch deterministically via the internal test hook.
 [<Fact(Timeout = 15000)>]
 let ``IgnoreFilterCache double-checked lock returns cached entry on contended populate`` () =
     withTempDir "cache-double-check" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
         let cache = IgnoreFilterCache()
 
-        // Both worker threads should miss the outer Volatile.Read, then block at
-        // this barrier so the lock-acquire ordering is forced: one thread enters
-        // the lock and populates while the other waits, exercising the
-        // "Some entry when isFresh entry" branch on the second thread.
+        // Both workers miss the outer Volatile.Read, then block here so the
+        // lock-acquire ordering is forced: one thread populates while the other
+        // waits, exercising the "Some entry when isFresh entry" branch on the second.
         use barrier = new Barrier(2)
         cache.SetTestHookAfterOuterMiss(fun () -> barrier.SignalAndWait())
 
@@ -295,11 +285,10 @@ let ``IgnoreFilterCache double-checked lock returns cached entry on contended po
 
         test <@ errors.Count = 0 @>
         test <@ results.Count = 2 @>
-        // Both threads should observe the same correct filter behaviour.
+
         for f in results do
             test <@ f logPath @>
             test <@ not (f fsPath) @>
-        // Both threads must have received the same Filter instance from the
-        // cache — i.e. the second thread's inner-lock check returned the
-        // entry the first thread populated, rather than rebuilding.
+        // Same Filter instance in both threads: the second thread's inner-lock check
+        // returned what the first populated rather than rebuilding.
         test <@ obj.ReferenceEquals(results.[0], results.[1]) @>)

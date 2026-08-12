@@ -115,20 +115,19 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
         []
 
 /// Aggregate, runner-agnostic view of a test run, read from the report's SUMMARY
-/// block. THE canonical shape lives in `FsHotWatch.Ctrf` — this is an ABBREVIATION
-/// of it, not a second copy: the pass/fail verdict, the flakiness recorder and the
-/// `suites` in `.fshw/verdict.json` all read one report through one parser, so they
-/// cannot disagree about what it says.
+/// block. An abbreviation of `FsHotWatch.Ctrf.Summary`, not a second copy: the
+/// pass/fail verdict, the flakiness recorder and the `suites` in
+/// `.fshw/verdict.json` all read one report through one parser, so they cannot
+/// disagree about what it says.
 type TestReport = FsHotWatch.Ctrf.Summary
 
 module TestReport =
     /// "All clear" — the run produced NOTHING that is not a clean pass-or-skip.
-    /// `Failed` and `Other` are both treated as problems (a test that threw an
-    /// unrecognised/raw exception is NOT a pass); `Pending` is folded into
-    /// skip-like and does not block green. The `Total > 0` guard is intentionally
-    /// NOT here — an unfiltered zero-test run is a real problem that the verdict
-    /// layer (which knows `wasFiltered`) decides, so this stays a pure "no bad
-    /// results" predicate.
+    /// `Failed` and `Other` are both problems (a test that threw an unrecognised
+    /// raw exception is NOT a pass); `Pending` is skip-like and does not block
+    /// green. No `Total > 0` guard, deliberately: an unfiltered zero-test run is
+    /// the verdict layer's call (it knows `wasFiltered`), so this stays a pure
+    /// "no bad results" predicate.
     let allClear (r: TestReport) : bool = r.Failed = 0 && r.Other = 0
 
 /// Parse a CTRF report's SUMMARY counts. `None` when the JSON is unparseable or
@@ -211,12 +210,10 @@ let internal loadHistory (path: string) : Map<string, TestRunRecord list> =
 
 /// How long a test's history survives after its LAST recorded run.
 ///
-/// `keepN` bounds each test's record list, but nothing bounded the set of test
-/// NAMES: a renamed, deleted, or one-off-parameterised test kept its entry
-/// forever, so the file only ever grew (5.5 MB observed live) and every write
-/// re-parsed and re-serialised all of it. A test that has not run in 30 days
-/// cannot inform a flakiness score anyone cares about; it is history of a test
-/// that no longer exists.
+/// `keepN` bounds each test's record list, but nothing bounds the set of test
+/// NAMES: without this, a renamed, deleted or one-off-parameterised test keeps its
+/// entry forever, so the file only grows (5.5 MB observed live) and every write
+/// re-parses and re-serialises all of it.
 let DefaultHistoryRetention = TimeSpan.FromDays 30.0
 
 /// Drop tests whose NEWEST run is older than `retention` as of `now`, and drop
@@ -257,12 +254,11 @@ let internal mergeRecords
 /// `DefaultHistoryRetention`. Atomic via temp + rename so a daemon crash
 /// mid-write can't corrupt the on-disk file.
 ///
-/// Call this ONCE PER RUN, with every project's records. It is a full `loadHistory`
-/// + full rewrite of the whole file, so calling it per test CONFIG would mean one
-/// parse+rewrite cycle per project; and since those configs run under
-/// `Async.Parallel`, a per-config read-modify-write would race itself (two projects
-/// finishing together each load the same `existing`, and the second write drops the
-/// first's records). One call, after the parallel section, avoids both.
+/// Call this ONCE PER RUN, with every project's records, AFTER the parallel
+/// section. It is a full `loadHistory` + full rewrite, so per-test-config calls
+/// would both cost a parse+rewrite per project and race themselves — test configs
+/// run under `Async.Parallel`, so two finishing together load the same `existing`
+/// and the second write drops the first's records.
 let internal appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
     let merged =
         loadHistory path

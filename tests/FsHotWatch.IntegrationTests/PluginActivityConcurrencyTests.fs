@@ -7,12 +7,10 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginActivity
 
-// Moved here from FsHotWatch.Tests/PluginActivityTests.fs. Both tests drive the
-// flaky concurrency / cap-eviction paths in PluginActivity.fs (enforceGlobalCap,
-// ~lines 112-138, and the concurrent lock branches), whose coverage jittered
-// run-to-run under the concurrent-stress test. They still validate behavior
-// here, just uncounted by the coverage metric. Deterministic single-threaded
-// replacements for the non-racy cap-eviction path live in the unit suite.
+// Both tests drive the racy cap-eviction / concurrent-lock paths in
+// PluginActivity.fs, whose coverage jittered run-to-run under stress. They still
+// validate the behavior here, just uncounted by the coverage metric; deterministic
+// single-threaded cover for the non-racy eviction path lives in the unit suite.
 
 [<Fact(Timeout = 15000)>]
 let ``2 MB global cap evicts oldest history entries across plugins`` () =
@@ -20,7 +18,6 @@ let ``2 MB global cap evicts oldest history entries across plugins`` () =
     let big = String('x', 10_000)
     let mutable total = 0
 
-    // Push enough history to exceed cap across two plugins
     for i in 1..200 do
         let plugin = if i % 2 = 0 then "a" else "b"
         s.Log(plugin, big)

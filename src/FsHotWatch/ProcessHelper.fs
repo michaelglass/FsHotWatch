@@ -10,13 +10,10 @@ open System.Threading.Tasks
 /// of it.
 ///
 /// A child's output is read by stream pumps that end at EOF. When the drain window
-/// closes with a pump still open, whatever we captured is NOT a measurement of the
-/// child's output: an empty capture then means "we read nothing", which is a
-/// different fact from "the child printed nothing".
-///
-/// So the two facts are different VALUES. A caller that only renders text says so
-/// (`ProcessOutput.text`); a caller that decides anything must match and handle
-/// `DrainTimedOut` explicitly. Unrepresentable beats detected; detected beats silent.
+/// closes with a pump still open, an empty capture means "we read nothing", which is
+/// a different fact from "the child printed nothing" — so the two are different
+/// VALUES. A caller that only renders text can use `ProcessOutput.text`; a caller
+/// that decides anything must match and handle `DrainTimedOut` explicitly.
 [<RequireQualifiedAccess>]
 type ProcessOutput =
     /// Both pumps reached EOF inside the drain window: `text` is the child's
@@ -25,9 +22,8 @@ type ProcessOutput =
     /// We never saw EOF on both streams — either the drain window elapsed with a
     /// pump still blocked on a pipe a GRANDCHILD holds open (see
     /// `PostExitDrainWindow`), or a pump's read DIED on a pipe torn down by the
-    /// timeout-kill. `captured` is whatever bytes had arrived by then. It is not a
-    /// measurement: `""` here means "we read nothing", NEVER "the child printed
-    /// nothing".
+    /// timeout-kill. `captured` is whatever bytes had arrived by then; `""` here
+    /// means "we read nothing", NEVER "the child printed nothing".
     | DrainTimedOut of captured: string * window: TimeSpan
 
 [<RequireQualifiedAccess>]
@@ -38,7 +34,7 @@ module ProcessOutput =
     /// short capture can only ever cost a hit, never invent one.
     ///
     /// Do NOT use this to conclude something from an ABSENCE. If the emptiness (or
-    /// the exact value) of the output is the thing you are deciding on, match the
+    /// the exact value) of the output is what you are deciding on, match the
     /// `ProcessOutput` and treat `DrainTimedOut` as the non-answer that it is.
     let text (output: ProcessOutput) : string =
         match output with
@@ -46,14 +42,12 @@ module ProcessOutput =
         | ProcessOutput.DrainTimedOut(captured, _) -> captured
 
 /// What happened when we tried to tear down a timed-out child's process tree.
+/// "I could not kill it" must never be spelled the same way as "I killed it": a
+/// caller who reads `TimedOut` as a promise the tree is dead walks away from a
+/// runaway that may still hold a lock, a port or a pipe.
 ///
-/// "I could not kill it" must never be spelled the same way as "I killed it". A
-/// `TimedOut` PROMISES the tree is dead; a caller — or an operator reading a log —
-/// who believes that promise walks away from a runaway tree that is still holding a
-/// lock, a port, a pipe, or a core.
-/// `NoComparison`: this carries the failing `exn` — the real one, not a lossy
-/// rendering of it — and exceptions do not order. Equality still holds, which is all
-/// any call site (or test) asks of it.
+/// `NoComparison`: this carries the failing `exn` itself, and exceptions do not
+/// order. Equality still holds, which is all any call site asks of it.
 [<RequireQualifiedAccess; NoComparison>]
 type KillOutcome =
     /// `Kill(entireProcessTree = true)` returned: the tree is dead.
@@ -73,12 +67,9 @@ type KillOutcome =
 ///
 /// The VERDICT rides on the exit code, never on stream EOF — a child that exits 0
 /// while a grandchild holds its stdout pipe has still succeeded. So a drain that
-/// could not finish does not change the case; it is carried INSIDE the output, where
-/// a caller that reads the text cannot help but see it (cf. `RunVerdict`: a terminal
-/// status must carry its evidence).
+/// could not finish does not change the case; it is carried INSIDE the output.
 ///
-/// `NoComparison` follows from `KillOutcome`'s: outcomes are matched and compared for
-/// equality, never ordered.
+/// `NoComparison` follows from `KillOutcome`'s.
 [<NoComparison>]
 type ProcessOutcome =
     /// Process exited with code 0. `output` is combined stdout+stderr (trimmed).
@@ -91,8 +82,8 @@ type ProcessOutcome =
     /// pumps.
     ///
     /// `kill` is whether the teardown ACTUALLY happened. It rides on the value
-    /// rather than in a log line nobody reads, because "timed out, tree killed" and
-    /// "timed out, tree still running" are different facts about the world.
+    /// rather than in a log line, because "timed out, tree killed" and "timed out,
+    /// tree still running" are different facts.
     | TimedOut of after: TimeSpan * tail: ProcessOutput * kill: KillOutcome
 
 /// Outcome of an in-process unit of work bounded by a wall-clock timeout.
@@ -111,8 +102,8 @@ let isTimedOut =
     | _ -> false
 
 /// Render a capture for a HUMAN — a log line, a plugin status, an error entry. An
-/// incomplete drain is NAMED in the rendered text, so nobody reads a silence here
-/// and trusts it. (`ProcessOutput.text` is the untagged form for text-searching.)
+/// incomplete drain is NAMED in the rendered text. (`ProcessOutput.text` is the
+/// untagged form for text-searching.)
 let renderOutput (output: ProcessOutput) : string =
     match output with
     | ProcessOutput.Drained text -> text
@@ -124,10 +115,9 @@ let renderOutput (output: ProcessOutput) : string =
 /// The operator-facing note for a kill that did NOT happen — empty string when the
 /// tree is dead (whether we killed it or it beat us to it).
 ///
-/// One sentence, one definition. Callers that render `outputOf` get it for free;
-/// callers that compose their OWN timeout message (DepsFreshness, the plugins) append
-/// it, so a leaked process tree cannot be dropped on the floor just because that call
-/// site chose to phrase the timeout itself.
+/// Callers that render `outputOf` get it for free; callers that compose their OWN
+/// timeout message (DepsFreshness, the plugins) must append it, so a leaked process
+/// tree is reported whichever site phrased the timeout.
 let renderKill (kill: KillOutcome) : string =
     match kill with
     | KillOutcome.Killed
@@ -139,11 +129,8 @@ let renderKill (kill: KillOutcome) : string =
 
 /// The SHORT form of `renderKill`, for the one-line summaries and verdicts a plugin
 /// puts on a status line (`"tests: timed out after 30s"`), where the paragraph above
-/// will not fit. Empty when the tree is dead.
-///
-/// A status line that says only "timed out after 30s" invites exactly the wrong
-/// conclusion — that the runaway is over. When the kill failed, it is not over, and
-/// the line must say so even in eight words.
+/// will not fit. Empty when the tree is dead. A bare "timed out after 30s" would read
+/// as "the runaway is over", which a failed kill makes false.
 let renderKillBrief (kill: KillOutcome) : string =
     match kill with
     | KillOutcome.Killed
@@ -151,9 +138,9 @@ let renderKillBrief (kill: KillOutcome) : string =
     | KillOutcome.KillFailed _ -> " (KILL FAILED — process tree STILL RUNNING)"
 
 /// Combined output regardless of outcome — for callers that just want the text
-/// to render in a status line. A kill we FAILED to perform is named where the human
-/// will see it: every plugin surfaces its diagnostic through this function, so this
-/// is the one place that reaches an operator no matter which spawn leaked the tree.
+/// to render in a status line. Names a kill we FAILED to perform: every plugin
+/// surfaces its diagnostic through here, so this one site reaches an operator no
+/// matter which spawn leaked the tree.
 let outputOf (outcome: ProcessOutcome) : string =
     match outcome with
     | Succeeded out -> renderOutput out
@@ -184,15 +171,13 @@ let isExpectedDrainException (ex: exn) : bool =
 
 /// Did a stream pump that has STOPPED reading do so at EOF?
 ///
-/// `None` — the read loop ran to EOF: the stream is exhausted, nothing more will
-/// ever arrive from it, and what we captured from it is complete.
+/// `None` — the read loop ran to EOF: the stream is exhausted and what we captured
+/// from it is complete.
 ///
-/// `Some ex` — the read DIED. On the timeout-kill path that is expected (the
-/// kill tears the pipe down under the pump), and it means the capture is NOT
-/// provably complete, so the pump reports `false` and the drain is classified as
-/// timed-out rather than drained. Anything OUTSIDE the expected classes is a real
-/// bug: it is re-raised on the pump's task and surfaces through the drain wait,
-/// because a read that failed for a reason we do not understand must never be
+/// `Some ex` — the read DIED. On the timeout-kill path that is expected (the kill
+/// tears the pipe down under the pump) and means the capture is not provably
+/// complete, so this reports `false` and the drain is classified as timed-out.
+/// Anything OUTSIDE the expected classes is re-raised on the pump's task rather than
 /// laundered into "the child printed nothing".
 ///
 /// Pure so all three arms are covered deterministically — the live paths need a
@@ -219,13 +204,10 @@ let internal classifyKill (failure: exn option) : KillOutcome =
 /// Tear down a child's process tree and SAY what happened — the whole of the kill
 /// policy, with the actual `Process.Kill` injected.
 ///
-/// `kill` is a parameter for exactly the reason `classifyDrain`'s EOF flags are: the
-/// arm that matters is the one where the OS REFUSES us, and no test can conjure an
-/// unkillable process reliably on every platform. Injecting the kill lets the unit
-/// suite drive all three outcomes — including the loud-log path — instead of leaving
-/// the failure arm uncovered.
+/// `kill` is a parameter because the arm that matters is the one where the OS refuses
+/// us, and no test can conjure an unkillable process reliably on every platform.
 ///
-/// `describe` is a thunk so the (formatting) cost is paid only when we have bad news.
+/// `describe` is a thunk so the formatting cost is paid only on the bad-news path.
 let internal killTreeWith (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
     let outcome =
         try
@@ -236,9 +218,8 @@ let internal killTreeWith (describe: unit -> string) (kill: unit -> unit) : Kill
 
     match outcome with
     | KillOutcome.KillFailed reason ->
-        // Loud, and carrying the two things an operator actually needs: WHAT we failed
-        // to kill, and WHY. The returned value carries the same fact to the caller;
-        // this log is so it also reaches a human who is only reading stderr.
+        // The returned value carries this fact to the caller; the log is so it also
+        // reaches a human who is only reading stderr.
         Logging.error
             "process"
             $"FAILED to kill the process tree for %s{describe ()}: %s{reason.GetType().Name}: %s{reason.Message}. \
@@ -274,36 +255,26 @@ let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
 
-/// Env keys that are only meaningful to the parent's in-process hosts (the
-/// .NET host, the in-process MSBuild ProjInfo stood up) and poison spawned
-/// children if inherited. We strip them unconditionally on every spawn:
-/// they're a no-op for non-dotnet children, and a spawned `dotnet` re-resolves
-/// the correct values from its own argv[0] / SDK. Caller-supplied overrides
-/// still win — the strip runs before the env overlay.
+/// Env keys that are only meaningful to the parent's in-process hosts (the .NET
+/// host, the in-process MSBuild ProjInfo stood up) and poison spawned children if
+/// inherited. Stripped unconditionally on every spawn: they're a no-op for
+/// non-dotnet children, and a spawned `dotnet` re-resolves the correct values from
+/// its own argv[0] / SDK. Caller-supplied overrides still win — the strip runs
+/// before the env overlay.
 ///
-/// Per-category rationale:
+/// Arch-specific DOTNET_ROOT_* — the .NET host writes these into its parent's env
+/// from argv[0]'s dir so child apphosts inherit the same runtime. On Nix-wrapped
+/// SDKs (and similar shims) that dir lacks shared/Microsoft.NETCore.App, so a child
+/// dotnet trusts the value and fails to find the runtime.
 ///
-/// Arch-specific DOTNET_ROOT_* — the .NET host writes these into its parent's
-/// env from argv[0]'s dir so child apphosts inherit the same runtime. On
-/// Nix-wrapped SDKs (and similar shims) that dir lacks
-/// shared/Microsoft.NETCore.App, so any child dotnet trusts the value and
-/// fails to find the runtime. Meaningful only to the .NET host, so dropping
-/// them is a no-op for non-dotnet children, and any later dotnet invocation
-/// re-resolves correctly from its own argv[0].
-///
-/// Ionide.ProjInfo MSBuild discovery (MSBUILD_EXE_PATH / MSBuildExtensionsPath
-/// / MSBuildSDKsPath) — Ionide.ProjInfo (`Init.init`) writes these into the
-/// daemon's OWN process environment to make in-process design-time project
-/// evaluation work. They pin MSBuild at the SDK band ProjInfo selected at
-/// startup. Process.Start inherits the full parent env, so leaving them set
-/// poisons every spawned `dotnet build`: the child's MSBuild is forced to that
-/// band's MSBuild.dll / Sdks dir even though the muxer may resolve a different
-/// (or, on a multi-SDK box, an incomplete) band — restore-graph generation
-/// then fails with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)"),
-/// while a plain-shell `dotnet build` of the same tree is clean. Meaningful
-/// only to an in-process MSBuild host, so dropping them is a no-op for
-/// non-dotnet children, and a spawned dotnet re-resolves MSBuild correctly
-/// from its own SDK. See docs/leaked-msbuild-env-bug.md.
+/// Ionide.ProjInfo MSBuild discovery (MSBUILD_EXE_PATH / MSBuildExtensionsPath /
+/// MSBuildSDKsPath) — `Init.init` writes these into the daemon's OWN process
+/// environment for in-process design-time evaluation, pinning MSBuild at the SDK
+/// band ProjInfo selected at startup. Inherited by a spawned `dotnet build`, they
+/// force the child's MSBuild to that band even when the muxer resolves a different
+/// (or, on a multi-SDK box, incomplete) one — restore-graph generation then fails
+/// with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)") while a
+/// plain-shell build of the same tree is clean. See docs/leaked-msbuild-env-bug.md.
 let private sanitizedChildEnvKeys =
     [
       // arch-specific DOTNET_ROOT_*
@@ -350,17 +321,16 @@ let private makeChildProcessStartInfo
         psi.Environment[key] <- value
 
     // Realpath DOTNET_HOST_PATH so dirname(DOTNET_HOST_PATH) lands on the
-    // directory containing shared/Microsoft.NETCore.App. On normal installs
-    // this is a no-op (already canonical). On Nix-wrapped SDKs, the wrapper
-    // bin/ has no shared/ sibling but the unwrapped target does — without
-    // this, child apphosts die with "apphost_version not found" because the
-    // muxer reads DOTNET_HOST_PATH literally. See
-    // memory/dotnet_tool_launcher_truncates_nix_profiles.md.
+    // directory containing shared/Microsoft.NETCore.App. A no-op on normal
+    // installs. On Nix-wrapped SDKs the wrapper bin/ has no shared/ sibling but
+    // the unwrapped target does — without this, child apphosts die with
+    // "apphost_version not found" because the muxer reads DOTNET_HOST_PATH
+    // literally. See memory/dotnet_tool_launcher_truncates_nix_profiles.md.
     //
-    // Applied AFTER the explicit env overlay so callers passing
-    // DOTNET_HOST_PATH explicitly also get the symlink resolved. This lets
-    // tests exercise the contract via explicit env rather than mutating
-    // process env, which would race other tests' subprocess spawns.
+    // Applied AFTER the explicit env overlay so callers passing DOTNET_HOST_PATH
+    // explicitly also get the symlink resolved — which lets tests exercise the
+    // contract via explicit env rather than mutating process env, which would race
+    // other tests' subprocess spawns.
     match psi.Environment.TryGetValue "DOTNET_HOST_PATH" with
     | true, hostPath when not (String.IsNullOrEmpty hostPath) ->
         try
@@ -378,7 +348,7 @@ let private makeChildProcessStartInfo
 // ONE spawn primitive.
 //
 // `runProcess` is the ONLY spawn: it always polls `HasExited` and always bounds
-// the post-exit drain, closing two wedges that an unbounded wait leaves open:
+// the post-exit drain, closing two wedges an unbounded wait leaves open:
 //
 //   * `WaitForExit(-1)` never returns if a machine sleep kills the child
 //     mid-launch — nothing raises, the plugin stays `Running` forever.
@@ -387,16 +357,14 @@ let private makeChildProcessStartInfo
 //     inherited the stdout pipe and outlives it — EOF never comes. Reachable from
 //     any hook / build / fileCommand.
 //
-// What varies per call site is `ProcessBounds` — and there is no way to construct
-// bounds that mean "wait forever with no escape".
+// What varies per call site is `ProcessBounds`, which cannot express "wait forever
+// with no escape".
 // ---------------------------------------------------------------------------
 
-/// Raised when a launched child never becomes a live, progressing process: it
-/// showed NO sign of life (no output, no exit) within the launch deadline — the
-/// box is so overloaded the spawn went nowhere. The message names the elapsed
-/// launch budget; TestPrune catches it and drives the run's `Aborted` lifecycle
-/// so `check` exits non-green with a legible "re-run when quiet" diagnostic
-/// rather than wedging.
+/// Raised when a launched child never becomes a live, progressing process: no
+/// output and no exit within the launch deadline. The message names the elapsed
+/// launch budget; TestPrune catches it and drives the run's `Aborted` lifecycle so
+/// `check` exits non-green with a "re-run when quiet" diagnostic rather than wedging.
 ///
 /// `Message` is overridden to return the raw diagnostic (not F#'s default
 /// `LaunchStalledException "..."` repr) so the string that flows through
@@ -417,9 +385,9 @@ type LaunchStep =
     | Stalled
     | KeepWaiting
 
-/// The terminal verdict of the launch-watchdog loop. Distinct from `LaunchStep`
-/// so the loop's result can NEVER be `KeepWaiting` — the impossible "still
-/// waiting" outcome is unrepresentable, and the production match has no dead arm.
+/// The terminal verdict of the launch-watchdog loop. Distinct from `LaunchStep` so
+/// the loop's result can never be `KeepWaiting` and the production match has no
+/// dead arm.
 [<RequireQualifiedAccess>]
 type LaunchOutcome =
     | Exited
@@ -451,7 +419,7 @@ let decideLaunchStep
 /// against the launch deadline and the optional overall timeout, sleeping between
 /// polls, until a terminal `LaunchOutcome` is reached. All effects (observe /
 /// clock / sleep) are injected so the loop is deterministically testable without
-/// spawning a real process — mirrors `waitForDaemonReadyWith`.
+/// spawning a real process.
 ///
 /// Either deadline may be `InfiniteTimeSpan`, which DISABLES that one:
 ///  * `overallTimeout = Infinite` — no total cap (the common TestPrune case),
@@ -531,23 +499,21 @@ let resolveLaunchDeadline (overrideSec: string option) : TimeSpan =
 /// only for a bounded window, then proceed with whatever output was captured; the
 /// verdict rides on the exit code, not on stream EOF.
 ///
-/// A wall clock is the RIGHT bound and the only sound one — a pipe a grandchild
-/// holds open has no "work" left to wait for, so no work-completion signal can ever
-/// arrive and only a clock can end the wait. The clock measures the PIPE, not the
-/// thread pool, only because the pumps own dedicated threads (below); a saturated
-/// pool would otherwise starve the reader and expire the window having read nothing.
-/// When the window does expire, it says so (`ProcessOutput.DrainTimedOut`) instead
-/// of handing back `""`.
+/// A wall clock is the only sound bound here: a pipe a grandchild holds open has no
+/// work left to wait for, so no work-completion signal can arrive. The clock measures
+/// the PIPE rather than the thread pool only because the pumps own dedicated threads
+/// (below) — a saturated pool would otherwise starve the reader and expire the window
+/// having read nothing. An expired window reports `ProcessOutput.DrainTimedOut`, not
+/// `""`.
 let internal PostExitDrainWindow = TimeSpan.FromSeconds 2.0
 
 /// The bounds ONE spawned child runs under. Construct only via
-/// `ProcessBounds.streaming` / `ProcessBounds.silent` — the fields are private
-/// precisely so a call site cannot assemble "no bound at all" out of two
-/// `InfiniteTimeSpan`s.
+/// `ProcessBounds.streaming` / `ProcessBounds.silent` — the fields are private so a
+/// call site cannot assemble "no bound at all" out of two `InfiniteTimeSpan`s.
 ///
-/// The two constructors encode a real property of the CHILD (does its output
-/// prove it is alive?), not two safety levels — every spawn, either way, polls
-/// `HasExited` and bounds its post-exit drain.
+/// The two constructors encode a property of the CHILD (does its output prove it is
+/// alive?), not two safety levels — every spawn, either way, polls `HasExited` and
+/// bounds its post-exit drain.
 [<NoComparison; NoEquality>]
 type ProcessBounds =
     private
@@ -599,25 +565,21 @@ module ProcessBounds =
 /// grandchild holding the inherited stdout pipe turns into a permanent wait —
 /// even on the SUCCESS path, even for a child that already exited cleanly).
 ///
-/// A process that EXITS — for any reason, with any code — is classified normally
-/// by its exit code: a nonzero exit with no output is a genuine test failure /
-/// zero-match, INDISTINGUISHABLE from a spawn-death at the process boundary, so
-/// it must NOT be force-aborted. Only a `ProcessBounds.streaming` child that has
-/// neither exited nor emitted a byte within its launch deadline raises
-/// `LaunchStalledException`.
+/// A process that EXITS — for any reason, with any code — is classified by its exit
+/// code: a nonzero exit with no output is a genuine test failure / zero-match,
+/// indistinguishable from a spawn-death at the process boundary, so it must NOT be
+/// force-aborted. Only a `ProcessBounds.streaming` child that has neither exited nor
+/// emitted a byte within its launch deadline raises `LaunchStalledException`.
 ///
 /// Reads stdout/stderr incrementally so the FIRST byte is observed as liveness.
 /// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the caller
 /// already set it (via `makeChildProcessStartInfo`).
 ///
 /// `sink`, when given, receives every chunk AS IT ARRIVES, on the pump thread,
-/// before the call returns. That "as it arrives" is the whole point: the returned
-/// `ProcessOutcome` only exists for a child we outlived, so anything derived from
-/// it is unavailable in exactly the case where evidence matters most — a child
-/// SIGKILLed on timeout, whose capture the kill truncates (`DrainTimedOut`), and a
-/// daemon that dies mid-run, which returns nothing at all. A sink that is written
-/// through as bytes land keeps what was said up to the moment it died. A sink fed
-/// from the final capture instead would be no sink at all.
+/// before the call returns. That ordering is the point: the returned `ProcessOutcome`
+/// only exists for a child we outlived, so it is unavailable exactly where evidence
+/// matters most — a child SIGKILLed on timeout, whose capture the kill truncates
+/// (`DrainTimedOut`), and a daemon that dies mid-run and returns nothing at all.
 ///
 /// A throwing sink is DISABLED, never fatal and never laundered into the capture:
 /// it may not turn a complete drain into a `DrainTimedOut` (the pump's own
@@ -639,19 +601,18 @@ let runProcessTo
     // Register so a daemon shutdown can tear down in-flight children.
     ProcessRegistry.track proc
 
-    // Read ONCE, while the handle is certainly live: this is the identifier an
-    // operator needs to hunt down a tree we failed to kill, and it must still be
-    // reportable on the path where everything else about the child has gone wrong.
+    // Read ONCE, while the handle is certainly live: this is what an operator needs
+    // to hunt down a tree we failed to kill, and it must still be reportable on the
+    // path where everything else about the child has gone wrong.
     let pid = proc.Id
 
-    // Incremental output capture via explicit stream pumps. We can NOT use the
-    // event API (`BeginOutputReadLine`) here: draining it requires the
+    // Incremental output capture via explicit stream pumps. The event API
+    // (`BeginOutputReadLine`) is not usable here: draining it requires the
     // parameterless `WaitForExit()` (the timed overload does NOT flush the async
-    // handlers), and that overload is exactly the unbounded, grandchild-pipe-
-    // wedging wait we must avoid. A chunk-at-a-time `Read` loop gives us a Task
-    // handle we can bound-wait AND flips a latch on the FIRST byte — the "alive &
-    // progressing" signal the launch deadline keys off (`ReadToEnd` only returns at
-    // EOF, which a wedged launch never reaches).
+    // handlers), which is the unbounded grandchild-pipe-wedging wait we must avoid.
+    // A chunk-at-a-time `Read` loop gives a Task handle we can bound-wait AND flips
+    // a latch on the FIRST byte — the liveness signal the launch deadline keys off
+    // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
     let output = StringBuilder()
     let outputLock = obj ()
     let mutable sawOutput = 0
@@ -682,13 +643,11 @@ let runProcessTo
     // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
     // and under a saturated pool — a `check` running the full suite in parallel,
     // exactly when a spawn's output matters most — the reader may never run, the 2 s
-    // drain window expire having read zero bytes, and the child's output come back
-    // as `""`: the clock measuring the POOL, not the process. A reader that cannot be
-    // scheduled cannot read, and a read that cannot happen must not be reported as a
-    // read of nothing.
+    // drain window expires having read zero bytes, and the child's output comes back
+    // as `""`: the clock measuring the POOL, not the process.
     //
-    // Returns TRUE iff the loop ended at EOF — i.e. the stream is exhausted and
-    // what we captured from it is all there ever was. See `pumpReachedEof`.
+    // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
+    // captured from it is all there ever was. See `pumpReachedEof`.
     let pump (reader: IO.StreamReader) : Task<bool> =
         Task.Factory.StartNew(
             (fun () ->
@@ -725,11 +684,9 @@ let runProcessTo
 
     // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
     // instant it exits (returns in ms); only a grandchild holding the pipe makes
-    // this block, and then only for the window — never forever.
-    //
-    // The window expiring is a FACT ABOUT THE MEASUREMENT, not a fact about the
-    // child, so it rides out on the value: `DrainTimedOut` can never be mistaken
-    // for a child that said nothing.
+    // this block, and then only for the window. An expired window rides out on the
+    // value as `DrainTimedOut` so it cannot be mistaken for a child that said
+    // nothing.
     let drainPumps () : ProcessOutput =
         let waitReturned =
             Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
@@ -758,11 +715,9 @@ let runProcessTo
         let outcome =
             launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
 
-        // A killed tree still needs draining so partial output is reported.
-        //
-        // The kill's OUTCOME is returned, never discarded: a tree we could not tear
-        // down is still running, and the caller must not be told otherwise. The
-        // policy itself lives in `killTreeWith`, where every arm of it is unit-driven.
+        // A killed tree still needs draining so partial output is reported. The
+        // kill's OUTCOME is returned, never discarded: a tree we could not tear down
+        // is still running. The policy lives in `killTreeWith`.
         let killTree () : KillOutcome =
             killTreeWith (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
                 proc.Kill(entireProcessTree = true))
@@ -779,16 +734,14 @@ let runProcessTo
             let killed = killTree ()
             TimedOut(timeout, drainPumps (), killed)
         | LaunchOutcome.Stalled ->
-            // A stall already raises below, and the exception is the diagnostic; a
-            // kill that FAILED here is still logged loudly by `killTree` itself, so
-            // the leaked tree cannot go unreported just because this arm throws.
+            // The exception below is the diagnostic; a kill that FAILED here is
+            // still logged by `killTree` itself, so the leaked tree is reported even
+            // though this arm throws.
             killTree () |> ignore
 
             // A stall is DEFINED as "not one byte within the launch deadline", so
-            // there is no capture to report and nothing a drain could tell us: we
-            // run it only to let the pumps close their pipes, and discard the
-            // (necessarily empty) result deliberately. The diagnostic is the
-            // exception, not the text.
+            // there is no capture to report: this runs only to let the pumps close
+            // their pipes, and the (necessarily empty) result is discarded.
             drainPumps () |> ignore
 
             raise (

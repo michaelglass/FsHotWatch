@@ -63,16 +63,13 @@ let ``format check handles non-source change events without crashing`` () =
     let handler = createFormatCheck None
     host.RegisterHandler(handler)
 
-    // ProjectChanged and SolutionChanged should not crash the plugin
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged)
 
-    // Wait until Completed AND no events still queued. The two EmitFileChanged
-    // calls above are dispatched asynchronously; waitUntil could see Completed
-    // after the first event but before the second (SolutionChanged) has been
-    // dequeued, causing a spurious Running at the assertion below. Requiring
-    // !AnyPluginBusy() ensures both events have been fully processed.
-    // 17s: well under the 20s Fact timeout but enough headroom for slow Linux CI.
+    // Wait until Completed AND no events still queued: the two EmitFileChanged
+    // calls are dispatched asynchronously, so waitUntil could otherwise see
+    // Completed after the first event but before SolutionChanged is dequeued.
+    // 17s is under the 20s Fact timeout with headroom for slow Linux CI.
     waitUntil
         (fun () ->
             (not (host.AnyPluginBusy()))
@@ -81,7 +78,6 @@ let ``format check handles non-source change events without crashing`` () =
                 | _ -> false))
         17000
 
-    // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")
     test <@ status.IsSome @>
 
@@ -96,8 +92,6 @@ let ``format check handles non-existent source file gracefully`` () =
     let handler = createFormatCheck None
     host.RegisterHandler(handler)
 
-    // Emit a SourceChanged with a file that doesn't exist — File.Exists check
-    // should cause it to be skipped (no crash)
     host.EmitFileChanged(SourceChanged [ "/tmp/nonexistent/Fake.fs" ])
 
     waitUntil
@@ -107,7 +101,6 @@ let ``format check handles non-existent source file gracefully`` () =
             | _ -> false)
         5000
 
-    // The non-existent file should not be in the unformatted set
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
@@ -117,11 +110,9 @@ let ``format check handles non-existent source file gracefully`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =
-    // F2 — pre-fix the cacheKey lambda silently substituted "" for an
-    // unreadable file. That collided with a real empty file AND across
-    // distinct read-failure causes, producing stale "format OK" cache hits
-    // on transient locks. The fix returns None so the cache is bypassed
-    // (cache miss + retry on the next event).
+    // F2 — the cacheKey lambda used to substitute "" for an unreadable file, which
+    // collided with a real empty file and across distinct read-failure causes,
+    // producing stale "format OK" hits on transient locks. None bypasses the cache.
     let handler = createFormatCheck None
 
     let cacheKeyFn =
@@ -136,8 +127,7 @@ let ``format-check cacheKey returns None when any input file is unreadable (F2)`
 
 [<Fact(Timeout = 15000)>]
 let ``format-check cacheKey returns None when one of multiple files is unreadable (F2 short-circuit)`` () =
-    // Cover the post-None short-circuit branch in the fold: a readable file
-    // followed by an unreadable one collapses to None for the whole event.
+    // Covers the post-None short-circuit branch in the fold.
     let handler = createFormatCheck None
 
     let cacheKeyFn =
@@ -150,9 +140,8 @@ let ``format-check cacheKey returns None when one of multiple files is unreadabl
     let goodFile = Path.Combine(tmpDir, "Good.fs")
     File.WriteAllText(goodFile, "module Good\n")
     let missingFile = Path.Combine(tmpDir, $"missing-{Guid.NewGuid():N}.fs")
-    // After alphabetical sort, "AAA-missing-...fs" comes BEFORE "ZZZ-good.fs",
-    // exercising the short-circuit branch where Option.bind sees None and
-    // skips the (still readable) successor file.
+    // "AAA-missing" sorts BEFORE "ZZZ-good", so Option.bind sees None first and
+    // skips the still-readable successor.
     let sortedFirstMissing = Path.Combine(tmpDir, "AAA-still-missing.fs")
     let sortedSecondGood = Path.Combine(tmpDir, "ZZZ-good.fs")
     File.WriteAllText(sortedSecondGood, "module ZZZ\n")
@@ -160,7 +149,7 @@ let ``format-check cacheKey returns None when one of multiple files is unreadabl
     try
         let key = cacheKeyFn (FileChanged(SourceChanged [ goodFile; missingFile ]))
         test <@ key = None @>
-        // Short-circuit: first file None → second file's Some never folds in.
+
         let key2 =
             cacheKeyFn (FileChanged(SourceChanged [ sortedFirstMissing; sortedSecondGood ]))
 
@@ -173,8 +162,6 @@ let ``format-check cacheKey returns None when one of multiple files is unreadabl
 
 [<Fact(Timeout = 15000)>]
 let ``format-check cacheKey returns Some for readable files`` () =
-    // Sanity: the happy path still produces a key so cache hits are possible
-    // when all inputs are readable.
     let handler = createFormatCheck None
 
     let cacheKeyFn =
@@ -201,7 +188,6 @@ let ``FormatPreprocessor formats unformatted file`` () =
 
     try
         let file = Path.Combine(tmpDir, "Bad.fs")
-        // Badly formatted: missing spaces, wrong indentation
         File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
@@ -209,7 +195,6 @@ let ``FormatPreprocessor formats unformatted file`` () =
         test <@ modified.Length = 1 @>
         test <@ modified.[0] = file @>
 
-        // Verify the file was rewritten
         let contents = File.ReadAllText(file)
         test <@ contents <> "module Bad\nlet   x=1\nlet   y   =   2\n" @>
     finally
@@ -223,7 +208,6 @@ let ``FormatPreprocessor skips already formatted file`` () =
 
     try
         let file = Path.Combine(tmpDir, "Good.fs")
-        // Well-formatted F# code
         File.WriteAllText(file, "module Good\n\nlet x = 1\nlet y = 2\n")
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
@@ -266,9 +250,8 @@ let ``FormatPreprocessor handles format error gracefully`` () =
         File.WriteAllText(file, "module \x00\x00\x00")
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        // Should not throw; error is caught internally
         let modified = preprocessor.Process [ file ] tmpDir
-        // May or may not modify depending on Fantomas behavior, but should not crash
+        // The result is Fantomas-dependent; the contract is only that it does not throw.
         test <@ true @>
     finally
         if Directory.Exists tmpDir then
@@ -286,7 +269,6 @@ let ``format check handles exception gracefully`` () =
 
     try
         let file = Path.Combine(tmpDir, "Bad.fs")
-        // Write invalid content that might cause Fantomas to throw
         File.WriteAllText(file, "module \x00\x00\x00")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -294,7 +276,6 @@ let ``format check handles exception gracefully`` () =
         let handler = createFormatCheck None
         host.RegisterHandler(handler)
 
-        // This should not crash the plugin - errors are caught
         host.EmitFileChanged(SourceChanged [ file ])
 
         waitUntil
@@ -321,7 +302,6 @@ let ``format check detects formatting change even with same commit ID`` () =
     try
         let file = Path.Combine(tmpDir, "Test.fs")
 
-        // Create a mock commit ID provider that always returns the same ID (simulating unchanged commit)
         let mockGetCommitId () = Some "fixed-commit-id"
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -339,7 +319,6 @@ let ``format check detects formatting change even with same commit ID`` () =
                 | _ -> false)
             15000
 
-        // Verify plugin detected unformatted file
         let result1 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ result1.IsSome @>
         test <@ result1.Value.Contains("\"count\": 1") @>
@@ -355,7 +334,6 @@ let ``format check detects formatting change even with same commit ID`` () =
                 | _ -> false)
             15000
 
-        // With proper cache invalidation, plugin should detect file is now formatted
         let result2 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
         test <@ result2.IsSome @>
         test <@ result2.Value.Contains("\"count\": 0") @>
@@ -387,7 +365,6 @@ let ``format check reports unformatted files to error ledger`` () =
                 | _ -> false)
             15000
 
-        // The format-check plugin should report errors to the ErrorLedger
         let errors = host.GetErrors()
         test <@ not errors.IsEmpty @>
 
@@ -450,7 +427,6 @@ let ``format check clears errors when file becomes formatted`` () =
                 | _ -> false)
             15000
 
-        // Errors should be cleared
         let errors2 = host.GetErrors()
         let fileErrors = errors2 |> Map.tryFind file
 
@@ -471,15 +447,10 @@ let ``format check clears errors when file becomes formatted`` () =
 //
 // The regression this pins: `FormatPreprocessor.Process` ran Fantomas via a bare
 // `Async.RunSynchronously` with NO timeout, while its twin `createFormatCheck`
-// wrapped the IDENTICAL call in `runWithCancellableTimeout` — one bounded, one
-// not, and the unbounded one on the WORSE path. A preprocessor runs inside the
-// daemon's `processBatch`, so a Fantomas hang there wedges the changeAgent: the
-// daemon silently stops processing file changes, forever. It also runs inside
-// `performScan`, which `WaitForScan` — `check`'s first step — blocks on.
-//
-// A zero budget is the boundary case of "cannot finish in time": the work is
-// started and the wait expires before it can complete, which is exactly the shape
-// of a hang, minus the waiting.
+// wrapped the IDENTICAL call in `runWithCancellableTimeout`. A preprocessor runs
+// inside the daemon's `processBatch`, so a Fantomas hang there wedges the
+// changeAgent — the daemon stops processing file changes, forever. It also runs
+// inside `performScan`, which `WaitForScan` — `check`'s first step — blocks on.
 
 [<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout`` () =
@@ -493,12 +464,10 @@ let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout
         let original = "module Bad\nlet   x=1\nlet   y   =   2\n"
         File.WriteAllText(file, original)
 
-        // Force the timeout DETERMINISTICALLY via the same test seam the
-        // format-check plugin has: a slow hook inside the guarded region, and a
-        // real (1 s) budget. The previous `timeoutSec = 0` raced the timer
-        // against Fantomas — on a warm, idle box the format WON, the file was
-        // rewritten, and this test failed while asserting nothing about the
-        // timeout path.
+        // Force the timeout DETERMINISTICALLY via the same seam the format-check
+        // plugin has: a slow hook inside the guarded region and a real (1 s)
+        // budget. Do not go back to `timeoutSec = 0` — that races the timer
+        // against Fantomas, and on a warm box the format wins.
         let slowHook () = System.Threading.Thread.Sleep 3000
 
         let preprocessor =
@@ -506,10 +475,8 @@ let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout
 
         let modified = preprocessor.Process [ file ] tmpDir
 
-        // No rewrite is reported...
         test <@ modified.IsEmpty @>
-        // ...and the file is untouched — a timed-out format must never write a
-        // half-formatted document.
+        // A timed-out format must never write a half-formatted document.
         test <@ File.ReadAllText(file) = original @>
     finally
         Directory.Delete(tmpDir, true)

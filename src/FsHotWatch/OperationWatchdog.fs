@@ -65,8 +65,7 @@ let overrunLogRecord (now: DateTime) (threshold: TimeSpan) (op: InFlightOp) : st
     let elapsed = now - op.StartedAt
     $"operation exceeded %d{int threshold.TotalSeconds}s: %s{op.Name} running %d{int elapsed.TotalSeconds}s"
 
-/// The inline recovery action printed in every wedge report, so a consumer who
-/// reads a wedged `status` knows exactly what to do without looking it up.
+/// The inline recovery action printed in every wedge report.
 [<Literal>]
 let RecoveryAction =
     "recover with `fshw stop` then re-run (the next command auto-restarts the daemon); check logs/daemon.log for the stuck op"
@@ -86,10 +85,10 @@ let wedgeReport (now: DateTime) (state: WatchdogState) : string option =
     | None -> None
 
 /// Heartbeat line: the default-on periodic diagnostic. Names the longest-running
-/// in-flight op + its elapsed time so a stuck daemon is diagnosable from a single
-/// log line, or "idle" when nothing is running. When several ops are in flight the
-/// count is carried too — a `status` poll landing on a free acceptor while a check
-/// is wedged is the normal case, and hiding it would misrepresent the daemon.
+/// in-flight op + its elapsed time so a stuck daemon is diagnosable from a single log
+/// line, or "idle" when nothing is running. The count is carried when several ops are
+/// in flight — a `status` poll landing on a free acceptor while a check is wedged is
+/// the normal case.
 let heartbeatLine (now: DateTime) (state: WatchdogState) : string =
     match oldestInFlight state.InFlight with
     | None -> "heartbeat: idle"
@@ -116,9 +115,8 @@ type Watchdog
     (threshold: TimeSpan, heartbeatEvery: TimeSpan, now: unit -> DateTime, log: string -> unit, ?tick: TimeSpan) =
     let gate = obj ()
     let inFlight = Dictionary<int64, InFlightOp>()
-    // Ops whose overrun record has already been emitted, so a long op logs its
-    // overrun once. Keyed per-op (not a single flag) so N concurrent wedges
-    // produce N records rather than one.
+    // Ops whose overrun record has already been emitted, so a long op logs its overrun
+    // once.
     let overrunLogged = HashSet<int64>()
     let mutable nextId = 0L
     let mutable lastHeartbeat = now ()

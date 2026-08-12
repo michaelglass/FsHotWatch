@@ -22,13 +22,10 @@ let ``EndSubtask removes the subtask`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``EndSubtask for an absent key while Recording is a no-op`` () =
-    // Covers EndSubtask's `| _ -> ()` absent-key arm (PluginActivity.fs L202):
-    // StartSubtask puts the plugin in Recording with key "k1", then EndSubtask
-    // for the different (absent) key "k2" must hit the TryGetValue-miss arm
-    // without throwing and without disturbing the open subtask. In production
-    // this arm is reached only via a thread race (PluginCtxHelpers.withSubtask's
-    // finally-EndSubtask landing after RecordTerminal/ResetRun cleared the
-    // subtask); this direct test makes that coverage deterministic.
+    // Covers EndSubtask's absent-key arm. In production it is reached only via a
+    // thread race — PluginCtxHelpers.withSubtask's finally-EndSubtask landing after
+    // RecordTerminal/ResetRun already cleared the subtask — so driving it directly
+    // makes the case deterministic.
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
     s.EndSubtask("p", "k2")
@@ -154,13 +151,10 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
-// Deterministic, single-threaded replacement for the cap-eviction coverage.
-// Drives enforceGlobalCap's main eviction path (PluginActivity.fs ~lines
-// 112-138) every run: pushes history entries of KNOWN size from a single
-// thread until the 2 MB cap is exceeded, then asserts the cap held and the
-// oldest entries were evicted in StartedAt order. The flaky concurrent-stress
-// variant lives in FsHotWatch.IntegrationTests; this is the deterministic
-// counterpart (no cross-lock recheck races).
+// Single-threaded so enforceGlobalCap's eviction path runs every time: entries of
+// KNOWN size are pushed until the 2 MB cap is exceeded. The concurrent-stress
+// variant lives in FsHotWatch.IntegrationTests, where cross-lock recheck races
+// make it flaky.
 [<Fact(Timeout = 15000)>]
 let ``global cap evicts oldest history entries first (single-threaded, deterministic)`` () =
     let s = State()
@@ -174,17 +168,14 @@ let ``global cap evicts oldest history entries first (single-threaded, determini
         let started = baseTime.AddSeconds(float i)
         s.RecordTerminal("p", CompletedRun, started, started.AddMilliseconds(1.0))
 
-    // Cap held.
     test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
 
     let hist = s.GetHistory("p")
     let histLen = hist.Length
-    // Some records were evicted (cap forced it) but not all.
     test <@ histLen > 0 && histLen < 80 @>
 
-    // Surviving records are the newest contiguous run; the oldest survivor's
-    // StartedAt is strictly later than the very first pushed record, proving
-    // eviction happened oldest-first.
+    // The oldest survivor's StartedAt is strictly later than the first pushed
+    // record, which is what proves eviction happened oldest-first.
     let firstPushed = baseTime.AddSeconds(1.0)
     let lastPushed = baseTime.AddSeconds(80.0)
     let oldestSurvivor = (List.head hist).StartedAt
@@ -192,17 +183,13 @@ let ``global cap evicts oldest history entries first (single-threaded, determini
     let evictedOldestFirst = oldestSurvivor > firstPushed
     test <@ evictedOldestFirst @>
 
-    // History is in ascending StartedAt order (oldest first), confirming FIFO
-    // eviction left a contiguous newest window ending at the last pushed record.
+    // Ascending StartedAt confirms FIFO eviction left a contiguous newest window
+    // ending at the last pushed record.
     let starts = hist |> List.map (fun r -> r.StartedAt)
     let ascending = starts = List.sort starts
     test <@ ascending @>
     test <@ newestSurvivor = lastPushed @>
 
-// Direct test of the SetNextTerminalOutcome → RecordTerminal override: the
-// next terminal record must use the override outcome, not the one passed to
-// RecordTerminal. Drives the OutcomeOverride branch in RecordTerminal
-// deterministically via the public API.
 [<Fact(Timeout = 15000)>]
 let ``SetNextTerminalOutcome overrides the outcome of the next RecordTerminal`` () =
     let s = State()
@@ -242,7 +229,6 @@ let ``ResetRun on idle plugin is a no-op and does not touch history`` () =
     let t1 = DateTime.UtcNow
     s.Log("p", "line")
     s.RecordTerminal("p", CompletedRun, t1, t1.AddMilliseconds(1.0))
-    // Plugin is now Idle. ResetRun must not throw nor alter history.
     s.ResetRun("p")
     s.ResetRun("p")
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
@@ -255,7 +241,6 @@ let ``Activity after RecordTerminal starts a fresh recording`` () =
     s.Log("p", "first")
     let t1 = DateTime.UtcNow
     s.RecordTerminal("p", CompletedRun, t1, t1.AddMilliseconds(1.0))
-    // New activity must not revive the prior run's tail.
     s.Log("p", "second")
     test <@ s.GetActivityTail("p") = [ "second" ] @>
     let t2 = t1.AddMilliseconds(10.0)
@@ -281,17 +266,14 @@ let ``UpdateSubtask is a no-op when key not present`` () =
     s.UpdateSubtask("p", "missing", "label")
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
-// The concurrent-stress test (100 Task.Run workers hammering
-// StartSubtask/EndSubtask) lives in
-// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs. Its hits on
-// the cross-lock branches fire flakily under load, which made the unit-suite
-// line coverage of PluginActivity.fs jitter; it is behavior-tested there
-// (no coverage package) instead.
+// The concurrent-stress variant (100 Task.Run workers) lives in
+// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs: its cross-lock
+// branch hits fire flakily under load, which made PluginActivity.fs line coverage
+// jitter here.
 
 [<Fact(Timeout = 15000)>]
 let ``StartSubtask then EndSubtask sequentially leaves no open subtasks`` () =
-    // Deterministic single-threaded analogue of the moved concurrency test:
-    // every Start is matched by an End, so no subtasks remain.
+    // Single-threaded analogue of that moved concurrency test.
     let s = State()
 
     for i in 1..100 do

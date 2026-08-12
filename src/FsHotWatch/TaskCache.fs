@@ -24,19 +24,16 @@ type CachedEvent =
 /// The terminal outcome a cache entry may replay. Scope rule: a cache entry may
 /// only assert facts derivable from its key's scope.
 ///
-/// Per-file entries (composite key `File = Some _`) are keyed on ONE file's
-/// content, so they cannot testify to a whole-session claim — yet plugins build
-/// their status summaries from whole-session state (analyzers' `DiagnosticsByFile`,
-/// lint's `WarningsByFile`). So the `CachedFile*` variants carry NO summary — the
-/// replay derives one from the live ledger — and no timestamp either: replay
-/// always re-stamps `now` (a cached instant from a prior session is equally
-/// unreplayable; see the timestamp-rewrite note in `tryReplayCache`).
+/// Per-file entries (composite key `File = Some _`) are keyed on ONE file's content,
+/// so they cannot testify to a whole-session claim — yet plugins build their status
+/// summaries from whole-session state (analyzers' `DiagnosticsByFile`, lint's
+/// `WarningsByFile`). So the `CachedFile*` variants carry no summary (replay derives
+/// one from the live ledger) and no timestamp (replay re-stamps `now`).
 ///
-/// Whole-run entries (`File = None`, e.g. BuildPlugin keyed on the full
-/// project-graph content hash) store a verdict that IS a pure function of the
-/// key, so `CachedRun*` keeps it for verbatim replay. Non-terminal statuses
-/// (Idle/Running) are unrepresentable here by construction — an entry that
-/// asserts nothing terminal is not a result.
+/// Whole-run entries (`File = None`, e.g. BuildPlugin keyed on the full project-graph
+/// content hash) store a verdict that IS a pure function of the key, so `CachedRun*`
+/// keeps it for verbatim replay. Non-terminal statuses (Idle/Running) are
+/// unrepresentable here by construction.
 [<NoComparison>]
 type CachedStatus =
     /// Per-file completion: elapsed only — the summary is derived at replay.
@@ -172,9 +169,9 @@ let optionalCacheKey (getCommitId: (unit -> string option) option) =
 let optionalSaltedCacheKey (getSalt: PluginEvent<'Msg> -> string) (getCommitId: (unit -> string option) option) =
     getCommitId |> Option.map (saltedCacheKey getSalt)
 
-/// §2a: content-merkle cache key. Hashes a list of (label, value) inputs into a
-/// stable ContentHash that depends only on the values — no commit_id, so a file
-/// reverted to its earlier content hits its earlier cache entry.
+/// Content-merkle cache key. Hashes a list of (label, value) inputs into a stable
+/// ContentHash that depends only on the values — no commit_id, so a file reverted to
+/// its earlier content hits its earlier cache entry.
 ///
 /// Encoding is length-prefixed to avoid `("x","ab"),("y","")` colliding with
 /// `("x","a"),("y","b")`. Sorted by label to make order-of-construction

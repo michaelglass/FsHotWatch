@@ -147,8 +147,6 @@ let ``GetParallelTiers groups independent projects in same tier`` () =
     graph.RegisterProject(pp "/proj/C.fsproj", [ fp "/proj/C.fs" ], [ pp "/proj/A.fsproj"; pp "/proj/B.fsproj" ])
 
     let tiers = graph.GetParallelTiers()
-    // A and B have no deps, so they should be in tier 0
-    // C depends on A and B, so it should be in tier 1
     test <@ tiers.Length = 2 @>
     test <@ tiers.[0] |> List.contains (pp "/proj/A.fsproj") @>
     test <@ tiers.[0] |> List.contains (pp "/proj/B.fsproj") @>
@@ -215,18 +213,15 @@ let ``GetAllFiles does not duplicate shared files`` () =
 
 // --- Coverage for uncovered edge cases ---
 
-// Line 41: RegisterProject duplicate dependent (existing list already contains project)
 [<Fact(Timeout = 15000)>]
 let ``RegisterProject does not duplicate dependent when registered twice`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
     graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs" ], [ pp "/proj/A.fsproj" ])
-    // Re-register B with same reference — should not add duplicate dependent
     graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs" ], [ pp "/proj/A.fsproj" ])
     let deps = graph.GetDependents(pp "/proj/A.fsproj")
     test <@ deps = [ pp "/proj/B.fsproj" ] @>
 
-// Line 61: RegisterFromFsproj with Compile element missing Include attribute
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj ignores Compile elements without Include attribute`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noinclude-{Guid.NewGuid():N}")
@@ -252,7 +247,6 @@ let ``RegisterFromFsproj ignores Compile elements without Include attribute`` ()
     finally
         Directory.Delete(tmpDir, true)
 
-// Line 72: RegisterFromFsproj with ProjectReference element missing Include attribute
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj ignores ProjectReference elements without Include attribute`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noref-{Guid.NewGuid():N}")
@@ -281,37 +275,32 @@ let ``RegisterFromFsproj ignores ProjectReference elements without Include attri
     finally
         Directory.Delete(tmpDir, true)
 
-// Line 88: GetSourceFiles for unregistered project returns empty list
 [<Fact(Timeout = 15000)>]
 let ``GetSourceFiles returns empty for unregistered project`` () =
     let graph = ProjectGraph()
     test <@ graph.GetSourceFiles(pp "/proj/NoSuch.fsproj") |> List.isEmpty @>
 
-// Line 94: GetReferences for unregistered project returns empty list
 [<Fact(Timeout = 15000)>]
 let ``GetReferences returns empty for unregistered project`` () =
     let graph = ProjectGraph()
     test <@ graph.GetReferences(pp "/proj/NoSuch.fsproj") |> List.isEmpty @>
 
-// Line 165: GetParallelTiers with circular dependency (blocked projects forced into final tier)
 [<Fact(Timeout = 15000)>]
 let ``GetParallelTiers puts circular dependencies in final tier`` () =
     let graph = ProjectGraph()
-    // Create a cycle: A -> B -> A (impossible in reality, but tests the fallback path)
+    // A -> B -> A is impossible in a real solution, but it is the only way to
+    // reach the fallback arm where nothing is ever "ready".
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [ pp "/proj/B.fsproj" ])
     graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs" ], [ pp "/proj/A.fsproj" ])
     let tiers = graph.GetParallelTiers()
-    // Neither can be "ready" — both should end up in the remaining tier
     test <@ tiers.Length = 1 @>
     test <@ tiers.[0] |> List.length = 2 @>
 
-// GetParallelTiers with empty graph
 [<Fact(Timeout = 15000)>]
 let ``GetParallelTiers returns empty for empty graph`` () =
     let graph = ProjectGraph()
     test <@ graph.GetParallelTiers() |> List.isEmpty @>
 
-// GetTopologicalOrder returns empty for empty graph
 [<Fact(Timeout = 15000)>]
 let ``GetTopologicalOrder returns empty for empty graph`` () =
     let graph = ProjectGraph()
