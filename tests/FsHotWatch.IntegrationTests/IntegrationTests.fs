@@ -318,10 +318,14 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
 // ---------------------------------------------------------------------------
 // Helper: create a temp directory with a single .fs returning (dir, filePath)
 // ---------------------------------------------------------------------------
-let private withTempFsFile (content: string) (action: string -> string -> 'a) =
+/// As `withTempFsFile`, but the caller names the file. FSHW-WAIT-001 is scoped
+/// to TEST sources by file name, so a control for it has to be written to a
+/// `*Tests.fs` — under the default `Temp.fs` the rule is out of scope and every
+/// assertion about it would pass for that reason instead of the intended one.
+let private withTempFsFileNamed (fileName: string) (content: string) (action: string -> string -> 'a) =
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-test-{Guid.NewGuid():N}")
     Directory.CreateDirectory(dir) |> ignore
-    let filePath = Path.Combine(dir, "Temp.fs")
+    let filePath = Path.Combine(dir, fileName)
     File.WriteAllText(filePath, content)
 
     try
@@ -331,6 +335,9 @@ let private withTempFsFile (content: string) (action: string -> string -> 'a) =
             Directory.Delete(dir, true)
         with _ ->
             ()
+
+let private withTempFsFile (content: string) (action: string -> string -> 'a) =
+    withTempFsFileNamed "Temp.fs" content action
 
 // ---------------------------------------------------------------------------
 // Helper: set up checker + pipeline + project options for a temp file
@@ -1036,7 +1043,7 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
 // on a deliberately-violating snippet before its green is worth anything.
 // ===========================================================================
 
-let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list =
+let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list =
     let repoRoot = findRepoRoot ()
     let rulesBin = conventionRulesPath.Value
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -1051,7 +1058,7 @@ let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list
 
     host.RegisterHandler(analyzers)
 
-    withTempFsFile source (fun _dir tmpFile ->
+    withTempFsFileNamed fileName source (fun _dir tmpFile ->
         match checkTempFile checker tmpFile with
         | Some checkResult ->
             // The fixture MUST parse. An offside-broken source yields an empty
@@ -1065,6 +1072,10 @@ let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list
             waitForTerminalStatus host "analyzers" 15000
             host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
         | None -> failwith "FCS failed to check temp file")
+
+/// The default fixture name — deliberately NOT a test source, so FSHW-WAIT-001
+/// is out of scope for every pre-existing control.
+let private runRulesOn (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list = runRulesOnFile "Temp.fs" source
 
 /// Build an F# source file from explicit lines. NOT a `\`-continuation string:
 /// that strips the leading whitespace of each continued line, which silently
@@ -1249,6 +1260,106 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
         let findings =
             runRulesOn source
             |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
+
+        test <@ findings.IsEmpty @>)
+
+/// A self-contained stand-in for the assertion + polling names FSHW-WAIT-001
+/// keys on. The rule is syntactic, so structurally identical locals reproduce it
+/// — and keeping the fixture type-correct means a "stays silent" assertion
+/// cannot pass because the source failed to parse.
+let private waitPreamble =
+    [ "module Test"
+      "open System.Threading"
+      "module Assert ="
+      "    let True (condition: bool, message: string) = if not condition then failwith message"
+      "    let False (condition: bool, message: string) = if condition then failwith message"
+      "let test (assertion: Microsoft.FSharp.Quotations.Expr<bool>) = ignore assertion"
+      "let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) ="
+      "    ignore (write, hasEvent, timeoutMs)" ]
+
+/// The 2026-08-12 flake, reintroduced verbatim. Written to a `*Tests.fs`: the
+/// rule is scoped to test sources, so the file NAME is part of the fixture.
+let private flakeShapeSource =
+    fsSource (
+        waitPreamble
+        @ [ "let flakeShape () ="
+            "    use signal = new ManualResetEventSlim(false)"
+            "    Thread.Sleep(100)"
+            "    System.IO.File.WriteAllText(\"/tmp/fshw-does-not-exist\", \"{}\")"
+            "    Assert.True(signal.Wait(5000), \"expected watcher callback within 5s\")"
+            "let unquoteFlavour () ="
+            "    use signal = new ManualResetEventSlim(false)"
+            "    System.Threading.Thread.Sleep(100)"
+            "    test <@ signal.Wait(5000) @>" ]
+    )
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WAIT-001 fires on a sleep that synchronises with an event assertion`` () =
+    withAnalyzerGate (fun () ->
+        let findings =
+            runRulesOnFile "WaitControlTests.fs" flakeShapeSource
+            |> List.filter (fun e -> e.Message.Contains "not synchronisation")
+
+        // One per shape: Assert.True(signal.Wait …) and test <@ signal.Wait … @>.
+        test <@ findings.Length = 2 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+
+        // The message has to point at the fix and at the escape hatch, or the
+        // rule is just a red light: naming `WriteUntil` (the fixture's only
+        // mutation) and the opt-out marker is what makes it actionable.
+        test
+            <@
+                findings
+                |> List.forall (fun e -> e.Message.Contains "WriteUntil" && e.Message.Contains "FSHW-WAIT-001 ok")
+            @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WAIT-001 stays silent on deliberate sleeps`` () =
+    withAnalyzerGate (fun () ->
+        // The negative control that decides whether this rule is shippable. Every
+        // shape here is live in the suite, and a rule that fires on any of them is
+        // a rule that gets suppressed rather than obeyed.
+        let source =
+            fsSource (
+                waitPreamble
+                @ [ // A NEGATIVE assertion — nothing may arrive inside the window.
+                    // This one DOES wait on the signal inside an assertion, so only
+                    // the opt-out comment keeps it quiet: it is the escape hatch's
+                    // control, and deleting the comment must turn this red.
+                    "let deliberateNegative () ="
+                    "    use signal = new ManualResetEventSlim(false)"
+                    "    // FSHW-WAIT-001 ok: negative assertion — nothing may arrive inside 300ms"
+                    "    Thread.Sleep(300)"
+                    "    Assert.False(signal.Wait(0), \"nothing should have fired\")"
+                    // `.IsSet` as a POLL PREDICATE is not a fixed-budget wait.
+                    "let probedProperly () ="
+                    "    use signal = new ManualResetEventSlim(false)"
+                    "    Thread.Sleep(10)"
+                    "    probeLoop (fun _ -> ()) (fun () -> signal.IsSet) 15000"
+                    "    Assert.True(true, \"done\")"
+                    // A pause with no event wait after it at all.
+                    "let plainPause () ="
+                    "    let mutable called = false"
+                    "    Thread.Sleep(50)"
+                    "    Assert.False(called, \"nothing called\")" ]
+            )
+
+        let findings =
+            runRulesOnFile "WaitControlTests.fs" source
+            |> List.filter (fun e -> e.Message.Contains "not synchronisation")
+
+        test <@ findings.IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WAIT-001 is scoped to test sources`` () =
+    withAnalyzerGate (fun () ->
+        // The SAME source that fires twice as `WaitControlTests.fs` must report
+        // nothing as `Temp.fs`. Production code sleeps for reasons this rule has
+        // no opinion about, and everything its message recommends (probeLoop,
+        // waitUntilTrue, WatchedDir) lives in the test assemblies.
+        let findings =
+            runRulesOn flakeShapeSource
+            |> List.filter (fun e -> e.Message.Contains "not synchronisation")
 
         test <@ findings.IsEmpty @>)
 
@@ -3142,6 +3253,12 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
             // flight, then HAMMER status concurrently. Each call MUST return
             // within a bounded window — a wedged daemon would block here, which
             // is exactly the 2026-06-16 symptom.
+            //
+            // FSHW-WAIT-001 ok: this sleep opens the window the test measures
+            // INSIDE (status stays responsive WHILE a rebuild runs) — it is not a
+            // wait for an event to arrive, and every probe below carries its own
+            // 8s budget. The `build` here is a literal `sleep 5`, so 1.5s lands
+            // mid-build with 3.5s of margin.
             Thread.Sleep(1500)
 
             let statusReturnedWithin (ms: int) =
@@ -3165,6 +3282,8 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                 if not (statusReturnedWithin 8000) then
                     allResponsive <- false
 
+                // FSHW-WAIT-001 ok: spacing between probes so they spread across
+                // the in-flight-build window. Nothing is awaited here.
                 Thread.Sleep(400)
 
             if not allResponsive then

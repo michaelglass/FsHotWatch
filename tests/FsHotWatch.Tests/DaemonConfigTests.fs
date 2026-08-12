@@ -8,6 +8,7 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.Tests.WatchedDir
 
 // --- Helper: defaults with known cache backend ---
 
@@ -1374,62 +1375,63 @@ let ``watchRepoConfigFile returns no-op disposable when no config file exists`` 
 [<Collection(FileWatchCollectionName)>]
 type RealWatchTests() =
 
+    // All three run through `withWatchedDir` (tests/FsHotWatch.Tests/WatchedDir.fs).
+    // The setup lambda seeds the file and returns the live watcher; the body then
+    // has NO path to write to and exactly one mutation — `WriteUntil`, which
+    // rewrites until the callback fires and hands back whether it ever did. The
+    // shape these tests used to have (sleep 100ms, write once, `signal.Wait(5000)`)
+    // is not expressible against this fixture, which is the point: it was a coin
+    // flip against 4-20s of FSEvents cold-start latency on a fresh temp dir.
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile invokes callback when .fshw.json is written``() =
-        withTempDir "cfg-watch-write" (fun tmpDir ->
-            let configPath = Path.Combine(tmpDir, ".fshw.json")
-            File.WriteAllText(configPath, "{}")
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        let observed = ref ""
 
-            use signal = new System.Threading.ManualResetEventSlim(false)
-            let observed = ref ""
-
-            use _watcher =
-                watchConfigFile configPath (fun reason ->
+        withWatchedDir
+            "cfg-watch-write"
+            (fun dir ->
+                watchConfigFile (dir.Seed(".fshw.json", "{}")) (fun reason ->
                     observed.Value <- reason
-                    signal.Set())
+                    signal.Set()))
+            (fun dir ->
+                let fired =
+                    dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
 
-            // A single write behind a 100ms "give the watcher a moment" sleep is a
-            // coin flip. On macOS a brand-new temp directory carries 4-20s of
-            // FSEvents cold-start latency, so the one write that mattered can land
-            // before the watcher is live and simply never be reported. Write
-            // REPEATEDLY until the callback fires - which is what `probeLoop`
-            // exists for, and why the other FSEvents tests use it.
-            probeLoop (fun _ -> File.WriteAllText(configPath, """{"lint": false}""")) (fun () -> signal.IsSet) 15000
-
-            Assert.True(signal.IsSet, "expected watcher callback within 15s")
-            test <@ observed.Value.Contains("config") @>)
+                Assert.True(fired, "expected watcher callback within 15s")
+                test <@ observed.Value.Contains("config") @>)
 
     [<Fact(Timeout = 20000)>]
     member _.``watchRepoConfigFile watches existing config file``() =
-        withTempDir "cfg-watch-existing" (fun tmpDir ->
-            File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
-            use signal = new System.Threading.ManualResetEventSlim(false)
-            use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
-            probeLoop
-                (fun _ -> File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}"""))
-                (fun () -> signal.IsSet)
-                15000
+        use signal = new System.Threading.ManualResetEventSlim(false)
 
-            Assert.True(signal.IsSet, "expected callback within 15s"))
+        withWatchedDir
+            "cfg-watch-existing"
+            (fun dir ->
+                dir.Seed(".fshw.json", "{}") |> ignore
+                watchRepoConfigFile dir.Root (fun _ -> signal.Set()))
+            (fun dir ->
+                let fired =
+                    dir.WriteUntil(".fshw.json", """{"lint": false}""", (fun () -> signal.IsSet))
+
+                Assert.True(fired, "expected callback within 15s"))
 
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
-        withTempDir "cfg-watch-invalid" (fun tmpDir ->
-            let configPath = Path.Combine(tmpDir, ".fshw.json")
-            File.WriteAllText(configPath, "{}")
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        let observed = ref ""
 
-            use signal = new System.Threading.ManualResetEventSlim(false)
-            let observed = ref ""
-
-            use _watcher =
-                watchConfigFile configPath (fun reason ->
+        withWatchedDir
+            "cfg-watch-invalid"
+            (fun dir ->
+                watchConfigFile (dir.Seed(".fshw.json", "{}")) (fun reason ->
                     observed.Value <- reason
-                    signal.Set())
+                    signal.Set()))
+            (fun dir ->
+                let fired =
+                    dir.WriteUntil(".fshw.json", "{not valid json", (fun () -> signal.IsSet))
 
-            probeLoop (fun _ -> File.WriteAllText(configPath, "{not valid json")) (fun () -> signal.IsSet) 15000
-
-            Assert.True(signal.IsSet, "expected watcher callback within 15s")
-            Assert.Contains("invalid", observed.Value))
+                Assert.True(fired, "expected watcher callback within 15s")
+                Assert.Contains("invalid", observed.Value))
 
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
 // Direct tests with injected clocks so BOTH arms of every watcher branch are
