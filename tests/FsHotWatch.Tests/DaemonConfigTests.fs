@@ -1388,12 +1388,15 @@ type RealWatchTests() =
                     observed.Value <- reason
                     signal.Set())
 
-            // Give the FSW a moment to become active.
-            System.Threading.Thread.Sleep(100)
+            // A single write behind a 100ms "give the watcher a moment" sleep is a
+            // coin flip. On macOS a brand-new temp directory carries 4-20s of
+            // FSEvents cold-start latency, so the one write that mattered can land
+            // before the watcher is live and simply never be reported. Write
+            // REPEATEDLY until the callback fires - which is what `probeLoop`
+            // exists for, and why the other FSEvents tests use it.
+            probeLoop (fun _ -> File.WriteAllText(configPath, """{"lint": false}""")) (fun () -> signal.IsSet) 15000
 
-            File.WriteAllText(configPath, """{"lint": false}""")
-
-            Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+            Assert.True(signal.IsSet, "expected watcher callback within 15s")
             test <@ observed.Value.Contains("config") @>)
 
     [<Fact(Timeout = 20000)>]
@@ -1402,9 +1405,12 @@ type RealWatchTests() =
             File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
             use signal = new System.Threading.ManualResetEventSlim(false)
             use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
-            System.Threading.Thread.Sleep(100)
-            File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
-            Assert.True(signal.Wait(5000), "expected callback within 5s"))
+            probeLoop
+                (fun _ -> File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}"""))
+                (fun () -> signal.IsSet)
+                15000
+
+            Assert.True(signal.IsSet, "expected callback within 15s"))
 
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
@@ -1420,11 +1426,9 @@ type RealWatchTests() =
                     observed.Value <- reason
                     signal.Set())
 
-            System.Threading.Thread.Sleep(100)
+            probeLoop (fun _ -> File.WriteAllText(configPath, "{not valid json")) (fun () -> signal.IsSet) 15000
 
-            File.WriteAllText(configPath, "{not valid json")
-
-            Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+            Assert.True(signal.IsSet, "expected watcher callback within 15s")
             Assert.Contains("invalid", observed.Value))
 
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
