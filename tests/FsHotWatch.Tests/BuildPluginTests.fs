@@ -1317,7 +1317,14 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
     // and would read the flag before the second build's BuildDone lands. (That
     // already-satisfied-wait shape is the same class of bug as AUTOMATION-224
     // itself — worth not reproducing in its own regression test.)
-    waitUntil (fun () -> (cacheKeyFn fileEvt).IsSome) 5000
+    // `waitUntilTrue`, not `waitUntil`: the unit-returning version gives up
+    // SILENTLY on timeout, so a loaded machine that missed the 5s budget failed
+    // on the assertion below — which reads as "force-rebuild was never spent by
+    // the build", a real bug's signature, manufactured by slowness. Asserting
+    // the wait itself separates "it did not happen" from "we stopped looking".
+    let built = waitUntilTrue (fun () -> (cacheKeyFn fileEvt).IsSome) 11000
+
+    test <@ built @>
 
     let afterBuild = cacheKeyFn fileEvt
     test <@ afterBuild.IsSome @>
