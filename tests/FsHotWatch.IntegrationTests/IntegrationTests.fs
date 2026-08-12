@@ -2578,7 +2578,7 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
             let task = Async.StartAsTask(daemon.Run(cts.Token))
             daemon.Ready.Wait(TimeSpan.FromSeconds(30.0)) |> ignore
 
-            // FSEvents cold-start is 4-20s on macOS, so this probe-loops writes rather
+            // FSEvents cold-start is an unbounded window on macOS, so this probe-loops writes rather
             // than writing once and waiting.
             let hasAssetsProjectChange () =
                 projectChanges

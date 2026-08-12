@@ -65,15 +65,13 @@ let private emitBatchAndQuiesce (host: PluginHost) (files: string list) =
     host.EmitBatchChecked(fakeBatchChecked files)
     waitForQuiescent host 10000
 
-/// Emit a successful BuildCompleted and wait for a terminal status. Unlike
-/// FileChecked/BatchChecked this handler spawns the test run via `Async.Start`, so the
-/// work outlives the handler and quiescence could return early — a terminal await is the
-/// right sync.
+/// Emit a successful BuildCompleted and wait for a terminal status. This handler spawns
+/// the test run via `Async.Start`, so the work outlives it and quiescence could return
+/// early — a terminal await is the right sync.
 ///
-/// Tests that index files emit this FIRST: the freshness sidecar's `markClean` only fires
-/// for FileChecked events arriving after a BuildCompleted has been observed in the
-/// session. That mirrors fshw's cold scan, where BuildPlugin's terminal status gates the
-/// FCS tier checks.
+/// Tests that index files emit this FIRST: the sidecar's `markClean` only fires for
+/// FileChecked events arriving after a BuildCompleted has been observed in the session,
+/// mirroring fshw's cold scan where BuildPlugin's terminal status gates the FCS tiers.
 let private emitBuildAndWaitTerminal (host: PluginHost) =
     let await = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
@@ -462,7 +460,6 @@ let ``FileChecked does not set Running status`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // Completed (success path) and Failed (error path) are both acceptable here.
         match status.Value with
         | Running _ -> Assert.Fail("FileChecked must not set Running — causes status cycling in the UI")
         | _ -> ())
@@ -794,15 +791,11 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, "{}")
 
-        // The subject is the EMISSION — that a `run-tests` force-run fires
-        // TestRunCompleted where a third-party subscriber can see it. Coverage is the
-        // observer, not the thing under test.
-        //
-        // With no cobertura XML on disk, CoveragePlugin polls `pollForFiles searchDir 50
-        // 100` — a designed 5s floor (measured: 5122ms idle), which dilates past 10s
-        // under a saturated thread pool. Seeding one file makes it return on attempt 0.
-        // The assertion is unweakened: the plugin still runs a real check and still has
-        // to reach a terminal status.
+        // Coverage is the observer here, not the thing under test. With no cobertura XML
+        // on disk it polls `pollForFiles searchDir 50 100` — a designed 5s floor
+        // (measured: 5122ms idle) that dilates past 10s under a saturated thread pool.
+        // Seeding one file makes it return on attempt 0 without weakening anything: the
+        // plugin still runs a real check and still has to reach a terminal status.
         File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), trivialCoberturaXml)
 
         let host, _ = withSingleProjectHarness dir "TestProject"
@@ -831,8 +824,7 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
-    // Framework-managed plugins need no explicit dispose; this only pins that construction
-    // does not throw.
+    // Framework-managed plugins need no explicit dispose; this pins only construction.
     let _handler = create ":memory:" "/tmp" None None None None None []
     ()
 
@@ -954,7 +946,7 @@ let ``RerunQueued path records previous run outcome to history before starting r
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        // Wait until run 1 is actually executing before queueing the rerun.
+
         waitUntil
             (fun () ->
                 match host.GetStatus("test-prune") with
@@ -979,7 +971,6 @@ let ``RerunQueued path records previous run outcome to history before starting r
                 | FailedRun _ -> true
                 | _ -> false)
 
-        // Run 1 definitely failed — the script always exits 1.
         test <@ firstFailed @>)
 
 // ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering
@@ -1103,7 +1094,6 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 
         let testFile = Path.Combine(tmpDir, "MyLib.fsx")
 
-        // Real FCS, to exercise the Ok analysisResult path.
         emitFileAndWait checker pipeline host testFile (testSource "MyLib")
         |> Async.RunSynchronously
 
@@ -1169,7 +1159,6 @@ let beta () = ()
 
         waitForPluginIdle host "test-prune" 10.0
 
-        // Flush pending analysis to DB by firing BuildSucceeded.
         let firstBuild = beginAwaitTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
@@ -1250,7 +1239,6 @@ let computeTest () =
 
         emitBuildAndWaitTerminal host
 
-        // Initial index: both files analysed, edges written to DB.
         let libResult =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
@@ -1697,11 +1685,10 @@ let ``all changed symbols with no covering test complete green without running``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // The orphan must be INDEXED, not merely absent: the guarantee under test is that
-        // a symbol PROVABLY has no covering test, and only an index that knows the symbol
-        // can prove it. Seeding the queue against a DB that never heard of
-        // `Orphan.uncovered` would assert the same green over "the index cannot answer" —
-        // the silent-green bug, not this feature.
+        // The orphan must be INDEXED, not merely absent: only an index that knows the
+        // symbol can prove it has no covering test. Against a DB that never heard of
+        // `Orphan.uncovered`, this would assert the same green over "the index cannot
+        // answer" — the silent-green bug, not this feature.
         let orphan: SymbolInfo =
             { FullName = "Orphan.uncovered"
               Kind = SymbolKind.Value
@@ -1826,7 +1813,6 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
         // unreachable test method would make the whole test pass vacuously.
         test <@ not (db.QueryAffectedTests [ "Lib.foo" ]).IsEmpty @>
 
-        // Genuine outstanding debt: changed, and no covering run has passed since.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
 
         // Stamp the incompatible version an older TestPrune.Core would have left, so the
@@ -1901,7 +1887,6 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
         test <@ (db.GetAllSymbolNames()).Contains "Lib.stillHere" @>
         test <@ not ((db.GetAllSymbolNames()).Contains "Lib.renamedAway") @>
 
-        // Real debt, queued under a name the index cannot resolve.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.renamedAway" ])
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -2081,7 +2066,6 @@ let lazyComputeTest () =
 
         emitBuildAndWaitTerminal host
 
-        // Seed the DB with the initial baseline.
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
@@ -2169,15 +2153,13 @@ let ``skip tests when 0 affected classes and not cold start`` () =
 
         host.RegisterHandler(handler)
 
-        // Cold start: runs everything.
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>
 
-        // No changed symbols this time.
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 12.0
-        test <@ runCount = 1 @>) // still 1, not 2
+        test <@ runCount = 1 @>) // skipped: no changed symbols
 
 // ── Dependency-fanout (DependencyFanout + PluginCtx.ProjectGraph) ─────────────
 // A dependency/PackageReference change flips a test project's dependency fingerprint (its
@@ -2243,11 +2225,10 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
 
         host.RegisterHandler(handler)
 
-        // Cold start: runs all, records the baseline fingerprint.
+        // Cold start records the baseline fingerprint.
         emitBuildAndSettle host
         test <@ runCount = 1 @>
 
-        // No dependency change and no symbols.
         emitBuildAndSettle host
         test <@ runCount = 1 @>
 
@@ -2294,7 +2275,6 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
         emitBuildAndSettle host
         test <@ runCount = 1 @>
 
-        // Two more builds, DLL unchanged → both skip; runCount stays 1.
         emitBuildAndSettle host
         emitBuildAndSettle host
         test <@ runCount = 1 @>)
@@ -2422,7 +2402,6 @@ let ``formatFailureReport names the run log it was actually given`` () =
         formatFailureReport "Intelligence.Tests.Integration" (FsHotWatch.RunLog.Ref.Written path) output
         |> String.concat "\n"
 
-    // A reader can copy the path and go.
     test <@ report.Contains(path) @>
     test <@ not (report.Contains("without the saved log")) @>
 
@@ -2444,11 +2423,10 @@ let ``formatFailureReport states WHY there is no log rather than naming one`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``the console tail cannot reach the head — which is why the log exists`` () =
-    // 60 lines: the cause is line 1 and the other 59 are the indistinguishable repeated
-    // startup logging that filled all forty lines of the real tail. A fixed tail
-    // structurally cannot reach a head — that is why the file is worth writing. This is
-    // also the positive control for the message tests above: if it ever passes trivially,
-    // they were proving nothing.
+    // The cause is line 1; the other 59 are the repeated startup logging that filled all
+    // forty lines of the real tail. A fixed tail structurally cannot reach a head — that
+    // is why the file is worth writing, and this is the positive control for the message
+    // tests above.
     let output =
         [ "Test shard pool 'intelligence_test_9f80_integration' is already in use by PID 18024"
           yield! List.replicate 59 "Applying migration 20250714_AddThing" ]
@@ -2587,7 +2565,6 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
         test <@ result.IsSome @>
         let doc = JsonDocument.Parse(result.Value)
         test <@ doc.RootElement.GetProperty("noTestsMatched").GetBoolean() @>
-        // Per-project: neither "passed" nor "failed".
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
 
@@ -2641,9 +2618,10 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // Kick off the background run (holds RunExclusive "tests"), and give it a moment
-        // to acquire the slot before forcing a rerun into it.
+        // Kick off the background run, which holds RunExclusive "tests".
         host.EmitBuildCompleted(BuildSucceeded)
+
+        // Give it a moment to acquire the slot before forcing a rerun into it.
         Thread.Sleep(300)
 
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -3251,7 +3229,6 @@ let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura unto
 
         ingestAndEmitCoverage db repoRoot (Some sharedOut) [ missingRaw ]
 
-        // Untouched: still the prior good document.
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
 [<Fact>]
@@ -3531,7 +3508,6 @@ let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` 
         let migration = Path.Combine(migrationsDir, "001_init.sql")
         File.WriteAllText(migration, "CREATE TABLE a (id int);")
 
-        // Same plugin config, salted by a glob that matches the migration.
         let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
         let cacheKeyFn = handler.CacheKey.Value
 
@@ -3574,10 +3550,8 @@ let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to t
         let kSalted = ((salted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
         let kUnsalted = ((unsalted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
 
-        // The two []-configured handlers agree, AND neither includes a depends-on
-        // term — verified structurally below via the helper.
         test <@ kSalted = kUnsalted @>
-        // And the salt helper returns "" (no entry added) when dependsOn is empty.
+        // "" means no merkle entry was added at all, not an entry with an empty value.
         test <@ externalDependencyHash tmpDir [] = "" @>)
 
 [<Fact(Timeout = 15000)>]
@@ -3593,8 +3567,6 @@ let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-d
         let kNoMatch =
             ((handlerNoMatch.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
 
-        // A glob that matches no file on disk hashes to "" → no salt entry → the
-        // key is identical to the empty-dependsOn key.
         test <@ kEmpty = kNoMatch @>
         test <@ externalDependencyHash tmpDir [ "does-not-exist/**" ] = "" @>)
 
@@ -3611,38 +3583,30 @@ let ``externalDependencyHash: deterministic and content-sensitive; missing files
         let globs = [ "ext/**" ]
         let h1 = externalDependencyHash tmpDir globs
         let h2 = externalDependencyHash tmpDir globs
-        // Deterministic across calls (sorted paths, content hash).
+        // Deterministic: sorted paths, content hash.
         test <@ h1 = h2 @>
         test <@ h1 <> "" @>
 
-        // Content change moves the hash.
         File.WriteAllText(f1, "ONE-changed")
         let h3 = externalDependencyHash tmpDir globs
         test <@ h3 <> h1 @>
 
-        // Deleting a matched file moves the hash; a now-empty match set → "".
+        // An emptied match set hashes back to "".
         File.Delete f1
         File.Delete f2
         let h4 = externalDependencyHash tmpDir globs
         test <@ h4 = "" @>)
 
-// ---------------------------------------------------------------------------
-// AUTOMATION-98 finding 6 — the cache key must not pay for inputs it discards.
-// ---------------------------------------------------------------------------
+// The cache key must not pay for inputs it discards. The `dependsOn` hash was computed
+// EAGERLY, above the `match event with`, so every event paid for it — including
+// `FileChecked`, which never splices it and which fires once PER FILE. With one glob
+// configured, a cold scan of N files did N full-repo SafeWalks plus a SHA256 of every
+// matched file, and threw all N results away. It was free only because no consumer sets
+// `dependsOn`; the day one does, a cold scan goes quadratic.
 //
-// The regression this pins: the `dependsOn` hash was computed EAGERLY, above the
-// `match event with`, so EVERY event paid for it — including `FileChecked`, which
-// never splices it. And `FileChecked` is one event PER FILE, not per batch (the
-// comment justifying the eager computation asserted the opposite). With one glob
-// configured, a cold scan of N files therefore did N full-repo SafeWalks, each
-// followed by a SHA256 of every matched file, and threw all N results away. It
-// was free only because no consumer sets `dependsOn` — the day one does, a cold
-// scan goes quadratic.
-//
-// `cacheKeyFor` takes its state as thunks precisely so this is countable.
-//
-// RED-BEFORE-GREEN: hoist any of these three thunks to a value at the top of
-// `cacheKeyFor` and the FileChecked counts go from 0 to 1.
+// `cacheKeyFor` takes its state as thunks precisely so this is countable. RED-BEFORE-GREEN:
+// hoist any thunk to a value at the top of `cacheKeyFor` and the FileChecked counts go
+// from 0 to 1.
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
@@ -3678,8 +3642,8 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     // It still produces a key — it is a pure function of THIS file.
     test <@ key.IsSome @>
 
-    // And it computed nothing else. The dependsOn one is the finding; the others
-    // are pinned with it so a future edit can't quietly re-hoist a sibling instead.
+    // dependsOn is the finding; the siblings are pinned with it so a future edit cannot
+    // quietly re-hoist one of them instead.
     test <@ dependsOnCalls = 0 @>
     test <@ pendingQueueCalls = 0 @>
     test <@ changedSymbolsCalls = 0 @>
@@ -3689,8 +3653,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
-    // The other half of the contract: thunking must not have made the salt vanish.
-    // BuildCompleted is the arm the dependsOn salt exists for, and it must force it.
+    // The other half: thunking must not have made the salt vanish on the arm it exists for.
     let mutable dependsOnCalls = 0
     let mutable changedSymbolsCalls = 0
 
@@ -3715,9 +3678,9 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
     test <@ dependsOnCalls = 3 @>
     test <@ changedSymbolsCalls = 3 @>
 
-    // Editing a dependsOn-matched file moves the key (cache miss → genuine re-run).
+    // Editing a matched file moves the key: a miss, so a genuine re-run.
     test <@ salted <> resalted @>
-    // No dependsOn → the entry is omitted, so the key differs from any salted one.
+    // No dependsOn omits the entry entirely, so the key differs from any salted one.
     test <@ unsalted <> salted @>
 
 [<Fact(Timeout = 10000)>]
@@ -3741,21 +3704,13 @@ let ``dependsOnGlobToRegex: ** crosses dirs, * does not, literals match exactly`
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same key is a miss and reports green`` () =
-    // End-to-end replay-suppression test exercising the real task cache.
+    // The same rule as the unit test above, end to end against the real task cache. The
+    // replay happens at the framework level BEFORE Update runs, keyed by the
+    // BuildCompleted merkle, so the load-bearing assertion is that after a FAILING cycle
+    // no entry exists under that key.
     //
-    // Cycle 1 (FAIL) via BuildCompleted: cold-start runs the suite; flag present
-    //   → `sh` exits 1 → TestsFinished(failed). The cache-replay bug operates at
-    //   the framework level BEFORE Update runs, keyed by the BuildCompleted
-    //   merkle. The root-cause assertion is therefore: after a FAILING cycle, NO
-    //   entry exists under that key — so a subsequent BuildCompleted can only be
-    //   a cache MISS (re-run), never a replay of the stale red ("green tree read
-    //   as red"). On the broken code the Failed status + red diagnostics were
-    //   cached here and replayed on the next matching key.
-    //
-    // Cycle 2 (PASS) via the `run-tests` command: flag removed. `run-tests`
-    //   forces a real re-run (a warm BuildCompleted with no changed symbols would
-    //   take the impact "skip" path and not actually re-execute), so this proves
-    //   the tree now genuinely reports green and the ledger clears.
+    // Cycle 2 is driven by `run-tests`, not BuildCompleted: a warm BuildCompleted with no
+    // changed symbols takes the impact skip path and never re-executes.
     withTempDir "tp-fail-not-cached" (fun tmpDir ->
         let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
         let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
@@ -3780,13 +3735,11 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
 
-        // The key a GREEN run would be written under. Computed from the pure `cacheKeyFor`
-        // rather than from the live handler, because the live handler (correctly) refuses
-        // to produce a BuildCompleted key at all until this process has test evidence
-        // (AUTOMATION-161) — and the question here is not "does the plugin participate",
-        // it is "was a FAILING outcome written under the key a passing one would use".
-        // Same merkle terms the plugin's own thunks feed in at this point: no changed
-        // symbols, empty queue, no dependsOn, inner-loop scope, no outstanding red.
+        // The key a GREEN run would be written under, computed from the pure `cacheKeyFor`
+        // rather than the live handler: the handler correctly refuses a BuildCompleted key
+        // until this process has test evidence (AUTOMATION-161), and the question here is
+        // whether a FAILING outcome was written under the key a passing one would use.
+        // Same merkle terms the plugin's own thunks feed in at this point.
         let computedKey =
             (cacheKeyFor
                 (fun () -> FsHotWatch.CheckCache.sha256Hex "")
@@ -3798,30 +3751,28 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
                 (BuildCompleted BuildSucceeded))
                 .Value
 
-        // --- Cycle 1: FAIL (cold BuildCompleted runs the suite) ---
+        // Cycle 1: FAIL (a cold BuildCompleted runs the suite).
         File.WriteAllText(flag, "")
         let await1 = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await1.Wait(TimeSpan.FromSeconds 12.0) |> ignore
 
-        // Status is non-green and the ledger holds a red after cycle 1.
         match host.GetStatus("test-prune") with
         | Some(Failed _) -> ()
         | other -> Assert.Fail($"cycle 1 expected Failed status, got %A{other}")
 
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-        // ROOT CAUSE: the failing outcome must NOT have been written to the cache,
-        // so the matching BuildCompleted key is a guaranteed miss (no stale replay).
+        // No entry under the key, so the next matching BuildCompleted is a guaranteed miss.
         test <@ (cacheIface.TryGet key computedKey).IsNone @>
 
-        // --- Cycle 2: PASS (run-tests forces a real re-run) ---
+        // Cycle 2: PASS.
         File.Delete(flag)
         let await2 = beginAwaitNextTerminal host "test-prune"
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
         await2.Wait(TimeSpan.FromSeconds 12.0) |> ignore
 
-        // Re-ran and reports green; the cycle-1 red is gone (cleared, not replayed).
+        // Green, and the cycle-1 red is cleared rather than replayed.
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"cycle 2 expected Completed (green) status, got %A{other}")
@@ -3829,11 +3780,9 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
         test <@ host.GetErrorsByPlugin("test-prune") |> Map.isEmpty @>)
 
-// NOTE: ``run summary names the slowest project when 2+ projects ran`` was moved
-// to FsHotWatch.IntegrationTests — it spawns two real sh subprocesses with a
-// 1-second sleep dependency to assert "slowest" ordering, and the 5-second
-// terminal-wait window starves under heavy parallel test load (manifesting as
-// `List.last` ArgumentException when history is empty after timeout).
+// ``run summary names the slowest project when 2+ projects ran`` lives in
+// FsHotWatch.IntegrationTests: it spawns two real sh subprocesses with a 1-second sleep
+// dependency, and its terminal-wait window starves under heavy parallel test load.
 
 [<Fact(Timeout = 15000)>]
 let ``run summary omits slowest when only 1 project ran`` () =
@@ -3886,10 +3835,9 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
 
 [<Fact(Timeout = 15000)>]
 let ``executeTests runs project on BuildSucceeded`` () =
-    // Contract: BuildSucceeded means artifacts are guaranteed fresh (BuildPlugin
-    // owns the verification — see verifyArtifactsFresh). TestPrune does not
-    // second-guess the signal; if it sees BuildSucceeded, it runs every test
-    // project and never emits "binary is stale" warnings.
+    // BuildSucceeded means artifacts are guaranteed fresh — BuildPlugin owns that
+    // verification (`verifyArtifactsFresh`). TestPrune does not second-guess the signal,
+    // so it never emits "binary is stale" warnings of its own.
     withTempDir "tp-runs-on-build-succeeded" (fun tmpDir ->
         let host, sentinel = withSingleProjectHarness tmpDir "TestProj"
 
@@ -3908,28 +3856,18 @@ let ``executeTests runs project on BuildSucceeded`` () =
 
 [<Fact(Timeout = 25000)>]
 let ``AUTOMATION-161: a cold-start BuildCompleted must NOT replay a test result from the task cache`` () =
-    // THIS TEST USED TO ASSERT THE BUG.
+    // Asserting the opposite here — that session 2 must NOT re-create the sentinel because
+    // the cached entry replays — is asserting the bug, and it passed for its whole life. A
+    // replay SKIPS the handler, so no `TestsFinished` lands and `LastCoverage` stays empty:
+    // the plugin then tells `test-scope` (and `.fshw/verdict.json`) that NO TESTS RAN while
+    // its own status line says "1 passed (cached)", and both `check` and `confirm` exit 3
+    // on a green tree.
     //
-    // It was called "cold-start BuildCompleted with unchanged state replays from task
-    // cache", and it pinned exactly that: session 2 must NOT re-create the sentinel,
-    // because the cached entry replays. What nobody traced was the consequence. A replay
-    // SKIPS THE HANDLER, so no run happens and no `TestsFinished` lands, so `LastCoverage`
-    // stays empty — and the plugin then tells `test-scope` (and through it
-    // `.fshw/verdict.json`) that NO TESTS RAN, while its own status line reports
-    // "1 passed (cached)". One tree, two surfaces, opposite answers. Both `fshw check`
-    // and `fshw confirm` exited 3 — "NO TESTS RAN — nothing was verified" — on a green
-    // tree, on the second run, every time.
-    //
-    // The belief underneath was that the cache key proves the inputs are identical. It
-    // does not. On a cold scan `BuildCompleted` is dispatched BEFORE the FCS pass, so
-    // `changed-symbols` is empty whatever the tree contains; what makes the entry sound in
-    // a WARM daemon is not the key but the symbol-diff pipeline that runs after it, and a
-    // new process has no such run to supersede the replay with.
-    //
-    // So the rule inverts: a process may not assert a test result it has no record of
-    // running. Fail closed — run. (The fast path a repeat `confirm` actually wants runs
-    // through `.fshw/verdict.json`, which IS content-addressed to the tree AND to the
-    // producing binary — see `Verdict.priorConfirmation`.)
+    // The key does not prove the inputs are identical. On a cold scan BuildCompleted is
+    // dispatched BEFORE the FCS pass, so `changed-symbols` is empty whatever the tree
+    // holds; what makes the entry sound in a WARM daemon is the symbol-diff pipeline that
+    // runs after it, and a new process has no such run to supersede the replay with. So a
+    // process may not assert a test result it has no record of running.
     withTempDir "tp-cold-cache-replay" (fun tmpDir ->
         let taskCache =
             FsHotWatch.FileTaskCache.FileTaskCache(Path.Combine(tmpDir, "task-cache"))
@@ -3948,7 +3886,6 @@ let ``AUTOMATION-161: a cold-start BuildCompleted must NOT replay a test result 
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // Session 1: run once to populate the task cache with a prior-session result.
         do
             let dbPath1 = Path.Combine(tmpDir, "tp1.db")
             let host1 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
@@ -3959,13 +3896,11 @@ let ``AUTOMATION-161: a cold-start BuildCompleted must NOT replay a test result 
             host1.EmitBuildCompleted(BuildSucceeded)
             waitForTerminalStatus host1 "test-prune" 10000
 
-        // Delete the sentinel. Session 2 must RE-CREATE it: it holds no test evidence of
-        // its own, and it is about to be asked what its tests covered.
         if File.Exists sentinel then
             File.Delete sentinel
 
-        // Session 2: new plugin instance (a daemon restart / a fresh `--run-once`
-        // process) over the SAME on-disk cache and the SAME tree.
+        // Session 2 is a new plugin instance — a daemon restart, or a fresh `--run-once` —
+        // over the SAME on-disk cache and the SAME tree.
         let dbPath2 = Path.Combine(tmpDir, "tp2.db")
         let host2 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
 
@@ -3976,26 +3911,23 @@ let ``AUTOMATION-161: a cold-start BuildCompleted must NOT replay a test result 
         host2.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host2 "test-prune" 10000
 
-        // The run ACTUALLY happened.
+        // The run happened ...
         test <@ File.Exists sentinel @>
 
-        // And — the load-bearing half — the plugin SAYS so. `scope: none` here is the
-        // release blocker: `confirm` reads this and refuses ("NO TESTS RAN") on a tree
-        // the very same plugin's status line is simultaneously calling green.
+        // ... and the plugin SAYS so. `scope: none` here is the release blocker: `confirm`
+        // reads it and refuses ("NO TESTS RAN") on a tree the same plugin's status line is
+        // simultaneously calling green.
         let scope = host2.RunCommand("test-scope", [||]) |> Async.RunSynchronously
         test <@ scope.IsSome && scope.Value.Contains "\"scope\":\"full\"" @>)
 
 // =============================================================================
-// FCS cache-poisoning gate: don't flush symbols for files whose FCS check
-// produced Error-severity diagnostics. Cold-start FCS sometimes returns
-// "expected type X but here has type X" for files that compile cleanly
-// once warm; flushing those poisoned symbols overwrites the prior good DB
-// snapshot and breaks the cache-replay path on the next boot.
+// FCS cache-poisoning gate. Cold-start FCS sometimes returns "expected type X but here
+// has type X" for files that compile cleanly once warm, and flushing those poisoned
+// symbols overwrites the prior good DB snapshot, breaking cache replay on the next boot.
 // =============================================================================
 
-/// Returns a real FCS FileCheckResult for the given source — full type-check,
-/// real diagnostics. Used by the cache-poisoning gate tests below to feed
-/// realistic Error / Warning / clean diagnostic shapes through the plugin.
+/// A real FCS FileCheckResult — full type-check, real diagnostics — so the gate tests
+/// below see realistic Error / Warning / clean diagnostic shapes.
 let private checkSourceForReal (tmpDir: string) (fileName: string) (source: string) =
     async {
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -4015,7 +3947,6 @@ let ``hasFcsErrors returns false for ParseOnly`` () =
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns true for source with type error`` () =
     withTempDir "tp-poisoning-err" (fun tmpDir ->
-        // Type mismatch: assigning string to int → Error.
         let brokenSource =
             """module Broken
 let x : int = "not an int"
@@ -4046,8 +3977,7 @@ let answer = 42
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for warning-only source`` () =
     withTempDir "tp-poisoning-warn" (fun tmpDir ->
-        // Incomplete pattern match: warning, not error. FCS reports
-        // FS0025 at Warning severity. The gate must allow flush.
+        // An incomplete pattern match: FCS reports FS0025 at Warning severity.
         let warnSource =
             """module Warn
 let f x =
@@ -4060,7 +3990,7 @@ let f x =
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // Sanity: the source actually does have warning diagnostics.
+        // Sanity: the source really does carry warning diagnostics.
         let diagnostics =
             match result.CheckResults with
             | FullCheck cr -> cr.Diagnostics
@@ -4074,26 +4004,19 @@ let f x =
                 |> Array.forall (fun d -> d.Severity <> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
             @>
 
-        // Gate result: warnings alone do NOT block flush.
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
 
 // =============================================================================
-// F38 gate suppression symmetry — `hasFcsErrors` must apply the same
-// `parseNowarnCodes ∪ FcsSuppressedCodes` filter that
-// `Daemon.reportFcsDiagnostics` applies to the user-visible error stream.
-// Without the filter the gate trips on codes the user has already silenced
-// (e.g. FS1182 promoted to Error by `<TreatWarningsAsErrors>` + `#nowarn`),
-// killing TestPrune cache-replay across daemon restarts on cold scans.
+// `hasFcsErrors` must apply the same suppression filter (parseNowarnCodes plus
+// FcsSuppressedCodes) that `Daemon.reportFcsDiagnostics` applies to the user-visible
+// error stream. Without it the gate trips on codes the user has already silenced — e.g.
+// FS1182 promoted to Error by `<TreatWarningsAsErrors>` alongside `#nowarn` — killing
+// cache replay across daemon restarts on cold scans.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors respects per-file #nowarn directives`` () =
     withTempDir "tp-poisoning-nowarn" (fun tmpDir ->
-        // Source has a real Error-severity diagnostic (FS0001 type mismatch).
-        // `#nowarn "1"` in the source adds code 1 to the gate's effective
-        // suppression set via `parseNowarnCodes`. The gate must drop the
-        // diagnostic — symmetric with `reportFcsDiagnostics` — even though
-        // FCS itself still reports it at Severity = Error.
         let source =
             """#nowarn "1"
 module Test
@@ -4105,9 +4028,8 @@ let x : int = "not-an-int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // Sanity: FCS still emits an Error-severity diagnostic the gate would
-        // otherwise trip on. (`#nowarn` does not actually suppress upstream FCS
-        // errors; the gate's own suppression filter is what carries the day.)
+        // `#nowarn` does not suppress upstream FCS errors — FCS still reports FS0001 at
+        // Severity = Error, and the gate's own suppression filter is what must drop it.
         let hasErrorDiagnostic =
             match result.CheckResults with
             | FullCheck cr ->
@@ -4119,16 +4041,13 @@ let x : int = "not-an-int"
 
         test <@ hasErrorDiagnostic @>
 
-        // The bug pre-fix: gate sees raw `cr.Diagnostics` and trips. Post-fix:
-        // `parseNowarnCodes` puts FS1 in the suppressed set and the gate falls through.
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors respects configured FcsSuppressedCodes`` () =
     withTempDir "tp-poisoning-config" (fun tmpDir ->
-        // No `#nowarn` in source — caller passes the suppression set instead.
-        // This is the path daemons use to silence cold-scan-only noise codes
-        // (`fcsSuppressedCodes` in DaemonConfig). The gate must honour it.
+        // No `#nowarn` in source: the caller passes the set instead, which is how daemons
+        // silence cold-scan-only noise codes (`fcsSuppressedCodes` in DaemonConfig).
         let source =
             """module Test
 let x : int = "not-an-int"
@@ -4158,9 +4077,8 @@ let x : int = "not-an-int"
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors still trips on real error not covered by suppression`` () =
-    // Load-bearing regression: the symmetry fix must not weaken the F38 gate
-    // for diagnostics the user has NOT silenced. A real type error with no
-    // matching suppression must still hold the prior DB snapshot.
+    // The positive control for the two suppression tests above: they would both pass
+    // against a gate that had simply stopped firing.
     withTempDir "tp-poisoning-loadbearing" (fun tmpDir ->
         let source =
             """module Test
@@ -4180,14 +4098,10 @@ let x : int = "not-an-int"
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirty`` () =
-    // Path D contract (replaces the prior F38 "withhold" behaviour):
-    // dirty FCS results no longer block the symbol-DB write. Symbols flow
-    // through to the DB as normal; the protection that prevented Phase B
-    // from spuriously seeing "0 stored" is moved to the FsHotWatch-owned
-    // freshness sidecar, which marks the file `fcsClean = false`. Phase B
-    // detectChanges then bypasses the diff for that file rather than
-    // computing a phantom "all symbols changed" delta against an empty
-    // stored row set.
+    // Dirty FCS results do NOT block the symbol-DB write. The protection against Phase B
+    // seeing "0 stored" lives in the freshness sidecar, which marks the file
+    // `fcsClean = false` so detectChanges bypasses the diff rather than computing a
+    // phantom "all symbols changed" delta against an empty stored row set.
     withTempDir "tp-poisoning-persist-dirty" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -4231,23 +4145,19 @@ let badTypeUse : int = "not-an-int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // Confirm the result is poisoned (Error-severity diagnostics).
+        // Sanity: the result really is poisoned.
         test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
 
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
 
-        // Drive a flush via BuildSucceeded.
         emitBuildAndWaitTerminal host
 
-        // NEW contract: symbols ARE in the DB (gate no longer withholds the write).
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
         let freshDb = Database.create dbPath
         let symbols = freshDb.GetSymbolsInFile "Broken.fsx"
         test <@ not symbols.IsEmpty @>
 
-        // NEW contract: the freshness sidecar marks the file dirty so Phase B
-        // detectChanges bypasses it.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Broken.fsx" freshness) @>)
 
@@ -4296,18 +4206,11 @@ let cleanTest () = ()
 
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
-        // Item 3 ordering: BuildSucceeded fires FIRST (matches real fshw cold
-        // scan — BuildPlugin's terminal status gates FCS tier checks). The
-        // sidecar's `markClean` only fires for FileChecked events that arrive
-        // AFTER BuildCompleted has been observed in this session.
         emitBuildAndWaitTerminal host
 
         emitFileAndQuiesce host result
-        // BatchChecked drives the cohort-complete flush that persists
-        // accumulated FileChecked analysis to the DB.
         emitBatchAndQuiesce host [ cleanFile ]
 
-        // Symbols MUST be in DB.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
 
         let mutable testMethods: TestMethodInfo list = []
@@ -4323,31 +4226,27 @@ let cleanTest () = ()
         test <@ testMethods.Length >= 1 @>
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>
 
-        // NEW Path D + Item 3 contract: clean FCS check that arrives AFTER
-        // BuildCompleted stamps the sidecar `fcsClean = true` so Phase B
+        // A clean check arriving after BuildCompleted stamps `fcsClean = true`, so Phase B
         // detectChanges trusts the stored rows for this file.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Clean.fsx" freshness @>)
 
 [<Fact(Timeout = 30000)>]
 let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildCompleted`` () =
-    // Phase B persistence regression (2026-05-02): on a cold scan, performScan
-    // awaits BuildPlugin terminal BEFORE FCS tier checks, so BuildCompleted
-    // arrives at the TestPrune mailbox before any FileChecked. The
-    // BuildCompleted handler then flushes against an empty PendingAnalysis
-    // (no-op). FileChecked × N follow, populating PendingAnalysis. BatchChecked
-    // is the cohort-complete signal — it MUST flush the accumulated analysis,
-    // otherwise the symbol DB stays empty and every subsequent cold scan
-    // perpetuates the empty-DB state.
+    // On a cold scan `performScan` awaits BuildPlugin terminal BEFORE the FCS tier checks,
+    // so BuildCompleted reaches the mailbox before any FileChecked and flushes an empty
+    // PendingAnalysis. The N FileCheckeds then populate it, and BatchChecked is the only
+    // remaining signal that can flush them — otherwise the symbol DB stays empty and every
+    // subsequent cold scan perpetuates that.
     withTempDir "tp-batchchecked-flush" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        // No testConfigs — BuildCompleted is unsubscribed; only FileChecked
-        // and BatchChecked drive the flush. The BatchChecked subscription is
-        // unconditional (independent of testConfigs).
+        // No testConfigs, so BuildCompleted is unsubscribed and only FileChecked and
+        // BatchChecked can drive the flush — the BatchChecked subscription is
+        // unconditional.
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
@@ -4375,11 +4274,9 @@ let cleanTest () = ()
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
 
-        // Cohort-complete signal — no BuildCompleted ever fires.
+        // No BuildCompleted ever fires.
         emitBatchAndQuiesce host [ cleanFile ]
 
-        // Symbols MUST be in DB after BatchChecked, even without a
-        // subsequent BuildCompleted.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
 
         let mutable testMethods: TestMethodInfo list = []
@@ -4397,24 +4294,17 @@ let cleanTest () = ()
 
 [<Fact(Timeout = 60000)>]
 let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges falls back`` () =
-    // Path D replaces the prior cold-boot regression test. Under the old F38
-    // gate the contract was "prior DB rows survive a dirty FCS check."
-    // Under Path D the contract is: dirty FCS may overwrite rows (we always
-    // persist), BUT the freshness sidecar marks the file dirty so a future
-    // `detectChanges` against those potentially-poisoned rows is bypassed
-    // rather than producing a phantom large diff.
-    //
-    // What we still must protect against is a *spurious large diff* — the
-    // 4921-affected-tests Phase B regression. The sidecar is the load-bearing
-    // piece for that, not the symbol-DB write decision.
+    // Dirty FCS may overwrite rows — persistence is unconditional — but the freshness
+    // sidecar marks the file dirty so a later `detectChanges` against those
+    // potentially-poisoned rows is bypassed. What must be prevented is the spurious large
+    // diff (the 4921-affected-tests Phase B regression), and the sidecar, not the
+    // symbol-DB write decision, is what prevents it.
     withTempDir "tp-poisoning-coldboot" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
 
-        // testConfigs is required for the plugin to subscribe to BuildCompleted
-        // and run the flush-and-query cycle. Command is a no-op.
         let testConfigs =
             [ { Project = "CB"
                 Command = "echo"
@@ -4452,16 +4342,11 @@ let coldBootTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None (clean)")
 
-        // Item 3 ordering: BuildSucceeded fires FIRST, then FileChecked, then
-        // BatchChecked drives the flush. Mirrors the real fshw cold-scan
-        // pipeline (BuildPlugin terminal gates FCS tier checks). Only this
-        // ordering allows the sidecar to stamp `fcsClean = true`.
         emitBuildAndWaitTerminal host1
 
         emitFileAndQuiesce host1 cleanResult
         emitBatchAndQuiesce host1 [ file ]
 
-        // Verify Phase 1 populated DB.
         let mutable phase1Tests: TestMethodInfo list = []
 
         waitUntil
@@ -4474,10 +4359,8 @@ let coldBootTest () = ()
 
         test <@ phase1Tests.Length >= 1 @>
 
-        // Phase 2: simulate cold-boot poisoning with the same file but
-        // synthesized broken source — fresh plugin instance reading prior DB,
-        // FileChecked carries Error-severity diagnostics. The gate must
-        // prevent the prior good DB rows from being overwritten.
+        // Phase 2: cold-boot poisoning — a fresh plugin instance reading the prior DB,
+        // with the same file now carrying Error-severity diagnostics.
         let brokenSource =
             """module CB
 type FactAttribute() = inherit System.Attribute()
@@ -4513,59 +4396,42 @@ let badTypeUse : int = "wrong-type"
         let handler2 = create dbPath tmpDir (Some testConfigs) None None None None []
         host2.RegisterHandler(handler2)
 
-        // Item 3 ordering for Phase 2 too: BuildSucceeded first, then dirty
-        // FileChecked. This exercises the `markUnverified` preservation rule:
-        // a prior `fcsClean = true` record (from Phase 1) is NOT downgraded to
-        // dirty even though the current FCS check has Error-severity
-        // diagnostics. The trade-off is intentional — cold-start reliability
-        // over correctness on user-broke-their-code transients. The next
-        // genuine clean check refreshes the timestamp.
         emitBuildAndWaitTerminal host2
 
         emitFileAndQuiesce host2 brokenResult
 
-        // Item 3 contract: prior clean record from Phase 1 survives a dirty
-        // Phase 2 FileChecked.
+        // `markUnverified` preserves a prior clean record: Phase 1's `fcsClean = true` is
+        // NOT downgraded even though the current check has Error-severity diagnostics.
+        // The trade-off is deliberate — cold-start reliability over precision on
+        // user-broke-their-code transients — and the next genuine clean check refreshes
+        // the timestamp.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean "CB.fsx" freshness @>
 
-        // Even though the sidecar still reads clean, the *current* FCS check
-        // is dirty — `currentClean` in the FileChecked handler is false, so
-        // detectChanges is bypassed for this event regardless of stored state.
-        // ChangedFiles therefore does not gain a phantom entry from the
-        // poisoned check.
+        // The sidecar still reads clean, but `currentClean` is false for this event, so
+        // detectChanges is bypassed regardless of stored state and ChangedFiles gains no
+        // phantom entry from the poisoned check.
         let changedAfterDirty =
             host2.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedAfterDirty.Value = "[]" @>)
 
 // =============================================================================
-// Path D — per-file freshness sidecar gates the detectChanges call site so
-// cross-restart Phase B replay only computes a real diff for files that
-// ended their last session FCS-clean. This is the load-bearing change for
-// the 4921-affected-tests Phase B regression: without the sidecar gate, a
-// fresh daemon's first FCS check sees ~0 stored rows for files whose prior
-// session ended dirty, producing a phantom "all symbols changed" delta.
+// The per-file freshness sidecar gates the detectChanges call site, so cross-restart
+// Phase B replay only computes a real diff for files that ended their last session
+// FCS-clean. Without it a fresh daemon's first FCS check sees ~0 stored rows for files
+// whose prior session ended dirty, and reports a phantom "all symbols changed" delta —
+// the 4921-affected-tests regression.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
 let ``Phase B replay: stored=dirty, current=clean → detectChanges bypassed`` () =
-    // Pre-populate the DB with stale (deliberately empty) symbol rows for a
-    // file whose prior session ended FCS-dirty. The freshness sidecar
-    // already records that file as dirty. The plugin then receives a fresh
-    // FCS-clean FileChecked for the same file with full symbols. Without
-    // the sidecar gate, detectChanges would report N current vs 0 stored =
-    // N changes (the Phase B 4921-affected-tests bug). With the gate, the
-    // diff is bypassed and ChangedFiles stays empty.
     withTempDir "tp-phaseb-bypass" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let relPath = "PhaseB.fsx"
         let absPath = Path.Combine(tmpDir, relPath)
 
-        // Seed the sidecar with a dirty entry for this file (simulates "prior
-        // session ended dirty"). Empty DB rows for the file simulates "F38
-        // gate previously withheld the write" — though under the new contract
-        // the rows are written, the sidecar is what gates the diff.
+        // A dirty sidecar entry and no DB rows: the prior session ended dirty.
         let earlier = DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)
 
         let priorSidecar =
@@ -4598,8 +4464,6 @@ let phaseBTest () = ()
 
         pipeline.RegisterProject(absPath, projOptions)
 
-        // testConfigs needed so the plugin subscribes to BuildCompleted;
-        // Item 3 gates `markClean` on a BuildCompleted having been observed.
         let testConfigs =
             [ { Project = "PhaseB"
                 Command = "echo"
@@ -4623,36 +4487,28 @@ let phaseBTest () = ()
         // Sanity: this is a clean check.
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
-        // Item 3 ordering: BuildSucceeded first so the FileChecked that
-        // follows is allowed to promote the sidecar to clean.
         emitBuildAndWaitTerminal host
 
         emitFileAndQuiesce host result
 
-        // Load-bearing: ChangedFiles must NOT include relPath. Stored=empty,
-        // current=N would produce N changes without the gate; with the gate
-        // the diff is bypassed entirely (sidecar said dirty when FileChecked
-        // arrived, so storedClean=false and the diff is skipped).
+        // Stored=empty against current=N would produce N changes without the gate. The
+        // sidecar said dirty when the FileChecked arrived, so the diff is skipped.
         let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedFiles.Value = "[]" @>
 
-        // The clean recheck flips the sidecar from dirty → clean so the NEXT
-        // restart's Phase B (post-this-session) trusts the rows.
+        // The clean recheck flips the sidecar dirty → clean, so the NEXT restart's Phase B
+        // trusts the rows.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean relPath freshness @>)
 
 [<Fact(Timeout = 30000)>]
 let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
-    // Counterpart to the prior test. Once a file has gone clean → clean
-    // across a restart boundary, detectChanges runs normally and a real AST
-    // change produces a real diff. This guards against an over-aggressive
-    // gate that would mask legitimate changes.
+    // The guard against an over-aggressive gate that would mask legitimate changes.
     let initialSource = "module Lib\nlet x = 1\n"
     let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
 
     withSeededTestEnv "tp-phaseb-realdiff" "Lib.fs" initialSource (fun env ->
-        // Real AST change. detectChanges should report a diff.
         File.WriteAllText(env.FilePath, astChangedSource)
 
         match
@@ -4668,23 +4524,18 @@ let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
         test <@ changed.Value.Contains(env.RelPath) @>)
 
 // =============================================================================
-// Item 3 — BuildCompleted-gated stamping. The sidecar's `markClean` only
-// fires for FileChecked events that arrive AFTER a BuildCompleted has been
-// observed in the current session. Pre-build FileChecked events stamp
-// `markUnverified` (treated as dirty unless a prior clean record exists).
-// This eliminates the cold-FCS-vs-warm-FCS extractor-stability problem
-// the Path D fcs-clean predicate alone couldn't solve: by the time
-// fshw's pipeline emits BuildCompleted, FCS has been warmed by the build's
-// reference-graph realization, so subsequent FileChecked events extract
-// the same number of symbols a Phase B warm rerun would.
+// BuildCompleted-gated stamping. `markClean` fires only for FileChecked events arriving
+// AFTER a BuildCompleted in the current session; earlier ones stamp `markUnverified`,
+// treated as dirty unless a prior clean record exists. This is what the fcs-clean
+// predicate alone could not solve: by the time the pipeline emits BuildCompleted, FCS has
+// been warmed by the build's reference-graph realization, so subsequent FileChecked
+// events extract the same number of symbols a warm Phase B rerun would.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
 let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () =
-    // Mirrors the realistic case where, on plugin startup, sidecar is empty
-    // and a FileChecked arrives BEFORE any BuildCompleted. The plugin must
-    // refuse to stamp clean — `currentClean=true` is necessary but not
-    // sufficient; warm-enough state is signalled by BuildCompleted.
+    // `currentClean = true` is necessary but not sufficient; BuildCompleted is what
+    // signals warm-enough state.
     withTempDir "tp-item3-pre-build-clean" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -4719,24 +4570,18 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // Sanity.
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
-        // Critically — emit FileChecked WITHOUT a prior BuildCompleted.
+        // Deliberately NOT emitBuildAndWaitTerminal first.
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
 
-        // Item 3: even though the FCS check itself was clean, the absence of
-        // a prior BuildCompleted means the plugin stamps `markUnverified` →
-        // sidecar entry is fcsClean=false.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Pre.fsx" freshness) @>)
 
 [<Fact(Timeout = 30000)>]
 let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` () =
-    // Counterpart: same harness, but BuildCompleted fires first. The plugin
-    // observes the build, sets its session flag, and the subsequent
-    // FileChecked is allowed to promote the sidecar entry to clean.
+    // Same harness as the pre-build case, with the ordering reversed.
     withTempDir "tp-item3-post-build-clean" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -4771,21 +4616,17 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // Build first.
         emitBuildAndWaitTerminal host
 
-        // Then FileChecked.
         emitFileAndQuiesce host result
 
-        // Item 3 promotion: sidecar now records the file clean.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Post.fsx" freshness @>)
 
 [<Fact(Timeout = 30000)>]
 let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` () =
-    // Two FileCheckeds in sequence, NO BuildCompleted. First is dirty, second
-    // is clean. The clean-but-pre-build event must NOT promote the entry —
-    // exactly because warm extraction stability isn't guaranteed yet.
+    // Two FileCheckeds and no BuildCompleted: dirty, then clean. The clean one must not
+    // promote the entry, because warm extraction stability is still not guaranteed.
     withTempDir "tp-item3-dirty-then-clean" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -4808,7 +4649,6 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
 
         let mixedFile = Path.Combine(tmpDir, "Mixed.fsx")
 
-        // Phase 1: dirty source, dirty FileChecked.
         let dirtySource =
             """module Mixed
 let bad : int = "not-an-int"
@@ -4831,8 +4671,7 @@ let bad : int = "not-an-int"
 
         emitFileAndQuiesce host dirtyResult
 
-        // Phase 2: same file, clean source. Re-check via a fresh pipeline so
-        // FCS reanalyzes against the new source.
+        // A fresh pipeline, so FCS reanalyzes against the new source.
         let cleanSource = "module Mixed\nlet n = 1\n"
         File.WriteAllText(mixedFile, cleanSource)
 
@@ -4859,42 +4698,34 @@ let bad : int = "not-an-int"
 
         emitFileAndQuiesce host cleanResult
 
-        // No BuildCompleted has fired in this session. Even though the latest
-        // FCS check is clean, Item 3 refuses to promote — sidecar stays dirty.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Mixed.fsx" freshness) @>)
 
 // =============================================================================
-// detectChanges call site: stored vs current must agree on unit. The DB stores
-// externs under the synthetic SourceFile "_extern", and `GetSymbolsInFile`
-// filters by source_file = relPath — so the stored side is file-local only.
-// Before this fix, the call passed unfiltered `normalizedSymbols` (file-local +
-// externs) on the current side, producing a phantom diff equal to the file's
-// extern count for every clean re-check. ~80% of every file's allSymbols are
-// externs in real codebases, hence "Phase B always reports 4921 affected tests"
-// in Intelligence stress runs. Fix: filter current symbols by SourceFile match
-// before invoking detectChanges.
+// detectChanges call site: stored and current must agree on unit. The DB stores externs
+// under the synthetic SourceFile "_extern" and `GetSymbolsInFile` filters by
+// source_file = relPath, so the stored side is file-local only. Passing unfiltered
+// `normalizedSymbols` (file-local + externs) on the current side produced a phantom diff
+// equal to the file's extern count on every clean re-check — and externs are ~80% of a
+// real file's allSymbols, hence "Phase B always reports 4921 affected tests".
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
 let ``detectChanges: re-check of unchanged source with externs reports no changes`` () =
-    // Source uses List.length so the extractor pulls in
-    // Microsoft.FSharp.Collections.List.length as an extern symbol.
+    // `List.length` makes the extractor pull in Microsoft.FSharp.Collections.List.length
+    // as an extern symbol.
     let source = "module Lib\nlet xs = List.length []\n"
 
     withSeededTestEnv "tp-extern-filter" "Lib.fsx" source (fun env ->
-        // Sanity: extracted set actually contains externs (otherwise the test
-        // tautologically passes regardless of the fix).
+        // Both controls: the extracted set contains externs, and the DB read-back does
+        // not. Without them the test passes tautologically.
         let externs = env.SeededSymbols |> List.filter (fun s -> s.IsExtern)
         test <@ not externs.IsEmpty @>
 
-        // Sanity: DB read-back is file-local only — externs absent.
         let storedFromDb = env.Db.GetSymbolsInFile(env.RelPath)
         test <@ storedFromDb |> List.forall (fun s -> not s.IsExtern) @>
 
-        // Re-check the IDENTICAL source — no edit. detectChanges should report
-        // zero changes. Without TestPrune.Core's internal extern filter, externs
-        // in the current set would produce a phantom diff equal to externs.Length.
+        // Re-check the IDENTICAL source, no edit.
         match
             env.Pipeline.CheckFile(AbsFilePath.create env.FilePath)
             |> Async.RunSynchronously
@@ -4910,17 +4741,14 @@ let ``detectChanges: re-check of unchanged source with externs reports no change
         test <@ changedFiles.Value = "[]" @>)
 
 // =============================================================================
-// Issue 1 — cold-start apphost-missing must NOT be reported as a spurious
-// FAILED. A `dotnet run --no-build` launched before the build plugin produced
-// the apphost fails with an "An error occurred trying to start process … No
-// such file or directory" message — distinct from a genuine non-zero test
-// exit. `looksLikeApphostMissing` is the classifier that distinguishes the two.
+// A cold-start missing apphost must NOT be reported as a FAILED test. `dotnet run
+// --no-build` launched before the build plugin produced the apphost fails with "An error
+// occurred trying to start process … No such file or directory", which
+// `looksLikeApphostMissing` distinguishes from a genuine non-zero test exit.
 // =============================================================================
 
 [<Fact(Timeout = 15000)>]
 let ``looksLikeApphostMissing detects the start-process launch failure`` () =
-    // The exact shape the .NET host emits when `dotnet run --no-build` cannot
-    // find the apphost binary because the build plugin hasn't produced it yet.
     let output =
         "Unhandled exception: System.ComponentModel.Win32Exception (2): An error occurred trying to start process '/repo/tests/Unit/bin/Debug/net10.0/Unit' with working directory '/repo'. No such file or directory"
 
@@ -4928,9 +4756,8 @@ let ``looksLikeApphostMissing detects the start-process launch failure`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``looksLikeApphostMissing is false for a genuine test failure`` () =
-    // A real xUnit/MTP failure carries `failed <name>` + a `failed:` summary,
-    // never the start-process signature. Misclassifying this as apphost-missing
-    // would SILENCE real reds — the opposite, and worse, failure mode.
+    // Misclassifying a real failure as apphost-missing would SILENCE reds — the opposite,
+    // and worse, failure mode.
     let output =
         "failed FsHotWatch.Tests.FooTests.bar (3ms)\nTest run summary: Failed!\n  total: 10\n  failed: 1\n  succeeded: 9"
 
@@ -4941,14 +4768,13 @@ let ``looksLikeApphostMissing is false for empty / passing output`` () =
     test <@ not (looksLikeApphostMissing "") @>
     test <@ not (looksLikeApphostMissing "Test run summary: Passed!\n  total: 5\n  succeeded: 5") @>
 
-// Issue 2: STRUCTURAL apphost detection. `tryApphostPresent` derives the
-// apphost binary path from the runner's `--project` arg and File.Exists-checks
-// it, instead of sniffing localized OS error text.
+// Structural apphost detection: `tryApphostPresent` derives the binary path from the
+// runner's `--project` arg and File.Exists-checks it, rather than sniffing localized OS
+// error text.
 
 [<Fact(Timeout = 15000)>]
 let ``tryApphostPresent returns None when args carry no --project`` () =
-    // A custom, non-`dotnet run` command isn't derivable — caller must fall
-    // back to the output sniff.
+    // Not derivable, so the caller falls back to the output sniff.
     test <@ tryApphostPresent "/tmp/runner.sh" "/repo" = None @>
     test <@ tryApphostPresent "test" "/repo" = None @>
 
@@ -4957,7 +4783,6 @@ let ``tryApphostPresent reports false when the bin dir is absent`` () =
     withTempDir "tp-apphost-struct-missing" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         Directory.CreateDirectory(projDir) |> ignore
-        // No bin/Debug at all → apphost definitionally absent.
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
 
 [<Fact(Timeout = 15000)>]
@@ -4966,7 +4791,7 @@ let ``tryApphostPresent reports false when bin exists but apphost is missing`` (
         let projDir = Path.Combine(tmpDir, "Unit")
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
-        // Only the DLL landed, not the apphost.
+        // The DLL landed; the apphost did not.
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
 
@@ -4976,7 +4801,7 @@ let ``tryApphostPresent reports true when the apphost binary exists`` () =
         let projDir = Path.Combine(tmpDir, "Unit")
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
-        // The extension-less apphost sibling of the canonical DLL.
+        // The apphost is the extension-less sibling of the canonical DLL.
         File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
 
@@ -5001,15 +4826,10 @@ let ``tryApphostPresent finds a Windows .exe apphost`` () =
         File.WriteAllText(Path.Combine(tfmDir, "Unit.exe"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
 
-// Issue 4: the cold-start and persistent apphost-missing cases share all
-// scaffolding and differ only in the runner script + the expected verdict, so
-// they collapse into one [<Theory>]. `transient` = the apphost-missing failure
-// clears on retry (cold-start race); otherwise it persists every run.
-//
-// These configs run a bare `sh <script>` (no `--project` arg), so the
-// structural `tryApphostPresent` check returns None and the plugin falls back
-// to the `looksLikeApphostMissing` output sniff — exercising the defensive
-// fallback path end-to-end.
+// `transient` = the apphost-missing failure clears on retry (the cold-start race);
+// otherwise it persists every run. The configs run a bare `sh <script>` with no
+// `--project`, so `tryApphostPresent` returns None and the plugin falls back to the
+// `looksLikeApphostMissing` output sniff — exercising that path end-to-end.
 [<Theory(Timeout = 20000)>]
 [<InlineData(true)>] // cold-start: fails once with the launch signature, then succeeds
 [<InlineData(false)>] // persistent: apphost never appears
@@ -5017,11 +4837,9 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
     withTempDir "tp-apphost" (fun tmpDir ->
         let scriptPath = Path.Combine(tmpDir, "runner.sh")
 
-        // The launch-failure line carries the .NET host's start-process
-        // signature (no test-summary block), which the fallback sniff
-        // classifies as apphost-missing. Counter lives in the working dir
-        // (repoRoot = tmpDir); written to a file to avoid fragile nested
-        // shell quoting through the F# arg string.
+        // The .NET host's start-process signature with no test-summary block. The retry
+        // counter lives in a file under the working dir (repoRoot = tmpDir) to avoid
+        // nested shell quoting through the F# arg string.
         let launchFailure =
             "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit' with working directory '/x'. No such file or directory\" 1>&2"
 
@@ -5064,8 +4882,8 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 15.0
 
-        // In NEITHER case may an apphost-missing launch be reported as a test
-        // FAILED — that's an ordering bug, never a real red.
+        // In neither case may an apphost-missing launch be a test FAILED: it is an
+        // ordering bug, never a real red.
         let failingReasons =
             host.GetErrorsByPlugin("test-prune")
             |> Map.toList
@@ -5079,22 +4897,17 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             @>
 
         if transient then
-            // Retry succeeded → PASSED. No failing reasons, status not Failed.
             test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
             match host.GetStatus("test-prune") with
             | Some(Failed _) -> Assert.Fail("transient apphost-missing was reported as FAILED")
             | _ -> ()
         else
-            // A persistently-missing apphost means the tests NEVER RAN — DEFERRED,
-            // which is NON-GREEN (nothing was verified; a CI check must not
-            // silent-green it) but NOT a failure. Exit-code reclassification
-            // (Commit 2): the diagnostic is `Deferred` severity (the verdict routes
-            // it to Incomplete/exit 2), NOT a failing `Error` (exit 1), and the
-            // status is a non-failing terminal, NOT `Failed`. The non-green
-            // guarantee now lives in the Deferred diagnostic + CLI verdict, never a
-            // red. (On pre-Issue-1 code this returned TestsPassed → a false green;
-            // that guarantee is preserved — it is simply exit 2, not exit 1.)
+            // A persistently-missing apphost means the tests NEVER RAN: deferred, which is
+            // NON-GREEN (a CI check must not silent-green it) but not a failure. The
+            // diagnostic is `Deferred` severity, which the verdict routes to
+            // Incomplete/exit 2, and the status is a non-failing terminal. Older code
+            // returned TestsPassed here — a false green.
             test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
             let allEntries =
@@ -5107,56 +4920,42 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                     && e.Message.ToLowerInvariant().Contains("waiting on build"))
 
             test <@ waitingDiagnostic @>
-            // A defer is never a red: no Error entries.
             test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
 
-            // Status is a NON-failing terminal whose summary still says "waiting on
-            // build" — never `Failed`, never a silent green.
             match host.GetStatus("test-prune") with
             | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
             | other ->
                 Assert.Fail($"expected a non-failing Completed status for a pure deferred project, got %A{other}"))
 
 // =============================================================================
-// Freshness gate. `tryApphostPresent`/`detectApphostMissing` only fired on a
-// FAILED launch (post-exit), so a PRESENT-but-STALE apphost that exits 0
-// reported a false GREEN — `--no-build` ran OLD bits and "passed". The gate runs
-// PRE-launch, independent of exit code: build output that predates its inputs
-// DEFERS as "waiting on build" exactly like a missing apphost, so stale bits can
-// never produce a verdict. Mirrors BuildPlugin.verifyArtifactsFresh (ADR-008).
+// Freshness gate. `tryApphostPresent`/`detectApphostMissing` only fire on a FAILED launch
+// (post-exit), so a PRESENT-but-STALE apphost that exits 0 reported a false GREEN:
+// `--no-build` ran OLD bits and "passed". This gate runs PRE-launch, independent of exit
+// code — build output that predates its inputs defers as "waiting on build" exactly like
+// a missing apphost. Mirrors BuildPlugin.verifyArtifactsFresh (ADR-008).
 //
-// AUTOMATION-122 rebuilt WHAT it compares. The first cut compared the test DLL
-// against the newest source ANYWHERE IN THE REPO, which (a) condemned every
-// project outside an edit's dependency closure, and (b) could not be cleared:
-// an incremental `dotnet build` is correctly a no-op for an unaffected project,
-// so its DLL never caught up with the repo-wide watermark and only
-// `-t:Rebuild` — a relink forced purely to move a timestamp — escaped. It also
-// looked at `.fs`/`.cs` only, so a changed test FIXTURE copied in from a shared
-// project was invisible: the run read the OLD copy out of `bin/` and passed
-// (intelligence, `dsa-scope-4.json`, 2026-07-14 — a fake green that left main
-// red for hours).
+// WHAT it compares is the hard part. Comparing the test DLL against the newest source
+// ANYWHERE IN THE REPO condemns every project outside an edit's dependency closure, and
+// the accusation cannot be cleared: an incremental `dotnet build` is correctly a no-op for
+// an unaffected project, so its DLL never catches the repo-wide watermark and only
+// `-t:Rebuild` escapes. Looking at `.fs`/`.cs` alone also misses a changed test FIXTURE
+// copied in from a shared project — the run reads the OLD copy out of `bin/` and passes
+// (`dsa-scope-4.json`, 2026-07-14: a fake green that left main red for hours).
 //
-// Both directions are pinned below: an out-of-closure edit is FRESH, an
-// in-closure one is STALE — and content items are judged by the COPY the run
-// would actually read.
+// Both directions are pinned below — an out-of-closure edit is FRESH, an in-closure one
+// STALE — and content items are judged by the COPY the run would actually read.
 // =============================================================================
 
-// ---------------------------------------------------------------------------
-// The gate's memo must actually MEMOISE.
-// ---------------------------------------------------------------------------
+// `ArtifactFreshness.Cache` is documented "each project is walked at most ONCE per run"
+// and "thread-safe: test groups run in parallel". Both were true separately and neither
+// implied the other: `ConcurrentDictionary.GetOrAdd(key, valueFactory)` is thread-SAFE
+// (one result is published) without being once-ONLY — it may invoke the factory on
+// several threads for one key and discard the losers' work. Test groups do run in
+// parallel with heavily-overlapping ProjectReference closures, so the directory walks and
+// `XDocument.Load` parses the memo exists to eliminate could still each happen N times.
 //
-// `ArtifactFreshness.Cache` is documented "each project is walked at most ONCE per
-// run" and "thread-safe: test groups run in parallel" — and both were true, but they
-// were not the same claim. It was built on `ConcurrentDictionary.GetOrAdd(key,
-// valueFactory)`, which is thread-SAFE (one result is published) without being
-// once-ONLY: it may invoke the factory concurrently on several threads for the same
-// key and throw the losers' work away. Test groups do run in parallel and their
-// ProjectReference closures overlap heavily, so the directory walks and
-// `XDocument.Load` parses the memo exists to eliminate could still each happen N
-// times. `OnceMemo` is the guarantee the doc comment was already making.
-//
-// RED-BEFORE-GREEN: implement `OnceMemo.GetOrAdd` as `entries.GetOrAdd(key, factory)`
-// — the shape it replaced — and this counts 16 factory runs, not 1.
+// RED-BEFORE-GREEN: implement `OnceMemo.GetOrAdd` as `entries.GetOrAdd(key, factory)` and
+// this counts 16 factory runs, not 1.
 
 [<Fact(Timeout = 30000)>]
 let ``OnceMemo runs the value factory exactly ONCE per key under concurrent access`` () =
@@ -5167,9 +4966,9 @@ let ``OnceMemo runs the value factory exactly ONCE per key under concurrent acce
 
     let factory (_: string) =
         Interlocked.Increment(&factoryRuns) |> ignore
-        // The real factories walk directories and parse XML. Any non-trivial factory
-        // widens the window in which a second caller finds the key still absent —
-        // which is precisely the window a plain `GetOrAdd` leaves open.
+        // The real factories walk directories and parse XML. A slow factory widens the
+        // window in which a second caller finds the key still absent — precisely the
+        // window a plain `GetOrAdd` leaves open.
         Thread.Sleep 100
         42
 
@@ -5187,9 +4986,8 @@ let ``OnceMemo runs the value factory exactly ONCE per key under concurrent acce
     for t in threads do
         t.Join()
 
-    // Every caller got the value…
     test <@ results |> Array.forall (fun r -> r = 42) @>
-    // …and it was computed ONCE. Not "once was published" — once was RUN.
+    // Not "once was published" — once was RUN.
     test <@ factoryRuns = 1 @>
 
 [<Fact(Timeout = 30000)>]
@@ -5206,23 +5004,22 @@ let ``OnceMemo runs the value factory once per DISTINCT key`` () =
     test <@ memo.GetOrAdd("a", factory) = "a!" @>
     test <@ factoryRuns = 2 @>
 
-/// Production call shape: derive the target from the runner args exactly as
-/// `executeTests` does, then ask the gate. A fresh `Cache` per call (the memo is
-/// per-run in production).
+/// Derive the target from the runner args exactly as `executeTests` does, then ask the
+/// gate. A fresh `Cache` per call, since the memo is per-run in production.
 let private staleOf (args: string) (repoRoot: string) : ArtifactFreshness.StaleInput option =
     deriveProjectBin args repoRoot
     |> Option.bind (ArtifactFreshness.stale (ArtifactFreshness.Cache()))
 
 /// A synthetic repo mirroring the real MSBuild output layout:
 ///
-///   Leaf/     — an unrelated project. NOT referenced by Tests: out of closure.
+///   Leaf/     — an unrelated project, referenced by nobody: out of closure.
 ///   Common/   — a library with a content fixture, referenced by Tests.
-///   Tests/    — the test project. Its output dir holds COPIES of Common's DLL
-///               and of Common's fixture.
+///   Tests/    — the test project, whose output dir holds COPIES of Common's DLL and of
+///               Common's fixture.
 ///
-/// Copies carry their ORIGIN's mtime, because that is what MSBuild's `File.Copy`
-/// leaves behind — the property the gate's copy check rests on. Everything is
-/// "built" at `builtAt`; sources are older. Each test then moves ONE mtime.
+/// Copies carry their ORIGIN's mtime, because that is what MSBuild's `File.Copy` leaves
+/// behind — the property the gate's copy check rests on. Everything is "built" at
+/// `builtAt` and sources are older; each test then moves ONE mtime.
 type private Synth =
     { Root: string
       TestsDir: string
@@ -5254,19 +5051,15 @@ let private synth (root: string) : Synth =
     let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
     let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
 
-    // Leaf — no reference to it from anywhere: the out-of-closure project.
     writeAt (p [ leafDir; "Leaf.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (p [ leafDir; "Leaf.fs" ]) "module Leaf" sourcedAt
 
-    // Common — sources + a content fixture, both built/copied into its own bin.
     writeAt (p [ commonDir; "Common.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (p [ commonDir; "Common.fs" ]) "module Common" sourcedAt
     writeAt (p [ commonDir; "Fixtures"; "data.json" ]) "{ \"leaves\": 36 }" sourcedAt
     writeAt (p [ commonOut; "Common.dll" ]) "" builtAt
     writeAt (p [ commonOut; "Fixtures"; "data.json" ]) "{ \"leaves\": 36 }" sourcedAt
 
-    // Tests — references Common; its output holds the apphost, its own DLL, and
-    // COPIES of Common's DLL and Common's fixture.
     writeAt
         (p [ testsDir; "Tests.fsproj" ])
         "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Common/Common.fsproj\" />\n  </ItemGroup>\n</Project>"
@@ -5307,7 +5100,7 @@ let ``freshness is None when no build output exists`` () =
         let projDir = Path.Combine(tmpDir, "Unit")
         Directory.CreateDirectory(projDir) |> ignore
         File.WriteAllText(Path.Combine(projDir, "Foo.fs"), "module Foo")
-        // No bin/Debug → absence is tryApphostPresent's job, not staleness.
+        // Absence is tryApphostPresent's job, not staleness'.
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
@@ -5317,7 +5110,6 @@ let ``freshness is None when there are no sources to be stale against`` () =
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
-        // DLL present, no source files → nothing to be stale against.
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
@@ -5333,7 +5125,6 @@ let ``freshness is None when the DLL is newer than every source`` () =
         let t = DateTime.UtcNow
         File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(dll, t)
-        // Built AFTER the source → fresh → runnable.
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 [<Fact(Timeout = 15000)>]
@@ -5354,39 +5145,30 @@ let ``freshness is STALE when the project's own DLL predates its own source`` ()
         | Some(ArtifactFreshness.AssemblyOlderThanSource(_, source, _, _)) -> test <@ source = src @>
         | other -> Assert.Fail($"expected AssemblyOlderThanSource naming {src}, got %A{other}"))
 
-// =============================================================================
-// AUTOMATION-122, direction 1 — THE FALSE POSITIVE. An edit to a project OUTSIDE
-// the test project's dependency closure must leave it FRESH.
-//
-// This is the bug verbatim: `Intelligence.Build.Dev` (a build tool) was edited,
-// and `Intelligence.Tests.Integration` — which does not reference it — was
-// condemned as stale. MSBuild rightly refuses to relink it, so no plain build
-// could ever clear the accusation. On the pre-fix repo-wide watermark this test
-// FAILS (Leaf.fs is the newest source in the repo, and Tests.dll predates it).
-// =============================================================================
-
+// AUTOMATION-122, direction 1 — the false positive, verbatim: a build tool was edited and
+// an integration suite that does not reference it was condemned as stale. MSBuild rightly
+// refuses to relink that suite, so no plain build could ever clear the accusation. On a
+// repo-wide watermark this test FAILS — Leaf.fs is the newest source in the repo and
+// Tests.dll predates it.
 [<Fact(Timeout = 15000)>]
 let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
     withTempDir "tp-stale-outside" (fun tmpDir ->
         let s = synth tmpDir
 
-        // Leaf is not referenced by Tests (nor by Common). Edit it: it is now the
-        // newest source in the whole repo — and irrelevant to this test binary.
+        // Leaf is referenced by nobody, so this is now the newest source in the repo and
+        // still irrelevant to this test binary.
         File.SetLastWriteTimeUtc(s.LeafSrc, s.BuiltAt.AddMinutes(30.0))
 
         test <@ synthStale s = None @>)
 
-// An out-of-closure edit that MSBuild will never answer must not be reported —
-// but the same edit inside the closure must be. Direction 2: THE REAL HOLE.
-// A dependency's source newer than the dependency's own assembly means the build
-// has not run since the edit, so the DLL sitting in the test project's output dir
-// is old code. `--no-build` must NOT run.
+// Direction 2 — the real hole. A dependency's source newer than the dependency's own
+// assembly means the build has not run since the edit, so the DLL in the test project's
+// output dir is old code and `--no-build` must not run.
 [<Fact(Timeout = 15000)>]
 let ``an edit to a DEPENDENCY inside the closure is STALE`` () =
     withTempDir "tp-stale-inside" (fun tmpDir ->
         let s = synth tmpDir
 
-        // Common IS referenced by Tests. Edit it without rebuilding.
         File.SetLastWriteTimeUtc(s.CommonSrc, s.BuiltAt.AddMinutes(30.0))
 
         match synthStale s with
@@ -5395,12 +5177,11 @@ let ``an edit to a DEPENDENCY inside the closure is STALE`` () =
             test <@ source = s.CommonSrc @>
         | other -> Assert.Fail($"expected the dependency edit to be STALE, got %A{other}"))
 
-// The same edit, once the build HAS run (dependency DLL and its copy re-emitted
-// after the edit): fresh again. This is what proves a plain `dotnet build` — not
-// `-t:Rebuild` — clears the gate. Note the test project's own DLL is deliberately
-// NOT restamped: a private-only change to a dependency need not relink its
-// consumers (reference assemblies exist to avoid exactly that), and demanding it
-// would be the old unanswerable accusation in a smaller costume.
+// The same edit once the build HAS run: this is what proves a plain `dotnet build`, not
+// `-t:Rebuild`, clears the gate. The test project's own DLL is deliberately NOT restamped
+// — a private-only change to a dependency need not relink its consumers (reference
+// assemblies exist to avoid exactly that), and demanding it would be the same
+// unanswerable accusation in a smaller costume.
 [<Fact(Timeout = 15000)>]
 let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`` () =
     withTempDir "tp-stale-rebuilt" (fun tmpDir ->
@@ -5416,13 +5197,9 @@ let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`
 
         test <@ synthStale s = None @>)
 
-// Only the dependency was rebuilt — its DLL is fresh in its OWN bin, but the copy
-// the test run would actually load was never refreshed. That is stale bits.
-//
-// A rebuild emits new BYTES, and that — not a moved timestamp — is what this test
-// simulates since AUTOMATION-169. It used to move the origin's mtime alone, which
-// asserted the old contract (`copy < origin` ⇒ stale) rather than the real event.
-// Content is now the signal, so the test states the real event.
+// The dependency's DLL is fresh in its OWN bin, but the copy the test run would load was
+// never refreshed. A rebuild emits new BYTES — moving the origin's mtime alone would
+// assert the old `copy < origin` rule rather than the real event.
 [<Fact(Timeout = 15000)>]
 let ``a dependency DLL rebuilt but not re-copied into the test output is STALE`` () =
     withTempDir "tp-stale-depcopy" (fun tmpDir ->
@@ -5436,30 +5213,22 @@ let ``a dependency DLL rebuilt but not re-copied into the test output is STALE``
             test <@ copy = s.CommonDllCopy @>
         | other -> Assert.Fail($"expected the un-refreshed dependency copy to be STALE, got %A{other}"))
 
-// =============================================================================
-// AUTOMATION-122, second half — CONTENT FILES. This one let a RED main through.
-//
-// `tests/Intelligence.Tests.Common/Fixtures/RuleMaps/dsa-scope-4.json` changed
-// (36 → 40 leaf facts). The consuming test project's output dir still held the
-// OLD copy, so the `--no-build` run read the OLD fixture and PASSED — a fake
-// green that merged and left main red for hours. Only `-t:Rebuild` exposed it.
-//
-// A stale copy of a content/fixture item must make the run stale — exactly as a
-// stale apphost does. Reproduced here in miniature.
-// =============================================================================
+// AUTOMATION-122, second half — CONTENT FILES, which let a red main through. A shared
+// fixture changed (36 → 40 leaf facts); the consuming test project's output dir still
+// held the OLD copy, so the `--no-build` run read the old fixture and PASSED. Only
+// `-t:Rebuild` exposed it. A stale copy of a content item must make the run stale exactly
+// as a stale apphost does.
 
 [<Fact(Timeout = 15000)>]
 let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
     withTempDir "tp-stale-fixture" (fun tmpDir ->
         let s = synth tmpDir
 
-        // The dsa-scope-4 scenario: the fixture in the shared project changes …
+        // The fixture changes and the copy in the test project's output dir still holds
+        // the OLD bytes. Every compiled artifact is untouched, so the apphost/DLL checks
+        // alone see nothing wrong and the tests would run green against 36 leaves.
         File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
-        // … and the copy in the consuming test project's output dir still holds
-        // the OLD bytes. Every compiled artifact in the repo is untouched, so the
-        // apphost/DLL checks alone see nothing wrong — and the tests would run
-        // green against 36 leaves.
 
         match synthStale s with
         | Some(ArtifactFreshness.CopyDiffersFromOrigin(origin, copy)) ->
@@ -5467,8 +5236,8 @@ let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
             test <@ copy = s.FixtureCopy @>
         | other -> Assert.Fail($"expected the un-copied fixture to be STALE, got %A{other}"))
 
-// The remedy a plain `dotnet build` performs: the fixture is re-copied, carrying
-// the origin's mtime (verified against real MSBuild, 2026-07-14). Gate clears.
+// What a plain `dotnet build` does: re-copy the fixture, carrying the origin's mtime
+// (verified against real MSBuild, 2026-07-14).
 [<Fact(Timeout = 15000)>]
 let ``a FIXTURE re-copied by a plain build is FRESH`` () =
     withTempDir "tp-stale-fixture-copied" (fun tmpDir ->
@@ -5499,35 +5268,30 @@ let ``the test project's OWN stale fixture copy is STALE`` () =
             test <@ copy = ownCopy @>
         | other -> Assert.Fail($"expected the test project's own stale fixture to be STALE, got %A{other}"))
 
-// SHADOWING. Two projects in one closure can hold a file at the SAME relative path
-// — `xunit.runner.json` sits in five projects of the repo this gate was fixed
-// against. MSBuild copies both to the same destination and the last writer wins, so
-// exactly one of them survives in the output dir.
-//
-// Judge the survivor against only ONE claimant and the other project is condemned
-// for being shadowed — and no build can answer that, because the build is doing
-// precisely what it means to do. That is the unanswerable accusation this module
-// exists to prevent, and a CONTENT comparison would make it PERMANENT (an mtime one
-// only fired when the shadowed file happened to be newer). So a copy is checked
-// against every claimant in the closure, and is current if it matches ANY of them.
+// SHADOWING. Two projects in one closure can hold a file at the SAME relative path —
+// `xunit.runner.json` sits in five projects of the repo this gate was fixed against.
+// MSBuild copies both to one destination, last writer wins, so exactly one survives.
+// Judging the survivor against only ONE claimant condemns the other for being shadowed,
+// and no build can answer that. A CONTENT comparison would make that accusation PERMANENT
+// where an mtime one only fired when the shadowed file happened to be newer — so a copy
+// is checked against every claimant and is current if it matches ANY of them.
 [<Fact(Timeout = 15000)>]
 let ``a fixture SHADOWED by another project's file at the same path is not stale`` () =
     withTempDir "tp-stale-shadowed" (fun tmpDir ->
         let s = synth tmpDir
         let editedAt = s.BuiltAt.AddMinutes(30.0)
 
-        // Tests has its OWN Fixtures/data.json — same relative path as Common's, and
-        // different bytes. Its copy is the one that survives in the output dir.
+        // Tests has its OWN Fixtures/data.json — same relative path as Common's, different
+        // bytes — and its copy is the one that survives in the output dir. Common's
+        // fixture is now shadowed: its bytes appear nowhere in the output, and a build
+        // would change nothing.
         let testsFixture = p [ s.TestsDir; "Fixtures"; "data.json" ]
         writeAt testsFixture "{ \"leaves\": 99 }" editedAt
         writeAt s.FixtureCopy "{ \"leaves\": 99 }" editedAt
 
-        // Common's fixture is now shadowed: its bytes appear nowhere in the output.
-        // It must NOT be reported stale — a build would change nothing.
         test <@ synthStale s = None @>
 
-        // But a copy matching NEITHER claimant is still stale: shadowing is not a
-        // licence to stop checking.
+        // Shadowing is not a licence to stop checking.
         File.WriteAllText(s.FixtureCopy, "{ \"leaves\": 0 }")
 
         match synthStale s with
@@ -5535,20 +5299,19 @@ let ``a fixture SHADOWED by another project's file at the same path is not stale
         | other -> Assert.Fail($"a copy matching no claimant must still be STALE, got %A{other}"))
 
 // The other half of "keyed on the copy": a file the build does NOT copy has no
-// destination in the output dir, so editing it can never fire the gate. Without
-// this, the content check would become a new wolf-cry — every README and .fsproj
-// edit condemning a project no build would ever clear.
+// destination in the output dir, so editing it can never fire the gate. Otherwise the
+// content check becomes a new wolf-cry, every README and .fsproj edit condemning a
+// project no build would ever clear.
 [<Fact(Timeout = 15000)>]
 let ``a file the build never copies cannot make the run stale`` () =
     withTempDir "tp-stale-uncopied" (fun tmpDir ->
         let s = synth tmpDir
-        // A doc in the dependency, newer than everything, copied nowhere.
+        // Newer than everything, copied nowhere.
         writeAt (Path.Combine(tmpDir, "Common", "README.md")) "# notes" (s.BuiltAt.AddMinutes(30.0))
 
         test <@ synthStale s = None @>)
 
-// The gate must be able to say WHY, naming the file pair — a guard that cries
-// "something, somewhere is stale" is a guard people learn to bypass.
+// A guard that cries "something, somewhere is stale" is a guard people learn to bypass.
 [<Fact(Timeout = 15000)>]
 let ``the stale reason names the offending file`` () =
     withTempDir "tp-stale-describe" (fun tmpDir ->
@@ -5563,14 +5326,12 @@ let ``the stale reason names the offending file`` () =
         | None -> Assert.Fail "expected a stale verdict")
 
 // =============================================================================
-// FAIL CLOSED. A freshness gate that answers "up to date" because it COULD NOT
-// LOOK is this ticket's own bug reborn inside its fix. If the closure cannot be
-// determined — an unreadable/unparseable project file, a `ProjectReference` that
-// resolves to nothing — the run is REFUSED, and the build (which will choke on
-// the same file, loudly) gets to report the real error.
-//
-// Swallowing these into "no references" would silently shrink the closure to
-// nothing, and a stale dependency would sail straight through as fresh.
+// FAIL CLOSED. A gate that answers "up to date" because it COULD NOT LOOK is the original
+// bug reborn inside its own fix. If the closure cannot be determined — an unparseable
+// project file, a `ProjectReference` resolving to nothing — the run is REFUSED and the
+// build, which will choke on the same file loudly, reports the real error. Swallowing
+// these into "no references" would shrink the closure to nothing and let a stale
+// dependency sail through as fresh.
 // =============================================================================
 
 [<Fact(Timeout = 15000)>]
@@ -5597,8 +5358,8 @@ let ``a ProjectReference without an Include is REFUSED, not ignored`` () =
         | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
         | other -> Assert.Fail($"an unresolvable reference must fail CLOSED, got %A{other}"))
 
-// A reference naming a project that does not exist is the same ignorance: we
-// cannot know that project's sources, so we cannot certify this run.
+// The same ignorance: we cannot know a missing project's sources, so we cannot certify
+// this run.
 [<Fact(Timeout = 15000)>]
 let ``a ProjectReference to a missing project is REFUSED, not called fresh`` () =
     withTempDir "tp-stale-missingref" (fun tmpDir ->
@@ -5613,8 +5374,7 @@ let ``a ProjectReference to a missing project is REFUSED, not called fresh`` () 
         | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "Ghost" @>
         | other -> Assert.Fail($"a reference to a missing project must fail CLOSED, got %A{other}"))
 
-// Ignorance ANYWHERE in the closure fails closed — not just at its root. A
-// dependency's project file we cannot read hides that dependency's sources.
+// Ignorance ANYWHERE in the closure fails closed, not just at its root.
 [<Fact(Timeout = 15000)>]
 let ``an unparseable project file DEEP in the closure is REFUSED`` () =
     withTempDir "tp-stale-badxml-deep" (fun tmpDir ->
@@ -5625,8 +5385,8 @@ let ``an unparseable project file DEEP in the closure is REFUSED`` () =
         | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
         | other -> Assert.Fail($"an unreadable DEPENDENCY project file must fail CLOSED, got %A{other}"))
 
-// An fsproj REFERENCE CYCLE is MSBuild's error to report — the closure walk must
-// terminate rather than hang on it.
+// A reference cycle is MSBuild's error to report; the closure walk must terminate rather
+// than hang on it.
 [<Fact(Timeout = 15000)>]
 let ``a project reference cycle terminates`` () =
     withTempDir "tp-stale-cycle" (fun tmpDir ->
@@ -5642,10 +5402,9 @@ let ``a project reference cycle terminates`` () =
         File.SetLastWriteTimeUtc(s.CommonSrc, s.BuiltAt.AddMinutes(30.0))
         test <@ (synthStale s).IsSome @>)
 
-// A dependency that has not been built AT ALL is the build's business (and the
-// presence probe's), not staleness: there is no out-of-date artifact to refuse —
-// a build in flight may still land it. Same for a dependency assembly that has
-// not been copied into the test output yet.
+// A dependency never built at all is the build's business, not staleness': there is no
+// out-of-date artifact to refuse, and a build in flight may still land it. Same for a
+// dependency assembly not yet copied into the test output.
 [<Fact(Timeout = 15000)>]
 let ``an unbuilt dependency is not reported stale`` () =
     withTempDir "tp-stale-unbuilt-dep" (fun tmpDir ->
@@ -5663,35 +5422,25 @@ let ``a dependency assembly not yet copied into the test output is not reported 
         test <@ synthStale s = None @>)
 
 // =============================================================================
-// AUTOMATION-169 — THE WOLF-CRY, BACK THROUGH A DIFFERENT DOOR. Not the wrong
-// project this time: the wrong TARGET FRAMEWORK.
+// AUTOMATION-169 — the same wolf-cry through a different door: not the wrong project this
+// time, the wrong TARGET FRAMEWORK.
 //
-// A multi-targeted dependency (`netstandard2.0; net8.0; net9.0; net10.0` — the
-// vendored SqlHydra fork) consumed by a test project on net10.0. MSBuild copies
-// the dependency's net10.0 output; the gate resolved the ORIGIN to whichever TFM
-// output happened to be NEWEST, which was net8.0. Different TFMs of one project
-// build at different times — nine minutes apart, in the observed case — so the
-// gate compared a net10.0 copy against a net8.0 origin, found it "older", and
-// condemned it.
+// A multi-targeted dependency (netstandard2.0/net8.0/net9.0/net10.0) consumed by a
+// net10.0 test project. MSBuild copies the net10.0 output, but the gate resolved the
+// ORIGIN to whichever TFM output was NEWEST — net8.0, built nine minutes later — so it
+// compared a net10.0 copy against a net8.0 origin, found it "older", and condemned it.
+// Every consumer's copy was byte-identical to net10.0's digest, and a plain `dotnet build`
+// could not answer the accusation because a correct rebuild re-copies net10.0 and it
+// re-fires. 4 of 6 test projects refused to run.
 //
-// Live evidence from the consumer (intelligence, 2026-07-14): the fork's four
-// per-TFM DLLs hash to four DIFFERENT digests, `ls -t` puts net8.0 newest, and
-// every consumer's copy is byte-identical to net10.0's digest. So the copy was
-// PERFECT and the gate said stale — and a plain `dotnet build` could not answer
-// it, because a correct rebuild re-copies net10.0 and the accusation re-fires.
-// 4 of 6 test projects refused to run; verdict red.
-//
-// An mtime comparison ACROSS TFMs is meaningless by construction. These tests pin
-// that the comparison is no longer expressible.
+// An mtime comparison ACROSS TFMs is meaningless by construction; these tests pin that it
+// is no longer expressible.
 // =============================================================================
 
-/// A dependency multi-targeting net8.0 and net10.0, consumed by a net10.0 test
-/// project. The two TFM outputs carry DIFFERENT BYTES (as real per-TFM builds do
-/// — they differ at minimum in `TargetFrameworkAttribute`) and DIFFERENT MTIMES,
-/// with **net8.0 the newer**: exactly the shape that makes "newest output dir
-/// wins" pick the framework nobody consumes.
-///
-/// Returns the path of the copy MSBuild actually placed in the test output.
+/// A dependency multi-targeting net8.0 and net10.0, consumed by a net10.0 test project.
+/// The two TFM outputs carry DIFFERENT BYTES (real per-TFM builds differ at minimum in
+/// `TargetFrameworkAttribute`) and DIFFERENT MTIMES, with net8.0 the NEWER: exactly the
+/// shape that makes "newest output dir wins" pick the framework nobody consumes.
 type private MultiTfm =
     { Root: string
       TestsDir: string
@@ -5713,9 +5462,8 @@ let private multiTfmSynth (root: string) : MultiTfm =
     writeAt (p [ depDir; "Dep.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (p [ depDir; "Dep.fs" ]) "module Dep" sourcedAt
 
-    // The dependency's two TFM outputs: different bytes, and net8.0 built NINE
-    // MINUTES LATER than net10.0 — so net8.0 is the newest, and the pre-fix gate
-    // resolves the origin to it.
+    // Different bytes, and net8.0 built nine minutes later than net10.0 — so net8.0 is the
+    // newest, and a "newest wins" gate resolves the origin to it.
     writeAt (p [ depNet10; "Dep.dll" ]) "net10.0 bits" builtAt
     writeAt (p [ depNet8; "Dep.dll" ]) "net8.0 bits" (builtAt.AddMinutes(9.0))
 
@@ -5727,8 +5475,8 @@ let private multiTfmSynth (root: string) : MultiTfm =
     writeAt (p [ testsDir; "Tests.fs" ]) "module Tests" sourcedAt
     writeAt (p [ testsOut; "Tests" ]) "" builtAt // apphost
     writeAt (p [ testsOut; "Tests.dll" ]) "" builtAt
-    // THE COPY. MSBuild copied the net10.0 output — the TFM this consumer targets
-    // — preserving its mtime. It is a PERFECT, CURRENT copy.
+    // The copy: MSBuild took the net10.0 output — the TFM this consumer targets —
+    // preserving its mtime. It is perfect and current.
     writeAt (p [ testsOut; "Dep.dll" ]) "net10.0 bits" builtAt
 
     { Root = root
@@ -5742,10 +5490,8 @@ let private multiTfmStale (m: MultiTfm) =
     let fsproj = Path.Combine(m.TestsDir, "Tests.fsproj")
     staleOf $"run --project {fsproj} --no-build --" m.Root
 
-// THE REGRESSION. Nothing is stale: the copy is byte-identical to the net10.0
-// output it was copied from. Pre-fix this FAILS — the gate resolves the origin to
-// net8.0 (newest mtime), sees the net10.0 copy is nine minutes "older", and cries
-// stale. The message indicts itself: origin ends /net8.0/, copy ends /net10.0/.
+// Nothing is stale: the copy is byte-identical to the net10.0 output it came from. A
+// newest-mtime gate calls it nine minutes "older" than net8.0 and cries stale.
 [<Fact(Timeout = 15000)>]
 let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer`` () =
     withTempDir "tp-stale-tfm-sibling" (fun tmpDir ->
@@ -5753,25 +5499,22 @@ let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer
 
         test <@ multiTfmStale m = None @>)
 
-// The converse, and the reason this is not a weakening: a copy whose bytes match
-// NO current output of its origin is still caught. Note the copy's MTIME here is
-// EQUAL to its origin's — so the old mtime rule (`copy < origin`) calls this
-// FRESH and would run the stale bits. Content sees through it.
-//
-// This is the `jj`/`git` working-copy restamp, and the coarse-timestamp
-// filesystem, and the "rebuilt within the same second" case — all at once.
+// The converse, and why this is not a weakening: a copy whose bytes match NO current
+// output of its origin is still caught. Its MTIME here EQUALS its origin's, so the
+// `copy < origin` rule calls it fresh and runs the stale bits — this is the jj/git
+// working-copy restamp, the coarse-timestamp filesystem, and "rebuilt within the same
+// second", all at once.
 [<Fact(Timeout = 15000)>]
 let ``a copy whose bytes match NO output of its origin is STALE, even at an equal mtime`` () =
     withTempDir "tp-stale-tfm-realstale" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
 
-        // The dependency was rebuilt — both TFM outputs carry new bytes — but the
-        // copy in the test output dir was never refreshed. It holds the OLD bits.
+        // Both TFM outputs carry new bytes; the copy was never refreshed and holds the old
+        // bits. Every mtime is identical, so no mtime comparison can see it.
         File.WriteAllText(m.DepNet10Dll, "net10.0 bits v2")
         File.WriteAllText(m.DepNet8Dll, "net8.0 bits v2")
         File.SetLastWriteTimeUtc(m.DepNet10Dll, m.BuiltAt)
         File.SetLastWriteTimeUtc(m.DepNet8Dll, m.BuiltAt)
-        // … and every mtime is IDENTICAL, so no mtime comparison can see it.
         File.SetLastWriteTimeUtc(m.DepDllCopy, m.BuiltAt)
 
         match multiTfmStale m with
@@ -5780,10 +5523,9 @@ let ``a copy whose bytes match NO output of its origin is STALE, even at an equa
             test <@ copy = m.DepDllCopy @>
         | other -> Assert.Fail($"a copy holding OLD bytes must be STALE whatever the mtimes say, got %A{other}"))
 
-// FAIL CLOSED on ignorance, at the copy check too. A file we cannot read is not a
-// file we may certify: `ContentHash` hands back its `UnhashableContent` sentinel,
-// and an unhashable input is `InputsUndeterminable`, never "fresh". (An exclusive
-// lock is how a real build in flight holds a file it is mid-write on.)
+// Fail closed at the copy check too: a file we cannot read is not one we may certify, so
+// `ContentHash` hands back `UnhashableContent` and that is `InputsUndeterminable`, never
+// "fresh". An exclusive lock is how a real build in flight holds a file mid-write.
 [<Fact(Timeout = 15000)>]
 let ``an UNREADABLE copy is REFUSED, not called fresh`` () =
     withTempDir "tp-stale-unreadable-copy" (fun tmpDir ->
@@ -5796,18 +5538,17 @@ let ``an UNREADABLE copy is REFUSED, not called fresh`` () =
         | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
         | other -> Assert.Fail($"an unreadable copy must fail CLOSED, got %A{other}"))
 
-// The other side of the comparison, and the subtler one. The copy reads fine, but
-// an ORIGIN it must be checked against does not — so "it matches none of them" is
-// a conclusion we did not earn. An unhashable origin cannot match anything, and
-// calling that a MISMATCH would manufacture a stale verdict out of a permissions
-// error. Ignorance is `InputsUndeterminable`, in both directions.
+// The subtler side. The copy reads fine but an ORIGIN it must be checked against does
+// not, so "it matches none of them" is a conclusion we did not earn: an unhashable origin
+// cannot match anything, and calling that a MISMATCH manufactures a stale verdict out of
+// a permissions error.
 [<Fact(Timeout = 15000)>]
 let ``an UNREADABLE origin is REFUSED, not called stale`` () =
     withTempDir "tp-stale-unreadable-origin" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
 
-        // Make the copy match NO readable candidate: net8.0 holds different bytes
-        // by construction, and net10.0 — the one it does match — cannot be read.
+        // No readable candidate matches: net8.0 holds different bytes by construction, and
+        // net10.0 — the one it does match — cannot be read.
         use _lock =
             new FileStream(m.DepNet10Dll, FileMode.Open, FileAccess.Read, FileShare.None)
 
@@ -5815,75 +5556,64 @@ let ``an UNREADABLE origin is REFUSED, not called stale`` () =
         | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "net10.0" @>
         | other -> Assert.Fail($"an unreadable ORIGIN must fail CLOSED, not read as stale, got %A{other}"))
 
-// A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
-// which TFM `dotnet run` selects is not knowable here, so one fresh output dir
-// means there is a fresh way to run. Conservative against false-stale — the whole
-// point of the exercise.
+// A multi-targeted project is stale only when EVERY per-TFM output dir is: which TFM
+// `dotnet run` selects is not knowable here, so one fresh output dir means there is a
+// fresh way to run.
 [<Fact(Timeout = 15000)>]
 let ``a multi-TFM project with one FRESH output dir is not stale`` () =
     withTempDir "tp-stale-multitfm" (fun tmpDir ->
         let s = synth tmpDir
         let editedAt = s.BuiltAt.AddMinutes(30.0)
 
-        // The fixture changes; net10.0's copy still holds the OLD bytes, so it is
-        // stale …
+        // net10.0's copy still holds the OLD bytes, so it is stale ...
         File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, editedAt)
         test <@ (synthStale s).IsSome @>
 
-        // … but a second TFM's output dir carries the up-to-date copy.
+        // ... but a second TFM's output dir carries the up-to-date copy.
         let net9 = p [ s.TestsDir; "bin"; "Debug"; "net9.0" ]
         writeAt (p [ net9; "Tests.dll" ]) "" s.BuiltAt
         writeAt (p [ net9; "Common.dll" ]) "" s.BuiltAt
         writeAt (p [ net9; "Fixtures"; "data.json" ]) "{ \"leaves\": 40 }" editedAt
 
-        // And a TFM dir of the DEPENDENCY that holds no assembly at all (only one
-        // of its target frameworks was built) is simply not a candidate — it must
-        // not be mistaken for a missing build.
+        // A dependency TFM dir holding no assembly — only one of its frameworks was built
+        // — is not a candidate, and must not be mistaken for a missing build.
         Directory.CreateDirectory(p [ tmpDir; "Common"; "bin"; "Debug"; "net9.0" ])
         |> ignore
 
         test <@ synthStale s = None @>)
 
-// A TFM output dir of the TEST PROJECT ITSELF that holds no assembly is not a
-// candidate to be judged — it is not a build output at all. A partial or
-// interrupted build leaves such a directory behind, and an empty dir has nothing
-// in it to be stale: treating it as a candidate would mean walking an empty output
-// tree, finding no copy of anything, and — because every project in the closure
-// would then contribute no finding — quietly calling the run fresh on the strength
-// of a directory that contains nothing.
+// A partial or interrupted build leaves behind a TFM output dir of the TEST PROJECT with
+// no assembly in it. Judging it would mean walking an empty output tree, finding no copy
+// of anything, and — since every project in the closure then contributes no finding —
+// quietly calling the run fresh on the strength of a directory containing nothing.
 [<Fact(Timeout = 15000)>]
 let ``a TFM dir of the test project holding no assembly is not a candidate`` () =
     withTempDir "tp-stale-empty-tfmdir" (fun tmpDir ->
         let s = synth tmpDir
 
-        // A leftover output dir with no Tests.dll in it. The real net10.0 output is
-        // untouched and fresh, so the verdict must still be "fresh" — and must be
-        // reached without ever treating this empty dir as an output to judge.
         Directory.CreateDirectory(p [ s.TestsDir; "bin"; "Debug"; "net9.0" ]) |> ignore
 
         test <@ synthStale s = None @>
 
-        // … and the real output dir is still the one that decides: break it, and the
-        // gate must fire, rather than being placated by the empty sibling.
+        // The real output dir still decides: break it and the gate must fire rather than
+        // be placated by the empty sibling.
         File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
         test <@ (synthStale s).IsSome @>)
 
-// REGRESSION (2026-07-13 wedge): the freshness walk must TERMINATE in the
-// presence of symlink cycles. The production trigger: `.devenv/profile` links
-// into /nix/store where ncurses-6.6-dev/include contains TWO self-loop
-// symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
-// bounded only by ENAMETOOLONG ⇒ ~2^90 paths. The pre-SafeWalk walk followed
-// symlinked dirs and wedged EVERY `fshw check` forever (observed 8h36m,
-// silent). On a symlink-following walk this test trips its Timeout.
+// The freshness walk must TERMINATE through symlink cycles. Production trigger:
+// `.devenv/profile` links into /nix/store, where ncurses-6.6-dev/include holds two
+// self-loop symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
+// bounded only by ENAMETOOLONG, so ~2^90 paths. A symlink-following walk wedged every
+// `fshw check` forever (observed 8h36m, silent) and trips this test's Timeout.
 [<Fact(Timeout = 15000)>]
 let ``freshness terminates despite self-loop symlink cycles`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-nsm-cycle" (fun tmpDir ->
             let s = synth tmpDir
 
-            // Two self-loops in one directory = the exact /nix/store shape.
+            // Two self-loops in one directory: the /nix/store shape exactly.
             let cycleDir = Path.Combine(s.TestsDir, "cycle")
             Directory.CreateDirectory cycleDir |> ignore
             Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop"), ".") |> ignore
@@ -5891,10 +5621,10 @@ let ``freshness terminates despite self-loop symlink cycles`` () =
 
             test <@ synthStale s = None @>)
 
-// REGRESSION (same wedge, the other half): a symlinked directory is a portal OUT
-// of the tree (`.devenv/profile` → the nix store). Freshness is computed from the
-// REAL tree only — a newer file behind a symlinked dir is not an input to this
-// project, and following it is how the walk left the repo in the first place.
+// The same wedge, other half: a symlinked directory is a portal OUT of the tree
+// (`.devenv/profile` → the nix store). Freshness is computed from the REAL tree only — a
+// newer file behind a symlinked dir is not an input to this project, and following it is
+// how the walk left the repo in the first place.
 [<Fact(Timeout = 15000)>]
 let ``freshness does not follow a symlinked directory out of the project`` () =
     if not (OperatingSystem.IsWindows()) then
@@ -5909,8 +5639,8 @@ let ``freshness does not follow a symlinked directory out of the project`` () =
 
             test <@ synthStale s = None @>)
 
-// `.devenv`/`.direnv` are excluded by NAME as well (nix/devenv tooling dirs) —
-// even a REGULAR (non-symlinked) file under them must not count as an input.
+// `.devenv`/`.direnv` are excluded by NAME as well: even a regular, non-symlinked file
+// under them must not count as an input.
 [<Fact(Timeout = 15000)>]
 let ``freshness ignores sources under .devenv and .direnv`` () =
     withTempDir "tp-nsm-devenv" (fun tmpDir ->
@@ -5919,10 +5649,8 @@ let ``freshness ignores sources under .devenv and .direnv`` () =
 
         test <@ synthStale s = None @>)
 
-// End-to-end: a present-but-stale apphost must DEFER (non-green, "waiting on
-// build") through the plugin, never report a passing run on stale bits. On the
-// pre-fix code the runner exits 0 → TestsPassed → a false GREEN, so the
-// `HasFailingReasons` assertion FAILS until the freshness gate lands.
+// The gate end-to-end through the plugin. Without it the runner exits 0, yielding
+// TestsPassed and a false green on stale bits.
 [<Fact(Timeout = 20000)>]
 let ``a present-but-stale apphost defers as 'waiting on build' instead of passing on stale bits`` () =
     withTempDir "tp-stale-defer" (fun tmpDir ->
@@ -5930,21 +5658,20 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
         let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(tfmDir) |> ignore
 
-        // Apphost + canonical DLL PRESENT (so the missing-apphost path does NOT
-        // fire) ...
+        // Apphost and canonical DLL present, so the missing-apphost path does NOT fire ...
         File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
         let dll = Path.Combine(tfmDir, "Unit.dll")
         File.WriteAllText(dll, "")
 
-        // ... but a source was edited AFTER the build — the stale-binary trigger.
+        // ... but a source was edited after the build.
         let src = Path.Combine(projDir, "Tests.fs")
         File.WriteAllText(src, "module Tests")
         let now = DateTime.UtcNow
         File.SetLastWriteTimeUtc(dll, now.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(src, now)
 
-        // The runner would EXIT 0 (a 'pass' on stale bits) if launched; `--project`
-        // makes the project derivable so the freshness gate engages pre-launch.
+        // The runner exits 0 — a "pass" on stale bits — if it is ever launched. `--project`
+        // makes the project derivable, so the gate engages pre-launch.
         let configs =
             [ { Project = "Unit"
                 Command = "sh"
@@ -5966,11 +5693,8 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
         let allEntries =
             host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
 
-        // Stale bits must be DEFERRED — non-green, with an honest "waiting on
-        // build" diagnostic — exactly like a missing apphost; never a pass. Under
-        // the exit-code reclassification (Commit 2) a defer is `Deferred` severity
-        // (verdict routes it to Incomplete/exit 2), NOT a failing `Error`, so it
-        // no longer registers as a failing reason.
+        // A defer is `Deferred` severity, which the verdict routes to Incomplete/exit 2 —
+        // not a failing `Error` — so it does not register as a failing reason.
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
         let waitingDiagnostic =
@@ -5981,14 +5705,12 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
 
         test <@ waitingDiagnostic @>
 
-        // Status is a NON-failing terminal (the run did what it could; a
-        // build-ordering race left the project unrun) whose summary still says
-        // "waiting on build" — never `Failed`, never a silent green.
+        // A non-failing terminal whose summary still says "waiting on build" — never
+        // `Failed`, never a silent green.
         match host.GetStatus("test-prune") with
         | Some(Completed(_, v)) -> test <@ v.Summary.ToLowerInvariant().Contains("waiting on build") @>
         | other -> Assert.Fail($"expected a non-failing Completed status for the stale-artifact defer, got %A{other}")
 
-        // And it must never masquerade as a test failure: no Error entries at all.
         test <@ allEntries |> List.forall (fun e -> e.Severity <> FsHotWatch.ErrorLedger.Error) @>
 
         test
@@ -5997,24 +5719,14 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
                 |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
             @>)
 
-// =============================================================================
-// Issue 2 — `fshw errors` must reflect ONLY the most recent completed cycle.
-// When a cycle re-runs, the plugin's prior-cycle diagnostics must be
-// cleared/replaced so stale reds from a superseded run don't accumulate.
-// =============================================================================
-
 [<Fact(Timeout = 20000)>]
 let ``stale failures from a prior cycle are cleared when the next cycle supersedes them`` () =
-    // Cycle 1: ProjA fails (ProjB passes) → ledger holds a ProjA red.
-    // Cycle 2: ProjA passes, ProjB fails → ledger must hold ONLY a ProjB red;
-    // the superseded ProjA entry must be gone. Before the fix, the
-    // Custom(TestsFinished) handler only cleared on the all-pass branch, so the
-    // ProjA red from cycle 1 was never cleared when cycle 2 reported ProjB —
-    // `fshw errors` showed a stale red the fresh cycle had already cleared.
+    // Cycle 1 reds ProjA; cycle 2 passes ProjA and reds ProjB, so only ProjB may remain.
+    // The Custom(TestsFinished) handler used to clear only on the all-pass branch, so
+    // `fshw errors` showed a stale red the fresh cycle had already disproved.
     //
-    // Driven via the `run-tests` IPC command rather than BuildCompleted so each
-    // cycle deterministically RE-RUNS the given projects (BuildCompleted's
-    // impact path would skip on a warm cycle with no changed symbols).
+    // Driven via `run-tests` rather than BuildCompleted so each cycle deterministically
+    // re-runs: the impact path would skip a warm cycle with no changed symbols.
     withTempDir "tp-stale-clear" (fun tmpDir ->
         let flagA = Path.Combine(tmpDir, "failA")
         let flagB = Path.Combine(tmpDir, "failB")
@@ -6042,8 +5754,8 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         let hasFileFor (substr: string) () =
             ledgerFiles () |> List.exists (fun f -> f.Contains(substr))
 
-        // Cycle 1: only ProjA fails. run-tests runs executeTests synchronously
-        // then posts TestsFinished; wait for the ledger to reflect the ProjA red.
+        // `run-tests` runs executeTests synchronously then posts TestsFinished, so the
+        // ledger lags the call — wait for it.
         File.WriteAllText(flagA, "")
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
         waitUntil (hasFileFor "ProjA") 12000
@@ -6052,9 +5764,7 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         test <@ cycle1Files |> List.exists (fun f -> f.Contains("ProjA")) @>
         test <@ not (cycle1Files |> List.exists (fun f -> f.Contains("ProjB"))) @>
 
-        // Cycle 2: ProjA now passes, ProjB fails. Wait for the ledger to reflect
-        // the new ProjB red (which only appears after the Custom(TestsFinished)
-        // handler ran clear-then-report for this cycle).
+        // The ProjB red only appears after this cycle's clear-then-report has run.
         File.Delete(flagA)
         File.WriteAllText(flagB, "")
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
@@ -6062,23 +5772,21 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
 
         let cycle2Files = ledgerFiles ()
 
-        // ProjB red is present, ProjA red has been superseded/cleared.
         test <@ cycle2Files |> List.exists (fun f -> f.Contains("ProjB")) @>
         test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
 
 // =============================================================================
-// PendingVerification sidecar — focused, DETERMINISTIC unit tests for the
-// load/save/hash primitives. These pin both sides of every branch in `load`
-// (missing file, whitespace-only, corrupt JSON, well-formed) so the module's
-// branch coverage is stable run-to-run rather than depending on which states
-// the end-to-end queue tests happen to leave the sidecar in.
+// PendingVerification sidecar — deterministic unit tests for load/save/hash. These pin
+// both sides of every branch in `load` (missing file, whitespace-only, corrupt JSON,
+// well-formed) so branch coverage is stable run-to-run rather than depending on which
+// states the end-to-end queue tests happen to leave the sidecar in.
 // =============================================================================
 
 module private LedgerHelpers =
     open FsHotWatch.TestPrune
 
-    /// Write raw bytes to the sidecar — the only way to produce the torn/corrupt
-    /// shapes `save` itself can never write.
+    /// Write raw bytes to the sidecar — the only way to produce the torn/corrupt shapes
+    /// `save` itself can never write.
     let writeRawSidecar (tmpDir: string) (contents: string) =
         let path = PendingVerification.sidecarPath tmpDir
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -6090,8 +5798,8 @@ module private LedgerHelpers =
         | PendingVerification.LoadedQueue.Loaded queue -> queue
         | PendingVerification.LoadedQueue.Unreadable reason -> failwith $"expected Loaded, got Unreadable: {reason}"
 
-    /// Assert the ledger is UNREADABLE — the fact that must never again be spelled
-    /// with the same value as an empty queue.
+    /// Assert the ledger is UNREADABLE — the fact that must never be spelled with the same
+    /// value as an empty queue.
     let expectUnreadable (tmpDir: string) : string =
         match PendingVerification.load tmpDir with
         | PendingVerification.LoadedQueue.Unreadable reason -> reason
@@ -6102,9 +5810,9 @@ module private LedgerHelpers =
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: load on a MISSING file is Loaded empty, never Unreadable`` () =
     withTempDir "pv-missing" (fun tmpDir ->
-        // The fresh-clone boundary. No sidecar has ever been written, so nothing was
-        // ever queued, so nothing is owed — a PROVABLE empty. This must not be
-        // `Unreadable`, or every fresh clone would wedge into a permanent full suite.
+        // The fresh-clone boundary: nothing was ever queued, so nothing is owed — a
+        // PROVABLE empty. `Unreadable` here would wedge every fresh clone into a
+        // permanent full suite.
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
@@ -6117,17 +5825,17 @@ let ``PendingVerification: save then load round-trips the queue`` () =
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: save empty then load is Loaded empty (a provable 'nothing owed')`` () =
     withTempDir "pv-empty" (fun tmpDir ->
-        // `save` of an empty queue writes `[]` — well-formed and readable. It says,
-        // provably, "nothing is owed", and must stay a fast no-op.
+        // `save` of an empty queue writes `[]`: well-formed, readable, and provably
+        // "nothing is owed".
         FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: an EMPTY file is Unreadable (a torn write, not an empty queue)`` () =
     withTempDir "pv-whitespace" (fun tmpDir ->
-        // `save` writes through an atomic tmp+rename and always emits at least `[]`,
-        // so a zero-byte/whitespace file is a TORN WRITE. Pre-fix it read as `empty`
-        // and absorbed whatever the ledger had held.
+        // `save` writes through an atomic tmp+rename and always emits at least `[]`, so a
+        // zero-byte/whitespace file is a TORN WRITE — and reading it as `empty` absorbs
+        // whatever the ledger held.
         LedgerHelpers.writeRawSidecar tmpDir "   \n  "
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
@@ -6135,8 +5843,8 @@ let ``PendingVerification: an EMPTY file is Unreadable (a torn write, not an emp
 let ``PendingVerification: corrupt JSON is Unreadable, not empty (and never throws)`` () =
     withTempDir "pv-corrupt" (fun tmpDir ->
         LedgerHelpers.writeRawSidecar tmpDir "{ this is not valid json [[["
-        // Must not throw — but the failure to read is REPORTED, not swallowed into
-        // an empty queue that a caller would read as "nothing owed".
+        // Must not throw — but the failure is REPORTED, not swallowed into an empty queue
+        // a caller would read as "nothing owed".
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
 [<Fact(Timeout = 15000)>]
@@ -6149,8 +5857,8 @@ let ``PendingVerification: a TRUNCATED array is Unreadable, not empty`` () =
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: well-formed JSON that is not an array is Unreadable`` () =
     withTempDir "pv-not-array" (fun tmpDir ->
-        // Parses cleanly, but it is not a queue. `AsArray` throws; the old code caught
-        // that and returned `empty`.
+        // Parses cleanly, but it is not a queue: `AsArray` throws, and catching that to
+        // return `empty` is the bug.
         LedgerHelpers.writeRawSidecar tmpDir "{\"pending\": [\"Lib.foo\"]}"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
@@ -6163,10 +5871,9 @@ let ``PendingVerification: a bare JSON null is Unreadable`` () =
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: a NON-STRING entry makes the whole ledger Unreadable`` () =
     withTempDir "pv-bad-entry" (fun tmpDir ->
-        // The retail version of the same bug: the old `Seq.choose` silently DROPPED an
-        // entry it could not read, quietly absorbing that symbol's debt while the rest
-        // of the queue looked healthy. A symbol we cannot name is a symbol we cannot
-        // verify — the ledger is unreadable.
+        // A `Seq.choose` here silently DROPS the entry it cannot read, absorbing that
+        // symbol's debt while the rest of the queue looks healthy. A symbol we cannot name
+        // is a symbol we cannot verify.
         LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", 42, \"Lib.bar\"]"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
@@ -6179,32 +5886,28 @@ let ``PendingVerification: a null entry makes the whole ledger Unreadable`` () =
 [<Fact(Timeout = 15000)>]
 let ``PendingVerification: hash is order-independent and empty-distinct`` () =
     let pv = FsHotWatch.TestPrune.PendingVerification.hash
-    // Same membership, different insertion order → identical hash.
     test <@ pv (Set.ofList [ "a"; "b"; "c" ]) = pv (Set.ofList [ "c"; "a"; "b" ]) @>
-    // A non-empty queue hashes differently from the empty queue.
     test <@ pv (Set.ofList [ "a" ]) <> pv FsHotWatch.TestPrune.PendingVerification.empty @>
 
 // =============================================================================
-// Sound test-gate (pending-verification queue). A changed symbol leaves the
-// needs-testing queue ONLY when a test run that covered it completed green.
-// "0 affected tests" must provably mean "test-equivalent to the last green
-// run." These tests pin the three holes the queue closes:
-//   1. Verdict ignored run outcome — an Aborted run false-greened.
-//   2. The queue drained unconditionally — Aborted/failed runs forgot what
-//      still needed testing.
-//   3. No durable queue — a restart absorbed unverified symbols.
-// They drive the plugin through the real BuildCompleted → run → TestsFinished
-// flow, seeding the symbol DB directly (deterministic, no FCS) so a known
-// symbol maps to a test in a known project, and assert against the on-disk
-// `.fshw/test-prune/pending-verification.json` sidecar.
+// The pending-verification queue: a changed symbol leaves it ONLY when a test run that
+// covered it completed green, so that "0 affected tests" provably means "test-equivalent
+// to the last green run". Three holes it closes:
+//   1. The verdict ignored run outcome, so an Aborted run false-greened.
+//   2. The queue drained unconditionally, so Aborted/failed runs forgot what still
+//      needed testing.
+//   3. Without a durable queue, a restart absorbed unverified symbols.
+// These drive the real BuildCompleted → run → TestsFinished flow, seeding the symbol DB
+// directly (deterministic, no FCS) and asserting against the on-disk
+// `.fshw/test-prune/pending-verification.json`.
 // =============================================================================
 
 module private PendingQueueHelpers =
     open FsHotWatch.TestPrune
 
-    /// Seed the symbol DB so `QueryAffectedTests [symbolFullName]` returns a test
-    /// in `testProject` (class `testClass`/method `testMethod`). Mirrors the
-    /// dependency-edge + TestMethodInfo shape the analyzer produces.
+    /// Seed the symbol DB so `QueryAffectedTests [symbolFullName]` returns a test in
+    /// `testProject`, mirroring the dependency-edge + TestMethodInfo shape the analyzer
+    /// produces.
     let seedCoveredSymbol
         (db: Database)
         (symbolFullName: string)
@@ -6213,7 +5916,6 @@ module private PendingQueueHelpers =
         (testClass: string)
         (testMethod: string)
         =
-        // The production symbol under test.
         let symbol: SymbolInfo =
             { FullName = symbolFullName
               Kind = SymbolKind.Value
@@ -6223,10 +5925,10 @@ module private PendingQueueHelpers =
               ContentHash = "seed-hash"
               IsExtern = false }
 
-        // The test method is ALSO a symbol: dependencies.from_symbol_id and
-        // test_methods.symbol_id are NOT-NULL FKs into symbols(id), so without a
-        // row for the test's own full name the edge/test-method are silently
-        // dropped and QueryAffectedTests returns nothing.
+        // The test method is ALSO a symbol: `dependencies.from_symbol_id` and
+        // `test_methods.symbol_id` are NOT-NULL FKs into symbols(id), so without a row for
+        // the test's own full name the edge and test-method are silently dropped and
+        // QueryAffectedTests returns nothing.
         let testSymbol: SymbolInfo =
             { FullName = $"{testClass}.{testMethod}"
               Kind = SymbolKind.Value
@@ -6253,18 +5955,14 @@ module private PendingQueueHelpers =
             )
 
         db.RebuildProjects([ analysis ])
-        // Cross-connection WAL visibility: the plugin opens its OWN
-        // Database.create(dbPath) connection, which a pooled stale snapshot can
-        // hide these writes from. Clear the pool so the plugin's first read sees
-        // the seed (mirrors the existing affected-tests tests' ClearAllPools).
+        // The plugin opens its OWN Database.create(dbPath) connection, which a pooled
+        // stale snapshot can hide these writes from. Clear the pool so its first read sees
+        // the seed.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
 
-    /// A test config whose runner passes (exit 0) or fails (exit 1) based on a
-    /// flag file's presence. The class filter is wired so the impact-selected
-    /// class actually runs.
+    /// A test config whose runner exits 1 iff `flag` exists, and 0 otherwise.
     let flagConfig (tmpDir: string) (project: string) (flag: string) : TestConfig =
         { Project = project
-          // exit 1 iff the flag file exists.
           Command = "sh"
           Args = $"-c \"if [ -f {flag} ]; then exit 1; else exit 0; fi\""
           Group = "default"
@@ -6274,11 +5972,10 @@ module private PendingQueueHelpers =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect }
 
-    /// Current durable pending-verification queue for a repo root. An UNREADABLE
-    /// ledger is a test failure, not an empty queue — these tests assert on what is
-    /// owed, and silently reading an unreadable ledger as `empty` is the very bug
-    /// AUTOMATION-150 closes. The tests that WANT the unreadable case match on
-    /// `LoadedQueue` themselves.
+    /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
+    /// test failure, not an empty queue: these tests assert on what is owed, and reading
+    /// an unreadable ledger as `empty` is the bug AUTOMATION-150 closes. The tests that
+    /// WANT the unreadable case match on `LoadedQueue` themselves.
     let loadQueue (tmpDir: string) : Set<string> =
         match PendingVerification.load tmpDir with
         | PendingVerification.LoadedQueue.Loaded queue -> queue
@@ -6287,25 +5984,21 @@ module private PendingQueueHelpers =
 
 [<Fact(Timeout = 20000)>]
 let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
-    // THE pinned incident. A changed symbol is queued; the run's beforeRun hook
-    // throws → executeTests propagates → runTestsWithImpact catches → the
-    // completion carries Outcome = Aborted, Results = Map.empty. Pre-fix, empty
-    // results trivially satisfied "failed = 0 && deferred = 0" → Completed
-    // (false green) AND the queue drained, permanently absorbing the symbol.
-    // Post-fix: status is NON-green (Failed) and the symbol stays queued.
+    // A beforeRun throw propagates out of executeTests, `runTestsWithImpact` catches it,
+    // and the completion carries Outcome = Aborted with Results = Map.empty. Empty results
+    // trivially satisfy "failed = 0 && deferred = 0", so the verdict greened AND the queue
+    // drained, permanently absorbing the symbol.
     withTempDir "tp-incident-abort" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
 
-        // Seed the durable queue so the run launches against it. (A restart that
-        // loaded this queue is the realistic source; here we set it directly.)
+        // Set directly; a restart that loaded this queue is the realistic source.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
 
         let configs =
             [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
 
-        // beforeRun that always throws.
         let beforeRun = Some(fun () -> failwith "beforeRun boom")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -6316,28 +6009,24 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
-        // (1) Verdict must NOT be Completed — an aborted run verified nothing.
+        // An aborted run verified nothing.
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> Assert.Fail("aborted run was reported as Completed (false green)")
         | Some(Failed _) -> ()
         | other -> Assert.Fail($"expected Failed for an aborted run, got %A{other}")
 
-        // (2) The symbol must STILL be queued — a subsequent run re-flags it.
+        // Still queued, so a subsequent run re-flags it.
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ queue.Contains("Lib.foo") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, not a swallowed error`` () =
-    // AUTOMATION-68 — the verdict-trust hole. The manual `run-tests` command ran
-    // `executeTests` inside a try/with that, on a `beforeRun` throw, returned a
-    // command-level JSON error and posted NOTHING back — leaving the plugin
-    // status at its prior (possibly green) value. A concurrent `fshw check` then
-    // read the daemon aggregate (`IpcOutput.hasFailures` → `anyPluginFailed`),
-    // saw no Failed status, and exited 0 while the preflight-guarded suite NEVER
-    // RAN. Unlike the impact path (`runTestsWithImpact`), whose catch builds an
-    // Aborted lifecycle → PluginStatus.Failed, the command path was silent.
-    // Post-fix the command posts the SAME Aborted lifecycle, so the plugin
-    // reaches Failed with the hook's output surfaced and `check` reads non-green.
+    // The `run-tests` command ran `executeTests` inside a try/with that, on a `beforeRun`
+    // throw, returned a command-level JSON error and posted NOTHING back — leaving the
+    // status at its prior, possibly green, value. A concurrent `fshw check` read the
+    // daemon aggregate, saw no Failed status, and exited 0 while the preflight-guarded
+    // suite never ran. The impact path's catch builds an Aborted lifecycle; the command
+    // path must post the same one.
     withTempDir "tp-cmd-beforerun-throw" (fun tmpDir ->
         let configs =
             [ { Project = "TestProject"
@@ -6350,49 +6039,43 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect } ]
 
-        // A beforeRun that fails its preflight (models a real csrf-gate step).
+        // A preflight failure, modelling a real csrf-gate step.
         let beforeRun = Some(fun () -> failwith "csrf-gate failed")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
         host.RegisterHandler(handler)
 
-        // The command posts the Aborted TestsFinished async; await the terminal
-        // transition it drives (Failed) before reading status.
+        // The command posts the Aborted TestsFinished asynchronously, so await the
+        // terminal transition it drives before reading status.
         let await = beginAwaitNextTerminal host "test-prune"
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
         await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
-        // (1) The command still reports the failure to its direct caller.
+        // The direct caller still hears about it ...
         test <@ result.IsSome @>
         test <@ result.Value.Contains("csrf-gate failed") @>
 
-        // (2) The seam `fshw check` reads: the plugin status is Failed with the
-        //     hook's output surfaced — NOT a stale green / Idle. `anyPluginFailed`
-        //     (IpcOutput.hasFailures) keys off exactly this, so a non-zero check
-        //     verdict follows.
+        // ... and so does the seam `fshw check` reads: `anyPluginFailed`
+        // (IpcOutput.hasFailures) keys off exactly this status, so a non-zero verdict
+        // follows rather than a stale green.
         match host.GetStatus("test-prune") with
         | Some(Failed(msg, _, _)) -> test <@ msg.Contains("csrf-gate failed") @>
         | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
 let ``incident: a test child that never becomes a live process drives the run to Failed, not a wedge`` () =
-    // AUTOMATION-65 QA finding — the launch gap. Between a config's spawn and its
-    // first sign of life NOTHING watched the wait: an overloaded box left the
-    // (infinite, no-TimeoutSec) `WaitForExit` hanging forever with no child ever
-    // appearing, so the plugin stayed `Running` and `check`'s WaitForComplete
-    // streamed "Waiting for plugins" for hours. `sleep 30` reproduces it: it
-    // produces no output and won't exit, so with a tiny launch deadline
-    // (`FSHW_LAUNCH_DEADLINE_SEC`) the watchdog kills the tree and raises
-    // `LaunchStalledException`, which the run-tests command's catch turns into the
-    // SAME Aborted lifecycle a beforeRun throw does (AUTOMATION-68 seam) →
-    // PluginStatus.Failed → `check` exits non-green rather than wedging.
+    // The launch gap: between a config's spawn and its first sign of life nothing watched
+    // the wait, so an overloaded box left an infinite `WaitForExit` hanging with no child
+    // ever appearing — the plugin stayed Running and `check` streamed "Waiting for
+    // plugins" for hours. `sleep 30` reproduces it: no output, no exit, so with a tiny
+    // `FSHW_LAUNCH_DEADLINE_SEC` the watchdog kills the tree and raises
+    // `LaunchStalledException`, which the command's catch turns into the same Aborted
+    // lifecycle a beforeRun throw does.
     //
-    // The env override is process-global, but only `executeTests` reads it and
-    // the tests that reach `executeTests` all live in this class (one xUnit
-    // collection ⇒ sequential); echo-based configs elsewhere emit output within
-    // ms and so are immune to a 1 s launch deadline regardless. Restored in a
-    // finally.
+    // The env override is process-global, but only `executeTests` reads it and every test
+    // that reaches `executeTests` is in this class (one xUnit collection, so sequential);
+    // echo-based configs emit within milliseconds and are immune to a 1s deadline anyway.
     withTempDir "tp-launch-gap-stall" (fun tmpDir ->
         let key = "FSHW_LAUNCH_DEADLINE_SEC"
         let prior = Environment.GetEnvironmentVariable key
@@ -6418,12 +6101,11 @@ let ``incident: a test child that never becomes a live process drives the run to
             let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
             await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
-            // The command surfaces the launch-stall diagnostic to its direct caller.
             test <@ result.IsSome @>
             test <@ result.Value.Contains("no live process") @>
 
-            // The seam `fshw check` reads: Failed, naming the config and the launch
-            // gap — NOT a stale green / a plugin stuck Running.
+            // Failed, naming the config and the launch gap — not a stale green, and not a
+            // plugin stuck Running.
             match host.GetStatus("test-prune") with
             | Some(Failed(msg, _, _)) ->
                 test <@ msg.Contains("no live process") @>
@@ -6434,9 +6116,7 @@ let ``incident: a test child that never becomes a live process drives the run to
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =
-    // Guards the pass path: a beforeRun that SUCCEEDS must leave the run
-    // unaffected — projects execute, results come back, and the plugin reaches a
-    // green terminal. Pairs with the failing-beforeRun regression above.
+    // The pass-path pair for the failing-beforeRun regression above.
     withTempDir "tp-cmd-beforerun-ok" (fun tmpDir ->
         let ran = ref false
 
@@ -6476,10 +6156,8 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
 let ``partial failure: symbols whose only covering project passed commit; symbols touching a failed project stay queued``
     ()
     =
-    // A run covers P1 (passes) and P2 (fails). SymA's tests live only in P1;
-    // SymB's tests live only in P2. SymA must commit (its covering project
-    // passed); SymB must stay queued (its covering project failed). Pre-fix the
-    // whole queue drained on any completion regardless of per-project outcome.
+    // SymA's tests live only in P1 (passes), SymB's only in P2 (fails). The whole queue
+    // used to drain on any completion, regardless of per-project outcome.
     withTempDir "tp-partial-fail" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
@@ -6488,7 +6166,6 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.symA"; "Lib.symB" ])
 
-        // P1 passes (no flag), P2 fails (flag present).
         let p2flag = Path.Combine(tmpDir, "p2fail")
         File.WriteAllText(p2flag, "")
 
@@ -6506,30 +6183,25 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
-        // symA's only covering project (P1) passed → committed (gone).
         test <@ not (queue.Contains("Lib.symA")) @>
-        // symB touches P2 which failed → still queued.
         test <@ queue.Contains("Lib.symB") @>)
 
 [<Fact(Timeout = 30000)>]
 let ``mid-run change: a green run commits only its launch set; a symbol that arrives mid-run stays queued and triggers a rerun``
     ()
     =
-    // Run 1 launches against {Lib.foo} and SLEEPS (~1.5s). While it is in flight a
-    // genuine FCS FileChecked lands that changes a second symbol (`bar`), which the
-    // plugin enqueues via the real write-through path, and a mid-run BuildCompleted
-    // sets PendingRerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its green
-    // completion commits ONLY Lib.foo; the mid-run `bar` is NOT in the launch set,
-    // so it survives the commit and the PendingRerun then covers + commits it.
-    // This exercises the real mid-run path (no file-rewrite simulation): the
-    // launch snapshot is captured at dispatch and the commit is launch-set-scoped.
+    // Run 1 launches against {Lib.foo} and sleeps ~1.5s. Mid-flight a real FCS FileChecked
+    // changes `bar`, which the plugin enqueues through the genuine write-through path, and
+    // a BuildCompleted sets PendingRerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its
+    // green completion commits only that; `bar` survives and the rerun covers it. No
+    // file-rewrite simulation: the snapshot is captured at dispatch and the commit is
+    // launch-set-scoped.
     withTempDir "tp-midrun" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
 
-        // Lib exposes `foo` and `bar`; the test file has a test calling each so a
-        // change to either selects its test.
+        // One test per exported function, so a change to either selects its own test.
         let libSource1 = "module Lib\nlet foo (x: int) = x + 1\nlet bar (x: int) = x + 1\n"
 
         let testsSource =
@@ -6552,7 +6224,7 @@ let barTest () = assert (bar 1 = 2)
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
-        // The runner sleeps so the mid-run injection has a window; always passes.
+        // The sleep is the window the mid-run injection needs.
         let configs =
             [ { Project = "Lib"
                 Command = "sh"
@@ -6576,8 +6248,6 @@ let barTest () = assert (bar 1 = 2)
 
         pipeline.RegisterProject(libFile, projOptions)
 
-        // Index both files (BuildCompleted first so the freshness sidecar can go
-        // clean, then FileChecked for each), then flush to the DB via BatchChecked.
         emitBuildAndWaitTerminal host
 
         for f in [ libFile; testsFile ] do
@@ -6588,7 +6258,7 @@ let barTest () = assert (bar 1 = 2)
         waitForPluginIdle host "test-prune" 10.0
         emitBatchAndQuiesce host [ libFile; testsFile ]
 
-        // Change `foo`'s body so `fooTest` is the affected test, then launch run 1.
+        // Change `foo`'s body, so `fooTest` is the affected test.
         let libSource2 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 1\n"
         File.WriteAllText(libFile, libSource2)
 
@@ -6598,7 +6268,7 @@ let barTest () = assert (bar 1 = 2)
 
         waitForPluginIdle host "test-prune" 10.0
 
-        // Launch run 1 (covers fooTest). It sleeps 1.5s.
+        // Run 1 covers fooTest, and sleeps 1.5s.
         host.EmitBuildCompleted(BuildSucceeded)
 
         waitUntil
@@ -6608,9 +6278,8 @@ let barTest () = assert (bar 1 = 2)
                 | _ -> false)
             5000
 
-        // MID-RUN: change `bar`'s body → a real FileChecked enqueues `bar`'s
-        // symbol via the plugin's write-through path, then a BuildCompleted sets
-        // PendingRerun. This all lands while run 1 is still sleeping.
+        // Mid-run, while run 1 is still sleeping: change `bar`'s body, so a real
+        // FileChecked enqueues it, then a BuildCompleted sets PendingRerun.
         let libSource3 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 99\n"
         File.WriteAllText(libFile, libSource3)
 
@@ -6620,16 +6289,11 @@ let barTest () = assert (bar 1 = 2)
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Run 1 finishes, then the PendingRerun (covering the mid-run `bar`) runs.
-        // Both passed (the runner always exits 0), so the queue ultimately drains
-        // to empty and the plugin settles green. Wait for that CONVERGED state
-        // (empty queue AND Completed) rather than a single terminal transition —
-        // the rerun re-enters Running between run 1's completion and final settle,
-        // so a one-shot terminal wait races the rerun. The load-bearing invariant
-        // (`bar` is NOT committed by run 1's completion — it only leaves the queue
-        // once the rerun actually covers it green) is what makes the convergence
-        // possible: had run 1 committed its non-launch-set arrival, the rerun
-        // would never have re-tested `bar`.
+        // Wait for the CONVERGED state — empty queue AND Completed — not a single terminal
+        // transition: the rerun re-enters Running between run 1's completion and the final
+        // settle, so a one-shot terminal wait races it. The invariant that makes
+        // convergence possible is that `bar` is not committed by run 1: had run 1
+        // committed its non-launch-set arrival, the rerun would never have re-tested it.
         let converged () =
             let q = PendingQueueHelpers.loadQueue tmpDir
 
@@ -6651,21 +6315,20 @@ let barTest () = assert (bar 1 = 2)
 
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
-    // Session 1 queues Lib.foo (covered by P1) but the run never proves it green
-    // (it fails). Session 2 (a fresh plugin instance against the same on-disk
-    // sidecar + DB) must load the queue, re-flag Lib.foo, and run P1 again.
-    // Pre-fix the in-memory queue died with the daemon → restart silent-greened.
+    // Session 1 queues Lib.foo (covered by P1) but never proves it green. Session 2 — a
+    // fresh plugin over the same on-disk sidecar and DB — must load the queue, re-flag
+    // Lib.foo and run P1 again. An in-memory-only queue dies with the daemon, so the
+    // restart silent-greens.
     withTempDir "tp-restart" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
 
-        // Queue Lib.foo on disk (session-1 residue: a symbol never proven green).
+        // Session-1 residue: a symbol never proven green.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
 
-        // Session 2: a fresh plugin. P1 PASSES this time, so the restart-driven
-        // run should cover Lib.foo, pass, and commit it — proving the symbol was
-        // re-flagged and actually re-tested (not silently absorbed).
+        // P1 passes this time, so the restart-driven run covers Lib.foo and commits it —
+        // proving it was re-flagged and actually re-tested, not silently absorbed.
         let ranMarker = Path.Combine(tmpDir, "p1-ran")
 
         let configs =
@@ -6687,28 +6350,23 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
-        // The restart re-flagged Lib.foo → P1 actually ran.
         test <@ File.Exists ranMarker @>
 
-        // P1 passed and covers Lib.foo → it committed (queue now empty).
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ not (queue.Contains("Lib.foo")) @>
 
-        // And the verdict is green now that the queue drained.
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed after the re-flagged symbol tested green, got %A{other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``no-covering-test symbol drops from the queue at flush without wedging it`` () =
-    // A queued symbol with NO covering test must drop immediately at flush time —
-    // nothing to wait for; retaining it would wedge the queue forever (every run
-    // selects zero tests yet the queue never empties → permanent non-green).
+    // Retaining it would wedge the queue forever: every run selects zero tests, the queue
+    // never empties, and the verdict is permanently non-green.
     withTempDir "tp-uncovered" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
-        // Seed a COVERED symbol so the DB is non-empty and indexed, plus queue an
-        // UNCOVERED symbol that maps to no test.
+        // A covered symbol too, so the DB is non-empty and indexed.
         PendingQueueHelpers.seedCoveredSymbol db "Lib.covered" "Lib.fs" "P1" "P1Tests" "coveredTest"
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.uncovered"; "Lib.covered" ])
@@ -6734,8 +6392,8 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
-        // The uncovered symbol dropped (no test to wait on); the covered symbol
-        // committed because P1 passed. Queue is empty → not wedged → green.
+        // The uncovered symbol drops with no test to wait on; the covered one commits
+        // because P1 passed. An empty queue is the not-wedged condition.
         test <@ not (queue.Contains("Lib.uncovered")) @>
         test <@ not (queue.Contains("Lib.covered")) @>
         test <@ Set.isEmpty queue @>
@@ -6744,10 +6402,8 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed (queue drained, not wedged), got %A{other}"))
 
-// --- classifyTestOutcome: report-authoritative verdict (CTRF over exit code) ---
-//
-// These pin the false-RED fix: the structured report (not the process exit code)
-// decides green/red, with the exit code only a tie-break when no report exists.
+// --- classifyTestOutcome: the structured report, not the process exit code, decides
+// green/red; the exit code is a tie-break only when no report exists.
 
 open FsHotWatch.ProcessHelper
 
@@ -6765,7 +6421,7 @@ let private isFailed result =
 
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
-    // exit 7 (MTP dirty-shutdown) but the report shows zero failures and >=1 test.
+    // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
     let report = Some(rep 12 12 0 0 0)
 
     let result =
@@ -6818,7 +6474,7 @@ let ``classify: non-zero exit with NO report from a capable runner is ERRORED, n
 
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED (no regression)`` () =
-    // NoReportRequested → exit code is the only signal → behave as before.
+    // Under NoReportRequested the exit code is the only signal there is.
     let result =
         classifyTestOutcome
             NoReportRequested
@@ -6865,7 +6521,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
 
     test <@ TestResult.isTimedOut result @>
 
-// --- detectCtrfCapable: scope report injection to xUnit runners ---
+// --- detectCtrfCapable: report injection is scoped to xUnit runners ---
 
 [<Fact(Timeout = 5000)>]
 let ``detectCtrfCapable: Some true when the project references xunit`` () =
@@ -6893,50 +6549,36 @@ let ``detectCtrfCapable: Some false when the project does not reference xunit`` 
 
 [<Fact(Timeout = 5000)>]
 let ``detectCtrfCapable: None when no project can be derived from the args`` () =
-    // A --project-less / non-file command → fall back to the dotnet heuristic.
+    // None sends the caller to the dotnet heuristic.
     test <@ detectCtrfCapable "test --no-build" "/tmp" = None @>
 
 // =============================================================================
-// AUTOMATION-95 / AUTOMATION-99 — the check must CONVERGE, never rest on a
-// verdict nobody earned.
+// AUTOMATION-95 / AUTOMATION-99 — the check must CONVERGE, never rest on a verdict
+// nobody earned. One defect, two polarities.
 //
-// One defect, two polarities. The pending-verification queue used to have
-// exactly ONE drain trigger: the `BuildCompleted` handler. But on a scan the
-// daemon runs the FCS pass only AFTER the build goes terminal (Daemon.fs
-// `performScan` awaits BuildPlugin before dispatching the FCS tiers), so every
-// symbol the SCAN discovers lands in the queue strictly AFTER the only event
-// that could have run its tests. `BatchChecked` flushed those symbols, even
-// computed their affected tests — and then returned without running anything.
-// The queue was never drained, and `check` reported whatever terminal status
-// test-prune happened to be holding:
+// The pending-verification queue had exactly ONE drain trigger, the `BuildCompleted`
+// handler. But on a scan `performScan` awaits BuildPlugin before dispatching the FCS
+// tiers, so every symbol the SCAN discovers lands in the queue strictly AFTER the only
+// event that could have run its tests. `BatchChecked` flushed those symbols, even
+// computed their affected tests, then returned without running anything — so the queue
+// was never drained and `check` reported whatever terminal status test-prune happened to
+// hold: a stale `Completed` is a false green with symbols pending; a stale `Failed` is a
+// permanently stuck red whose work never runs. Live: `check` returned in one second,
+// exit 0, zero daemon activity, while the plugin's own log said "24 affected tests".
 //
-//   * a stale `Completed` → FALSE GREEN with symbols pending      (AUTOMATION-95)
-//   * a stale `Failed`    → PERMANENTLY STUCK RED, work never runs (AUTOMATION-99)
-//
-// Reproduced live before the fix: `check` returned in ONE SECOND, exit 0, with
-// zero daemon activity, while the symbol it had just discovered sat unverified
-// in the queue and the plugin's own log said "24 affected tests".
-//
-// The contract these tests pin down: whoever DISCOVERS unverified symbols is
-// responsible for RUNNING them. Green is only ever earned by a run.
+// Whoever DISCOVERS unverified symbols is responsible for RUNNING them.
 // =============================================================================
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting on a stale verdict`` () =
-    // The cold-scan stranding, in miniature. Symbols discovered by the scan land
-    // in the queue AFTER BuildCompleted has already fired, so BuildCompleted can
-    // never have run them: BatchChecked (the cohort seal — the first moment the
-    // scan's symbols are known) is the only event left that can. It must DRAIN.
-    //
-    // Pre-fix: BatchChecked flushed and returned. No run, queue intact, and the
-    // plugin's last status stood as the verdict — the exact false-green/stuck-red.
+    // BatchChecked is the cohort seal — the first moment the scan's symbols are known —
+    // and so the only event left that can drain them.
     withTempDir "tp-batch-drain" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
 
-        // A symbol awaiting verification (as a scan's FileChecked pass would leave
-        // it), with NO BuildCompleted to follow.
+        // A symbol awaiting verification, as a scan's FileChecked pass would leave it.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
 
         let ranMarker = Path.Combine(tmpDir, "p1-ran")
@@ -6956,16 +6598,16 @@ let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting o
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // BatchChecked ONLY — deliberately no BuildCompleted, which is the whole
-        // point: on a scan it has already come and gone before these symbols existed.
+        // Deliberately no BuildCompleted: on a scan it has come and gone before these
+        // symbols existed.
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
-        // It RAN the covering tests rather than reporting on them.
+        // It RAN the covering tests rather than reporting on them ...
         test <@ File.Exists ranMarker @>
 
-        // …and only then went green — a verdict it earned.
+        // ... and only then went green.
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ not (queue.Contains("Lib.foo")) @>
 
@@ -6976,24 +6618,21 @@ let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting o
 // =============================================================================
 // AUTOMATION-150 — an unreadable ledger is not an empty one.
 //
-// The queue file is the record of what is still OWED. When it cannot be READ,
-// the debt it holds is UNKNOWN — and "unknown" is not "nothing". Pre-fix `load`
-// swallowed a corrupt/truncated sidecar into `empty`, which is byte-identical to
-// the value a genuinely-clean queue produces: the entire outstanding test debt
-// vanished into a `with _ -> empty`, and the module broke the invariant its own
-// header states ("the queue may only err toward OVER-testing, never
-// under-testing").
+// The queue file records what is still OWED, so when it cannot be READ the debt is
+// UNKNOWN — and "unknown" is not "nothing". `load` swallowed a corrupt/truncated sidecar
+// into `empty`, byte-identical to what a genuinely clean queue produces, so the entire
+// outstanding test debt vanished into a `with _ -> empty` and the module broke its own
+// stated invariant: the queue may only err toward OVER-testing.
 //
-// The boundary that keeps the fix honest, and the subtlety of the ticket: "the
-// file does not exist" (first run, fresh clone) and "the file exists and I could
-// not read it" are DIFFERENT facts. The first is legitimately empty. Collapsing
-// them either wedges every fresh clone into a permanent full suite, or re-opens
-// the hole. All three tests below exist to pin that boundary from both sides.
+// The boundary that keeps the fix honest: "the file does not exist" (first run, fresh
+// clone) and "the file exists and I could not read it" are DIFFERENT facts. The first is
+// legitimately empty; collapsing them either wedges every fresh clone into a permanent
+// full suite or re-opens the hole. All three tests below pin that boundary.
 // =============================================================================
 
-/// The two-project runner used by the AUTOMATION-150 tests. P1 covers `Lib.foo`,
-/// P2 covers `Lib.debt` — so an impact-filtered selection driven by a changed
-/// `Lib.foo` runs P1 and SKIPS P2. A widened (full-suite) run touches both.
+/// The two-project runner these tests share. P1 covers `Lib.foo` and P2 covers `Lib.debt`,
+/// so an impact-filtered selection driven by a changed `Lib.foo` runs P1 and SKIPS P2,
+/// while a widened full-suite run touches both.
 let private ledgerRunner (project: string) (marker: string) : TestConfig =
     { Project = project
       Command = "sh"
@@ -7007,26 +6646,22 @@ let private ledgerRunner (project: string) (marker: string) : TestConfig =
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than greening on nothing`` () =
-    // THE regression. The sidecar EXISTS but is truncated mid-array — the shape a
-    // crashed/torn write leaves behind. It once held real debt (Lib.debt, covered
-    // by P2, never proven green).
+    // The sidecar EXISTS but is truncated mid-array — a crashed/torn write — and it once
+    // held real debt (Lib.debt, covered by P2, never proven green). Catching the parse
+    // throw and returning `empty` makes the drain gate (`if Set.isEmpty pendingQueueRef
+    // then return`) read "nothing owed", run ZERO tests, and rest on a green verdict.
     //
-    // Pre-fix: `load` caught the parse throw and returned `empty`. The drain gate
-    // (`if Set.isEmpty pendingQueueRef then return`) read that empty queue as
-    // "nothing owed", ran ZERO tests, and the plugin rested on a green verdict. The
-    // debt was absorbed by a corrupt file.
-    //
-    // Post-fix: the ledger loads as `Unreadable`, which is a DIFFERENT VALUE from an
-    // empty `Queue` and cannot be mistaken for one. A selection made without the
-    // ledger cannot be trusted, so the run widens to EVERY configured project in
-    // full — the only scope that can discharge a debt of unknown membership.
+    // `Unreadable` is a DIFFERENT VALUE that cannot be mistaken for an empty queue, and a
+    // selection made without the ledger cannot be trusted — so the run widens to every
+    // configured project in full, the only scope that discharges a debt of unknown
+    // membership.
     withTempDir "tp-ledger-unreadable" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
         PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
 
-        // A TRUNCATED ledger. The file exists — this is emphatically not a fresh clone.
+        // The file EXISTS: this is emphatically not a fresh clone.
         let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
         File.WriteAllText(path, "[\"Lib.deb")
@@ -7039,39 +6674,35 @@ let ``AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than 
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
-        // The cold-scan shape (as in AUTOMATION-95/99): BatchChecked is the cohort
-        // seal, and the only event left that can drain what the scan discovered.
+        // The cold-scan shape again: BatchChecked is the only event that can drain what
+        // the scan discovered.
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
-        // It RAN — an unreadable ledger owes MORE testing, never less…
+        // It RAN — an unreadable ledger owes MORE testing, never less ...
         test <@ File.Exists p1Ran @>
-        // …and it ran EVERYTHING. P2 is the project the pre-fix filtered selection
-        // skipped, and the one holding the debt the corrupt file swallowed.
+        // ... and it ran EVERYTHING. P2 is the project a filtered selection skips, and
+        // the one holding the debt the corrupt file swallowed.
         test <@ File.Exists p2Ran @>
 
-        // And the debt is DISCHARGED: a full suite passed every configured project,
-        // so every symbol the lost ledger could have held is now verified, and the
-        // corrupt file has been rewritten. It self-heals — the next session loads a
-        // readable ledger and goes back to impact filtering, instead of grinding a
-        // full suite forever.
+        // And it SELF-HEALS: a full suite passed every configured project, so every symbol
+        // the lost ledger could have held is verified and the corrupt file is rewritten.
+        // The next session loads a readable ledger and goes back to impact filtering
+        // rather than grinding a full suite forever.
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-150: a MISSING ledger (fresh clone) is legitimately empty and does NOT force a full suite`` () =
-    // The converse, and the trade this fix must NOT make: fail-open swapped for a
-    // stuck full suite. A fresh clone / first run has no ledger at all. That is a
-    // genuine, provable "nothing owed" — not an unreadable one — and it must stay a
-    // fast no-op. Collapsing "missing" into "unreadable" would wedge every fresh
-    // clone into a permanent full-suite run.
+    // The trade this fix must NOT make: fail-open swapped for a stuck full suite. A fresh
+    // clone has no ledger at all, which is a provable "nothing owed" and must stay a fast
+    // no-op.
     withTempDir "tp-ledger-missing" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
         PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
 
-        // No sidecar written AT ALL — the file does not exist.
         test <@ not (File.Exists(FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir)) @>
 
         let p1Ran = Path.Combine(tmpDir, "p1-ran")
@@ -7084,28 +6715,23 @@ let ``AUTOMATION-150: a MISSING ledger (fresh clone) is legitimately empty and d
 
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
 
-        // Give a run every chance to start before concluding that none did.
+        // Give a run every chance to start before concluding none did.
         waitUntil (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000
         waitForQuiescent host 5000
 
-        // Nothing is owed and nothing was run. The fast no-op is intact.
         test <@ not (File.Exists p1Ran) @>
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-150: a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
-    // The other half of the boundary. `save` of an empty queue writes `[]` — a
-    // well-formed, READABLE ledger that says, provably, "nothing is owed". It must
-    // load as `Loaded empty` and skip, exactly as before. If the fix misclassified
-    // `[]` (or any clean empty queue) as unreadable, every idle daemon would grind
-    // a full suite forever — and this test would fail.
+    // The other half of the boundary. Misclassify `[]` as unreadable and every idle daemon
+    // grinds a full suite forever.
     withTempDir "tp-ledger-empty" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
         PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
 
-        // A clean, well-formed, EMPTY ledger on disk.
         FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
         test <@ File.Exists(FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir) @>
 
@@ -7129,19 +6755,15 @@ let ``AUTOMATION-150: a genuinely EMPTY ledger stays a fast no-op (not a widened
 let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the verdict red``
     ()
     =
-    // The permanent wedge. The symbol DB indexes test methods from EVERY project it
-    // analyzed — which is NOT the same set as the projects fshw is configured to run.
-    // A symbol covered only by an unconfigured project can never be proven green: its
-    // covering project never executes, so it never lands in a run's results, so the
-    // symbol never commits. Pre-fix it sat in the queue forever and `check` stayed red
-    // no matter how many times the suite passed.
-    //
-    // Observed live: two full suites ran and PASSED back-to-back, and `check` STILL
-    // exited 1 with the symbols pending — because their only covering tests lived in
+    // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
+    // set of projects fshw is configured to run. A symbol covered only by an unconfigured
+    // project can never be proven green: its covering project never executes, so it never
+    // lands in a run's results and never commits. Live: two full suites passed
+    // back-to-back and `check` still exited 1, because the only covering tests lived in
     // FsHotWatch.IntegrationTests, which the daemon does not run.
     //
-    // "Covered" must mean "covered by a test we can actually run". Anything else is
-    // indistinguishable from having no covering test, and drops by the same rule.
+    // "Covered" means "covered by a test we can actually run"; anything else is
+    // indistinguishable from having no covering test and drops by the same rule.
     withTempDir "tp-unrunnable" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
@@ -7171,11 +6793,10 @@ let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
-        // Unverifiable-by-construction → dropped, not retained forever.
+        // Unverifiable by construction, so dropped rather than retained forever.
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ not (queue.Contains("Lib.orphan")) @>
 
-        // And the verdict is NOT stuck red on a symbol no configured test can ever prove.
         match host.GetStatus("test-prune") with
         | Some(PluginStatus.Failed(msg, _, _)) ->
             Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
@@ -7184,15 +6805,11 @@ let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =
     // The third facet: `check` handed back a verdict WHILE the run that would have
-    // produced it was still executing. "Busy" used to mean only "has events queued in
-    // its mailbox" — blind to the background work a handler launches via RunExclusive
-    // and then returns from. So the host saw an idle mailbox, called the plugin at
-    // rest, and WaitForComplete resolved mid-run.
-    //
-    // Observed live: test run launched 11:30:17, still executing at 11:30:34, and the
-    // daemon logged "all plugins already terminal" and `check` exited 0.
-    //
-    // Busy must mean "has work in flight", full stop.
+    // produced it was still executing. "Busy" meant only "has events queued in its
+    // mailbox", blind to the background work a handler launches via RunExclusive and then
+    // returns from — so the host saw an idle mailbox and WaitForComplete resolved mid-run.
+    // Live: a run launched 11:30:17, still executing at 11:30:34, and the daemon logged
+    // "all plugins already terminal" while `check` exited 0.
     withTempDir "tp-busy-during-run" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -7214,9 +6831,9 @@ let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verd
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait until the run is genuinely in flight (status Running). By this point the
-        // BuildCompleted handler has returned, so the MAILBOX is drained — the only
-        // thing that can still be keeping the plugin busy is the background run itself.
+        // By the time status reaches Running the BuildCompleted handler has returned, so
+        // the MAILBOX is drained and the only thing that can keep the plugin busy is the
+        // background run itself.
         let isRunning () =
             match host.GetStatus("test-prune") with
             | Some(Running _) -> true
@@ -7225,11 +6842,8 @@ let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verd
         waitUntil isRunning 5000
         test <@ isRunning () @>
 
-        // THE ASSERTION: work is in flight, so the host must not call this at rest.
-        // Pre-fix this was false (idle mailbox) and the verdict resolved mid-run.
         test <@ host.AnyPluginBusy() @>
 
-        // And the run still lands normally.
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
         match host.GetStatus("test-prune") with
@@ -7238,14 +6852,11 @@ let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verd
 
 // --- AUTOMATION-113: an unanalysable file must not vanish from the impact graph ---
 //
-// A file whose symbol analysis fails contributes NO symbols. Before this fix the
-// plugin's `Error` branch simply `return state`d — the file was dropped, the impact
-// graph never saw it, a change to it diffed against nothing and selected NO tests,
-// and the check went green having run nothing relevant. Completely silent.
-//
-// The contract now: an unanalysable file forces the COARSE selection (every test
-// project, in full), and says so loudly. Safe over-selection beats silent
-// under-selection — "the one failure mode a test-impact tool must not have".
+// A file whose symbol analysis fails contributes NO symbols, and the `Error` branch
+// simply `return state`d: the file was dropped, the impact graph never saw it, a change
+// to it diffed against nothing and selected NO tests, and the check went green having run
+// nothing relevant — silently. It now forces the COARSE selection (every test project, in
+// full) and says so loudly. Safe over-selection beats silent under-selection.
 
 let private testConfigNamed (project: string) : TestConfig =
     { Project = project
@@ -7265,8 +6876,7 @@ let private threeProjects =
 
 [<Fact(Timeout = 15000)>]
 let ``coarseFallbackProjects is a no-op while every file analyses cleanly`` () =
-    // The healthy tree pays nothing: the precise, symbol-scoped selection stands and
-    // the dependency-fanout set passes through untouched.
+    // A healthy tree pays nothing: the dependency-fanout set passes through untouched.
     let fanout = Set.ofList [ "Beta.Tests" ]
 
     let result = coarseFallbackProjects threeProjects Set.empty fanout
@@ -7275,9 +6885,9 @@ let ``coarseFallbackProjects is a no-op while every file analyses cleanly`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``one unanalysable file force-runs EVERY test project`` () =
-    // The file is invisible to the symbol graph, so no per-symbol selection can be
-    // trusted to cover it. The honest answer is "I cannot tell you what is affected",
-    // and the only sound response to that is the whole suite.
+    // The file is invisible to the symbol graph, so no per-symbol selection can be trusted
+    // to cover it, and the whole suite is the only sound response to "I cannot tell you
+    // what is affected".
     let unanalyzable = Set.ofList [ "src/Lib/Broken.fs" ]
 
     let result = coarseFallbackProjects threeProjects unanalyzable Set.empty
@@ -7297,11 +6907,10 @@ let ``the coarse fallback is a superset of the dependency fanout, never a replac
 
 [<Fact(Timeout = 15000)>]
 let ``a non-empty coarse fallback disables the zero-affected skip gate`` () =
-    // The skip gate in `runTestsWithImpact` terminates as a clean green with 0 tests
-    // run when there are no affected classes AND no force-run projects. An
-    // unanalysable file must never be able to reach that verdict — which is exactly
-    // what a non-empty force-run set guarantees, so assert the emptiness predicate the
-    // `confirm` actually reads.
+    // The skip gate in `runTestsWithImpact` greens with 0 tests run when there are no
+    // affected classes AND no force-run projects, so a non-empty force-run set is what
+    // keeps an unanalysable file away from that verdict. Asserted through the same
+    // emptiness predicate `confirm` reads.
     let forceRun =
         coarseFallbackProjects threeProjects (Set.ofList [ "src/Lib/Broken.fs" ]) Set.empty
 
@@ -7309,10 +6918,9 @@ let ``a non-empty coarse fallback disables the zero-affected skip gate`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``an unanalysable file is reported LOUDLY, naming the file and the reason`` () =
-    // The old behaviour reported nothing a consumer could see: a log line, and a
-    // plugin status the very next file's `Completed` overwrote. The diagnostic must
-    // name the file, carry the reason, and be at least Warning severity so the
-    // default warn-fail policy denies the check a green verdict.
+    // A log line and a plugin status the next file's `Completed` overwrites is nothing a
+    // consumer can see. The diagnostic must name the file, carry the reason, and be at
+    // least Warning severity so the default warn-fail policy denies the check a green.
     let reason = "Parse errors: XML comment is not placed on a valid language element."
 
     let entry = unanalyzableFileDiagnostic "src/Lib/Broken.fs" reason
@@ -7329,11 +6937,11 @@ let ``an unanalysable file is reported LOUDLY, naming the file and the reason`` 
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdict`` () =
-    // The subtlest road to the bug. Everything else about the tree is identical — same
-    // symbols, empty queue, same deps — so WITHOUT the scope in the key, the first
-    // thing `fshw confirm` does on an unchanged tree is HIT the entry an earlier
-    // impact-filtered `fshw check` wrote, replay its green, and never start a test
-    // process. A filtered verdict, laundered into a merge verdict, with no run at all.
+    // Everything else about the tree is identical — same symbols, empty queue, same deps
+    // — so without the scope in the key, the first thing `fshw confirm` does on an
+    // unchanged tree is hit the entry an earlier impact-filtered `check` wrote, replay its
+    // green, and never start a test process: a filtered verdict laundered into a merge
+    // verdict with no run at all.
     let keyWithScope (fullSuiteScope: string option) =
         cacheKeyFor
             (fun () -> "same-symbols")
@@ -7353,10 +6961,9 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
-    // `None` (not "impact") for the inner loop keeps the merkle entry OMITTED, so the
-    // ordinary key stays byte-identical to the pre-feature one and every existing
-    // on-disk cache entry keeps hitting. `confirm` pays the cost of its own scope; the
-    // fast loop pays nothing.
+    // `None` rather than "impact" for the inner loop keeps the merkle entry OMITTED, so
+    // the ordinary key stays byte-identical to the pre-feature one and existing on-disk
+    // entries keep hitting. `confirm` pays for its own scope; the fast loop pays nothing.
     let withScopeThunk =
         cacheKeyFor
             (fun () -> "s")
@@ -7367,7 +6974,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> true)
             (BuildCompleted BuildSucceeded)
 
-    // Same inputs, hand-built without any full-suite-scope entry at all.
+    // The same inputs, hand-built with no full-suite-scope entry at all.
     let expected =
         FsHotWatch.TaskCache.merkleCacheKey
             [ "plugin-version", "test-prune-merkle-v2"
@@ -7380,17 +6987,16 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
-    // The key is DETERMINISTIC — same inputs, same key. That is all this says, and the
-    // comment it used to carry ("a second `confirm` over an unchanged tree replays a run
-    // that genuinely WAS full-suite — sound, and fast") is the belief that produced
-    // AUTOMATION-161. It is not sound. The key does not pin the TREE: on a cold scan
-    // BuildCompleted is dispatched before the FCS pass, so `changed-symbols` is empty
-    // whatever the tree holds. Determinism of the key is not equivalence of the world.
+    // Determinism of the key is not equivalence of the world. Reading this as "a second
+    // `confirm` over an unchanged tree may replay a run that genuinely WAS full-suite" is
+    // the belief that produced AUTOMATION-161: the key does not pin the TREE, because on a
+    // cold scan BuildCompleted is dispatched before the FCS pass and `changed-symbols` is
+    // empty whatever the tree holds.
     //
-    // Sharing the key is still right — it is what lets a WARM daemon skip a redundant run
-    // in-session, and what lets the entry a `TestsFinished` writes be found by the next
-    // `BuildCompleted`. What must not follow from it is a REPLAY into a process that has
-    // no run of its own; the session-evidence gate below is what forbids that.
+    // Sharing the key is still right — it lets a WARM daemon skip a redundant in-session
+    // run, and lets the entry a `TestsFinished` writes be found by the next
+    // `BuildCompleted`. What must not follow is a REPLAY into a process with no run of its
+    // own; the session-evidence gate below forbids that.
     let fullSuiteKey () =
         cacheKeyFor
             (fun () -> "same")
@@ -7405,10 +7011,9 @@ let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-161: cacheKeyFor refuses BuildCompleted while the process has NO test evidence`` () =
-    // The gate, in isolation. A cached BuildCompleted entry ASSERTS a test result; a
-    // process whose own state records no run may not make that assertion. `None` = no
-    // replay AND no write, exactly as a non-empty pending queue and an outstanding
-    // failure already do.
+    // A cached BuildCompleted entry ASSERTS a test result, and a process whose own state
+    // records no run may not make that assertion. `None` means no replay and no write,
+    // exactly as a non-empty pending queue and an outstanding failure already do.
     let keyWithEvidence (hasEvidence: bool) =
         cacheKeyFor
             (fun () -> "same")
@@ -7419,21 +7024,18 @@ let ``AUTOMATION-161: cacheKeyFor refuses BuildCompleted while the process has N
             (fun () -> hasEvidence)
             (BuildCompleted BuildSucceeded)
 
-    // No run in this process yet: do not participate. GO AND RUN.
     test <@ (keyWithEvidence false).IsNone @>
-
     // Once a run has covered something, the warm in-session fast path is back.
     test <@ (keyWithEvidence true).IsSome @>
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-161: the TestsFinished WRITE is not gated on session evidence`` () =
-    // The WRITE is what mints the entry the next BuildCompleted hits, and it is computed
-    // at DISPATCH time — when the run this message carries has not yet been folded into
-    // state, so there IS no evidence to see. Gating it would mean the cache is never
-    // written at all, and the warm in-session fast path would die with it.
-    //
-    // Safe, because this key is never used for a LOOKUP: the framework does not replay
-    // over a `Custom` message (its payload is not in its key — see PluginFrameworkTests).
+    // The WRITE mints the entry the next BuildCompleted hits, and it is computed at
+    // DISPATCH time — before the run this message carries has been folded into state, so
+    // there IS no evidence to see. Gating it would mean the cache is never written and the
+    // warm in-session fast path dies with it. Safe, because this key is never used for a
+    // LOOKUP: the framework does not replay over a `Custom` message, whose payload is not
+    // in its key (see PluginFrameworkTests).
     let allPassed =
         Custom(
             TestsFinished(
@@ -7463,12 +7065,11 @@ let ``AUTOMATION-161: the TestsFinished WRITE is not gated on session evidence``
 
 // --- AUTOMATION-129: `confirm`'s scope is a PROJECTION of RunCoverage ---
 //
-// These replace the `classifyRunScope` suite (AUTOMATION-112). That function derived
-// `confirm`'s scope INDEPENDENTLY, from `LastResults`, while the ledger decided what a
-// run may CLEAR from `RunCoverage` (AUTOMATION-125) — two answers to one question,
+// `classifyRunScope` derived `confirm`'s scope independently from `LastResults`, while the
+// ledger decided what a run may CLEAR from `RunCoverage` — two answers to one question
 // with nothing making them agree, so `confirm` could go green on a scope the ledger would
-// never have granted. `scopeOf` is a VIEW of the ledger's own value; they cannot
-// disagree by construction. Every behaviour the old suite pinned is pinned here.
+// never have granted. `scopeOf` is a VIEW of the ledger's own value, so they cannot
+// disagree by construction.
 
 [<Fact(Timeout = 10000)>]
 let ``scopeOf: every project executed in FULL is the only whole-suite scope`` () =
@@ -7498,10 +7099,9 @@ let ``scopeOf: an unfiltered run that SKIPPED a project is a subset`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``scopeOf: the zero-affected skip's empty green is NO SCOPE, not a full suite`` () =
-    // The trap, carried over verbatim from the suite this replaces: a run whose
-    // coverage is EMPTY verified nothing. `RanFullSuite` is vacuously true for an empty
-    // map, which is exactly what `confirm` must not swallow. It is `ScopeNone` — and
-    // the CLI refuses to call that green in EITHER mode (AUTOMATION-129).
+    // The trap: `RanFullSuite` is vacuously TRUE for an empty map, and a run whose
+    // coverage is empty verified nothing. `ScopeNone` is what the CLI refuses to call
+    // green in either mode.
     test <@ scopeOf [ "Alpha.Tests" ] RunCoverage.none = ScopeNone 1 @>
 
 [<Fact(Timeout = 10000)>]
@@ -7510,20 +7110,16 @@ let ``scopeOf: a repo with no test projects is not a covered suite`` () =
     test <@ scopeOf [] RunCoverage.none = ScopeNone 0 @>
 
 
-// ---------------------------------------------------------------------------
-// AUTOMATION-99 — a test run the daemon cannot SEE is evidence it cannot
-// judge. The `run-tests` IPC command used to call `executeTests` directly on
-// the IPC thread: no `RunExclusive "tests"` slot, no `Running` status, no
-// busy accounting. During such a run the daemon's whole model read "at
-// rest" — `fshw check` could exit 0 while the test process was literally
-// alive, and any concurrent FileChecked stamped a terminal status over it
-// (the observed "✓ test-prune, started: with no elapsed:" signature).
-// ---------------------------------------------------------------------------
+// A test run the daemon cannot SEE is evidence it cannot judge. The `run-tests` IPC
+// command called `executeTests` directly on the IPC thread: no `RunExclusive "tests"`
+// slot, no `Running` status, no busy accounting. During such a run the daemon's whole
+// model read "at rest", so `fshw check` could exit 0 while the test process was alive and
+// any concurrent FileChecked stamped a terminal status over it (the "✓ test-prune,
+// started: with no elapsed:" signature).
 
-/// A single-project config whose command touches `started`, waits until
-/// `release` exists (bounded), then touches `done` — a run whose in-flight
-/// window the test controls deterministically. The script lives in a file
-/// (`sh <script>`) so no argument-quoting rules apply.
+/// A single-project config whose command touches `started`, waits (bounded) for `release`,
+/// then touches `done` — so the test controls the in-flight window deterministically. The
+/// script lives in a file so no argument-quoting rules apply.
 let private gatedRunConfig (tmpDir: string) =
     let started = Path.Combine(tmpDir, "started")
     let release = Path.Combine(tmpDir, "release")
@@ -7566,10 +7162,9 @@ let ``run-tests: an in-flight command-driven run is visible to the daemon model`
             waitUntil (fun () -> File.Exists started) 15000
             test <@ File.Exists started @>
 
-            // The test process is now RUNNING. The daemon model must reflect it:
-            // the plugin holds the exclusive "tests" slot (busy) and reports
-            // Running — otherwise a concurrent `fshw check` sees "at rest" and
-            // exits 0 while tests are still executing.
+            // The test process is running, so the plugin must hold the exclusive "tests"
+            // slot and report Running — otherwise a concurrent `fshw check` sees "at rest"
+            // and exits 0 mid-execution.
             test <@ host.AnyPluginBusy() @>
 
             let statusDuringRun = host.GetStatus("test-prune")
@@ -7585,7 +7180,7 @@ let ``run-tests: an in-flight command-driven run is visible to the daemon model`
 
         cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
         test <@ cmdTask.IsCompleted @>
-        // The command still returns the results JSON it always did.
+        // The results JSON is unchanged by the accounting.
         test <@ cmdTask.Result.IsSome @>
         test <@ cmdTask.Result.Value.Contains("projects") @>)
 
@@ -7604,18 +7199,15 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
             waitUntil (fun () -> File.Exists started) 15000
             test <@ File.Exists started @>
 
-            // A FileChecked lands MID-RUN (an editor save during a long suite).
-            // Whatever its analysis outcome, the plugin must NOT go terminal:
-            // the run owns the status until TestsFinished delivers the earned
-            // verdict. (Analysis diagnostics still reach the error ledger —
-            // nothing is lost by staying Running.)
+            // An editor save during a long suite. Whatever its analysis outcome, the run
+            // owns the status until TestsFinished delivers the earned verdict — analysis
+            // diagnostics still reach the error ledger, so nothing is lost by staying
+            // Running.
             let srcFile = Path.Combine(tmpDir, "Lib.fs")
             File.WriteAllText(srcFile, "module Lib\nlet x = 1\n")
 
-            // SUBSCRIBE to status transitions before the mid-run event: the
-            // bug this hunts is a TRANSIENT terminal stamped and immediately
-            // overwritten, which a polling sampler can miss entirely. The
-            // OnStatusChanged subscription cannot miss an edge.
+            // Subscribe BEFORE the mid-run event: the bug is a TRANSIENT terminal, stamped
+            // and immediately overwritten, which a polling sampler misses entirely.
             let terminalDuringRun = beginAwaitNextTerminal host "test-prune"
 
             host.EmitFileChecked(
@@ -7623,9 +7215,8 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
                     Source = "module Lib\nlet x = 1\n" }
             )
 
-            // The FileChecked handler gets ample time to run; the run is
-            // provably still gated (`done` not written), so ANY terminal
-            // transition observed here is the manufactured-status lie.
+            // The run is provably still gated (`done` unwritten), so any terminal
+            // transition observed inside this window is the manufactured status.
             let stampedMidRun = terminalDuringRun.Wait(TimeSpan.FromSeconds 3.0)
             test <@ not (File.Exists doneFile) @>
             test <@ not stampedMidRun @>
@@ -7637,10 +7228,8 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
 
 [<Fact(Timeout = 30000)>]
 let ``a green run's Completed status carries its verdict`` () =
-    // AUTOMATION-99, the type-level guarantee end-to-end: the status a real
-    // green run reports CARRIES what it did (summary) — a ✓ with nothing to
-    // say is unrepresentable — and the run-history record holds the SAME
-    // summary (one channel, host-routed).
+    // A ✓ with nothing to say is unrepresentable: the status carries what the run did, and
+    // the history record holds the SAME summary — one channel, host-routed.
     withTempDir "tp-verdict" (fun tmpDir ->
         let host, _sentinel = withSingleProjectHarness tmpDir "VerdictProject"
         emitBuildAndWaitTerminal host
@@ -7654,15 +7243,11 @@ let ``a green run's Completed status carries its verdict`` () =
             test <@ record.Summary = Some v.Summary @>
         | other -> Assert.Fail($"expected Completed carrying a verdict, got: %A{other}"))
 
-// ---------------------------------------------------------------------------
-// `test-rerun` is the repo's "prove it ran" verb: it must NEVER report success
-// without running. A slot held by another run QUEUES the force-run — it does
-// not decline it (AUTOMATION-99 review, finding 1).
-// ---------------------------------------------------------------------------
+// `test-rerun` is the repo's "prove it ran" verb: it must never report success without
+// running, so a slot held by another run QUEUES the force-run rather than declining it.
 
-/// Like `gatedRunConfig`, but the script also appends one line per invocation
-/// to a `runs` file, so a test can COUNT how many times the suite actually
-/// executed rather than trusting a status.
+/// Like `gatedRunConfig`, but the script appends one line per invocation to a `runs` file,
+/// so a test can COUNT executions rather than trusting a status.
 let private countingGatedRunConfig (tmpDir: string) =
     let started = Path.Combine(tmpDir, "started")
     let release = Path.Combine(tmpDir, "release")
@@ -7712,16 +7297,15 @@ let ``run-tests refused the slot is QUEUED and still runs — never a green it d
         waitUntil (fun () -> File.Exists started) 20000
         test <@ runCount runs = 1 @>
 
-        // Run #2 arrives while the slot is HELD. Pre-fix this replied `busy`
-        // (→ exit 0) having executed nothing. It must now be queued and RUN.
+        // Run #2 arrives while the slot is HELD. Replying `busy` here means exit 0 having
+        // executed nothing.
         let second = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        // The queued run has NOT started yet (the slot is still held) …
+        // Still queued, and still owed a reply.
         Thread.Sleep 500
         test <@ runCount runs = 1 @>
         test <@ not second.IsCompleted @>
 
-        // … and it is still owed: nothing has been reported back to the caller.
         File.WriteAllText(release, "")
 
         first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
@@ -7730,9 +7314,8 @@ let ``run-tests refused the slot is QUEUED and still runs — never a green it d
         test <@ first.IsCompleted @>
         test <@ second.IsCompleted @>
 
-        // THE POINT: the suite executed TWICE. The second force-run was not
-        // dropped, and its reply is a real results payload — not a "busy"
-        // non-verdict that would have exited 0 without running.
+        // The suite executed TWICE, and the second reply is a real results payload rather
+        // than a "busy" non-verdict.
         waitUntil (fun () -> runCount runs = 2) 20000
         test <@ runCount runs = 2 @>
 
@@ -7743,9 +7326,9 @@ let ``run-tests refused the slot is QUEUED and still runs — never a green it d
 
 [<Fact(Timeout = 60000)>]
 let ``a queued run-tests reply resolves — a refused claim can never strand the IPC caller`` () =
-    // The latent hang the RunClaim DU makes impossible: the reply TCS lives
-    // inside the work async, so a claim that was silently dropped resolved
-    // nothing and the command's `Async.AwaitTask reply.Task` waited forever.
+    // The hang the RunClaim DU makes impossible: the reply TCS lives inside the work
+    // async, so a silently-dropped claim resolved nothing and the command's
+    // `Async.AwaitTask reply.Task` waited forever.
     withTempDir "tp-rerun-noStrand" (fun tmpDir ->
         let config, started, release, _runs = countingGatedRunConfig tmpDir
 
@@ -7756,8 +7339,7 @@ let ``a queued run-tests reply resolves — a refused claim can never strand the
         let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
         waitUntil (fun () -> File.Exists started) 20000
 
-        // Three force-runs pile up behind the in-flight one. Every one of them
-        // must get a reply — none may be stranded.
+        // Three force-runs pile up behind the in-flight one; none may be stranded.
         let queued =
             [ for _ in 1..3 -> host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask ]
 
@@ -7772,10 +7354,9 @@ let ``a queued run-tests reply resolves — a refused claim can never strand the
 
 [<Fact(Timeout = 30000)>]
 let ``run-tests bounds its wait: a run that outlives the budget reports busy, never a verdict`` () =
-    // AUTOMATION-98's rule applied to the last unbounded seam: the reply wait.
-    // A 1-second budget against a gated (never-releasing) run must return the
-    // DISTINCT `busy` status — which the CLI maps to a NON-ZERO exit, so it can
-    // never be read as a pass the run did not produce.
+    // The last unbounded seam is the reply wait. A 1-second budget against a gated,
+    // never-releasing run must return the DISTINCT `busy` status, which the CLI maps to a
+    // non-zero exit so it can never read as a pass the run did not produce.
     withTempDir "tp-rerun-bounded" (fun tmpDir ->
         let config, started, release, _runs = countingGatedRunConfig tmpDir
 
@@ -7790,7 +7371,6 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
 
             test <@ json.IsSome @>
             test <@ json.Value.Contains("\"busy\"") @>
-            // Never a pass/fail verdict the command did not earn.
             test <@ not (json.Value.Contains("\"projects\"")) @>
             test <@ File.Exists started @>
         finally
@@ -7801,23 +7381,20 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
 // =============================================================================
 // AUTOMATION-125 — a run may clear ONLY what it COVERED.
 //
-// Observed live (2026-07-14): a full run failed one project; a queued
-// impact-filtered re-run then executed a NARROWER selection, passed, and — via
-// `ClearAllErrors` + last-cycle-wins — SUPERSEDED the red. The failing test never
-// re-ran and never passed, yet `check` went green. Same disease as
-// AUTOMATION-95/99/112: a verdict that was not earned, "no failures reported by
-// THIS run" read as "no failures".
+// Live, 2026-07-14: a full run failed one project; a queued impact-filtered re-run then
+// executed a NARROWER selection, passed, and — via `ClearAllErrors` plus
+// last-cycle-wins — superseded the red. The failing test never re-ran and never passed,
+// yet `check` went green: "no failures reported by THIS run" read as "no failures".
 //
-// These drive the plugin's REAL `Custom(TestsFinished)` handler through a
-// recording `PluginCtx` — the exact seam where the laundering happened — so the
-// sequence is the one that was observed, not an analogue of it. Both directions
-// are pinned: a disjoint filtered green must NOT clear, and a COVERING filtered
-// green MUST (no over-correction into AUTOMATION-99's permanent stuck-red).
+// These drive the plugin's real `Custom(TestsFinished)` handler through a recording
+// `PluginCtx` — the exact seam where the laundering happened. Both directions are pinned:
+// a disjoint filtered green must NOT clear, and a COVERING filtered green MUST, or the
+// fix becomes AUTOMATION-99's permanent stuck-red.
 // =============================================================================
 
-/// Recording ctx over the TestPrune plugin: captures the terminal statuses and
-/// models the shared error ledger (ClearAllErrors wipes the plugin's whole slice,
-/// exactly as `PluginFramework` does via `ClearPlugin`).
+/// Recording ctx over the plugin: captures terminal statuses and models the shared error
+/// ledger, where ClearAllErrors wipes the plugin's whole slice exactly as
+/// `PluginFramework` does via `ClearPlugin`.
 let private makeTestPruneRecordingCtx () =
     let statuses = System.Collections.Generic.List<PluginStatus>()
 
@@ -7860,8 +7437,8 @@ let private a125Config (project: string) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect }
 
-/// A `TestsFinished` for a completed run: its per-project results and the SCOPE it
-/// was launched against.
+/// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
+/// launched against.
 let private testsFinishedEvent (results: (string * TestResult) list) (launch: TestRunLaunch) =
     let runId = Guid.NewGuid()
 
@@ -7884,21 +7461,21 @@ let private failedProjA =
     TestsFailed("failed FsHotWatch.Tests.ProjATests.boom (12ms)", false, TimeSpan.FromSeconds 1.0)
 
 /// What `executeTests` records for a project impact analysis SKIPPED: a pass, marked
-/// filtered, with no output and no elapsed. It proves precisely nothing — and is the
-/// value the old `ClearAllErrors` path read as "ProjA is fine now".
+/// filtered, with no output and no elapsed. It proves nothing, and is the value the
+/// `ClearAllErrors` path read as "ProjA is fine now".
 let private impactSkipped = TestsPassed("", true, TimeSpan.Zero)
 
 let private passed (filtered: bool) =
     TestsPassed("ok", filtered, TimeSpan.FromSeconds 1.0)
 
-/// No per-test report evidence at all — the fail-closed default `RunCoverage.ofRun`
-/// reads whenever a run wrote no readable/complete CTRF report (AUTOMATION-225). With
-/// this, a raw `--filter` run claims exactly what it claimed before the fix: nothing.
+/// No per-test report evidence: the fail-closed default `RunCoverage.ofRun` reads
+/// whenever a run wrote no readable, complete CTRF report. A raw `--filter` run under
+/// this claims nothing.
 let private noReportEvidence: Map<string, Set<string>> = Map.empty
 
-/// Drive the plugin through a sequence of completed runs, returning the ctx
-/// recorders and the final state. Starts from the handler's own initial state, so
-/// every invariant the real plugin carries in state is carried here too.
+/// Drive the plugin through a sequence of completed runs, returning the ctx recorders and
+/// the final state. Starts from the handler's own `Init`, so every invariant the real
+/// plugin carries in state is carried here too.
 let private driveRuns
     (handler: FsHotWatch.PluginFramework.PluginHandler<TestPruneState, TestPruneMsg>)
     (runs: PluginEvent<TestPruneMsg> list)
@@ -7925,16 +7502,15 @@ let private ledgerFilesOf
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed project's red`` () =
-    // The observed sequence, exactly: full run fails ProjA → a queued impact-filtered
-    // re-run selects only ProjB (ProjA is SKIPPED, and recorded as a filtered pass) →
-    // ProjA must still be RED, and the plugin must NOT report a green terminal.
+    // The observed sequence exactly: a full run fails ProjA, then a queued
+    // impact-filtered re-run selects only ProjB while ProjA is skipped and recorded as a
+    // filtered pass.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
 
-    // The narrower re-run: only ProjB's tests were selected. ProjA never executed.
     let filteredRun =
         testsFinishedEvent
             [ "ProjA", impactSkipped; "ProjB", passed true ]
@@ -7946,27 +7522,22 @@ let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed p
     test <@ final.OutstandingFailures |> List.exists (fun f -> f.Project = "ProjA") @>
     test <@ ledgerFilesOf ledger |> List.exists (fun f -> f.Contains("ProjA")) @>
 
-    // And the verdict is non-green: `check` cannot exit 0 with a failing test
-    // outstanding (a failing ledger entry alone would already deny it, but the
-    // plugin's own status must not claim a green it did not earn either).
+    // A failing ledger entry alone would already deny `check` its exit 0, but the plugin's
+    // own status must not claim a green it did not earn either.
     match lastStatus statuses with
     | PluginStatus.Failed(msg, _, _) -> test <@ msg.Contains("ProjA") @>
     | other -> Assert.Fail($"a filtered green that never ran ProjA must not produce a green terminal, got %A{other}")
 
-// AUTOMATION-272 — a run in which EVERY project matched zero tests must not produce a
-// green terminal status.
-//
-// `recordRunOutcome` is the sole producer of this plugin's terminal status, and it
-// decides purely on `TestResult.isPassed` counts. `isPassed` is TRUE for `TestsNoMatch`
-// by design — per project, a filter selecting nothing is not that project's failure —
-// so `failed = 0 && deferred = 0` holds and the green branch fires unless the run-level
+// `recordRunOutcome` is the sole producer of this plugin's terminal status and decides
+// purely on `TestResult.isPassed` counts. `isPassed` is TRUE for `TestsNoMatch` by design
+// — per project, a filter selecting nothing is not that project's failure — so
+// `failed = 0 && deferred = 0` holds and the green branch fires unless the run-level
 // question is asked explicitly. It reported "N passed, 0 failed in N projects" about N
 // projects that executed no test at all.
 //
-// Note what this is NOT changing: a zero match in ONE project is still a pass for that
-// project (an impact selection naming no class in the Integration project must not fail
-// it). Only the run-level verdict changes, and only when NOTHING matched anywhere —
-// which is operator error or a mis-aimed filter, never a verified pass.
+// A zero match in ONE project remains a pass for that project: an impact selection naming
+// no class in the Integration project must not fail it. Only the run-level verdict
+// changes, and only when nothing matched anywhere.
 [<Fact(Timeout = 20000)>]
 let ``a run where every project matched zero tests is not a green terminal status`` () =
     let handler =
@@ -7986,8 +7557,7 @@ let ``a run where every project matched zero tests is not a green terminal statu
         )
     | _ -> ()
 
-// The other direction, so the guard above cannot be satisfied by refusing greens
-// generally: a run where at least one project really executed tests is still green.
+// So the guard above cannot be satisfied by refusing greens generally.
 [<Fact(Timeout = 20000)>]
 let ``a run where one project matched zero tests and another really ran is still green`` () =
     let handler =
@@ -8006,17 +7576,15 @@ let ``a run where one project matched zero tests and another really ran is still
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no stuck-red)`` () =
-    // The other direction — the over-correction guard (cf. AUTOMATION-99's stuck-RED
-    // half). A filtered run that DID execute the failing class and passed it is real
-    // evidence, and must clear the red. A check that can never go green again is not a
-    // fix, it is a different bug.
+    // The over-correction guard. A filtered run that DID execute the failing class and
+    // passed it is real evidence; a check that can never go green again is not a fix, it
+    // is a different bug.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
 
-    // This time the selection COVERS the failing class (ProjATests) — and it passes.
     let coveringRun =
         testsFinishedEvent
             [ "ProjA", passed true; "ProjB", impactSkipped ]
@@ -8033,9 +7601,8 @@ let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no st
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: an unfiltered re-run (test-rerun) clears an outstanding red`` () =
-    // The escape hatch the rule leans on: `dotnet fshw test-rerun` runs every project
-    // UNFILTERED, which covers everything and so may clear anything. Without this the
-    // rule would be a wedge.
+    // The escape hatch the rule leans on: `test-rerun` runs every project UNFILTERED, so
+    // it covers everything and may clear anything. Without it the rule is a wedge.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
@@ -8056,9 +7623,9 @@ let ``AUTOMATION-125: an unfiltered re-run (test-rerun) clears an outstanding re
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a filtered green over a DIFFERENT class in the same project does not clear it`` () =
-    // Project granularity is not enough. A run that selected ProjA but filtered to a
-    // class OTHER than the failing one executed the project without executing the
-    // failure — "ProjA passed" is true of that run and says nothing about the red.
+    // Project granularity is not enough: a run that selected ProjA but filtered to a class
+    // OTHER than the failing one executed the project without executing the failure, so
+    // "ProjA passed" is true of that run and says nothing about the red.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
 
@@ -8078,9 +7645,8 @@ let ``AUTOMATION-125: a filtered green over a DIFFERENT class in the same projec
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: the zero-affected skip (0 ran, green) cannot launder an outstanding red`` () =
-    // The likeliest laundering path in practice: after the failing run, the next build
-    // changes nothing relevant, so the skip gate completes "green, 0 ran". It executed
-    // NOTHING, so it may clear nothing.
+    // The likeliest laundering path in practice: after the failing run the next build
+    // changes nothing relevant, so the skip gate completes "green, 0 ran".
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
 
@@ -8101,9 +7667,8 @@ let ``AUTOMATION-125: the zero-affected skip (0 ran, green) cannot launder an ou
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not a class-filtered one`` () =
-    // A project killed for being stuck is a fact about the PROJECT: no class-filtered
-    // green may vindicate it (`Class = None`), and only a run that executed the project
-    // in full can clear it.
+    // A project killed for being stuck is a fact about the PROJECT (`Class = None`), so
+    // only a run that executed the project in full can clear it.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
 
@@ -8124,8 +7689,7 @@ let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not 
     let _ctx, _statuses, _ledger, afterFiltered =
         driveRuns handler [ timedOut; classFilteredGreen ]
 
-    // The timeout is project-level: even a green over the very class named in the
-    // timeout output does not clear it.
+    // Even a green over the very class named in the timeout output does not clear it.
     test
         <@
             afterFiltered.OutstandingFailures
@@ -8149,8 +7713,8 @@ let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not 
 
 [<Fact(Timeout = 10000)>]
 let ``RunCoverage: an impact-SKIPPED project (filtered pass, absent from the selection) covers nothing`` () =
-    // The laundering vector in one assertion: the skip sentinel is a PASS, and reading
-    // it as evidence is exactly the bug.
+    // The laundering vector in one assertion: the skip sentinel is a PASS, and reading it
+    // as evidence is the bug.
     let coverage =
         RunCoverage.ofRun
             (Map.ofList [ "ProjB", ProjectClasses(Set.ofList [ "ProjBTests" ]) ])
@@ -8163,8 +7727,8 @@ let ``RunCoverage: an impact-SKIPPED project (filtered pass, absent from the sel
 
 [<Fact(Timeout = 10000)>]
 let ``RunCoverage: an UNFILTERED result covers the whole project whatever the selection asked for`` () =
-    // A project with selected classes but no `filterTemplate` runs in FULL. The RESULT
-    // is the receipt, not the request — so it covers everything in the project.
+    // A project with selected classes but no `filterTemplate` runs in FULL: the RESULT is
+    // the receipt, not the request.
     let coverage =
         RunCoverage.ofRun
             (Map.ofList [ "ProjA", ProjectClasses(Set.ofList [ "OneClass" ]) ])
@@ -8184,7 +7748,7 @@ let ``RunCoverage: a class-filtered pass covers ONLY the classes it ran`` () =
 
     test <@ RunCoverage.covers "ProjA" (Some "Alpha") coverage @>
     test <@ not (RunCoverage.covers "ProjA" (Some "Beta") coverage) @>
-    // ... and never a project-level red (an unparseable failure, a timeout).
+    // Never a project-level red — an unparseable failure, or a timeout.
     test <@ not (RunCoverage.covers "ProjA" None coverage) @>
 
 [<Fact(Timeout = 10000)>]
@@ -8205,12 +7769,10 @@ let ``RunCoverage: deferred, errored and zero-match results cover nothing — th
 
 [<Fact(Timeout = 10000)>]
 let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on build' entry, never a failing Error`` () =
-    // 224 reclassification AT THE SOURCE: a deferred project (its build artifact was
-    // not produced, so its tests did not run) must surface as a NON-failing
-    // `Deferred` diagnostic the verdict routes to Incomplete/exit 2 — never a failing
-    // `Error` (exit 1). Pre-fix this was `errorWithDetail` (Error severity), which is
-    // exactly what made the deploy preflight read a build-ordering defer as a test
-    // failure. A genuine failure MUST still be a failing `Error` (no regression).
+    // A deferred project's build artifact was not produced, so its tests did not run: it
+    // must surface as a non-failing `Deferred` the verdict routes to Incomplete/exit 2.
+    // As `errorWithDetail` (Error severity) it made the deploy preflight read a
+    // build-ordering defer as a test failure.
     let deferred: TestResults =
         { Results = Map.ofList [ "ProjA", TestsDeferred "apphost not produced" ]
           Elapsed = TimeSpan.Zero }
@@ -8224,8 +7786,7 @@ let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on buil
     test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing false entry) @>
     test <@ entry.Message.ToLowerInvariant().Contains "waiting on build" @>
 
-    // A genuine test failure is STILL a failing `Error` — the reclassification is
-    // surgical to the defer case, not a blanket downgrade.
+    // The reclassification is surgical to the defer case, not a blanket downgrade.
     let failed: TestResults =
         { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
@@ -8248,10 +7809,9 @@ let ``failuresOf: a TestsDeferred result is a Deferred-severity 'waiting on buil
 [<Fact(Timeout = 10000)>]
 let ``RunCoverage: a raw --filter passthrough with NO report evidence claims no coverage`` () =
     // `run-tests --filter <raw>` launches every project in full but hands the runner an
-    // arbitrary filter string. `wasFiltered` is true and the selection names no classes,
-    // so the LAUNCH REQUEST can say nothing about its reach. With no report to ask
-    // either, we claim nothing rather than guess — the fail-closed floor AUTOMATION-225
-    // is built on top of, not a replacement for.
+    // arbitrary filter string: `wasFiltered` is true and the selection names no classes,
+    // so the LAUNCH REQUEST can say nothing about its reach. With no report to ask either,
+    // claim nothing. This is the floor AUTOMATION-225 builds on, not a replacement for it.
     let coverage =
         RunCoverage.ofRun (Map.ofList [ "ProjA", ProjectInFull ]) (Map.ofList [ "ProjA", passed true ]) noReportEvidence
 
@@ -8259,10 +7819,10 @@ let ``RunCoverage: a raw --filter passthrough with NO report evidence claims no 
 
 // --- AUTOMATION-225: a green re-run retires the red it just disproved ---
 
-/// A CTRF report in the shape fshw's runners really emit — summary counts and the
-/// per-test array, both nested under `results`. The summary is DERIVED from the
-/// entries unless `declaredTotal` overrides it, so a fixture cannot accidentally
-/// disagree with itself (and can deliberately, to pin the truncation guard).
+/// A CTRF report in the shape fshw's runners really emit: summary counts and the per-test
+/// array, both nested under `results`. The summary is DERIVED from the entries unless
+/// `declaredTotal` overrides it, so a fixture cannot accidentally disagree with itself —
+/// only deliberately, to pin the truncation guard.
 let private ctrfReportWithTotal (declaredTotal: int option) (tests: (string * string) list) : string =
     let count status =
         tests |> List.filter (fun (_, s) -> s = status) |> List.length
@@ -8286,9 +7846,8 @@ let private ctrfReport (tests: (string * string) list) : string = ctrfReportWith
 
 /// A completed run whose CTRF reports sit exactly where the real runner writes them:
 /// `<repoRoot>/.fshw/test-runs/<runId>/<Project>.ctrf.json`. That directory is the only
-/// route by which a run's own per-test evidence reaches the ledger, so these tests drive
-/// the whole path — disk → `passedClassesOfRun` → `ofRun` → `covers` → `carriedOver` —
-/// rather than handing `ofRun` a hand-made map.
+/// route by which a run's per-test evidence reaches the ledger, so these tests drive the
+/// whole path rather than handing `ofRun` a hand-made map.
 let private testsFinishedEventWithReports
     (repoRoot: string)
     (reports: (string * string) list)
@@ -8326,8 +7885,8 @@ let ``AUTOMATION-225: a report's PASSED classes are the receipt a raw-filter run
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: a class that RAN AND FAILED is claimed by nothing, not even its own passes`` () =
-    // Per-class judgement, on that class's own evidence. The class with a failure is not
-    // vindicated by its siblings' greens; the sibling class IS vindicated by its own.
+    // Per-class judgement on that class's own evidence: a class with a failure is not
+    // vindicated by its siblings' greens, and the sibling IS vindicated by its own.
     let report =
         ctrfReport
             [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
@@ -8351,9 +7910,9 @@ let ``AUTOMATION-225: a class with nothing but skips proves nothing; a skip besi
 
     test <@ passedClassesOfReport allSkipped = Set.empty @>
 
-    // Neutral, not disqualifying — the unfiltered arm this refines returns
-    // `CoveredWholeProject` for a full run whose report contains skips, so a rule where a
-    // skip blocked a class here would be stricter than the path it is a refinement of.
+    // Neutral, not disqualifying: the unfiltered arm this refines returns
+    // `CoveredWholeProject` for a full run whose report contains skips, so blocking a
+    // class on a skip here would be stricter than the path it refines.
     let mixed =
         ctrfReport
             [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
@@ -8363,19 +7922,18 @@ let ``AUTOMATION-225: a class with nothing but skips proves nothing; a skip besi
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: report evidence that is missing, unparseable or INCOMPLETE claims nothing`` () =
-    // Fail CLOSED, four ways. A bug here must degrade to "the red stays red".
+    // Fail CLOSED, four ways: a bug here must degrade to "the red stays red".
     test <@ passedClassesOfReport "" = Set.empty @>
     test <@ passedClassesOfReport "not json at all" = Set.empty @>
 
-    // A per-test array with NO summary block: the report was truncated or never flushed,
-    // and completeness cannot be checked, so it is not evidence.
+    // A per-test array with NO summary block was truncated or never flushed, so
+    // completeness cannot be checked and it is not evidence.
     test <@ passedClassesOfReport """{"results":{"tests":[{"name":"A.BTests.c","status":"passed"}]}}""" = Set.empty @>
 
-    // THE dangerous case: a real report OMITS per-test entries for tests that threw a raw
-    // (non-assertion) exception while still counting them in the summary. Counting is the
-    // only way to see the omission — a class could otherwise look all-green here while one
-    // of its tests exploded. An array that does not account for every test in the summary
-    // is evidence about NO class in it.
+    // The dangerous case: a real report OMITS per-test entries for tests that threw a raw,
+    // non-assertion exception while still counting them in the summary. Counting is the
+    // only way to see the omission — a class could otherwise look all-green while one of
+    // its tests exploded.
     let truncated =
         ctrfReportWithTotal
             (Some 3)
@@ -8393,20 +7951,19 @@ let ``AUTOMATION-225: a raw --filter run is credited with the classes its own re
 
     test <@ RunCoverage.covers "ProjA" (Some "BrowserIntegrationTests") coverage @>
 
-    // ... and with NOTHING else. A class the report never mentions is untouched, and a
-    // PROJECT-level red (timeout / errored / unparseable failure) still needs a full run.
+    // A class the report never mentions is untouched, and a PROJECT-level red (timeout,
+    // errored, unparseable failure) still needs a full run.
     test <@ not (RunCoverage.covers "ProjA" (Some "SomeOtherTests") coverage) @>
     test <@ not (RunCoverage.covers "ProjA" None coverage) @>
 
-    // The merge gate is unmoved: this is a FILTERED scope, never a whole-suite claim.
+    // Still a FILTERED scope, never a whole-suite claim.
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA" ] coverage) @>
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: report evidence never speaks for a project the run did not LAUNCH`` () =
-    // AUTOMATION-125's laundering vector, re-checked against the new input: ProjA was
-    // impact-SKIPPED (absent from the selection, recorded as a filtered pass). A report
-    // bearing its name must not resurrect it as coverage — the selection is consulted
-    // BEFORE any evidence, and absence from it is final.
+    // The AUTOMATION-125 laundering vector re-checked against report evidence: ProjA was
+    // impact-SKIPPED, and a report bearing its name must not resurrect it. The selection
+    // is consulted BEFORE any evidence, and absence from it is final.
     let evidence = Map.ofList [ "ProjA", Set.ofList [ "ProjATests" ] ]
 
     let coverage =
@@ -8420,8 +7977,7 @@ let ``AUTOMATION-225: report evidence never speaks for a project the run did not
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: a TIMED-OUT project is credited with nothing, report or no report`` () =
-    // A project killed for being stuck is a fact about the PROJECT, and whatever a shot
-    // process managed to flush is not a receipt for anything.
+    // Whatever a killed process managed to flush is not a receipt for anything.
     let evidence = Map.ofList [ "ProjA", Set.ofList [ "ProjATests" ] ]
 
     let coverage =
@@ -8434,12 +7990,11 @@ let ``AUTOMATION-225: a TIMED-OUT project is credited with nothing, report or no
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran — and only that one`` () =
-    // The deadlock, end to end. An environmental failure (`ERR_NETWORK_IO_SUSPENDED`
-    // after a machine suspend) reds a class; `fshw test-rerun --filter-class
-    // '*BrowserIntegrationTests'` re-runs it and it passes — and before this fix the red
-    // STAYED, because the launch records every project as `ProjectInFull` and the raw
-    // filter string's reach was unknowable. Sticky forever; it blocked a production
-    // deploy three times.
+    // The deadlock, end to end. An environmental failure (`ERR_NETWORK_IO_SUSPENDED` after
+    // a machine suspend) reds a class; `test-rerun --filter-class '*BrowserIntegrationTests'`
+    // re-runs it and it passes — and the red STAYS, because the launch records every
+    // project as `ProjectInFull` and the raw filter string's reach is unknowable. Sticky
+    // forever; it blocked a production deploy three times.
     let repoRoot =
         Path.Combine(Path.GetTempPath(), "fshw-a225-" + Guid.NewGuid().ToString("N"))
 
@@ -8469,8 +8024,8 @@ let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran �
                                                                                               Some "LedgerTests" ]
             @>
 
-        // The re-run: `ProjectInFull` selection + an opaque filter string, exactly as
-        // `commandForceRun` builds it. Only the run's own report knows what executed.
+        // A `ProjectInFull` selection plus an opaque filter string, exactly as
+        // `commandForceRun` builds it: only the run's own report knows what executed.
         let filteredRerun =
             testsFinishedEventWithReports
                 repoRoot
@@ -8480,7 +8035,7 @@ let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran �
 
         let _c2, _s2, ledger, afterRerun = driveRuns handler [ fullRun; filteredRerun ]
 
-        // THE FIX: the class that re-ran and passed is retired ...
+        // The class that re-ran and passed is retired ...
         test
             <@
                 not (
@@ -8509,8 +8064,7 @@ let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran �
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retires NOTHING`` () =
-    // Fail closed at the top of the stack too: with no usable evidence the run is back to
-    // claiming nothing, and every red survives. A defect here must cost a stuck red, never
+    // Fail closed at the top of the stack too: a defect here must cost a stuck red, never
     // a false green.
     let repoRoot =
         Path.Combine(Path.GetTempPath(), "fshw-a225-closed-" + Guid.NewGuid().ToString("N"))
@@ -8531,7 +8085,7 @@ let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retir
                   ) ]
                 (fullSuiteLaunch [ "ProjA" ])
 
-        // (a) the run wrote no report at all.
+        // No report at all.
         let noReport =
             testsFinishedEventWithReports repoRoot [] [ "ProjA", passed true ] (fullSuiteLaunch [ "ProjA" ])
 
@@ -8543,7 +8097,7 @@ let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retir
                 |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
             @>
 
-        // (b) the run wrote an unparseable one.
+        // An unparseable one.
         let garbage =
             testsFinishedEventWithReports
                 repoRoot
@@ -8576,7 +8130,7 @@ let private redIn (project: string) (cls: string option) =
 let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-passed one`` () =
     let prior = [ redIn "ProjA" (Some "ProjATests"); redIn "ProjB" None ]
 
-    // A run that covered ONLY ProjB, in full, and found nothing.
+    // Covered ONLY ProjB, in full, and found nothing.
     let coverage: RunCoverage = Map.ofList [ "ProjB", CoveredWholeProject ]
 
     let carried =
@@ -8592,14 +8146,13 @@ let ``OutstandingFailure.carry: a covered project that failed AGAIN keeps exactl
 
     let carried = OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage found prior
 
-    // Superseded by this run's own evidence — one entry, not two (AUTOMATION-95's
-    // "Issue 2" accumulation must not come back).
+    // Superseded by this run's own evidence: one entry, not two. Reds must not accumulate.
     test <@ carried.Length = 1 @>
 
 [<Fact(Timeout = 10000)>]
 let ``OutstandingFailure.carry: a red for a project no longer configured is pruned, never wedged`` () =
-    // A project dropped from `tests.projects` can never be covered again — retaining its
-    // red would be a permanent stuck-red with no command that could clear it.
+    // A project dropped from `tests.projects` can never be covered again, so retaining its
+    // red is a permanent stuck-red no command can clear.
     let prior = [ redIn "Removed" None; redIn "ProjA" None ]
 
     let carried =
@@ -8611,11 +8164,10 @@ let ``OutstandingFailure.carry: a red for a project no longer configured is prun
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-125: no cache participation while a red is outstanding`` () =
-    // Two roads to the same laundered green. (1) BuildCompleted HITS a cached green
-    // entry → the handler is skipped → no run → the red is replayed away. (2) A run
-    // that passed everything it ran while carrying an uncovered red reports a FAILED
-    // terminal; writing that under a content merkle would replay it on a tree that has
-    // since been fixed. Both are refused by returning no key at all.
+    // Two roads to the same laundered green. A BuildCompleted that HITS a cached green
+    // skips the handler, so no run happens and the red is replayed away. And a run that
+    // passed everything it ran while carrying an uncovered red reports a FAILED terminal,
+    // which written under a content merkle replays on a tree that has since been fixed.
     let started: TestRunStarted =
         { RunId = Guid.NewGuid()
           StartedAt = DateTime.UtcNow }
@@ -8643,29 +8195,26 @@ let ``AUTOMATION-125: no cache participation while a red is outstanding`` () =
             (fun () -> true)
             event
 
-    // Clean plugin: the green fast-path is untouched.
+    // A clean plugin keeps the green fast-path ...
     test <@ (keyFor false (BuildCompleted BuildSucceeded)).IsSome @>
     test <@ (keyFor false allPassed).IsSome @>
 
-    // Outstanding red: no replay, no write — on either arm.
+    // ... and an outstanding red means no replay and no write, on either arm.
     test <@ (keyFor true (BuildCompleted BuildSucceeded)).IsNone @>
     test <@ (keyFor true allPassed).IsNone @>
 
-// --- Confirmation's UnearnedScope protection is untouched (AUTOMATION-112) ---
-
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` () =
-    // The fix must not weaken the gate it stands beside. The filtered re-run from the
-    // regression above still classifies as a SUBSET, and a merge verdict built on a
-    // subset is still `UnearnedScope` (exit 3) — never Clean.
+    // The fix must not weaken the gate it stands beside: the filtered re-run above still
+    // classifies as a SUBSET, and a merge verdict built on a subset is `UnearnedScope`.
     let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
 
     let filteredResults: TestResults =
         { Results = Map.ofList [ "ProjA", impactSkipped; "ProjB", passed true ]
           Elapsed = TimeSpan.FromSeconds 1.0 }
 
-    // ProjA was impact-skipped (it never ran). ProjB was launched under a CLASS FILTER
-    // and passed — so the run's honest reach is "some of ProjB", and nothing else.
+    // ProjA never ran and ProjB was launched under a CLASS FILTER, so the run's honest
+    // reach is "some of ProjB" and nothing else.
     let coverage =
         RunCoverage.ofRun
             (Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectClasses(Set.ofList [ "SomeTests" ]) ])
@@ -8692,13 +8241,11 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
 let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO coverage, so the gate sees no scope at all``
     ()
     =
-    // Sharper than the case above, and worth pinning: `run-tests --filter <raw>` is an
-    // arbitrary filter string whose reach the LAUNCH REQUEST cannot express, so with no
-    // report to ask either (`noReportEvidence`) `RunCoverage.ofRun` credits the run with
-    // NOTHING. Projecting that gives `ScopeNone` — not `ScopeFiltered` — and the CLI
-    // refuses to call it green in EITHER mode. Strictly safer than the `classifyRunScope`
-    // it replaces, which would have called this a SUBSET (still exit 3, but for the
-    // weaker reason).
+    // Sharper than the case above: a raw filter's reach the LAUNCH REQUEST cannot express,
+    // with no report to ask either, credits the run with NOTHING. That projects to
+    // `ScopeNone`, not `ScopeFiltered`, and the CLI refuses it in either mode — strictly
+    // safer than `classifyRunScope`, which called this a SUBSET (still exit 3, weaker
+    // reason).
     let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
 
     let rawFiltered: TestResults =
@@ -8713,7 +8260,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
 
     test <@ scopeOf (configs |> List.map (fun c -> c.Project)) coverage = ScopeNone 2 @>
 
-    // NoTestsRun → UnearnedScope → exit 3, in the inner loop as well as `confirm`.
+    // NoTestsRun is UnearnedScope in the inner loop as well as in `confirm`.
     let noTestsRan: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
@@ -8732,12 +8279,11 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, and confirm still refuses it`` () =
-    // The honest consequence of crediting a raw-filter run with what its report proves:
-    // the scope projection stops saying "nothing ran" and says what actually did. That is
-    // a report of MORE evidence, not a weaker gate — and the gate is where it matters:
-    // `confirm` still demands a full-suite scope and still exits 3 (UnearnedScope). The
-    // ONE source of truth (`scopeOf` as a pure projection of `RunCoverage`) is preserved:
-    // the ledger and the verdict read the same coverage, as AUTOMATION-129 requires.
+    // Crediting a raw-filter run with what its report proves makes the scope projection
+    // say what actually ran instead of "nothing ran". That is MORE evidence, not a weaker
+    // gate: `confirm` still demands a full-suite scope and still exits 3. And `scopeOf`
+    // stays a pure projection of `RunCoverage`, so the ledger and the verdict read the
+    // same coverage.
     let configs = [ a125Config "ProjA"; a125Config "ProjB" ]
 
     let evidence = Map.ofList [ "ProjB", Set.ofList [ "BrowserIntegrationTests" ] ]
@@ -8764,12 +8310,11 @@ let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, 
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (AUTOMATION-113)`` () =
-    // The same defect on a different diagnostic, and it was live: the `TestsFinished`
-    // ledger rewrite cleared this plugin's whole slice, so the FIRST test run after an
-    // analysis failure dropped the warning that is supposed to DENY the check its green
-    // verdict. The file kept forcing full-suite runs (state), but nothing told anyone
-    // (ledger) — a check that quietly stopped checking. The warning now leaves the ledger
-    // only when the CONDITION clears: the file analyses cleanly.
+    // The same defect on a different diagnostic. The `TestsFinished` ledger rewrite
+    // cleared this plugin's whole slice, so the FIRST test run after an analysis failure
+    // dropped the warning that is supposed to deny the check its green verdict: the file
+    // kept forcing full-suite runs (state) but nothing told anyone (ledger). The warning
+    // leaves only when the CONDITION clears — the file analyses cleanly.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
 
@@ -8784,7 +8329,7 @@ let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (A
 
     let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
 
-    // A full-suite run in which EVERYTHING passes — the strongest green there is.
+    // The strongest green there is: a full-suite run in which everything passes.
     let greenRun =
         testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
 
@@ -8801,7 +8346,7 @@ let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (A
     test <@ ledger.ContainsKey broken.File @>
     test <@ warnings |> List.exists (fun e -> e.Message.Contains("src/Broken.fs")) @>
 
-    // ... and it DOES go once the file analyses cleanly (the state drops it).
+    // ... and it DOES go once the file analyses cleanly and the state drops it.
     let ctx2, _statuses2, ledger2 = makeTestPruneRecordingCtx ()
 
     handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
@@ -8810,9 +8355,8 @@ let ``AUTOMATION-125: a test run does not erase the unanalysable-file warning (A
 
 [<Fact(Timeout = 10000)>]
 let ``RunCoverage.coversWholeSuite: only every project, each in FULL, is a whole-suite claim`` () =
-    // The question a verdict writer actually asks. It is answered from what the run
-    // EXECUTED, so there is one notion of scope in the system — the same one the ledger
-    // clears by — rather than a parallel one that can drift from it.
+    // Answered from what the run EXECUTED, so there is one notion of scope in the system —
+    // the same one the ledger clears by — rather than a parallel one that can drift.
     let projects = [ "ProjA"; "ProjB" ]
 
     let everything: RunCoverage =
@@ -8824,11 +8368,10 @@ let ``RunCoverage.coversWholeSuite: only every project, each in FULL, is a whole
     let oneMissing: RunCoverage = Map.ofList [ "ProjA", CoveredWholeProject ]
 
     test <@ RunCoverage.coversWholeSuite projects everything @>
-    // A filtered project covered LESS than the suite, whatever its result said.
+    // A filtered project covered LESS than the suite, whatever its result said; so did a
+    // skipped one; and a run of nothing is never evidence of everything.
     test <@ not (RunCoverage.coversWholeSuite projects oneFiltered) @>
-    // So did a skipped one.
     test <@ not (RunCoverage.coversWholeSuite projects oneMissing) @>
-    // And a run of nothing is never evidence of everything.
     test <@ not (RunCoverage.coversWholeSuite projects RunCoverage.none) @>
     test <@ not (RunCoverage.coversWholeSuite [] everything) @>
 
@@ -8843,8 +8386,8 @@ let ``RunCoverage.coveredProjects: names exactly what the run executed`` () =
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict writer's receipt)`` () =
     // `LastResults` says what the run FOUND; `LastCoverage` says what it COVERED. A
-    // consumer outside the handler must be able to read the second, or it will invent
-    // its own answer to "what did this run cover?" and the two will drift.
+    // consumer outside the handler must be able to read the second, or it invents its own
+    // answer to "what did this run cover?" and the two drift.
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
@@ -8855,19 +8398,16 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
 
     let _ctx, _statuses, _ledger, final = driveRuns handler [ filteredRun ]
 
-    // Every project produced a "passed" result — and yet the run covered only ProjB's
-    // one class. That gap is the whole ticket, and it is now legible from state.
+    // Every project produced a "passed" result, and yet the run covered only ProjB's one
+    // class. That gap is the whole ticket, and it must be legible from state.
     test <@ final.LastResults.IsSome @>
     test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
 
-// ---------------------------------------------------------------------------
-// `verificationOf` replaces the boolean that could not tell "no project was
-// selected" from "every project matched nothing". The bool answered `false` to
-// both "did every project match nothing?" and "did anything run?" for an empty
-// result set — so an empty run reached the CLI looking like a real one and was
-// reported as `Tests passed`, exit 0.
-// ---------------------------------------------------------------------------
+// `verificationOf` replaces a boolean that could not tell "no project was selected" from
+// "every project matched nothing": for an empty result set it answered `false` to both
+// "did every project match nothing?" and "did anything run?", so an empty run reached the
+// CLI looking like a real one and was reported as `Tests passed`, exit 0.
 
 [<Fact>]
 let ``verificationOf tells an EMPTY run apart from one that matched nothing — the bool could not`` () =
@@ -8889,37 +8429,33 @@ let ``verificationOf tells an EMPTY run apart from one that matched nothing — 
     test <@ verificationOf emptyRun.Results = NoProjectsSelected @>
     test <@ verificationOf allZero.Results = AllZeroMatch 2 @>
     // `Ran`, and PARTIAL: project A matched nothing, which `wasFiltered` reports as
-    // filtered, so this run cannot claim the whole suite. Under the old bool the
-    // scope rode alongside as a separate field and nothing tied it to having run.
+    // filtered, so this run cannot claim the whole suite. Under the bool the scope rode
+    // alongside as a separate field with nothing tying it to having run.
     test <@ verificationOf ran.Results = Ran RunScope.Partial @>
 
-    // The whole point: the old bool collapsed the first two into `false`/`true`
-    // in a way that lost the empty case entirely.
+    // The bool collapses the first two cases in a way that loses the empty one entirely.
     test <@ allZeroMatch emptyRun = false @>
     test <@ allZeroMatch allZero = true @>
 
-// `RunVerification.verifiedNothing` and the wire tokens are core API and are
-// pinned in EventTests.fs, which since AUTOMATION-282 covers every case plus the
-// token round-trip and the refusal of the retired bare "ran". They were duplicated
-// here, and this file had to be edited in lockstep with that one for each change.
+// `RunVerification.verifiedNothing` and the wire tokens are core API, pinned in
+// EventTests.fs. Duplicating them here meant editing both files in lockstep.
 
 // ── ProjectReference Include with an MSBuild property ────────────────────────
 //
-// `directReferences` resolved an `Include` by string-concatenating it onto the
-// project directory, with no MSBuild property expansion. A computed reference —
+// `directReferences` resolved an `Include` by string-concatenating it onto the project
+// directory, with no MSBuild property expansion, so a computed reference —
 //
-//   <FalcoUnionRoutesProject>$(MSBuildThisFileDirectory)../../Other/Other.fsproj</…>
-//   <ProjectReference Include="$(FalcoUnionRoutesProject)" Condition="…" />
+//   <SomeProject>$(MSBuildThisFileDirectory)../../Other/Other.fsproj</SomeProject>
+//   <ProjectReference Include="$(SomeProject)" Condition="..." />
 //
-// — therefore became a search for a file literally named `$(FalcoUnionRoutesProject)`,
-// which of course does not exist. The gate then answered `InputsUndeterminable` and
-// the whole test run was deferred as "waiting on build", forever, on a tree that was
-// perfectly fresh. Observed against TestPrune, whose test project computes its
-// optional Falco.UnionRoutes reference exactly this way.
+// — became a search for a file literally named `$(SomeProject)`. The gate then answered
+// `InputsUndeterminable` and deferred the whole test run as "waiting on build", forever,
+// on a perfectly fresh tree. Observed against TestPrune's own test project, which
+// computes its optional Falco.UnionRoutes reference exactly this way.
 //
-// The fail-CLOSED behaviour is not the bug and must survive: an `Include` that
-// genuinely cannot be resolved still has to be an error, or this fix reintroduces
-// the fail-open hole the module exists to close. Both directions are asserted.
+// The fail-CLOSED behaviour must survive: an `Include` that genuinely cannot be resolved
+// still has to be an error, or this reintroduces the fail-open hole the module exists to
+// close. Both directions are asserted below.
 
 let private writeProj (path: string) (contents: string) =
     Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
@@ -8931,8 +8467,8 @@ let ``ProjectReference Include is resolved through MSBuild properties`` () =
         let other = Path.Combine(tmpDir, "Other", "Other.fsproj")
         writeProj other "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"
 
-        // The shape that broke: the Include is a property, defined in this same file
-        // in terms of another well-known MSBuild property.
+        // The shape that broke: the Include is a property, defined in the same file in
+        // terms of another well-known MSBuild property.
         let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
 
         writeProj
@@ -8948,15 +8484,15 @@ let ``ProjectReference Include is resolved through MSBuild properties`` () =
 
         match ArtifactFreshness.Cache().Closure main with
         | Ok refs ->
-            // Resolved to the real file, not to a literal `$(OtherProject)`.
+            // The real file, not a literal `$(OtherProject)`.
             test <@ refs |> List.exists (fun r -> Path.GetFileName r = "Other.fsproj") @>
         | Error e -> Assert.Fail($"a property-computed ProjectReference must resolve, got: %s{e}"))
 
 [<Fact(Timeout = 15000)>]
 let ``an unresolvable ProjectReference still fails closed`` () =
-    // The positive control for the test above. If expansion made every reference
+    // The positive control for the test above: if expansion made every reference
     // resolvable, the gate would answer "fresh" for a project whose inputs it cannot
-    // actually determine — the exact fail-open this module was written to prevent.
+    // determine.
     withTempDir "af-msbuild-missing" (fun tmpDir ->
         let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
 
@@ -8974,10 +8510,10 @@ let ``an unresolvable ProjectReference still fails closed`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a CONDITIONAL ProjectReference to a missing project is optional, not undeterminable`` () =
-    // The arm carrying this fix's one trade-off, so it gets its own test rather than
-    // riding on the others. A project guards an optional sibling checkout with a
-    // Condition; on a machine that has not cloned it the file is absent. Deferring the
-    // whole run over a reference the build correctly ignores is what we are fixing.
+    // The one trade-off this fix makes, so it gets its own test. A project guards an
+    // optional sibling checkout with a Condition, and on a machine that has not cloned it
+    // the file is absent — deferring the whole run over a reference the build correctly
+    // ignores is the thing being fixed.
     withTempDir "af-cond-missing" (fun tmpDir ->
         let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
 
@@ -8995,16 +8531,15 @@ let ``a CONDITIONAL ProjectReference to a missing project is optional, not undet
 
         match ArtifactFreshness.Cache().Closure main with
         | Ok refs ->
-            // Skipped, not resolved — and emphatically not a phantom entry.
+            // Skipped, not resolved, and not a phantom entry either.
             test <@ refs |> List.forall (fun r -> Path.GetFileName r <> "Absent.fsproj") @>
         | Error e -> Assert.Fail($"a conditional reference to an absent project must not be an error, got: %s{e}"))
 
 [<Fact(Timeout = 15000)>]
 let ``an UNCONDITIONAL reference to an unexpandable property still fails closed`` () =
-    // The other side of the same coin. Nothing defines `$(Nope)`, so it stays
-    // unexpanded and the path cannot exist — and with no Condition to mark it optional
-    // the gate must still refuse. If expansion ever made this resolvable, the module's
-    // whole fail-closed contract would be gone.
+    // The other side of that trade-off. Nothing defines `$(Nope)`, so it stays unexpanded
+    // and the path cannot exist — and with no Condition marking it optional, the gate must
+    // still refuse.
     withTempDir "af-unexpandable" (fun tmpDir ->
         let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
 
@@ -9022,9 +8557,9 @@ let ``an UNCONDITIONAL reference to an unexpandable property still fails closed`
 
 [<Fact(Timeout = 15000)>]
 let ``a self-referential property does not spin`` () =
-    // The expansion loop is bounded. A property defined in terms of itself would
-    // otherwise never reach a fixed point; the bound turns it into an ordinary
-    // unresolvable path, which then fails closed like any other.
+    // A property defined in terms of itself never reaches a fixed point, so the expansion
+    // loop is bounded; the bound turns it into an ordinary unresolvable path, which then
+    // fails closed like any other.
     withTempDir "af-self-ref" (fun tmpDir ->
         let main = Path.Combine(tmpDir, "Main", "Main.fsproj")
 

@@ -1349,7 +1349,7 @@ type RealWatchTests() =
     // All three go through `withWatchedDir`, whose body gets no path to write to and
     // exactly one mutation — `WriteUntil`, which rewrites until the callback fires. The
     // shape these used to have (sleep 100ms, write once, `signal.Wait(5000)`) is not
-    // expressible against that fixture: it was a coin flip against 4-20s of FSEvents
+    // expressible against that fixture: it was a coin flip against an unbounded window of FSEvents
     // cold-start latency on a fresh temp dir.
     [<Fact(Timeout = 20000)>]
     member _.``watchConfigFile invokes callback when .fshw.json is written``() =

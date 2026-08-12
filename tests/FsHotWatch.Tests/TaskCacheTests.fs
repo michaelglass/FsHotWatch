@@ -222,8 +222,7 @@ let ``merkleCacheKey distinguishes "ab","" from "a","b"`` () =
 
 [<Fact(Timeout = 30000); Trait("Category", "Benchmark")>]
 let ``BENCH merkleCacheKey on representative .fs file`` () =
-    // measurement B: per-FileChecked hashing cost. Repo avg .fs size ~12KB.
-    // Use the longest .fs file we can find as a worst-case proxy.
+    // Per-FileChecked hashing cost, against a worst-case proxy (repo avg .fs is ~12KB).
     let testSrc =
         let typical =
             String.replicate 240 "let aReasonablyLongIdentifier = someValue + otherValue\n"
@@ -251,8 +250,8 @@ let ``BENCH merkleCacheKey on representative .fs file`` () =
     sw.Stop()
     let perCallUs = sw.Elapsed.TotalMicroseconds / float iterations
 
-    // Print to stdout via xunit's facility — using printfn since Trait gives
-    // us a way to filter this test out of normal runs if needed.
+    // `printfn` rather than an xUnit sink: the Trait already lets a normal run filter this
+    // test out, so the raw number on stdout is the point.
     printfn
         "merkleCacheKey on %d-byte source: %.1f µs/call (%d iters in %d ms)"
         testSrc.Length
@@ -260,15 +259,13 @@ let ``BENCH merkleCacheKey on representative .fs file`` () =
         iterations
         sw.ElapsedMilliseconds
 
-    // Soft assertion: < 1 ms per call. If this fires, predicted downside #1
-    // (hashing cost per tick) is real.
+    // A generous ceiling: this only fires if per-tick hashing cost has become real.
     test <@ perCallUs < 1000.0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key is stable across runs for same file content`` () =
-    // hypothesis: editing Foo.fs and reverting it should hit the cache.
-    // The cache key for a FileChecked event should depend on file content,
-    // not on jj commit_id (which would change on every save).
+    // The key depends on file CONTENT, not on a jj commit_id that would change on every
+    // save — so editing Foo.fs and reverting it hits the cache.
     let handler = FsHotWatch.Lint.LintPlugin.create None None None None
 
     let mkResult (file: string) (source: string) : FileCheckResult =
@@ -300,7 +297,6 @@ let ``LintPlugin cache key is None for non-FileChecked events`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key reflects config file content`` () =
-    // editing the lint config should invalidate cached lint results.
     withTempDir "lint-config" (fun tmpDir ->
         let configPath = System.IO.Path.Combine(tmpDir, "fsharplint.json")
         System.IO.File.WriteAllText(configPath, "{\"rules\":\"v1\"}")
@@ -318,7 +314,6 @@ let ``LintPlugin cache key reflects config file content`` () =
         | None -> failwith "expected CacheKey"
         | Some k1 ->
             let key1 = k1 (FileChecked(mkResult "let x = 1"))
-            // Edit config, rebuild handler.
             System.IO.File.WriteAllText(configPath, "{\"rules\":\"v2\"}")
             let handler2 = FsHotWatch.Lint.LintPlugin.create None (Some configPath) None None
 
@@ -330,9 +325,8 @@ let ``LintPlugin cache key reflects config file content`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs FullCheck`` () =
-    // oracle: the cache key must distinguish ParseOnly from FullCheck even
-    // when source bytes are identical — they may produce different lint
-    // results because Lint inspects type info from check results when available.
+    // Identical source bytes can still produce different lint results, because Lint inspects
+    // type info from the check results when they are available.
     let handler = FsHotWatch.Lint.LintPlugin.create None None None None
 
     let mkResult (file: string) (source: string) (state: FileCheckState) : FileCheckResult =
@@ -357,8 +351,8 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key uses missing-config marker when config path doesn't exist`` () =
-    // Covers the `Some path` branch where the file is not on disk — should
-    // produce a stable key (no exception) distinct from the `None` case.
+    // The `Some path` branch where the file is not on disk: a stable key, no exception, and
+    // distinct from the `None` case.
     let h1 =
         FsHotWatch.Lint.LintPlugin.create None (Some "/nonexistent/fsharplint.json") None None
 
@@ -396,9 +390,8 @@ let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-// Cache tests use Source = "" and null ParseResults — the cache intercept
-// doesn't read either, so override the shared helper rather than build the
-// record by hand.
+// The cache intercept reads neither Source nor ParseResults, so these override the shared
+// helper rather than build the record by hand.
 let private dummyFileCheckResult file =
     { fakeFileCheckResult file with
         Source = ""
@@ -408,7 +401,6 @@ let private dummyFileCheckResult file =
 let ``plugin skips Update on cache hit and replays errors`` () =
     let cache = InMemoryTaskCache()
 
-    // Pre-populate cache with a result
     let cachedErrors =
         [ ("/src/A.fs",
            [ { Message = "cached warning"
@@ -447,13 +439,9 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     host.RegisterHandler(handler)
     host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
 
-    // Wait for the agent to process the event
     waitUntil (fun () -> host.GetStatus("test-plugin") <> Some Idle) 12000
 
-    // Update should NOT have been called — cache hit
     test <@ updateCallCount = 0 @>
-
-    // Errors should be replayed into the ledger
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
     test
@@ -487,14 +475,13 @@ let ``plugin stores result on cache miss then hits on second event`` () =
 
     host.RegisterHandler(handler)
 
-    // First event: cache miss, runs Update
     host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
     waitForTerminalStatus host "counter-plugin" 5000
     test <@ updateCallCount = 1 @>
 
-    // Second event with same cache key: cache hit, skips Update
+    // Same cache key. There is no status transition to wait on — the replay sets the same
+    // terminal status — so this sleeps rather than polls.
     host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
-    // Wait for the agent to process — status will be set by replay
     Thread.Sleep(200)
     test <@ updateCallCount = 1 @>
 
@@ -523,12 +510,10 @@ let ``plugin runs Update when cache key changes`` () =
 
     host.RegisterHandler(handler)
 
-    // First event: cache miss
     host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
     waitForTerminalStatus host "key-change-plugin" 5000
     test <@ updateCallCount = 1 @>
 
-    // Change the commit — second event should miss cache
     currentCommit <- "commit-2"
     host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
     waitUntil (fun () -> updateCallCount = 2) 12000
@@ -540,15 +525,13 @@ let ``plugin runs Update when cache key changes`` () =
 // AUTOMATION-98 finding 5 — the task cache grew without bound.
 // ---------------------------------------------------------------------------
 //
-// Entries are named `{plugin--file}@{contentHash}.json` "so multiple versions
-// coexist", but `tryGet` reconstructs the exact path from the key — so only the
-// entry matching the CURRENT content is reachable, and every prior one is dead
-// weight that nothing ever removed. Each edit to a file added one, forever:
-// 3,126 files / 13 MB in a ~1.5-day-old workspace, across ~6 live workspaces,
-// while `Stats`/`clearFile`/`clearPlugin` full-scan the directory each call.
+// Entries are named `{plugin--file}@{contentHash}.json` "so multiple versions coexist", but
+// `tryGet` reconstructs the exact path from the key — so only the entry matching the CURRENT
+// content is reachable and every prior one is dead weight nothing removed. Each edit added
+// one forever: 3,126 files / 13 MB in a ~1.5-day-old workspace, while `Stats`/`clearFile`/
+// `clearPlugin` full-scan the directory on every call.
 //
-// RED-BEFORE-GREEN: remove the `pruneSiblingsOf` call from `set` and the file
-// count is 3, not 1.
+// RED-BEFORE-GREEN: remove the `pruneSiblingsOf` call from `set` and the file count is 3.
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
@@ -569,11 +552,9 @@ let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
         let files = System.IO.Directory.GetFiles(tmpDir, "*.json")
         test <@ files.Length = 1 @>
 
-        // The survivor is the NEWEST, and it is readable.
         test <@ (cache.TryGet key (hash "v3")).IsSome @>
-        // The superseded ones are gone — which costs nothing, because they were
-        // already unreachable: a lookup keyed by old content could never be issued
-        // for a file whose content has moved on.
+        // Collecting the superseded entries costs nothing: they were already unreachable,
+        // since no lookup keyed by old content can be issued once the content has moved on.
         test <@ (cache.TryGet key (hash "v1")).IsNone @>
         test <@ (cache.TryGet key (hash "v2")).IsNone @>)
 
@@ -595,7 +576,6 @@ let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
         cache.Set (ck "lint" "/src/B.fs") (hash "k") { result with CacheKey = hash "k" }
         cache.Set (ckPlugin "build") (hash "k") { result with CacheKey = hash "k" }
 
-        // Now supersede ONE of them.
         cache.Set (ck "lint" "/src/A.fs") (hash "k2") { result with CacheKey = hash "k2" }
 
         test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "k2")).IsSome @>
@@ -606,10 +586,10 @@ let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache prune failure never propagates (cache hygiene must not fail a task)`` () =
-    // The prune runs immediately AFTER a successful write, so a failure here would
-    // otherwise throw away a result the task had already earned. It must not — and
-    // this cannot be staged through `Set`, because a directory that refuses a delete
-    // also refuses the write that precedes it. So drive the prune directly.
+    // The prune runs immediately AFTER a successful write, so a failure here would throw
+    // away a result the task had already earned. It cannot be staged through `Set` — a
+    // directory that refuses a delete also refuses the preceding write — hence the direct
+    // call.
     if not (OperatingSystem.IsWindows()) then
         withTempDir "ftc-prune-fail" (fun tmpDir ->
             let sibling = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@deadbeefcafe.json")
@@ -622,7 +602,6 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
             )
 
             try
-                // Must not throw.
                 pruneSupersededSiblings [ sibling ] "/some/other/keep.json"
             finally
                 System.IO.File.SetUnixFileMode(
@@ -632,17 +611,16 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
                     ||| System.IO.UnixFileMode.UserExecute
                 )
 
-            // The sibling survived — the delete really did fail, so we proved the
-            // swallow, not merely that nothing was there to delete. The next write
-            // to this key collects it.
+            // The sibling survived, so the delete really did fail — this proves the swallow
+            // rather than merely that nothing was there to delete.
             test <@ System.IO.File.Exists sibling @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache prune keeps collecting after one delete fails`` () =
-    // Each delete is independently guarded, so one undeletable sibling cannot shield
-    // the rest. (The old shape wrapped the whole loop in a single `try`: the first
-    // throw abandoned every sibling after it.) The undeletable one is a DIRECTORY at
-    // an entry's path — `File.Delete` refuses it — which needs no permission games.
+    // Each delete is independently guarded, so one undeletable sibling cannot shield the
+    // rest — the old shape wrapped the whole loop in a single `try`, and the first throw
+    // abandoned every sibling after it. The undeletable one is a DIRECTORY at an entry's
+    // path, which `File.Delete` refuses without any permission games.
     withTempDir "ftc-prune-partial" (fun tmpDir ->
         let blocker = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@aaaaaaaaaaaa.json")
 
@@ -661,17 +639,15 @@ let ``FileTaskCache prune keeps collecting after one delete fails`` () =
 // The prune must not SCAN. Its cost cannot be a function of the cache's size.
 // ---------------------------------------------------------------------------
 //
-// `Directory.EnumerateFiles(dir, pattern)` is not a prefix-optimised syscall: it
-// readdirs the WHOLE directory and pattern-matches in managed code. A cold scan
-// writes ~3 entries per source file (Lint, Analyzers, FormatCheck each carry a
-// per-`FileChecked` cache key) into a directory that grows to ~3 entries per file —
-// so a prune that scans makes the cold scan QUADRATIC. Measured at ~2.2 ms per scan
-// against a 4,500-entry directory: ~10 seconds of pure directory scanning added to a
-// cold scan of a 1500-file repo, on exactly the paths (cold scan, `--run-once`, the
-// merge gate) that were already timing out.
+// `Directory.EnumerateFiles(dir, pattern)` is not a prefix-optimised syscall: it readdirs
+// the WHOLE directory and pattern-matches in managed code. A cold scan writes ~3 entries per
+// source file (Lint, Analyzers and FormatCheck each carry a per-`FileChecked` key) into a
+// directory that grows at the same rate, so a prune that scans makes the cold scan
+// QUADRATIC — measured at ~2.2ms per scan against 4,500 entries, i.e. ~10s of pure directory
+// scanning on a 1500-file repo, on exactly the paths that were already timing out.
 //
-// RED-BEFORE-GREEN: restore the `EnumerateFiles(cacheDir, prefix + "*.json")` prune
-// and this reads 200, not 0.
+// RED-BEFORE-GREEN: restore the `EnumerateFiles(cacheDir, prefix + "*.json")` prune and this
+// reads 200, not 0.
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache write path never scans the directory (prune cost is independent of cache size)`` () =
@@ -702,11 +678,10 @@ let ``FileTaskCache write path never scans the directory (prune cost is independ
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
-    // The write path knows only the paths IT wrote, so the guarantee ("only the newest
-    // hash per key survives") would end at the process boundary — a cache directory
-    // carried over from an earlier daemon would keep its dead siblings forever. The
-    // constructor's one-time sweep is what closes that: it seeds the memo from disk, so
-    // the first write to a key still collects what someone else left under it.
+    // The write path knows only the paths IT wrote, so "only the newest hash per key
+    // survives" would end at the process boundary and a directory carried over from an
+    // earlier daemon would keep its dead siblings forever. The constructor's one-time sweep
+    // seeds the memo from disk, so the first write to a key collects what was left under it.
     withTempDir "ftc-prune-prior-process" (fun tmpDir ->
         // Entries a previous process left behind, for two different keys.
         let priorA1 = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@aaaaaaaaaaaa.json")
@@ -730,18 +705,16 @@ let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
         // Both of A's inherited siblings are collected by A's first write…
         test <@ not (System.IO.File.Exists priorA1) @>
         test <@ not (System.IO.File.Exists priorA2) @>
-        // …and B's, belonging to a key nobody wrote, is untouched: it is still the
-        // newest entry for ITS key, and is still reachable.
+        // …and B's is untouched: nobody wrote that key, and it is still ITS newest entry.
         test <@ System.IO.File.Exists priorB @>
         test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "v-new")).IsSome @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache ignores a stray .json that is not one of its entries`` () =
-    // The construction sweep reads every `*.json` in the cache dir and works out which
-    // key each one belongs to — from the `@{hash}` suffix in its name. A file WITHOUT
-    // that suffix belongs to no key: it is unreachable through `TryGet`, so it is not
-    // ours to remember — and, just as importantly, not ours to DELETE. Nothing in the
-    // cache dir may be collected except as the superseded sibling of a key we wrote.
+    // The construction sweep works out which key each `*.json` belongs to from the `@{hash}`
+    // suffix. A file WITHOUT that suffix belongs to no key: unreachable through `TryGet`, so
+    // not ours to remember and — the part that matters — not ours to DELETE. Nothing here is
+    // collected except as the superseded sibling of a key we wrote.
     withTempDir "ftc-stray" (fun tmpDir ->
         let stray = System.IO.Path.Combine(tmpDir, "notes.json")
         let leadingAt = System.IO.Path.Combine(tmpDir, "@nokey.json")
@@ -787,7 +760,6 @@ let ``FileTaskCache persists and retrieves across instances`` () =
 
         (cache1 :> ITaskCache).Set (ck "lint" "/src/A.fs") (hash "abc") result
 
-        // New instance, same directory
         let cache2 = FileTaskCache(tmpDir)
         let retrieved = (cache2 :> ITaskCache).TryGet (ck "lint" "/src/A.fs") (hash "abc")
         test <@ retrieved.IsSome @>
@@ -831,7 +803,6 @@ let ``FileTaskCache roundtrips all CachedStatus variants`` () =
 
             c.Set key (hash "k") result
 
-        // Read back from a new instance
         let cache2 = FileTaskCache(tmpDir)
         let c2 = cache2 :> ITaskCache
 
@@ -912,9 +883,9 @@ let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
-    // AUTOMATION-272. The new case must survive serialization AS ITSELF. If it came
-    // back as a plain `TestsPassed`, a replayed entry would claim a project's tests
-    // passed when the filter had matched none of them.
+    // AUTOMATION-272: the case must survive serialization AS ITSELF. Coming back as a plain
+    // `TestsPassed`, a replayed entry would claim a project's tests passed when the filter
+    // had matched none of them.
     withTempDir "ftc-nomatch" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -954,14 +925,13 @@ let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache reads a PRE-272 zero-match entry back as TestsNoMatch, not a pass`` () =
-    // AUTOMATION-272 back-compat, and why it matters: entries already on disk encode a
-    // zero match as `"passed"` with a magic marker embedded in the output. Reading one
-    // back as a plain pass would replay a run that executed no test as a genuine green
-    // — the bug resurrected from a warm cache rather than from the code.
+    // Entries already on disk encode a zero match as `"passed"` with a magic marker in the
+    // output, so reading one back as a plain pass replays a run that executed no test as a
+    // genuine green — the AUTOMATION-272 bug resurrected from a warm cache.
     //
-    // Writing `TestsPassed(marker + output)` through the CURRENT serializer reproduces
-    // the legacy on-disk shape exactly, because that value is what the old code
-    // constructed and this serializer still writes it as `"passed"`.
+    // Writing `TestsPassed(marker + output)` through the CURRENT serializer reproduces the
+    // legacy on-disk shape exactly: that value is what the old code constructed, and this
+    // serializer still writes it as `"passed"`.
     withTempDir "ftc-legacy-nomatch" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1003,9 +973,8 @@ let ``FileTaskCache reads a PRE-272 zero-match entry back as TestsNoMatch, not a
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` () =
-    // Issue 1: the new TestsDeferred case must survive serialization, and on
-    // the way back it must stay NON-passing (so a cached deferred result can
-    // never replay as a silent false-green).
+    // TestsDeferred must stay NON-passing on the way back, or a cached deferred result
+    // replays as a silent false green.
     withTempDir "ftc-deferred" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1042,10 +1011,8 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
-    // The TestsErrored case must survive serialization and stay NON-passing on
-    // the way back. In practice an errored result is never written (it is
-    // non-passing, so the cacheKey gate skips the write), but the serializer
-    // must still handle it for exhaustiveness/robustness.
+    // In practice an errored result is never written — it is non-passing, so the cacheKey
+    // gate skips the write — but the serializer must still handle it exhaustively.
     withTempDir "ftc-errored" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1160,10 +1127,9 @@ let ``FileTaskCache.Set leaves no .tmp files behind`` () =
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache constructor sweeps orphan .tmp files`` () =
     withTempDir "ftc-atomic-sweep" (fun tmpDir ->
-        // Simulate a prior crash mid-write by dropping an orphan .tmp file.
+        // A prior crash mid-write leaves an orphan .tmp behind.
         let orphan = System.IO.Path.Combine(tmpDir, "build--Foo.fs@deadbeef.json.tmp")
         System.IO.File.WriteAllText(orphan, "{ partial JSON")
-        // Constructor should sweep it.
         let _cache = FileTaskCache(tmpDir)
         test <@ not (System.IO.File.Exists orphan) @>)
 
@@ -1204,26 +1170,21 @@ let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
         test <@ cache.ParseFailureCount = before + 1 @>)
 
 // --- Coverage-floor tests for FileTaskCache JSON variants -----------
-// These exercise serialise/deserialise paths for the rarer EmittedEvents
-// shapes (TestsTimedOut, CachedTestProgress, CachedCommandCompleted,
-// Aborted outcome, CompositeKey-without-file). Without them
-// FileTaskCache.fs sits at ~77.7 % line coverage and the ratchet's 78 %
-// threshold drifts in/out of fail across runs (deterministic shortfall,
-// not flake — see coverage_ratchet_lucky_ceiling memory).
+// These exercise the serialise/deserialise paths for the rarer EmittedEvents shapes
+// (TestsTimedOut, CachedTestProgress, CachedCommandCompleted, Aborted outcome,
+// CompositeKey-without-file), which FileTaskCache.fs's coverage ratchet needs.
 
-// The two fields this pair separates were once both "tolerate null, default to
-// the safe-looking value". They are NOT the same kind of field. An unknown
-// DURATION is genuinely unknown and reports as Zero, harming nothing. An
-// unknown SCOPE is a gating input, and the old default answered it with the
-// value that makes a filtered run look like a full one — so it is now a
-// rejection. The split is the point: tolerate absent evidence, never invent it.
+// The next two tests separate fields that were once both "tolerate null, default to the
+// safe-looking value". They are not the same kind of field: an unknown DURATION is genuinely
+// unknown and reports as Zero, harming nothing, while an unknown SCOPE is a gating input
+// whose old default made a filtered run look like a full one. Tolerate absent evidence,
+// never invent it.
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting it to unfiltered`` () =
-    // Note what the old behaviour did here: the entry is WRITTEN with
-    // `wasFiltered = true` (a filtered run) and used to read back `false`. That
-    // is not a lenient default, it is a reversal — and `TestResult.ranFullSuite`
-    // reads exactly this flag, so the replayed run claimed to be the whole suite.
+    // The old behaviour was not a lenient default but a REVERSAL: the entry is WRITTEN with
+    // `wasFiltered = true` and read back `false`, and `TestResult.ranFullSuite` reads exactly
+    // this flag — so the replayed run claimed to be the whole suite.
     withTempDir "ftc-null-wasfiltered" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1263,9 +1224,8 @@ let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting 
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compat)`` () =
-    // A duration is not a claim about what ran, so an entry that never recorded
-    // one still has everything a replay needs. Defaults to Zero, and exercises
-    // the `isNull node` branch in deserializeTestResult.
+    // A duration is not a claim about what ran, so an entry that never recorded one still
+    // has everything a replay needs.
     withTempDir "ftc-null-fields" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1286,9 +1246,8 @@ let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compa
 
         c.Set key cacheKey result
 
-        // Rewrite the on-disk JSON, replacing the stored elapsedSeconds value
-        // with an explicit null (the "old/partial cache" shape). `wasFiltered`
-        // is left intact — it is required, and its own test above covers it.
+        // The "old/partial cache" shape: an explicit null elapsedSeconds. `wasFiltered` is
+        // left intact — it is required, and the test above covers it.
         let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
         let raw = System.IO.File.ReadAllText(path)
 
@@ -1398,8 +1357,7 @@ let ``FileTaskCache roundtrips CachedTestProgress and CachedCommandCompleted`` (
                   CachedCommandCompleted cmdOk
                   CachedCommandCompleted cmdBad ] }
 
-        // Use a CompositeKey *without* a file to also cover that branch
-        // of compositeKeyToString.
+        // A CompositeKey *without* a file, to cover that branch of compositeKeyToString.
         c.Set (ckPlugin "filecmd") (hash "k") result
 
         let cache2 = FileTaskCache(tmpDir)
@@ -1465,26 +1423,22 @@ let ``FileTaskCache TryGet on missing file returns None`` () =
 // is in flight (AUTOMATION-95/99 — "a verdict nobody earned").
 // ---------------------------------------------------------------------------
 //
-// On a warm scan EVERY FileChecked is a cache hit, and each hit re-reported its
-// cached `Completed` — stomping the `Running` that the in-flight test run had
-// just set. `allPluginsAtRest` then saw no plugin Running and `WaitForComplete`
-// resolved WHILE the tests were still executing (field evidence: run launched
-// 11:30:17, still running at 11:30:34, daemon logged "all plugins already
-// terminal", `check` exited 0). The suppression that fixes it shipped without a
-// test; this is that test.
+// On a warm scan EVERY FileChecked is a cache hit, and each hit re-reported its cached
+// `Completed` — stomping the `Running` the in-flight test run had just set. `allPluginsAtRest`
+// then saw no plugin Running and `WaitForComplete` resolved WHILE the tests were still
+// executing, so `check` exited 0 on a run that had not finished.
 //
-// The replay is proven to have actually HAPPENED — via the errors it replays —
-// so this cannot pass by accident on a replay that never ran.
+// The replay is proven to have actually HAPPENED, via the errors it replays, so this cannot
+// pass by accident on a replay that never ran.
 //
-// RED-BEFORE-GREEN: drop the `anyRunSlotBusy ()` guard in PluginFramework's
-// replay path and the status is Completed while the run is still in flight.
+// RED-BEFORE-GREEN: drop the `anyRunSlotBusy ()` guard in PluginFramework's replay path and
+// the status is Completed while the run is still in flight.
 
 [<Fact(Timeout = 20000)>]
 let ``cache replay does not stomp a Running status while an exclusive run is in flight`` () =
     let cache = InMemoryTaskCache()
 
-    // The cached entry for B: terminal, and carrying an error so the replay is
-    // observable.
+    // B's cached entry: terminal, carrying an error so the replay is observable.
     cache.Set(
         ck "test-plugin" "/src/B.fs",
         hash "k-B",
@@ -1513,8 +1467,8 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
                 async {
                     match event with
                     | FileChecked _ ->
-                        // Launch a long "test run", exactly as TestPrune does —
-                        // the framework reports Running at the claim.
+                        // A long "test run", exactly as TestPrune does: the framework
+                        // reports Running at the claim.
                         let claim =
                             ctx.RunExclusive
                                 "tests"
@@ -1525,7 +1479,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
 
                         test <@ claim = Claimed @>
                     | Custom() ->
-                        // The run finished and reported its own real verdict.
+                        // The run finished and reports its own real verdict.
                         ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
@@ -1543,8 +1497,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
 
     host.RegisterHandler(handler)
 
-    // 1. A: cache miss → Update runs → Running + an exclusive run that is now stuck
-    //    on the gate.
+    // 1. A: cache miss → Update runs → Running, with an exclusive run stuck on the gate.
     host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
 
     waitUntil
@@ -1554,13 +1507,13 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
             | _ -> false)
         12000
 
-    // 2. B: cache HIT → the replay path runs. Wait for the replayed ERROR, which
-    //    proves the replay really happened (and isn't merely slow).
+    // 2. B: cache HIT → the replay path runs. Waiting for the replayed ERROR proves the
+    //    replay really happened rather than merely being slow.
     host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
     waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 12000
 
-    // 3. THE ASSERTION. The run is still in flight — nobody has earned a verdict —
-    //    so the cached terminal status must not have been reported over it.
+    // 3. The run is still in flight — nobody has earned a verdict — so the cached terminal
+    //    status must not have been reported over it.
     test
         <@
             match host.GetStatus("test-plugin") with
@@ -1568,7 +1521,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
             | _ -> false
         @>
 
-    // 4. Let the run finish; the REAL verdict (from the run itself) lands.
+    // 4. Let the run finish; the REAL verdict lands.
     runGate.Release() |> ignore
     waitForTerminalStatus host "test-plugin" 12000
 
@@ -1597,9 +1550,8 @@ let ``FileTaskCache rejects a pre-verdict completed entry as a cache miss`` () =
         let cacheKey = hash "k"
         c.Set key cacheKey (makeResult "k")
 
-        // Strip the status's required evidence fields (elapsedMs; summary is
-        // already absent on a per-file entry) — an entry whose terminal has no
-        // evidence must read as a MISS, never as a verdict-free terminal.
+        // Strip the status's required evidence fields (summary is already absent on a
+        // per-file entry): a terminal with no evidence must read as a MISS.
         let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
 
         let root =
@@ -1617,10 +1569,9 @@ let ``FileTaskCache rejects a pre-verdict completed entry as a cache miss`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``cache replay of a whole-run entry reports the original verdict marked as cached`` () =
-    // AUTOMATION-186 scope rule, the sound half: a `File = None` entry is keyed
-    // on the run's FULL input, so its stored verdict is a pure function of the
-    // key and replays VERBATIM (plus the cached marker) — never laundered into
-    // a ledger-derived summary that would lose run evidence like pass counts.
+    // A `File = None` entry is keyed on the run's FULL input, so its stored verdict is a
+    // pure function of the key and replays VERBATIM plus the cached marker — never laundered
+    // into a ledger-derived summary that would lose run evidence like pass counts.
     let cache = InMemoryTaskCache()
 
     cache.Set(
@@ -1655,17 +1606,16 @@ let ``cache replay of a whole-run entry reports the original verdict marked as c
 
     match host.GetStatus("verdict-plugin") with
     | Some(Completed(_, v)) ->
-        // The evidence is the ORIGINAL run's (summary + true duration), and the
-        // rendering can never pass the replay off as a fresh run.
+        // The ORIGINAL run's summary and true duration, and a rendering that cannot pass the
+        // replay off as a fresh run.
         test <@ v.Summary = "6 passed, 0 failed in 6 projects (cached)" @>
         test <@ v.Elapsed = TimeSpan.FromSeconds 12.5 @>
     | other -> failwith $"expected Completed with verdict, got %A{other}"
 
 [<Fact(Timeout = 20000)>]
 let ``cache replay does not stack the cached marker on an already-marked verdict`` () =
-    // Idempotence pin for the replay marker: a cached run verdict whose summary
-    // already carries " (cached)" (however it got there) replays unchanged —
-    // never "(cached) (cached)".
+    // A verdict whose summary already carries " (cached)" replays unchanged, never
+    // "(cached) (cached)".
     let cache = InMemoryTaskCache()
 
     cache.Set(
@@ -1702,17 +1652,11 @@ let ``cache replay does not stack the cached marker on an already-marked verdict
     | Some(Completed(_, v)) -> test <@ v.Summary = "ok (cached)" @>
     | other -> failwith $"expected Completed, got %A{other}"
 
-// NOTE (AUTOMATION-186): the former "cache replay of a non-terminal status
-// replays it verbatim" pin is gone WITH its hazard — `CachedStatus` has no
-// non-terminal variants, so a cache entry that asserts nothing terminal is
-// unrepresentable and there is no laundering branch left to test.
-
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache reads an old-format entry as a miss, counted as a parse failure`` () =
-    // AUTOMATION-186: format-1 entries (no "format" field) stored a status
-    // summary a per-file key cannot back. They must deterministically read as
-    // a MISS (invalidating the whole pre-fix cache) — never half-parse into a
-    // result carrying the stale claim.
+    // AUTOMATION-186: format-1 entries (no "format" field) stored a status summary a
+    // per-file key cannot back. They must deterministically read as a MISS — invalidating
+    // the whole pre-fix cache — never half-parse into a result carrying the stale claim.
     withTempDir "ftc-old-format" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1742,24 +1686,21 @@ let ``FileTaskCache reads an old-format entry as a miss, counted as a parse fail
         test <@ cache.ParseFailureCount = before + 1 @>)
 
 // --- Absent scope fields are a DEFECT, not a default ------------------------
-// Same class as the two rejections above (format-1 entries, pre-verdict
-// terminals): a field that is ABSENT is not a field that holds the convenient
-// value. These two pin the scope fields — the ones that decide whether a
-// replayed run counts as "the whole suite ran".
+// Same class as the two rejections above (format-1 entries, pre-verdict terminals): an
+// ABSENT field is not a field holding the convenient value. These two pin the scope fields —
+// the ones deciding whether a replayed run counts as "the whole suite ran".
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache rejects a testRunCompleted entry with no verification, rather than replaying it as a full suite``
     ()
     =
     // The verification is a gating input: `gateVerdict` gates a `SomeFailed` on
-    // `Ran FullSuite` and downgrades it on `Ran Partial`, and FileCommandPlugin
-    // turns it into FSHW_RAN_FULL_SUITE for user hooks.
+    // `Ran FullSuite` and downgrades it on `Ran Partial`, and FileCommandPlugin turns it
+    // into FSHW_RAN_FULL_SUITE for user hooks.
     //
-    // An entry that never recorded it has nothing honest to replay — which is why
-    // the field is a TOKEN and not a bool (AUTOMATION-282): with a bool, `true`
-    // over-gated and `false` silently switched coverage gating OFF, and there was
-    // no third value meaning "this entry cannot say". Absent, it reads as a MISS
-    // and the work is simply redone.
+    // It is a TOKEN and not a bool (AUTOMATION-282) because with a bool, `true` over-gated,
+    // `false` silently switched coverage gating OFF, and there was no third value meaning
+    // "this entry cannot say". Absent, it reads as a MISS and the work is redone.
     withTempDir "ftc-no-verification" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1780,12 +1721,12 @@ let ``FileTaskCache rejects a testRunCompleted entry with no verification, rathe
 
         c.Set key cacheKey result
 
-        // POSITIVE CONTROL: untouched, this entry round-trips. Without it, a
-        // `None` below would prove only that the rewrite broke something.
+        // POSITIVE CONTROL: untouched, this entry round-trips. Without it, a `None` below
+        // would prove only that the rewrite broke something.
         test <@ (c.TryGet key cacheKey).IsSome @>
 
-        // Now the only difference a writer that never recorded it would leave: a
-        // current-format entry with that one field absent.
+        // The only difference a writer that never recorded it would leave: a current-format
+        // entry with that one field absent.
         let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
 
         let root =
@@ -1795,20 +1736,19 @@ let ``FileTaskCache rejects a testRunCompleted entry with no verification, rathe
         evt.Remove("verification") |> ignore
         System.IO.File.WriteAllText(path, root.ToJsonString())
 
-        // Before the fix this returned Some, with the scope silently flipped to
-        // the gating value on an entry that had recorded the opposite.
+        // This used to return Some, with the scope silently flipped to the gating value on
+        // an entry that had recorded the opposite.
         let before = cache.ParseFailureCount
         test <@ c.TryGet key cacheKey = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache rejects a passed test result with no wasFiltered, rather than replaying it as unfiltered`` () =
-    // The same lie through the other door. FileCommandPlugin does not read the
-    // event's `RanFullSuite` on the progress path — it DERIVES the scope from
-    // the accumulated results (`TestResult.ranFullSuite accumulated`) and
-    // exports that. So a replayed progress result whose `wasFiltered` is absent
-    // and defaults to `false` reads as "not filtered" — i.e. a filtered run
-    // laundered into a full suite, with the `ranFullSuite` field never involved.
+    // The same lie through the other door: FileCommandPlugin does not read the event's
+    // `RanFullSuite` on the progress path, it DERIVES the scope from the accumulated results
+    // and exports that. So a replayed progress result whose `wasFiltered` is absent and
+    // defaults to `false` launders a filtered run into a full suite, with `ranFullSuite`
+    // never involved.
     withTempDir "ftc-no-wasfiltered" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1846,11 +1786,9 @@ let ``FileTaskCache rejects a passed test result with no wasFiltered, rather tha
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () =
-    // The guard above must key off the shapes whose WRITER emits the flag.
-    // `TestsNoMatch` / `TestsDeferred` / `TestsErrored` hold no `wasFiltered` in
-    // the DU, so `serializeTestResult` omits it and its absence there is not a
-    // missing answer. Requiring it everywhere would reject live entries — this
-    // is the regression that would catch that overreach.
+    // The guard above must key off the shapes whose WRITER emits the flag. `TestsNoMatch` /
+    // `TestsDeferred` / `TestsErrored` hold no `wasFiltered` in the DU, so its absence there
+    // is not a missing answer — requiring it everywhere would reject live entries.
     withTempDir "ftc-flagless-shapes" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
         let c = cache :> ITaskCache
@@ -1871,9 +1809,8 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
                               [ "p1", TestsNoMatch("no match", TimeSpan.FromSeconds 2.0)
                                 "p2", TestsDeferred "apphost not produced"
                                 "p3", TestsErrored "runner blew up" ]
-                        // Not one of these executed a test, so this is what the run
-                        // verified. Under the old bool the fixture could carry any
-                        // scope it liked alongside results that contradicted it.
+                        // None of these executed a test. Under the old bool the fixture
+                        // could carry any scope alongside results that contradicted it.
                         Verification = NothingExecuted } ] }
 
         c.Set key cacheKey result
@@ -1889,7 +1826,6 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
 
         test <@ evt.IsSome @>
         test <@ TestResult.isNoMatch evt.Value.Results.["p1"] @>
-        // Round-trips as what it was written as: a run in which nothing executed.
-        // The bool could not express this at all — it had to be reported as either a
-        // full suite or a filtered run, neither of which happened.
+        // A run in which nothing executed — which the bool could not express at all: it had
+        // to be reported as either a full suite or a filtered run, neither of which happened.
         test <@ evt.Value.Verification = NothingExecuted @>)

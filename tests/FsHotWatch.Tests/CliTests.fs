@@ -33,12 +33,9 @@ let private waitForIpcServer (pipeName: string) =
 let tree = FsHotWatch.Cli.Program.commandTree
 let spec = FsHotWatch.Cli.Program.globalSpec
 
-/// A currently-valid leaf command name, DERIVED from the command tree rather
-/// than hard-coded. The tests below only need "some known command" to attach a
-/// bad/help flag to; naming a specific verb meant they broke whenever that verb
-/// was retired (the `test`→`check` churn during the verb collapse bit these
-/// twice). Deriving the first leaf (a plain command, not a subcommand group)
-/// keeps them fresh across any future verb changes.
+/// A currently-valid leaf command name, DERIVED from the command tree rather than
+/// hard-coded. The tests below only need "some known command" to hang a bad/help flag on,
+/// and naming a specific verb broke them every time that verb was retired.
 let private someKnownCommand =
     match tree with
     | Group g ->
@@ -185,13 +182,12 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
         // 4 files total: 2 projects × (baseline + partial)
         test <@ deleted.Length = 4 @>
 
-        // Cobertura stays (not baseline/partial)
+        // The plain cobertura file is neither baseline nor partial, so it stays.
         test <@ File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.cobertura.xml")) @>
-        // Both flavors gone for opted-in projects
         test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.baseline.cobertura.xml"))) @>
         test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.partial.cobertura.xml"))) @>
         test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjB", "coverage.baseline.cobertura.xml"))) @>
-        // Opt-out project is untouched
+        // The opt-out project is untouched.
         test <@ File.Exists(Path.Combine(tmp, covDir, "ProjOptOut", "coverage.baseline.cobertura.xml")) @>
     finally
         if Directory.Exists tmp then
@@ -204,8 +200,8 @@ let ``parse init returns Init`` () =
 [<Fact(Timeout = 15000)>]
 let ``parse unknown command returns UnknownCommand`` () =
     match CommandTree.parse tree [| "warnings" |] with
-    // CommandTree 0.6.0: UnknownCommand carries (input, rest, groupPath). A root-level
-    // unknown command has an empty groupPath; rest is the raw argv past the token.
+    // UnknownCommand carries (input, rest, groupPath): a root-level unknown command has an
+    // empty groupPath, and `rest` is the raw argv past the token.
     | Error(UnknownCommand("warnings", [||], [])) -> ()
     | other -> failwith $"Expected UnknownCommand, got %A{other}"
 
@@ -217,9 +213,8 @@ let ``parse unknown command keeps trailing args in rest`` () =
 
 // --- reportParseError / renderParseError tests ---
 //
-// These assert the strict-CLI contract: garbage/invalid input renders a clear
-// error PLUS the nearest subcommand/group help and returns a non-zero exit code,
-// uniformly via CommandTree.renderParseError + isError.
+// The strict-CLI contract: garbage or invalid input renders a clear error PLUS the nearest
+// subcommand/group help, and returns a non-zero exit code.
 
 /// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
 let private captureStderr (f: unit -> 'a) : string * 'a =
@@ -236,8 +231,8 @@ let private captureStderr (f: unit -> 'a) : string * 'a =
 
 [<Fact(Timeout = 15000)>]
 let ``reportParseError on a known command with a bad flag renders the error plus help and exits non-zero`` () =
-    // `--all` is not a flag on any known command → UnknownFlag. This is the case
-    // the repo-owner wants to stop being masked when run outside a repo.
+    // `--all` is not a flag on any known command → UnknownFlag, which used to be masked when
+    // run outside a repo.
     let err =
         match spec.Parse [| someKnownCommand; "--all" |] with
         | Error e -> e
@@ -246,15 +241,14 @@ let ``reportParseError on a known command with a bad flag renders the error plus
     let stderr, exitCode = captureStderr (fun () -> reportParseError err)
 
     test <@ exitCode <> 0 @>
-    // Mentions the offending flag...
     test <@ stderr.Contains("--all") @>
-    // ...and renders the command's own help (the command name appears).
+    // The command's own help is rendered too, which is why its name appears.
     test <@ stderr.Contains(someKnownCommand) @>
 
 [<Fact(Timeout = 15000)>]
 let ``reportParseError on a nested unknown command fails hard with non-zero exit`` () =
-    // `config bogus` — `config` is a known GROUP, `bogus` is an unknown child →
-    // UnknownCommand with a non-empty groupPath. No daemon passthrough for this.
+    // `config` is a known GROUP and `bogus` an unknown child → UnknownCommand with a
+    // non-empty groupPath, which gets no daemon passthrough.
     let err =
         match spec.Parse [| "config"; "bogus" |] with
         | Error e -> e
@@ -270,7 +264,7 @@ let ``reportParseError on a nested unknown command fails hard with non-zero exit
 
 [<Fact(Timeout = 15000)>]
 let ``reportParseError returns 0 for HelpRequested`` () =
-    // isError is false for Help/Version — informational, exit zero.
+    // Help and Version are informational, not errors.
     let err =
         match spec.Parse [| someKnownCommand; "--help" |] with
         | Error e -> e
@@ -279,10 +273,9 @@ let ``reportParseError returns 0 for HelpRequested`` () =
     let _, exitCode = captureStderr (fun () -> reportParseError err)
     test <@ exitCode = 0 @>
 
-// classifyParse is the pure dispatch that encodes the strict-CLI ordering: all
-// repo-independent decisions (help/version + every genuine flag/arg error and a
-// nested unknown command) resolve BEFORE the repo-root lookup; only Ok and a
-// root-level unknown command defer to the daemon path.
+// classifyParse encodes the strict-CLI ordering: every repo-independent decision
+// (help/version, genuine flag/arg errors, a nested unknown command) resolves BEFORE the
+// repo-root lookup, and only Ok and a root-level unknown command defer to the daemon path.
 
 [<Fact(Timeout = 15000)>]
 let ``classifyParse Ok yields RunCommand`` () =
@@ -451,7 +444,6 @@ let ``shutdown via IPC stops the daemon`` () =
         let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
         test <@ result = "shutting down" @>
 
-        // Daemon should stop within a few seconds
         try
             task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
         with _ ->
@@ -558,11 +550,10 @@ let ``CLI plugin status query works against running daemon`` () =
           Teardown = None }
 
     daemon.RegisterHandler(handler)
-    // Trigger a FileChanged so the plugin reports Running status
     daemon.Host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
-    // Wait for the plugin to update
+
     waitUntil
         (fun () ->
             match daemon.Host.GetStatus("my-lint") with
@@ -623,8 +614,8 @@ let ``CLI command proxying works against running daemon`` () =
 
         test <@ result.Contains("hello Claude") @>
 
-        // An unrecognized command must come back as the distinguishable unknown-command
-        // sentinel over IPC (not a plain echo), so the CLI can fail hard on it.
+        // An unrecognized command comes back as the distinguishable unknown-command sentinel
+        // rather than a plain echo, so the CLI can fail hard on it.
         let unknown =
             IpcClient.runCommand pipeName "definitely-not-a-command" ""
             |> Async.RunSynchronously
@@ -651,9 +642,9 @@ let private fakeConfig: DaemonConfiguration =
         Lint = false
         Cache = FsHotWatch.Cli.DaemonConfig.NoCache }
 
-/// Structured plugin-status JSON in the shape expected by parsePluginStatuses
-/// (object per plugin, not a bare string). Using the bare-string shape made the
-/// pollAndRender loop hang because isAllTerminal on an empty parse is false.
+/// Structured plugin-status JSON in the shape `parsePluginStatuses` expects — object per
+/// plugin, not a bare string. The bare-string shape parses to an empty map, on which
+/// `isAllTerminal` is false, so the pollAndRender loop hangs.
 let private completedStatusJson =
     """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
@@ -673,12 +664,11 @@ let private fakeIpc () : IpcOps =
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
-/// Run `executeCommand` with the common test defaults. "/tmp" is made to look
-/// like a repo whose (stubbed always-running) daemon is THIS process's binary
-/// with the current config, so `ensureDaemon` takes the Reuse path — the
-/// identity handshake (AUTOMATION-147) would otherwise restart the fake daemon
-/// on every call (a 1s shutdown sleep per test, plus a real killStaleDaemon
-/// walk over /tmp/.fshw).
+/// Run `executeCommand` with the common test defaults. "/tmp" is made to look like a repo
+/// whose stubbed always-running daemon is THIS process's binary with the current config, so
+/// `ensureDaemon` takes the Reuse path — otherwise the identity handshake restarts the fake
+/// daemon on every call, costing a 1s shutdown sleep per test plus a real killStaleDaemon
+/// walk over /tmp/.fshw.
 let private exec (ipc: IpcOps) (command: Command) : int =
     Directory.CreateDirectory("/tmp/.fshw") |> ignore
     FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
@@ -737,8 +727,6 @@ let ``executePluginCommand proxies a recognized command to IPC`` () =
                         return "result"
                     } }
 
-    // A real plugin result (not the unknown-command sentinel) → Handled with the
-    // rendered exit code, and the raw rest args are forwarded verbatim.
     let result =
         executePluginCommand ipc "pipe" defaultGlobalOptions "warnings" "--verbose x"
 
@@ -748,9 +736,8 @@ let ``executePluginCommand proxies a recognized command to IPC`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``executePluginCommand reports NotRecognized when daemon returns unknown-command sentinel`` () =
-    // The daemon's RunCommand replies with the unknown-command sentinel when the
-    // plugin host doesn't recognize the command. The CLI must surface this distinctly
-    // so the caller can fail hard with the canonical parse error.
+    // The CLI must surface this distinctly, so the caller can fail hard with the canonical
+    // parse error rather than treating the sentinel as output.
     let ipc =
         { fakeIpc () with
             RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
@@ -760,7 +747,7 @@ let ``executePluginCommand reports NotRecognized when daemon returns unknown-com
 
 [<Fact(Timeout = 15000)>]
 let ``executePluginCommand reports DaemonUnavailable when IPC throws (with hint)`` () =
-    // TimeoutException maps to a known recovery hint → the Some-hint branch.
+    // TimeoutException maps to a known recovery hint — the Some-hint branch.
     let ipc =
         { fakeIpc () with
             RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }
@@ -770,7 +757,7 @@ let ``executePluginCommand reports DaemonUnavailable when IPC throws (with hint)
 
 [<Fact(Timeout = 15000)>]
 let ``executePluginCommand reports DaemonUnavailable when IPC throws (no hint)`` () =
-    // A plain exception has no known hint → the None-hint branch.
+    // A plain exception has no known hint — the None-hint branch.
     let ipc =
         { fakeIpc () with
             RunCommand = fun _ _ _ -> async { return raise (InvalidOperationException("pipe gone")) } }
@@ -802,8 +789,8 @@ let ``forwardRootUnknownCommand fails hard via renderErr when daemon does not re
 
     let mutable renderCalled = false
 
-    // The not-recognized path must invoke renderErr (which prints the canonical
-    // error+help and returns the non-zero exit code) — garbage never silently succeeds.
+    // The not-recognized path must invoke renderErr — which prints the canonical error+help
+    // and returns the non-zero exit code — so garbage never silently succeeds.
     let result =
         forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "bogus" "" (fun () ->
             renderCalled <- true
@@ -863,10 +850,8 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Start exits 2 when no projects are discovered`` () =
-    // Fail-fast contract: when project discovery would return 0, Start
-    // exits 2 (config error) BEFORE creating the daemon, acquiring the
-    // lockfile, or writing the pidfile — so a project-less directory
-    // never spins up a daemon that would idle forever.
+    // Exit 2 lands BEFORE creating the daemon, acquiring the lockfile or writing the pidfile,
+    // so a project-less directory never spins up a daemon that would idle forever.
     withTempDir "cli-start-zero-projects" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
@@ -884,17 +869,13 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
             executeCommand createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
 
         test <@ exitCode = 2 @>
-        // Pre-check fires before any daemon work, so the factory must not
-        // be invoked and no .fshw state should be left behind.
         test <@ not createDaemonCalled @>
         test <@ not (Directory.Exists(Path.Combine(tmpDir, ".fshw"))) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check exits 2 when no projects are discovered`` () =
-    // Same fail-fast contract as Start: project-requiring commands must
-    // propagate exit code 2 (config error) when zero projects are
-    // discoverable, instead of launching a daemon that immediately exits
-    // 2 itself and surfacing as "Failed to start daemon" + exit 1.
+    // The same fail-fast as Start. Without it, the daemon launches, exits 2 itself, and the
+    // whole thing surfaces as "Failed to start daemon" with exit 1.
     withTempDir "cli-check-zero-projects" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
@@ -917,16 +898,15 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
                 30.0
 
         test <@ exitCode = 2 @>
-        // Pre-check fires before any daemon work; daemon launch is skipped.
         test <@ not launched @>)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
-    // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
-    // where killStaleDaemon from other tests would read it and kill the test process.
+    // A unique temp dir, so the test process PID is not written to /tmp/.fshw/daemon.pid
+    // where another test's killStaleDaemon would read it and kill this process.
     withTempDir "cli-start" (fun tmpDir ->
-        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
-        // passes and execution actually reaches `createDaemon`.
+        // A discoverable .fsproj, so the failIfNoProjects pre-check passes and execution
+        // actually reaches `createDaemon`.
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
@@ -984,8 +964,7 @@ let ``decideRunningDaemonAction restarts daemon when config hash changes`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``decideRunningDaemonAction restarts a different-binary daemon even when config matches`` () =
-    // A stale binary must restart even with a matching config hash: every
-    // answer that daemon gives comes from the wrong code.
+    // Every answer a stale daemon gives comes from the wrong code, whatever its config says.
     let recorded = ident "0.9.0" "cafebabe00000000"
 
     let action =
@@ -1000,8 +979,7 @@ let ``decideRunningDaemonAction restarts a different-binary daemon even when con
 
 [<Fact(Timeout = 15000)>]
 let ``decideRunningDaemonAction restarts a daemon with no recorded identity`` () =
-    // THE release-critical case: an old daemon that predates the handshake
-    // never recorded an identity — it reads as unknown and is restarted,
+    // An old daemon predating the handshake never recorded an identity. It must be restarted
     // unilaterally, with no cooperation from the old build required.
     let action =
         decideRunningDaemonAction
@@ -1033,9 +1011,9 @@ let ``restartReasonLine names the reason for every restart and none for reuse`` 
 
 // --- Daemon readiness gate (AUTOMATION-66) ---
 
-/// A stand-in whose type name contains "ConnectionLost" — exercises the
-/// StreamJsonRpc connection-loss detection without a compile-time dependency on
-/// the transport assembly (the production match is by type-name substring).
+/// A stand-in whose type NAME contains "ConnectionLost" — exercises the StreamJsonRpc
+/// connection-loss detection without a compile-time dependency on the transport assembly
+/// (the production match is by type-name substring).
 type private FakeConnectionLostException() =
     inherit exn("connection lost")
 
@@ -1046,8 +1024,7 @@ let ``isTransientConnectFault recognises connect-phase transients`` () =
     test <@ isTransientConnectFault (System.IO.EndOfStreamException()) @>
     test <@ isTransientConnectFault (System.ObjectDisposedException("pipe")) @>
     test <@ isTransientConnectFault (FakeConnectionLostException()) @>
-    // ...seen through an AggregateException / inner-exception chain (as produced
-    // by Async.RunSynchronously wrapping the connect fault).
+    // ...and through the AggregateException chain `Async.RunSynchronously` wraps it in.
     test <@ isTransientConnectFault (AggregateException(TimeoutException("timed out"))) @>
 
 [<Fact(Timeout = 15000)>]
@@ -1077,16 +1054,15 @@ let ``decideReadinessStep times out when the deadline passes while still transie
 
 [<Fact(Timeout = 15000)>]
 let ``decideReadinessStep proceeds on a non-connect probe error (daemon reached)`` () =
-    // A non-transient error means the daemon answered (just not cleanly); proceed
-    // and let the real check surface it, regardless of liveness/deadline.
+    // A non-transient error means the daemon answered, just not cleanly — so proceed and let
+    // the real check surface it, regardless of liveness or deadline.
     test <@ decideReadinessStep (Error(exn "weird")) true false = ReadinessStep.ProceedReady @>
     test <@ decideReadinessStep (Error(exn "weird")) false true = ReadinessStep.ProceedReady @>
 
 [<Fact(Timeout = 15000)>]
 let ``waitForDaemonReadyWith retries transient faults then reports Ready`` () =
-    // Simulate a daemon still cold-scanning: the first two probes time out, the
-    // third answers. The gate must WAIT (retry) and then succeed — not surface
-    // the startup-race timeout as a failure.
+    // A daemon still cold-scanning: the first two probes time out, the third answers. The
+    // gate must retry and then succeed, not surface the startup race as a failure.
     let mutable calls = 0
     let mutable slept = 0
 
@@ -1160,7 +1136,7 @@ let ``daemonProcessAliveWith treats a missing pidfile as alive`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``daemonProcessAliveWith reports a dead pid as not alive`` () =
-    // A pid that cannot name a live process → GetProcessById throws → not alive.
+    // A pid that cannot name a live process: GetProcessById throws, so it reads as not alive.
     let fileOps =
         { defaultFileOps with
             FileExists = fun _ -> true
@@ -1191,19 +1167,18 @@ let ``daemonProcessAliveWith reports a live pid as alive`` () =
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check retries a startup connect race then succeeds`` () =
     withTempDir "cli-check-startup-race" (fun tmpDir ->
-        // Force the Reuse path (daemon already listening) so the readiness gate,
-        // not a fresh launch, is what absorbs the race. Reuse now requires the
-        // identity handshake to match too (AUTOMATION-147), so record THIS
-        // process's identity as the "daemon's".
+        // Force the Reuse path (daemon already listening) so the readiness gate, not a fresh
+        // launch, is what absorbs the race. Reuse also requires the identity handshake to
+        // match, hence recording THIS process's identity as the daemon's.
         let stateDir = Path.Combine(tmpDir, ".fshw")
         Directory.CreateDirectory(stateDir) |> ignore
         let hash = computeConfigHashWith defaultFileOps tmpDir
         File.WriteAllText(Path.Combine(stateDir, "config.hash"), hash)
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
 
-        // The daemon is mid cold-scan: the first two GetStatus probes time out
-        // (ConnectAsync starved), the third answers. The readiness gate must WAIT
-        // and then let the check run green — never surface the timeout as exit 1.
+        // The daemon is mid cold-scan: the first two GetStatus probes time out with
+        // ConnectAsync starved, the third answers. The gate must wait and let the check run
+        // green, never surfacing the timeout as exit 1.
         let mutable statusCalls = 0
 
         let getStatus () =
@@ -1239,11 +1214,9 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns exit code 2 when daemon dies during poll`` () =
-    // `check` polls GetStatus in a loop until plugins are terminal. If the daemon
-    // dies (or is gracefully stopped) mid-poll the RPC throws — the daemon never
-    // produced a verdict, so the check is UN-COMPLETABLE. That is exit 2, NEVER
-    // exit 1 (which an autonomous loop reads as "the daemon ran and found
-    // failures"). See `withCheckIpc` / AUTOMATION-66.
+    // If the daemon dies mid-poll the RPC throws, and no verdict was ever produced, so the
+    // check is UN-COMPLETABLE. That is exit 2, never exit 1 — which an autonomous loop reads
+    // as "the daemon ran and found failures".
     let ipc =
         { fakeIpc () with
             WaitForScan = fun _ _ -> async { return "idle" }
@@ -1272,8 +1245,8 @@ let ``executeCommand TestRerun with no flags sends default waitSec and no filter
     let result = exec ipc (TestRerun [])
 
     test <@ result = 0 @>
-    // The slot-wait budget always travels (default) so a long beforeRun chain
-    // can't defeat the rerun; no filter is sent when no filter flag is given.
+    // The slot-wait budget always travels, so a long beforeRun chain cannot defeat the
+    // rerun; and no filter is sent when no filter flag was given.
     test <@ capturedArgs = $"""{{"waitSec":{DefaultTestRerunWaitSec}}}""" @>
     test <@ not (capturedArgs.Contains("filter")) @>
 
@@ -1337,24 +1310,22 @@ let ``RerunFilter.render returns empty string for empty flag list`` () = test <@
 
 [<Fact>]
 let ``RerunFilter.render omits WaitSec (it is not an xUnit filter)`` () =
-    // `--wait-sec` is a client-side slot-wait knob; it must never leak into the
-    // xUnit runner arg string.
+    // `--wait-sec` is a client-side slot-wait knob, not something the runner understands.
     test <@ RerunFilter.render [ WaitSec 300; FilterClass "*Foo*" ] = "--filter-class *Foo*" @>
     test <@ RerunFilter.render [ WaitSec 300 ] = "" @>
 
 [<Fact>]
 let ``RerunFilter.render omits Project (it selects projects, it is not an xUnit filter)`` () =
-    // AUTOMATION-272. `--project` picks WHICH test projects the daemon invokes; it
-    // travels in the run-tests payload. Leaking it into the runner arg string would
-    // hand the xUnit runner an option it does not know, failing the very run the flag
-    // exists to aim.
+    // AUTOMATION-272: `--project` picks WHICH test projects the daemon invokes and travels in
+    // the run-tests payload. Leaked into the runner arg string it hands xUnit an option it
+    // does not know, failing the very run the flag exists to aim.
     test <@ RerunFilter.render [ Project "Acme.Tests"; FilterClass "*Foo*" ] = "--filter-class *Foo*" @>
     test <@ RerunFilter.render [ Project "Acme.Tests" ] = "" @>
 
 [<Fact>]
 let ``RerunFilter.projects collects the named projects, de-duplicated`` () =
-    // AUTOMATION-272. Repeatable, order preserved, and EMPTY means "every configured
-    // project" — the historical behaviour, which stays the default.
+    // Repeatable, order preserved, and EMPTY means "every configured project" — the
+    // historical behaviour, which stays the default (AUTOMATION-272).
     test <@ List.isEmpty (RerunFilter.projects []) @>
     test <@ List.isEmpty (RerunFilter.projects [ FilterClass "*Foo*"; WaitSec 30 ]) @>
     test <@ RerunFilter.projects [ Project "A" ] = [ "A" ] @>
@@ -1480,14 +1451,12 @@ let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
 
 // --- Regression tests for bug fixes ---
 
-/// Run a test that triggers daemon startup failure using an isolated temp dir
-/// so that killStaleDaemon cannot read another test's PID file.
+/// Trigger a daemon startup failure in an isolated temp dir, so `killStaleDaemon` cannot
+/// read another test's PID file.
 let private withStartupFailure command =
     withTempDir "cli-fail" (fun tmpDir ->
-        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
-        // (hoisted into executeCommand for project-requiring commands) passes
-        // and execution actually reaches the daemon-launch poll-timeout path
-        // that this helper is meant to exercise.
+        // A discoverable .fsproj, so the failIfNoProjects pre-check passes and execution
+        // reaches the daemon-launch poll-timeout path this helper exists to exercise.
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
@@ -1500,8 +1469,8 @@ let private withStartupFailure command =
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns 2 when daemon startup fails`` () =
-    // A daemon that never comes up means the check could not run at all —
-    // un-completable, so exit 2 (never exit 1, which reads as "failures found").
+    // A daemon that never comes up means the check could not run at all — un-completable, so
+    // exit 2, never exit 1 (which reads as "failures found").
     test <@ withStartupFailure (Check []) = 2 @>
 
 // --- computeLaunchCommand tests ---
@@ -1528,7 +1497,7 @@ let ``computeLaunchCommand: dotnet.exe on Windows with no entry assembly falls b
 
 [<Fact(Timeout = 15000)>]
 let ``computeLaunchCommand: dotnet with a real local dll spawns that same dll, not the pinned tool`` () =
-    // Use this test assembly's own dll as an existing .dll path on disk.
+    // This test assembly's own dll, as an existing .dll path on disk.
     let dll = System.Reflection.Assembly.GetExecutingAssembly().Location
     test <@ dll.ToLowerInvariant().EndsWith(".dll") && File.Exists dll @>
 
@@ -1554,11 +1523,10 @@ let ``computeLaunchCommand: dotnet with empty entry-assembly location falls back
 
 // --- AUTOMATION-147: the daemon self-heal, end to end through executeCommand ---
 //
-// A simulated daemon that behaves like the real one in the two ways that matter:
-// it RECORDS ITS BINARY IDENTITY when launched (as `fshw start` does), and every
-// answer it gives is tagged with the generation that produced it. That tag is
-// what lets these tests assert the acceptance criterion literally — not just
-// "a restart happened", but "the reply came from the NEW daemon".
+// The simulated daemon behaves like the real one in the two ways that matter: it RECORDS ITS
+// BINARY IDENTITY when launched, and every answer it gives is tagged with the generation
+// that produced it. That tag is what lets these tests assert not just "a restart happened"
+// but "the reply came from the NEW daemon".
 
 [<NoComparison; NoEquality>]
 type private FakeDaemon =
@@ -1571,10 +1539,9 @@ type private FakeDaemon =
         Served: ResizeArray<int>
     }
 
-/// An IpcOps backed by `FakeDaemon`, rooted at `repoRoot`. Launching records
-/// THIS process's identity into `.fshw/daemon.identity` — exactly what the real
-/// daemon's `start` path does — so the CLI's next handshake sees a current
-/// daemon and reuses it.
+/// An IpcOps backed by `FakeDaemon`, rooted at `repoRoot`. Launching records THIS process's
+/// identity into `.fshw/daemon.identity`, exactly as the real daemon's `start` path does, so
+/// the CLI's next handshake sees a current daemon and reuses it.
 let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
     { fakeIpc () with
         IsRunning = fun _ -> d.Running
@@ -1599,8 +1566,8 @@ let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
                     return """{"count": 0, "files": {}, "unchecked": 0}"""
                 } }
 
-/// A daemon already running from generation 1 (its identity is whatever the
-/// caller staged beforehand — that's the point of the test).
+/// A daemon already running from generation 1. Its identity is whatever the caller staged
+/// beforehand — that is the variable each test below sets.
 let private runningDaemon () =
     { Running = true
       Generation = 1
@@ -1608,8 +1575,8 @@ let private runningDaemon () =
       Launches = 0
       Served = ResizeArray() }
 
-/// Stage `.fshw/` with a config hash matching `tmpDir`, so the ONLY thing under
-/// test is the identity handshake — never the config-drift restart.
+/// Stage `.fshw/` with a config hash matching `tmpDir`, so the ONLY thing under test is the
+/// identity handshake and never the config-drift restart.
 let private stageStateDir (tmpDir: string) =
     Directory.CreateDirectory(Path.Combine(tmpDir, ".fshw")) |> ignore
 
@@ -1617,10 +1584,9 @@ let private stageStateDir (tmpDir: string) =
 
 [<Fact(Timeout = 15000)>]
 let ``check against a daemon with NO recorded identity replaces it and runs on the NEW daemon`` () =
-    // THE release-critical case, exactly as it will occur on the next repin: the
-    // daemon currently running is an OLD build that never wrote an identity. The
-    // NEW CLI must detect that UNILATERALLY — the old daemon reports nothing and
-    // is asked for nothing — stop it, start a fresh one, and answer from THAT.
+    // The running daemon is an OLD build that never wrote an identity. The new CLI must
+    // detect that UNILATERALLY — the old daemon reports nothing and is asked for nothing —
+    // then stop it, start a fresh one, and answer from THAT.
     withTempDir "cli-identity-notrecorded" (fun tmpDir ->
         stageStateDir tmpDir
         // No daemon.identity file at all — an old build's footprint.
@@ -1641,21 +1607,19 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
                 30.0
 
         test <@ result = 0 @>
-        // The old daemon was stopped and a new one started...
         test <@ d.Shutdowns = 1 @>
         test <@ d.Launches = 1 @>
-        // ...the new daemon recorded THIS binary's identity, so the next command reuses it...
+        // The new daemon recorded THIS binary's identity, so the next command reuses it...
         test <@ FsHotWatch.DaemonIdentity.verdictFor tmpDir = FsHotWatch.DaemonIdentity.IdentityVerdict.Match @>
-        // ...and — the acceptance criterion — every answer the check consumed came
-        // from generation 2 (the NEW code), never from the stale generation 1.
+        // ...and every answer the check consumed came from generation 2 (the NEW code),
+        // never from the stale generation 1.
         test <@ d.Served.Count > 0 @>
         test <@ d.Served |> Seq.forall (fun g -> g = 2) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``check against a daemon built from a DIFFERENT binary replaces it and runs on the NEW daemon`` () =
-    // Same-version, different-content is the AUTOMATION-123 repack: the version
-    // label matches and the daemon is still the wrong code. The content hash is
-    // what catches it.
+    // Same-version, different-content is the AUTOMATION-123 repack: the version label
+    // matches and the daemon is still the wrong code, so only the content hash catches it.
     withTempDir "cli-identity-different" (fun tmpDir ->
         stageStateDir tmpDir
 
@@ -1687,13 +1651,13 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
         test <@ result = 0 @>
         test <@ d.Shutdowns = 1 && d.Launches = 1 @>
         test <@ d.Served |> Seq.forall (fun g -> g = 2) @>
-        // It SAYS what it found — no silent swap, no ritual for the human.
+        // It SAYS what it found — no silent swap.
         test <@ stderr.Contains "different fshw binary" @>)
 
 [<Fact(Timeout = 15000)>]
 let ``check against a HEALTHY daemon never restarts it — the warm cache survives`` () =
-    // The guard against over-correction. Discarding a warm FCS cache costs a ~30s
-    // cold rebuild, so a matching identity + matching config must REUSE, always.
+    // The guard against over-correction: discarding a warm FCS cache costs a ~30s cold
+    // rebuild, so a matching identity plus matching config must always REUSE.
     withTempDir "cli-identity-healthy" (fun tmpDir ->
         stageStateDir tmpDir
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
@@ -1720,9 +1684,8 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
 
 [<Fact(Timeout = 15000)>]
 let ``status names a stale-binary daemon instead of presenting its output as current`` () =
-    // `status` is a read-only observer: it does not restart (a fresh daemon has
-    // nothing to report), so it must SAY that what it is showing came from a
-    // different build — never let the reader assume it is current.
+    // `status` is a read-only observer and does not restart — a fresh daemon would have
+    // nothing to report — so it must SAY that what it shows came from a different build.
     withTempDir "cli-identity-status" (fun tmpDir ->
         stageStateDir tmpDir
         let d = runningDaemon ()
@@ -1741,15 +1704,12 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
                     30.0)
 
         test <@ stderr.Contains "no recorded binary identity" @>
-        // Named, not restarted: `status` triggers no work, so a fresh daemon would
-        // have nothing to say — and the warm cache is not worth spending on a read.
         test <@ d.Shutdowns = 0 && d.Launches = 0 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a corrupted IPC reply restarts the daemon and retries the command automatically`` () =
-    // The OutOfMemoryException whose own comment conceded it "is misleading
-    // because the machine isn't actually out of memory" used to hand the operator
-    // a ritual (`fshw stop` then `fshw start`). The tool performs it now.
+    // A corrupted pipe surfaces as OutOfMemoryException, and used to hand the operator a
+    // `fshw stop` + `fshw start` ritual. The tool performs it now.
     withTempDir "cli-heal-corrupt" (fun tmpDir ->
         stageStateDir tmpDir
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
@@ -1765,8 +1725,8 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                             calls <- calls + 1
 
                             if calls = 1 then
-                                // A garbage Content-Length header: StreamJsonRpc tries to
-                                // allocate a nonsensical buffer and throws OOM.
+                                // A garbage Content-Length header makes StreamJsonRpc try to
+                                // allocate a nonsensical buffer and throw OOM.
                                 raise (OutOfMemoryException("Insufficient memory"))
 
                             d.Served.Add d.Generation
@@ -1788,7 +1748,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
         // The command SUCCEEDED — no ritual, no exit-1 handed to the human.
         test <@ result = 0 @>
         test <@ d.Shutdowns >= 1 && d.Launches = 1 @>
-        // ...and the retry was served by the fresh daemon.
+        // The retry was served by the fresh daemon.
         test <@ d.Served |> Seq.forall (fun g -> g = 2) @>
         test <@ stderr.Contains "corrupted" @>
         test <@ stderr.Contains "restarting the daemon and retrying" @>)
@@ -1820,9 +1780,8 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a LIVE daemon-pid file is never eaten by the hygiene pass`` () =
-    // Unknowns lean ALIVE. Deleting a live daemon's pidfile would strand the
-    // process beyond the reach of `fshw stop` — the exact mess this ticket exists
-    // to end, recreated by an over-eager cleaner.
+    // Unknowns lean ALIVE: deleting a live daemon's pidfile strands the process beyond the
+    // reach of `fshw stop` — the same mess, recreated by an over-eager cleaner.
     withTempDir "cli-live-pid" (fun tmpDir ->
         stageStateDir tmpDir
         let pidPath = Path.Combine(tmpDir, ".fshw", "daemon.pid")
@@ -1843,8 +1802,8 @@ let ``an unparseable daemon-pid file is left alone rather than assumed dead`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``the next command reports that the daemon restarted ITSELF over a wedge`` () =
-    // The daemon has no terminal to print to. The breadcrumb is how "the tool says
-    // what it DID" survives the restart — printed once, then consumed.
+    // The daemon has no terminal to print to, so the breadcrumb is how the report of what it
+    // did survives the restart — printed once, then consumed.
     withTempDir "cli-wedge-breadcrumb" (fun tmpDir ->
         stageStateDir tmpDir
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
@@ -1875,8 +1834,8 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
 
 [<Fact(Timeout = 15000)>]
 let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
-    // Every other fault goes straight through: a self-heal on, say, a timeout
-    // would restart healthy daemons and torch their warm cache.
+    // Every other fault goes straight through: self-healing on, say, a timeout would restart
+    // healthy daemons and torch their warm caches.
     let mutable restarts = 0
 
     let heal (throwCount: int) (ex: unit -> exn) =
@@ -1915,19 +1874,15 @@ let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
 // ---------------------------------------------------------------------------
 // `confirm`'s daemon commands (AUTOMATION-129)
 //
-// `RunCommand` dispatches on the COMMAND name. `confirm` used to call it with the
-// PLUGIN name — `RunCommand "test-prune" "test-scope"` — so the host looked up a
-// command called `test-prune`, found none, and returned the unknown-command
-// sentinel. `parseTestScope` then correctly, and SILENTLY, read that as
-// `ScopeUnknown`, which `confirm` correctly, and SILENTLY, treats as "not
-// full-suite". Result: `fshw confirm` had NO PATH TO A GREEN on any repo, ever — it
-// exited 3 even when the whole suite had just run unfiltered.
+// `RunCommand` dispatches on the COMMAND name, and `confirm` used to call it with the PLUGIN
+// name — `RunCommand "test-prune" "test-scope"` — so the host found no command called
+// `test-prune` and returned the unknown-command sentinel. `parseTestScope` then correctly and
+// SILENTLY read that as `ScopeUnknown`, which `confirm` correctly and SILENTLY treats as "not
+// full-suite", so `fshw confirm` had NO PATH TO A GREEN on any repo: exit 3 even right after
+// the whole suite had run unfiltered. It failed in the safe direction, which is why nothing
+// caught it.
 //
-// It failed in the safe direction, which is why nothing caught it. A check that
-// always refuses is never WRONG; it is merely useless, and the workaround for a
-// useless check is a hand-rolled bash harness making merge decisions.
-//
-// These tests pin the WIRE NAMES, which is the thing that was broken.
+// These pin the WIRE NAMES, which is the thing that was broken.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
@@ -1945,10 +1900,10 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
 
     let run = readTestRun ipc "pipe"
 
-    // The command name — not the plugin name — travels in the command slot.
+    // The command name — not the plugin name — travels in the command slot...
     test <@ seen |> List.map fst = [ "test-scope" ] @>
-    // ...and the daemon's answer is actually READ, rather than collapsing to
-    // ScopeUnknown because the call never reached a handler.
+    // ...and the daemon's answer is actually READ, rather than collapsing to ScopeUnknown
+    // because the call never reached a handler.
     test <@ run.Scope = IpcParsing.FullSuite 6 @>
 
 [<Fact(Timeout = 15000)>]
@@ -1961,11 +1916,10 @@ let ``an unknown-command reply is ScopeUnknown — `confirm` never goes green on
 
 [<Fact(Timeout = 15000)>]
 let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} payload`` () =
-    // Doubly broken before: the command name was wrong AND the args were
-    // `set-scope {"scope":"full"}`, which is not JSON — so even if it had been
-    // routed, the handler's `JsonDocument.Parse` would have thrown and defaulted
-    // to IMPACT. `confirm` would have asked for a full suite and been given a
-    // filtered one.
+    // Doubly broken before: the command name was wrong AND the args were `set-scope
+    // {"scope":"full"}`, which is not JSON — so even correctly routed, the handler's
+    // `JsonDocument.Parse` would have thrown and defaulted to IMPACT, handing `confirm` a
+    // filtered run in answer to its request for a full suite.
     let mutable seen: (string * string) list = []
 
     let ipc =

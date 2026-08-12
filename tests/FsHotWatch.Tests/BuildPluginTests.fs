@@ -77,10 +77,9 @@ let ``create accepts graph and test project names`` () =
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
-// NOTE: ``concurrent FileChanged events do not start two builds`` was moved to
-// FsHotWatch.IntegrationTests because it spawns a real `sleep 1` subprocess and
-// asserts on cross-thread timing windows; under the parallel xUnit collection
-// runner with system load it intermittently flakes due to scheduler starvation.
+// ``concurrent FileChanged events do not start two builds`` lives in
+// FsHotWatch.IntegrationTests: it spawns a real `sleep 1` and asserts on cross-thread timing
+// windows, which flakes under the parallel runner from scheduler starvation.
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
@@ -285,7 +284,7 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     host.EmitFileChanged(SolutionChanged)
 
-    // SolutionChanged is ignored — poll briefly; will time out (expected)
+    // SolutionChanged is ignored, so this wait is expected to time out.
     waitUntil (fun () -> (getBuild ()).IsSome) 200
 
     test <@ getBuild () = None @>
@@ -479,14 +478,13 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // FileChanged should be buffered — dependency not yet satisfied
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Brief wait — build should NOT start
+    // A short bound: this wait is expected to time out, so it only has to be long enough to
+    // catch a build that wrongly started.
     waitUntil (fun () -> (getBuild ()).IsSome) 500
     test <@ getBuild () = None @>
 
-    // Now satisfy the dependency
     host.EmitCommandCompleted(
         { Name = "setup"
           Outcome = CommandSucceeded "ok" }
@@ -507,13 +505,11 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // Satisfy dependency first
     host.EmitCommandCompleted(
         { Name = "setup"
           Outcome = CommandSucceeded "ok" }
     )
 
-    // Now FileChanged should proceed immediately
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
@@ -578,17 +574,14 @@ let ``build with multiple dependsOn waits for all`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Satisfy only one dependency
     host.EmitCommandCompleted(
         { Name = "setup"
           Outcome = CommandSucceeded "ok" }
     )
 
-    // Build should still NOT start
     waitUntil (fun () -> (getBuild ()).IsSome) 500
     test <@ getBuild () = None @>
 
-    // Satisfy the second dependency
     host.EmitCommandCompleted(
         { Name = "codegen"
           Outcome = CommandSucceeded "ok" }
@@ -736,7 +729,7 @@ let ``BuildInputsHasher hash differs when a source file's content changes`` () =
         let graph = stubGraph [ f1 ] []
         let h = BuildInputsHasher(graph)
         let before = h.Compute()
-        // Brief sleep to ensure mtime advances; the cache key is (path, mtimeTicks).
+        // Advance the mtime so this is not also a same-mtime case.
         System.Threading.Thread.Sleep(50)
         System.IO.File.WriteAllText(f1, "let a = 2")
         test <@ before <> h.Compute() @>)
@@ -1227,9 +1220,8 @@ let ``force-rebuild still lets the fresh build's result be cached`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild is spent by a completed build, not by the lookup alone`` () =
-    // Clearing on the LOOKUP would let a dispatch that never reached a build
-    // consume the request and leave the artifacts stale anyway — the same
-    // deadlock, one run later and harder to see.
+    // Clearing on the LOOKUP would let a dispatch that never reached a build consume the
+    // request and leave the artifacts stale — the same deadlock, one run later.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
@@ -1243,19 +1235,16 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
     let whileForced = cacheKeyFn fileEvt
     test <@ whileForced.IsNone @>
 
-    // Drive a real build to completion; the request is now satisfied.
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Poll rather than `waitForTerminalStatus`: the status is ALREADY terminal
-    // from the warm-up build above, so a wait-for-terminal is satisfied instantly
-    // and would read the flag before the second build's BuildDone lands. (That
-    // already-satisfied-wait shape is the same class of bug as AUTOMATION-224
-    // itself — worth not reproducing in its own regression test.)
-    // `waitUntilTrue`, not `waitUntil`: the unit-returning version gives up
-    // SILENTLY on timeout, so a loaded machine that missed the 5s budget failed
-    // on the assertion below — which reads as "force-rebuild was never spent by
-    // the build", a real bug's signature, manufactured by slowness. Asserting
-    // the wait itself separates "it did not happen" from "we stopped looking".
+    // Poll rather than `waitForTerminalStatus`: the status is ALREADY terminal from the
+    // warm-up build, so a wait-for-terminal is satisfied instantly and reads the flag before
+    // the second build's BuildDone lands.
+    //
+    // `waitUntilTrue`, not `waitUntil`: the unit-returning version gives up SILENTLY on
+    // timeout, so a loaded machine that missed the budget failed the assertion below — which
+    // reads as "force-rebuild was never spent by the build", a real bug's signature
+    // manufactured by slowness. Asserting the wait separates that from "we stopped looking".
     let built = waitUntilTrue (fun () -> (cacheKeyFn fileEvt).IsSome) 11000
 
     test <@ built @>
@@ -1265,10 +1254,8 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``the build plugin's force-rebuild command matches the name the CLI sends`` () =
-    // Plugins sit below the CLI, so the name is a bare literal on this side and a
-    // [<Literal>] on the other. Two spellings of one contract is exactly the
-    // failure this pins: a rename on either side would otherwise degrade silently
-    // to "unknown command" and quietly restore the deadlock.
+    // Plugins sit below the CLI, so the name is a bare literal here and a [<Literal>] there.
+    // A rename on either side degrades silently to "unknown command", restoring the deadlock.
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
 
     let names = handler.Commands |> List.map fst

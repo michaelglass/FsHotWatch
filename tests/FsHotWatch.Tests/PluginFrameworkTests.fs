@@ -74,7 +74,8 @@ let ``registered plugin dispatches FileChanged`` () =
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
-    // Poll the command deterministically — it queues behind the FileChanged message
+    // Running a command is how these tests synchronize: it queues behind the dispatched
+    // message in the same mailbox, so awaiting it proves that message was processed.
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
@@ -94,10 +95,8 @@ let ``registered plugin skips unsubscribed events`` () =
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    // Dispatch subscribed events — should increment state
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
-    // Dispatch unsubscribed events — should be ignored
     reg.Dispatch(
         DispatchFileChecked
             { File = AbsFilePath.create "/tmp/repo/Foo.fs"
@@ -116,7 +115,6 @@ let ``registered plugin skips unsubscribed events`` () =
               Outcome = CommandSucceeded "" }
     )
 
-    // Only the FileChanged should have incremented
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "1" @>
@@ -147,7 +145,6 @@ let ``commands query agent state`` () =
         let (cmdName, cmdHandler) = registeredCmd.Value
         test <@ cmdName = "get-count" @>
 
-        // Query initial state
         let! result = cmdHandler [||]
         test <@ result = "42" @>
     }
@@ -184,7 +181,6 @@ let ``Custom messages work for self-posting`` () =
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
-        // Poll command deterministically — queues behind FileChanged AND Custom messages
         let (_, cmdHandler) = registeredCmd.Value
 
         waitUntil
@@ -223,11 +219,9 @@ let ``handler errors are recovered`` () =
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
-        // First: throw. Second: normal — should still work.
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/ok" ]))
 
-        // Poll command — deterministic, queues behind both messages
         waitUntil
             (fun () ->
                 let r = registeredCmd.Value [||] |> Async.RunSynchronously
@@ -267,7 +261,6 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
               Outcome = CommandSucceeded "done" }
     )
 
-    // Poll the command deterministically — it queues behind the CommandCompleted message
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
@@ -276,10 +269,9 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``handler that throws after ReportStatus(Running) still transitions status to Failed`` () =
-    // Regression: before the fix, a handler that reported Running and then threw
-    // (e.g. TestPrune flushing a schema-drifted DB) would leave the plugin
-    // indefinitely displaying Running with no work dispatched — the classic
-    // stuck-state hang. The framework now catches the throw and forces Failed.
+    // A handler that reported Running and then threw (e.g. TestPrune flushing a
+    // schema-drifted DB) used to leave the plugin displaying Running forever with no work
+    // dispatched. The framework catches the throw and forces Failed.
     let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let mutable registeredCmd: CommandHandler option = None
 
@@ -310,12 +302,12 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
 
-    // Drain the agent: the command queues behind the failing FileChanged, so
-    // awaiting it guarantees both statuses have been recorded by the time we read.
+    // Drains the agent: the command queues behind the failing FileChanged, so awaiting it
+    // guarantees both statuses have been recorded by the time we read.
     registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
 
     let statuses = reportedStatuses.ToArray() |> List.ofArray
-    // Must have seen Running first, then Failed — never just Running.
+
     test
         <@
             statuses
@@ -332,7 +324,8 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                 | _ -> false)
         @>
 
-    // Critically: the last observed status must be terminal (not Running).
+    // The LAST observed status must be terminal — Running-then-Failed is not enough if
+    // something stamps Running back over it.
     let lastStatus = statuses |> List.last
 
     test
@@ -345,10 +338,8 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
 
 [<Fact(Timeout = 15000)>]
 let ``handler that throws records ex.ToString() (full type+stack) in Failed status, not just ex.Message`` () =
-    // Item D: when a plugin's Update throws, the user-visible Failed status must
-    // include the full exception (ex.ToString() — type name and stack trace),
-    // not just ex.Message. Otherwise the user has to grep daemon.log to figure
-    // out which throw site fired.
+    // The user-visible Failed status must carry the full exception, or the user has to grep
+    // daemon.log to work out which throw site fired.
     let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let mutable registeredCmd: CommandHandler option = None
 
@@ -402,9 +393,9 @@ let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: st
 
 [<Fact(Timeout = 20000)>]
 let ``pre-populated cache replays on the very first dispatch`` () =
-    // Regression: with the old `RequireWarmStart` gate, plugins skipped replay
-    // until they completed once per session. Now that BatchChecked closes the
-    // half-formed-key window, the gate is gone and replay fires immediately.
+    // The old `RequireWarmStart` gate made plugins skip replay until they had completed once
+    // per session. BatchChecked closes the half-formed-key window it existed for, so the
+    // gate is gone and replay fires immediately.
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
         let cacheKey = ContentHash.create "k"
@@ -454,14 +445,10 @@ let ``pre-populated cache replays on the very first dispatch`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``cache key is computed exactly once per dispatched event on a cache miss`` () =
-    // Perf regression guard: the framework used to call `cacheKeyFn event` twice
-    // per dispatch — once in tryReplayCache (LOOKUP) and once in runAndCache
-    // (STORE). For BuildPlugin that key is a full content-hash of the project
-    // graph, so a miss (common while editing) paid TWO SHA-256 passes per
-    // trigger. The dispatch loop now computes the key ONCE and threads the single
-    // value to both lookup and store. On a miss (empty cache) the handler runs,
-    // reports a terminal status, and the result is stored — exercising both the
-    // lookup and store paths — yet the key function must fire only once.
+    // Perf regression guard: the framework called `cacheKeyFn event` twice per dispatch,
+    // once for the LOOKUP and once for the STORE. For BuildPlugin that key is a full
+    // content-hash of the project graph, so a miss — common while editing — paid two SHA-256
+    // passes per trigger. A miss exercises both paths, so one call is the whole assertion.
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
         let cacheKey = ContentHash.create "k"
@@ -494,16 +481,14 @@ let ``cache key is computed exactly once per dispatched event on a cache miss`` 
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
         let! _ = registeredCmd.Value [||]
-        // Miss: handler ran AND result was stored, but the key was computed once.
         test <@ !keyCalls = 1 @>
     }
     |> Async.RunSynchronously
 
 [<Fact(Timeout = 20000)>]
 let ``cache key is computed exactly once per dispatched event on a cache hit`` () =
-    // On a hit the lookup path replays and the store path is never reached, so
-    // even the old code computed the key once here. This pins that the
-    // once-per-event threading does not accidentally recompute on the hit path.
+    // A hit never reaches the store path, so even the old code computed the key once here —
+    // this pins that the once-per-event threading did not add a recompute on the hit path.
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
         let cacheKey = ContentHash.create "k"
@@ -544,12 +529,9 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
 
 // --- RunExclusive primitive: per-handler single-flight (always-Drop) ---
 
-/// Drive RunExclusive end-to-end via the agent: each FileChanged dispatch invokes
-/// `ctx.RunExclusive "k" work`, where `work` waits on `gate` and then
-/// returns a synthetic completion BuildMsg. We track:
-///   - `started`: increments at the top of `work`, observed before gate release.
-///   - `completed`: increments inside the agent when the framework posts the
-///     completion msg back as Custom (-> proves "framework posts return value").
+/// Drives RunExclusive end-to-end through the agent. `started` increments at the top of the
+/// gated work; `completed` increments inside the agent when the framework posts the work's
+/// return value back as `Custom`, which is what proves the framework posts it at all.
 type private RxMsg = RxDone of int
 
 [<Fact(Timeout = 20000)>]
@@ -568,10 +550,9 @@ let ``RunExclusive does not start a second run while the first holds the slot`` 
                     async {
                         match event with
                         | FileChanged _ ->
-                            // Both outcomes are this test's subject: the first
-                            // dispatch claims, the second lands on SlotBusy (the
-                            // single-flight semantics under test). The CALLER
-                            // decides what a refusal means — here, skip.
+                            // Both outcomes are the subject here: the first dispatch claims,
+                            // the second lands on SlotBusy. The CALLER decides what a
+                            // refusal means — this one skips.
                             match
                                 ctx.RunExclusive
                                     "k"
@@ -598,17 +579,15 @@ let ``RunExclusive does not start a second run while the first holds the slot`` 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
-        // Wait for first work to enter (gate-blocked).
         waitUntil (fun () -> !started = 1) 12000
         test <@ !started = 1 @>
 
-        // Second dispatch while running: must be dropped.
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/b.fs" ]))
-        // Drain the agent so we know the second FileChanged was processed.
+        // Drains the agent, so the second FileChanged is known to have been processed
+        // before the assertion — otherwise "not started" would just mean "not yet".
         let! _ = registeredCmd.Value [||]
         test <@ !started = 1 @>
 
-        // Release first work -> completion msg posts back to mailbox.
         gate.Set()
         waitUntil (fun () -> !completed = 1) 12000
         test <@ !completed = 1 @>
@@ -631,11 +610,8 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
     ()
     =
     async {
-        // Pre-populate the cache with a result whose EmittedEvents list contains
-        // every CachedEvent variant the framework knows how to replay. On
-        // dispatch (RequireWarmStart=false), the framework must re-fire each
-        // one through the corresponding host service. Covers the replay arm in
-        // PluginFramework that walks `result.EmittedEvents` (lines 347-356).
+        // A cached result carrying every CachedEvent variant the framework knows how to
+        // replay: on dispatch, each must be re-fired through its host service.
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
         let cacheKey = ContentHash.create "k"
         let pluginNameStr = "replay-emit"
@@ -665,9 +641,9 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
             compKey
             cacheKey
             { CacheKey = cacheKey
-              // Errors uses three forms: file="*" (ClearPlugin), entries=[] for a real
-              // file (ClearErrors), and a real entry list (ReportErrors). Covers all
-              // three branches in the replay error loop.
+              // The three forms the replay error loop branches on: file="*" (ClearPlugin),
+              // empty entries for a real file (ClearErrors), and a real entry list
+              // (ReportErrors).
               Errors =
                 [ ("*", [])
                   ("/tmp/clear-me.fs", [])
@@ -716,23 +692,18 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
 
         let reg = registerHandler services handler
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        // Drain past dispatch.
         let! _ = registeredCmd.Value [||]
 
-        // Cache replayed → Update must NOT have been called.
         test <@ !updateCalls = 0 @>
 
-        // Each emitted-event variant fired exactly once.
         test <@ !buildSeen = 1 @>
         test <@ !trsSeen = 1 @>
         test <@ !tpSeen = 1 @>
         test <@ !trcSeen = 1 @>
         test <@ !ccSeen = 1 @>
 
-        // Error-replay branches all exercised.
-        // The replay loop emits ClearPlugin (for "*"), ClearErrors (for empty entries
-        // on a real file), ReportErrors (for non-empty entries). The pre-replay
-        // ClearPlugin (FileChanged event with File=None) also fires once.
+        // `>=` rather than `=`: the pre-replay ClearPlugin (FileChanged carries File=None)
+        // fires in addition to the one the "*" entry replays.
         test <@ !clearedPlugin >= 1 @>
         test <@ clearedFiles |> Seq.contains "/tmp/clear-me.fs" @>
         test <@ reportedFiles |> Seq.contains "/tmp/has-errors.fs" @>
@@ -741,9 +712,8 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
 
 [<Fact(Timeout = 30000)>]
 let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
-    // Covers runOne's try/with around `let! msg = w` (PluginFramework lines 212-213, 219):
-    // when work throws, completion stays ValueNone (no Custom message posted),
-    // and the slot is released so a subsequent RunExclusive can run.
+    // When work throws, completion stays ValueNone (no Custom message posted) and the slot
+    // is released so a subsequent RunExclusive can run.
     async {
         let started = ref 0
         let completed = ref 0
@@ -795,18 +765,16 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
         let! _ = registeredCmd.Value [||]
-        // Wait for the throwing work to complete (synchronously raises in the async).
-        // Generous polling timeouts: under heavy parallel-collection load the
-        // thread-pool can lag scheduling our runOne async by several seconds.
+        // The 20s polls are deliberately generous: under heavy parallel-collection load the
+        // thread-pool can lag scheduling the runOne async by several seconds.
         waitUntil (fun () -> !started = 1) 20000
 
-        // Slot released — IsRunning "k" must report false even though work raised.
         waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
         test <@ not (capturedCtx.Value.IsRunning "k") @>
-        // No completion posted (Custom RxDone never fired).
+        // No completion posted — Custom RxDone never fired.
         test <@ !completed = 0 @>
 
-        // Subsequent dispatch can run — proves the slot was released.
+        // A subsequent dispatch running is what proves the slot was released.
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/ok.fs" ]))
         waitUntil (fun () -> !completed = 1) 20000
         test <@ !started = 2 @>
@@ -816,15 +784,12 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
 
 [<Fact(Timeout = 30000)>]
 let ``RunExclusive forces a terminal Failed status when work raises (no strand)`` () =
-    // Regression for AUTOMATION-65 (fresh-workspace daemon wedge). A faulted
-    // exclusive run MUST NOT strand the plugin in a non-terminal (Running) status:
-    // the completion message that normally drives the plugin to terminal is never
-    // posted on the fault path, and plugins routinely report Running just before
-    // launching the work (test-prune reports Running immediately before
-    // `RunExclusive "tests"`). Without the framework forcing a terminal here the
-    // plugin sits Running forever while IsBusy/AnyPluginBusy report false — exactly
-    // the wedge that hangs the check's WaitForComplete and then lets idle-exit fire
-    // mid-wait. This asserts the fault transitions the plugin to a terminal Failed.
+    // AUTOMATION-65's fresh-workspace daemon wedge. On the fault path the completion message
+    // that normally drives the plugin to terminal is never posted, and plugins routinely
+    // report Running just before launching the work (test-prune does, immediately before
+    // `RunExclusive "tests"`). Without the framework forcing a terminal the plugin sits
+    // Running forever while IsBusy/AnyPluginBusy report false — which hangs the check's
+    // WaitForComplete and then lets idle-exit fire mid-wait.
     async {
         let statuses =
             System.Collections.Concurrent.ConcurrentQueue<PluginName * PluginStatus>()
@@ -868,8 +833,6 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
         let reg = registerHandler services handler
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
 
-        // The fault path must report a terminal Failed (never leaving the plugin
-        // stranded Running).
         waitUntil isFailed 20000
         test <@ isFailed () @>
 
@@ -918,16 +881,14 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "x" ]))
-        // Drain to ensure ctx captured + RunExclusive called.
+        // Drains, so ctx is captured and RunExclusive has been called.
         let! _ = registeredCmd.Value [||]
-        // While work blocked on gate, IsRunning must report true.
         waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 12000
         observedRunning.Value <- capturedCtx.Value.IsRunning "k"
         test <@ !observedRunning @>
         test <@ not (capturedCtx.Value.IsRunning "other") @>
 
         gate.Set()
-        // After completion msg posts back, drain again.
         waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 12000
         test <@ not (capturedCtx.Value.IsRunning "k") @>
     }
@@ -970,7 +931,6 @@ let ``plugin subscribing to BatchChecked receives event`` () =
 
     reg.Dispatch(DispatchBatchChecked batch)
 
-    // Drain agent — `drain` queues behind the BatchChecked dispatch.
     let (_, cmdHandler) = registeredCmd.Value
     cmdHandler [||] |> Async.RunSynchronously |> ignore
 
@@ -1019,7 +979,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
               CompletedAt = now }
     )
 
-    // Dispatch a subscribed event after, so we can drain the mailbox.
+    // A subscribed event afterwards, so the mailbox can be drained at all.
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
     let (_, cmdHandler) = registeredCmd.Value
@@ -1031,12 +991,10 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``a handler throw while an exclusive run is in flight does not stomp a terminal status over it`` () =
-    // The forced-Failed net exists for the "threw before any terminal report,
-    // nothing else will ever report one" case. While an exclusive run is in
-    // flight that premise is false — the run's completion path is guaranteed
-    // to deliver a terminal status — and stomping Failed over the live
-    // Running IS the AUTOMATION-99 manufactured-terminal lie. The crash is
-    // still logged; the status is not touched.
+    // The forced-Failed net exists for "threw before any terminal report, and nothing else
+    // will ever report one". While an exclusive run is in flight that premise is false — the
+    // run's completion path will deliver a terminal — so stomping Failed over the live
+    // Running is exactly the AUTOMATION-99 manufactured terminal. The crash is still logged.
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     use runGate = new System.Threading.SemaphoreSlim(0, 1)
 
@@ -1083,14 +1041,10 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/boom" ]))
 
-    // The throwing dispatch has been fully processed once IsBusy drops to the
-    // run-token-only state is not observable directly; instead wait until both
-    // mailbox messages are done: the run token keeps IsBusy true, so wait on
-    // the recorded statuses instead — Running must be the LAST status seen.
+    // "Both mailbox messages are done" is not directly observable — the run token keeps
+    // IsBusy true throughout — so this waits on the recorded statuses instead, then sleeps
+    // to give a stomping terminal time to appear if one is coming.
     waitUntil (fun () -> statuses.Count >= 1) 10000
-
-    // Give the throwing handler time to have been processed, then assert no
-    // terminal was stomped while the run is still in flight.
     System.Threading.Thread.Sleep 300
 
     test
@@ -1133,12 +1087,11 @@ type private ClaimMsg = ClaimDone
 
 /// A one-shot gate for holding a background run open.
 ///
-/// Deliberately NOT a disposable primitive: a `use`d SemaphoreSlim is disposed
-/// when the test's scope ends, which can happen while the gated run is still
-/// resuming on it — the run then faults with ObjectDisposedException, the
-/// framework forces a terminal, and the thread-pool churn destabilises
-/// NEIGHBOURING tests (observed: a CheckPipeline test timed out). A
-/// TaskCompletionSource has no such lifetime.
+/// Deliberately NOT a disposable primitive: a `use`d SemaphoreSlim is disposed when the
+/// test's scope ends, which can happen while the gated run is still resuming on it. The run
+/// then faults with ObjectDisposedException, the framework forces a terminal, and the
+/// thread-pool churn destabilises NEIGHBOURING tests. A TaskCompletionSource has no such
+/// lifetime.
 type private Gate() =
     let tcs =
         System.Threading.Tasks.TaskCompletionSource<unit>(
@@ -1159,10 +1112,9 @@ let private openAndDrain (gate: Gate) (reg: RegisteredPlugin) =
 
 [<Fact(Timeout = 20000)>]
 let ``RunExclusive reports Running at the claim — the framework owns the start`` () =
-    // A run nobody can see as Running is unrepresentable: the FRAMEWORK reports
-    // Running when it claims the slot, so a plugin cannot launch work and forget
-    // to announce it (CoveragePlugin shipped exactly that gap, which also
-    // starved the host's work-cycle generation counter).
+    // The FRAMEWORK reports Running when it claims the slot, so a plugin cannot launch work
+    // and forget to announce it — CoveragePlugin shipped exactly that gap, which also
+    // starved the host's work-cycle generation counter.
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let gate = Gate()
 
@@ -1221,11 +1173,9 @@ let ``RunExclusive reports Running at the claim — the framework owns the start
 
 [<Fact(Timeout = 20000)>]
 let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT started`` () =
-    // The bug this makes unwritable: `runExclusive` used to return unit and drop
-    // the refused work with a debug log. The caller could not tell — so a
-    // `run-tests` whose claim was refused replied "busy" and exited 0 having run
-    // nothing, and a reply TCS resolved inside the dropped work would never
-    // resolve at all.
+    // `runExclusive` used to return unit and drop the refused work with a debug log, so the
+    // caller could not tell: a `run-tests` whose claim was refused replied "busy" and exited
+    // 0 having run nothing, and a reply TCS resolved inside the dropped work never resolved.
     let started = ref 0
     let claims = System.Collections.Concurrent.ConcurrentQueue<RunClaim>()
     let gate = Gate()
@@ -1268,8 +1218,8 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
 
     let observed = claims.ToArray() |> List.ofArray
     test <@ observed = [ Claimed; SlotBusy ] @>
-    // The refused work NEVER ran — that is what makes dropping it a bug the
-    // caller has to answer for, not a silent no-op.
+    // The refused work NEVER ran, which is what makes dropping it something the caller has
+    // to answer for rather than a silent no-op.
     let startedCount = System.Threading.Volatile.Read(&started.contents)
     test <@ startedCount = 1 @>
 
@@ -1277,10 +1227,9 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
 
 [<Fact(Timeout = 20000)>]
 let ``a terminal stamped by ANY plugin path while a run is in flight is suppressed at the funnel`` () =
-    // The ownership rule is enforced at the ONE choke point every plugin-originated
-    // status passes through — not re-implemented as `if not (ctx.IsRunning "tests")`
-    // in each handler (which is the duplication class that caused this bug). Here
-    // the plugin reports a Completed mid-run *directly*: the framework must drop it.
+    // The ownership rule lives at the ONE choke point every plugin-originated status passes
+    // through, rather than being re-implemented as `if not (ctx.IsRunning "tests")` in each
+    // handler — the duplication class that caused this bug in the first place.
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let gate = Gate()
 
@@ -1302,8 +1251,8 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
 
                         test <@ claim = Claimed @>
                     | FileChanged _ ->
-                        // A per-file handler stamping a terminal WHILE the run is
-                        // live — the manufactured-✓ that made `check` exit 0.
+                        // A per-file handler stamping a terminal WHILE the run is live — the
+                        // manufactured ✓ that made `check` exit 0.
                         ctx.ReportStatus(PluginStatus.completedNow "per-file work, no run due" System.TimeSpan.Zero)
                     | Custom ClaimDone ->
                         ctx.ReportStatus(
@@ -1350,8 +1299,8 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
                 | Running _ -> true)
         @>
 
-    // Releasing the run lets its OWN verdict through — suppression is scoped to
-    // the live run, it does not silence the plugin forever.
+    // Releasing the run lets its OWN verdict through: suppression is scoped to the live run,
+    // not a permanent silencing of the plugin.
     gate.Open()
 
     waitUntil
@@ -1375,17 +1324,16 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
 // ---------------------------------------------------------------------------
 // The SAME guarantees on the CACHE-ENABLED path (the capturing ctx).
 //
-// `runAndCache` hands the handler a DIFFERENT PluginCtx — the one that records
-// side effects for the task cache. Every ownership rule must hold there too, or
-// the guarantee is only true for plugins that happen to have no cache. (A cache
-// key is exactly what TestPrune and Build have.)
+// `runAndCache` hands the handler a DIFFERENT PluginCtx — the one that records side effects
+// for the task cache. Every ownership rule must hold there too, or the guarantee only covers
+// plugins with no cache key, which is exactly the ones TestPrune and Build are not.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 20000)>]
 let ``cache path: a terminal stamped while a run is in flight is neither reported NOR cached`` () =
-    // Sharpest form of the bug: the suppressed terminal must not sneak into the
-    // task cache either. A cached manufactured-✓ would be REPLAYED on the next
-    // matching event — a false green that outlives the run that caused it.
+    // The suppressed terminal must not sneak into the task cache either: a cached
+    // manufactured ✓ would be REPLAYED on the next matching event, outliving the run that
+    // caused it.
     let cache = TaskCache.InMemoryTaskCache()
     let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
     let gate = Gate()
@@ -1463,10 +1411,9 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
 
 [<Fact(Timeout = 20000)>]
 let ``cache path: a handler that LAUNCHES a run does not cache the terminal it reported first`` () =
-    // TestPrune's queued-rerun shape: report the completed run's verdict, then
-    // immediately launch the next run. That terminal is about to be superseded
-    // by the run just started — caching it would replay a verdict the rerun
-    // exists to overturn.
+    // TestPrune's queued-rerun shape: report the completed run's verdict, then immediately
+    // launch the next run. That terminal is about to be superseded, so caching it would
+    // replay a verdict the rerun exists to overturn.
     let cache = TaskCache.InMemoryTaskCache()
     let gate = Gate()
 
@@ -1478,8 +1425,7 @@ let ``cache path: a handler that LAUNCHES a run does not cache the terminal it r
                 async {
                     match event with
                     | FileChanged _ ->
-                        // A terminal FIRST (nothing is running yet, so it is
-                        // reported) …
+                        // A terminal FIRST — nothing is running yet, so it is reported …
                         ctx.ReportStatus(PluginStatus.completedNow "prior cycle" System.TimeSpan.Zero)
 
                         // … then a new run in the SAME capture window.
@@ -1567,11 +1513,9 @@ let ``cache path: RunExclusive still refuses a second claim and says so`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
-    // The Failed arm of the cache-write gate. A failure is a real, replayable
-    // result (that's how `check` stays red on an unchanged tree without
-    // re-running everything), and since the verdict now rides the terminal
-    // TRANSITION, the replayed failure carries its summary and elapsed too —
-    // there is no shape in which a cached Failed comes back content-free.
+    // A failure is a real, replayable result — that is how `check` stays red on an unchanged
+    // tree without re-running everything — and because the verdict rides the terminal
+    // TRANSITION, the replayed failure carries its summary and elapsed too.
     let cache = TaskCache.InMemoryTaskCache()
 
     let handler: PluginHandler<unit, ClaimMsg> =
@@ -1623,12 +1567,10 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
 
 [<Fact(Timeout = 25000)>]
 let ``cache path: only an EARNED terminal is written — every other shape is skipped`` () =
-    // The cache-write gate is what decides whether a result can be REPLAYED as a
-    // verdict later. It must admit exactly one thing: a terminal that this cycle
-    // actually earned. Every other shape — nothing reported, still Running, or a
-    // terminal immediately superseded by a run the same handler launched — must
-    // write NOTHING, or a future cache hit would hand `check` a verdict no run
-    // produced.
+    // The cache-write gate decides whether a result can be REPLAYED as a verdict later, so
+    // it admits exactly one thing: a terminal this cycle actually earned. Nothing reported,
+    // still Running, or a terminal immediately superseded by a run the same handler launched
+    // must all write NOTHING, or a future hit hands `check` a verdict no run produced.
     let cache = TaskCache.InMemoryTaskCache()
     let c = cache :> TaskCache.ITaskCache
     let gate = Gate()
@@ -1697,46 +1639,35 @@ let ``cache path: only an EARNED terminal is written — every other shape is sk
 
 // --- AUTOMATION-118: is the terminal-status guard ATOMIC against a slot claim? ---
 //
-// The guard reads the run slots under `runSlotsLock` and (before the fix) reported
-// the status AFTER releasing it. A design review alleged that made it "a narrowing,
-// not a cure": a `RunExclusive` claim landing between the check and the report
-// publishes `Running`, and the stale terminal then lands ON TOP of the live run —
-// the "content-free ✓ while tests are still running" signature (`started:` with no
-// `elapsed:`) that AUTOMATION-95/99 exist to make impossible.
+// The guard reads the run slots under `runSlotsLock` and used to report the status AFTER
+// releasing it, which made it a narrowing rather than a cure: a `RunExclusive` claim landing
+// between the check and the report publishes `Running`, and the stale terminal then lands ON
+// TOP of the live run — the "content-free ✓ while tests are still running" signature.
 //
-// These two tests settle it against the REAL framework — real `registerHandler`,
-// real guard, real `runExclusive` — not a model of it. Both PARK the mailbox thread
-// inside the host's `ReportStatus` for the stale terminal, which is a faithful
-// widening of a window that genuinely exists (it does not invent one), and then race
-// a slot claim into it. They differ ONLY in where the claim comes from, which is
-// exactly the variable that decides the verdict:
+// These two settle it against the REAL framework, not a model of it. Both PARK the mailbox
+// thread inside the host's `ReportStatus` for the stale terminal — a faithful widening of a
+// window that genuinely exists, not an invented one — and race a slot claim into it. They
+// differ ONLY in where the claim comes from, which is the variable that decides the verdict:
 //
-//   * from a FOREIGN thread — legal (`PluginCtx` is a record of closures; nothing
-//     confines it to the mailbox). Before the fix this REPRODUCED the race.
-//   * from the MAILBOX — the production shape. Cannot reach the window at all,
+//   * from a FOREIGN thread — legal, since `PluginCtx` is a record of closures and nothing
+//     confines it to the mailbox. Before the fix this REPRODUCED the race.
+//   * from the MAILBOX — the production shape, which cannot reach the window at all,
 //     because the mailbox is parked inside the report and cannot dequeue the claim.
-//
-// Both must now be green: the guard is atomic against claims, so the property holds
-// regardless of which thread the claim comes from.
 
 type private A118Msg = A118Done
 
-/// Outcome of one race: every status the host observed, plus any terminal it was
-/// handed WHILE a run slot was held — the invariant under test:
-///
-///     no terminal may reach the host while an exclusive run is in flight.
-///
-/// `IsRunning` is the framework's OWN view of the slot, so the check cannot drift
-/// from what the guard is guarding.
+/// Outcome of one race: every status the host observed, plus any terminal it was handed
+/// WHILE a run slot was held — the invariant being that no terminal may reach the host while
+/// an exclusive run is in flight. `IsRunning` is the framework's OWN view of the slot, so
+/// the check cannot drift from what the guard is guarding.
 type private A118Result =
     { Statuses: PluginStatus list
       Violations: string list }
 
-/// Park the mailbox inside the host's `ReportStatus` for the first TERMINAL status
-/// this plugin reports, run `raceTheClaim` while it is parked, then unpark.
-/// `raceTheClaim` is handed the captured ctx, the registration, and the work async
-/// the run must execute — the SAME work on both paths, so neither can pass by
-/// quietly failing to start a run.
+/// Park the mailbox inside the host's `ReportStatus` for the first TERMINAL status this
+/// plugin reports, run `raceTheClaim` while it is parked, then unpark. `raceTheClaim` is
+/// handed the SAME work async on both paths, so neither can pass by quietly failing to start
+/// a run.
 let private runA118Rig (raceTheClaim: PluginCtx<A118Msg> -> RegisteredPlugin -> Async<A118Msg> -> unit) =
     let statuses = ResizeArray<PluginStatus>()
     let violations = ResizeArray<string>()
@@ -1790,10 +1721,9 @@ let private runA118Rig (raceTheClaim: PluginCtx<A118Msg> -> RegisteredPlugin -> 
                     ctxRef <- Some ctx
 
                     match event with
-                    // The STALE terminal. Models exactly the illegitimate terminals the
-                    // guard exists to drop: a cache replay, a FileChecked per-file
-                    // completion, a `safeUpdate` crash-net stamp. Reported through the
-                    // plugin-facing funnel, like all of them.
+                    // The STALE terminal, reported through the plugin-facing funnel exactly
+                    // as the illegitimate terminals the guard drops do: a cache replay, a
+                    // FileChecked per-file completion, a `safeUpdate` crash-net stamp.
                     | FileChanged _ ->
                         ctx.ReportStatus(
                             PluginStatus.completedNow "stale per-file terminal" (System.TimeSpan.FromSeconds 1.0)
@@ -1820,17 +1750,16 @@ let private runA118Rig (raceTheClaim: PluginCtx<A118Msg> -> RegisteredPlugin -> 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
     windowOpen.Wait(20000) |> ignore
 
-    // The window is now OPEN: the guard has checked (no slot held) and is committing
-    // the report. Race a claim into it.
+    // The window is OPEN: the guard has checked (no slot held) and is committing the report.
     raceTheClaim ctxRef.Value reg rigWork
 
-    // Hold the window open long enough for the claim to land in it. This pins a real
-    // window; it does not create one.
+    // Long enough for the claim to land in the window. This pins a real window rather than
+    // creating one.
     System.Threading.Thread.Sleep 400
 
     unpark.Set()
 
-    // The run must actually go live — otherwise these assertions would be vacuous.
+    // The run must actually go live, or the assertions would be vacuous.
     workEntered.Wait(20000) |> ignore
     System.Threading.Thread.Sleep 300
 
@@ -1853,25 +1782,23 @@ let private assertNoTerminalOnLiveRun (result: A118Result) =
         | Running _ -> true
         | _ -> false
 
-    // Anti-vacuity: the run genuinely started. Without this a rig that silently
-    // failed to claim would "pass".
+    // Anti-vacuity: the run genuinely started. Without this a rig that silently failed to
+    // claim would "pass".
     test <@ result.Statuses |> List.exists isRunning @>
 
     // THE INVARIANT: no terminal may reach the host while an exclusive run is live.
-    // Unquote reduces the expression, so a failure still prints the offending terminals.
     test <@ List.isEmpty result.Violations @>
 
-    // And the plugin must not be left LOOKING finished while its run is still going:
-    // the last thing the host saw must be the live run, not a verdict nobody earned.
+    // And the plugin must not be left LOOKING finished while its run is still going — the
+    // last thing the host saw must be the live run, not a verdict nobody earned.
     test <@ result.Statuses |> List.tryLast |> Option.map PluginStatus.isTerminal = Some false @>
 
 [<Fact(Timeout = 60000)>]
 let ``AUTOMATION-118: a claim from a FOREIGN thread cannot land a stale terminal on the live run`` () =
-    // The claim arrives on a thread that is NOT the plugin's mailbox — the shape the
-    // design review modelled, and a legal use of the framework API. Before the
-    // `statusLock` fix this reproduced the race: the guard checked "no run is live",
-    // the foreign claim then published `Running`, and the parked terminal landed on
-    // top of it.
+    // The claim arrives on a thread that is NOT the plugin's mailbox — a legal use of the
+    // framework API. Before the `statusLock` fix this reproduced the race: the guard checked
+    // "no run is live", the foreign claim published `Running`, and the parked terminal
+    // landed on top of it.
     runA118Rig (fun ctx _reg work ->
         System.Threading.Tasks.Task.Run(fun () ->
             match ctx.RunExclusive "tests" work with
@@ -1885,41 +1812,32 @@ let ``AUTOMATION-118: a claim from a FOREIGN thread cannot land a stale terminal
 
 [<Fact(Timeout = 60000)>]
 let ``AUTOMATION-118: a claim from the MAILBOX cannot enter the guard's window at all`` () =
-    // The production shape, and the structural reason the shipped daemon never hit
-    // this: EVERY `ctx.RunExclusive` and `ctx.ReportStatus` call in all eight shipped
-    // plugins is lexically inside `Update`, and the agent loop awaits each `Update`
-    // before dequeuing the next event — so the check, the claim and the report are
-    // totally ordered on one logical thread. Here the mailbox is parked INSIDE the
-    // report, so the claim event cannot even be dequeued until the report has landed.
+    // The production shape, and the structural reason the shipped daemon never hit this:
+    // every `ctx.RunExclusive` and `ctx.ReportStatus` in the shipped plugins is lexically
+    // inside `Update`, and the agent loop awaits each `Update` before dequeuing the next
+    // event, so check, claim and report are totally ordered on one logical thread. With the
+    // mailbox parked INSIDE the report, the claim event cannot even be dequeued.
     runA118Rig (fun _ctx reg _work -> reg.Dispatch(DispatchBuildCompleted BuildSucceeded))
     |> assertNoTerminalOnLiveRun
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-161 — a `Custom` message is a cache WRITER, never a cache READER.
 //
-// Every other event the framework dispatches is an OBSERVATION of the world, and its
-// payload is what the cache key is computed from: same key ⇒ same input ⇒ the cached
-// result is the result. A `Custom` message is neither of those things. It is the
-// plugin's OWN post — the DELIVERY of work that has already been done, at real cost —
-// and its payload is NOT in the key: TestPrune's `cacheKeyFor` reads its
-// `TestRunCompleted` only far enough to decide whether the result is CACHEABLE, never
-// far enough to IDENTIFY it. Two different runs, with different run ids and different
-// (all-passing) results, therefore collide on one key.
+// Every other event the framework dispatches is an OBSERVATION of the world, and its payload
+// is what the cache key is computed from: same key ⇒ same input ⇒ the cached result is the
+// result. A `Custom` message is the plugin's OWN post — the DELIVERY of work already done —
+// and its payload is NOT in the key: TestPrune's `cacheKeyFor` reads its `TestRunCompleted`
+// only far enough to decide whether the result is CACHEABLE, never far enough to IDENTIFY
+// it. Two different all-passing runs therefore collide on one key.
 //
-// So a "hit" on a Custom message is not a proof of equivalence — it is a collision.
-// And serving it SKIPS THE HANDLER, which is the only thing that folds the finished
-// run into the plugin's state.
+// So a "hit" on a Custom message is a collision, not a proof of equivalence — and serving it
+// SKIPS THE HANDLER, the only thing that folds the finished run into the plugin's state.
+// Observed live: `confirm` ran the full suite for 102s, passed 1965 tests, wrote a complete
+// CTRF report — and the framework then replayed a cached terminal over the `TestsFinished`
+// carrying it, so `test-scope` still answered "no tests ran".
 //
-// Observed, live, on an unchanged tree: `fshw confirm` forced the full suite, ran it
-// for 102 seconds, passed 1965 tests and wrote a complete CTRF report to disk — and
-// then the framework replayed a cached terminal over the `TestsFinished` that carried
-// the result. The plugin never learned the run had happened; `test-scope` still
-// answered "no tests ran"; and `confirm` refused to give a verdict on evidence it had
-// just spent 102 seconds producing. A cache that can DESTROY evidence is worse than
-// no cache.
-//
-// The WRITE stays: a Custom window is how the entry the next `BuildCompleted` hits
-// gets minted in the first place.
+// The WRITE stays: a Custom window is how the entry the next `BuildCompleted` hits gets
+// minted in the first place.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 20000)>]
@@ -1949,8 +1867,8 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
                 fun ctx state event ->
                     async {
                         match event with
-                        // The command below posts this. It stands for `TestsFinished`:
-                        // the results of a run that HAS ALREADY HAPPENED.
+                        // Posted by the command below; stands for `TestsFinished`, the
+                        // results of a run that HAS ALREADY HAPPENED.
                         | Custom _ ->
                             System.Threading.Interlocked.Increment(customHandled) |> ignore
                             ctx.ReportStatus(completedAt System.DateTime.UtcNow)
@@ -1974,19 +1892,18 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
 
         let! _ = registeredCmd.Value [||]
 
-        // The handler MUST run. A cached status is not a substitute for the result of
-        // a run that actually executed.
+        // The handler MUST run: a cached status is no substitute for the result of a run
+        // that actually executed.
         waitUntil (fun () -> !customHandled = 1) 10000
         test <@ !customHandled = 1 @>
     }
     |> Async.RunSynchronously
 
 // ---------------------------------------------------------------------------
-// AUTOMATION-186: the derived per-file replay summary feeds `RunVerdict.create`,
-// which THROWS on an empty summary. `ledgerSummary` must therefore render a
-// non-empty string for EVERY ledger state — including the empty ledger, where a
-// clean per-file replay derives its summary — or the replay path would crash
-// instead of reporting a green "0 findings".
+// AUTOMATION-186: the derived per-file replay summary feeds `RunVerdict.create`, which
+// THROWS on an empty summary. `ledgerSummary` must therefore render a non-empty string for
+// EVERY ledger state — including the empty ledger a clean per-file replay derives from — or
+// the replay path crashes instead of reporting a green "0 findings".
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
