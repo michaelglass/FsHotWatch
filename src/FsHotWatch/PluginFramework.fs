@@ -940,51 +940,118 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 ch.Reply(state)
                                 return! loop state
                             | Choice1Of2 event ->
-                                // Compute the cache key ONCE per dispatched event and thread the
-                                // single value to both the lookup (tryReplayCache) and the store
-                                // (runAndCache). Computing it twice would pay two SHA-256 passes
-                                // per trigger for BuildPlugin (whose key is a full content-hash of
-                                // the project graph); threading one value also guarantees the
-                                // lookup key equals the store key by construction.
-                                let cacheKeyOpt =
-                                    match handler.CacheKey with
-                                    | Some cacheKeyFn -> cacheKeyFn event
-                                    | None -> None
-
-                                // A `Custom` message is a cache WRITER, never a cache READER.
+                                // EVERYTHING this event does runs inside the
+                                // decrement's `finally` and under a `with`. Both
+                                // matter, and neither used to hold:
                                 //
-                                // Every other event here is an OBSERVATION of the world, and its
-                                // payload is what the key is computed FROM: same key ⇒ same input ⇒
-                                // the cached result IS the result. A `Custom` message is neither.
-                                // It is the plugin's own post — the DELIVERY of work already done,
-                                // at real cost — and its payload is NOT in the key. TestPrune's
-                                // `cacheKeyFor` reads the `TestRunCompleted` it carries only far
-                                // enough to decide whether the result is CACHEABLE (did everything
-                                // pass? did it abort?), never far enough to IDENTIFY it. Two
-                                // different runs — different run ids, different results, both
-                                // green — collide on one key.
+                                //   * the cache-key computation below sat OUTSIDE
+                                //     the `finally`, so a throw there leaked the
+                                //     increment `post` had already taken;
+                                //   * a throw anywhere here escaped `loop`, which
+                                //     STOPS the MailboxProcessor. Nothing
+                                //     subscribed to `agent.Error`, so it stopped
+                                //     SILENTLY, and every later post incremented
+                                //     into a mailbox nobody was reading.
                                 //
-                                // So a hit here is not a proof of equivalence; it is a COLLISION.
-                                // And serving it skips the handler, which is the only thing that
-                                // folds the finished run into the plugin's state — a cache that can
-                                // DESTROY evidence (replaying a cached terminal over the
-                                // `TestsFinished` carrying a real completed run) is worse than no
-                                // cache.
+                                // `IsBusy` is `inflightCount > 0`, so that left a
+                                // dead agent indistinguishable from a busy one,
+                                // permanently: both satisfaction paths in
+                                // `waitForAllTerminalCore` require
+                                // `not (AnyPluginBusy())`, so `check`/`confirm`
+                                // could never resolve. Three deploys in
+                                // thellma-intelligence sat on that for an hour
+                                // each. The key arms are not exotic code:
+                                // TestPrune's `dependsOnHash` hashes every file
+                                // matched by the `dependsOn` globs, and the
+                                // per-file arm calls `fcsCheckSignature` over raw
+                                // FCS results. Both are I/O and third-party data
+                                // shapes, on the dispatch thread.
                                 //
-                                // The WRITE below keeps the real key: a Custom window is how the
-                                // entry the next `BuildCompleted` hits gets minted at all.
-                                let replayKeyOpt =
-                                    match event with
-                                    | Custom _ -> None
-                                    | _ -> cacheKeyOpt
-
+                                // So a fault is now ACCOUNTED FOR (the finally
+                                // still decrements), VISIBLE (forced Failed, same
+                                // rule as `safeUpdate`: a live exclusive run owns
+                                // the status and delivers its own terminal), and
+                                // SURVIVABLE (the loop continues, so the plugin
+                                // keeps serving later events).
                                 let! nextState =
                                     async {
                                         try
-                                            if tryReplayCache event replayKeyOpt then
+                                            try
+                                                // Compute the cache key ONCE per dispatched event and thread the
+                                                // single value to both the lookup (tryReplayCache) and the store
+                                                // (runAndCache). Computing it twice would pay two SHA-256 passes
+                                                // per trigger for BuildPlugin (whose key is a full content-hash of
+                                                // the project graph); threading one value also guarantees the
+                                                // lookup key equals the store key by construction.
+                                                let cacheKeyOpt =
+                                                    match handler.CacheKey with
+                                                    | Some cacheKeyFn -> cacheKeyFn event
+                                                    | None -> None
+
+                                                // A `Custom` message is a cache WRITER, never a cache READER.
+                                                //
+                                                // Every other event here is an OBSERVATION of the world, and its
+                                                // payload is what the key is computed FROM: same key ⇒ same input ⇒
+                                                // the cached result IS the result. A `Custom` message is neither.
+                                                // It is the plugin's own post — the DELIVERY of work already done,
+                                                // at real cost — and its payload is NOT in the key. TestPrune's
+                                                // `cacheKeyFor` reads the `TestRunCompleted` it carries only far
+                                                // enough to decide whether the result is CACHEABLE (did everything
+                                                // pass? did it abort?), never far enough to IDENTIFY it. Two
+                                                // different runs — different run ids, different results, both
+                                                // green — collide on one key.
+                                                //
+                                                // So a hit here is not a proof of equivalence; it is a COLLISION.
+                                                // And serving it skips the handler, which is the only thing that
+                                                // folds the finished run into the plugin's state — a cache that can
+                                                // DESTROY evidence (replaying a cached terminal over the
+                                                // `TestsFinished` carrying a real completed run) is worse than no
+                                                // cache.
+                                                //
+                                                // The WRITE below keeps the real key: a Custom window is how the
+                                                // entry the next `BuildCompleted` hits gets minted at all.
+                                                let replayKeyOpt =
+                                                    match event with
+                                                    | Custom _ -> None
+                                                    | _ -> cacheKeyOpt
+
+                                                if tryReplayCache event replayKeyOpt then
+                                                    return state
+                                                else
+                                                    return! runAndCache event state cacheKeyOpt
+                                            with ex ->
+                                                // Not `safeUpdate`'s net: this catches the
+                                                // dispatch machinery AROUND the handler — the
+                                                // cache-key thunks and the replay lookup — which
+                                                // `safeUpdate` never covered because it wraps
+                                                // `handler.Update` alone.
+                                                error
+                                                    (PluginName.value handler.Name)
+                                                    $"Dispatch failed (cache key or cache replay), plugin kept alive: %s{ex.ToString()}"
+
+                                                let forcedFailed =
+                                                    Failed(
+                                                        ex.ToString(),
+                                                        DateTime.UtcNow,
+                                                        RunVerdict.create
+                                                            $"dispatch failed: %s{ex.Message}"
+                                                            TimeSpan.Zero
+                                                    )
+
+                                                // Same ownership rule as `safeUpdate`: a live
+                                                // exclusive run reported Running at its claim and
+                                                // its completion path delivers a terminal, so
+                                                // stomping Failed over it would manufacture a
+                                                // verdict mid-run.
+                                                reportUnlessRunOwns
+                                                    (fun () ->
+                                                        FsHotWatch.Logging.debug
+                                                            (PluginName.value handler.Name)
+                                                            "dispatch fault: suppressing forced Failed status — an exclusive run is in flight and owns the status")
+                                                    forcedFailed
+                                                |> ignore
+
                                                 return state
-                                            else
-                                                return! runAndCache event state cacheKeyOpt
                                         finally
                                             // Decrement only after the handler
                                             // (or cache replay) finishes — until
@@ -1000,6 +1067,18 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                     loop handler.Init)
             )
+
+    // Last resort, matching `ErrorLedger` and the scan-signal agent. The
+    // dispatch arm above now handles its own faults and keeps looping, so this
+    // should never fire; if it ever does — a fault in `inbox.Receive()` or the
+    // state-reply arm — the agent stops, and a stopped plugin agent is the worst
+    // failure this framework has: `inflightCount` can only rise from then on and
+    // `WaitForComplete` can never be satisfied again. Silence is what made that
+    // cost three hour-long deploy stalls, so say it loudly.
+    agent.Error.Add(fun ex ->
+        error
+            (PluginName.value handler.Name)
+            $"Mailbox loop crashed (programming bug, agent stopped — this plugin will now pin WaitForComplete): %s{ex.ToString()}")
 
     agentRef <- Some agent
 

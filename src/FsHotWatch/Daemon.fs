@@ -929,8 +929,7 @@ let internal waitForAllTerminalQuiescenceWindow =
 /// hour spent to learn nothing, three times over, and a `check` that cannot
 /// complete blocks every deploy behind it. Failing in five minutes NAMING the
 /// plugin turns an outage into a bug report.
-let internal waitForAllTerminalBusyStallThreshold =
-    System.TimeSpan.FromMinutes(5.0)
+let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(5.0)
 
 /// Sentinel message for shutdown-driven cancellation. Anything that surfaces
 /// this is a daemon-teardown event, not a plugin failure.
@@ -1032,8 +1031,7 @@ let internal waitForAllTerminalCore
 
             let statuses = host.GetAllStatuses()
 
-            let hasVerdict =
-                statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
+            let hasVerdict = statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
 
             let reasons =
                 [ if not busy.IsEmpty then
@@ -1067,10 +1065,20 @@ let internal waitForAllTerminalCore
         if (now - lastLogTime).TotalSeconds >= 10.0 then
             lastLogTime <- now
 
-            // Say what is actually blocking, every time. A wait that repeats
-            // "waiting for quiescence" for an hour and only then reveals it was
-            // a stuck plugin is a wait nobody can diagnose while it happens.
-            Logging.info "wait" (formatTimeoutDetail ())
+            // Progress is what someone watching a check wants, so "still
+            // running: X" stays at info.
+            //
+            // The "nothing running, but ..." breakdown is a DIAGNOSTIC and sits
+            // at debug. A healthy run emits it for minutes at a stretch while a
+            // plugin drains a large FileChecked backlog — alarming to read, and
+            // wrong: it is not the wedge signature. A dead agent is identified
+            // by a plugin going SILENT while the host still counts it busy, not
+            // by this line. It is still printed in full where it decides
+            // something: the timeout message and the wedge failure below.
+            if not (List.isEmpty (getRunningPlugins ())) then
+                Logging.info "wait" (formatTimeoutDetail ())
+            else
+                Logging.debug "wait" (formatTimeoutDetail ())
 
     let isQuiescent () =
         System.DateTime.UtcNow - host.LastActivityAt()

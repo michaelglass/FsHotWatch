@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- fix: **a fault in a plugin's dispatch loop no longer wedges `WaitForComplete`
+  forever.** `check`/`confirm` could hang with every plugin terminal, nothing
+  `Running`, and the wait spinning to its timeout. Three deploys in a downstream
+  repo sat on that for an hour each, because `check` gates the deploy preflight.
+
+  The dispatch loop computed `handler.CacheKey event` *outside* the `try/finally`
+  that decrements the plugin's in-flight counter. A throw there leaked the
+  increment the post had already taken **and** escaped the message loop, which
+  stops the `MailboxProcessor` — silently, because nothing subscribed to its
+  `Error` event. Every later post then incremented into a mailbox nobody was
+  reading. Since a plugin is "busy" exactly when that counter is above zero, a
+  dead agent was indistinguishable from a working one, permanently, and both
+  satisfaction paths in the wait require no plugin to be busy.
+
+  `safeUpdate` was never a net for this: it wraps `handler.Update` alone, while
+  the fault is in the machinery around the handler — the cache-key thunks and the
+  cache-replay lookup, which do file I/O and read raw FCS results on the dispatch
+  thread.
+
+  A fault is now accounted for (the `finally` still decrements), visible (a forced
+  `Failed`, under the same ownership rule as `safeUpdate`, so it cannot stomp a
+  live exclusive run's status), and survivable (the loop continues, so the plugin
+  keeps serving later events). Plugin agents also subscribe to `agent.Error` as a
+  last resort, which `ErrorLedger` and the scan-signal agent already did.
+
+  Field note for anyone diagnosing a similar hang: "nothing running, but plugins
+  still BUSY" is *not* by itself a wedge — a healthy run emits it for minutes
+  while draining a large `FileChecked` backlog. What identifies a dead agent is a
+  plugin that goes **completely silent** while the host still counts it busy.
+
 - chore(deps): **StreamJsonRpc 2.24.92 → 2.25.29; both MessagePack pins removed.**
 
   The direct `MessagePack` reference here and the repo-wide `Nerdbank.MessagePack` pin
