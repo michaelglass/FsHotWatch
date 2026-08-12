@@ -4,6 +4,40 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### tests: a watched-dir fixture, and FSHW-WAIT-001 to keep the flaky shape out
+
+Two tests flaked on the same shape: `Thread.Sleep(100)` to "give the watcher a
+moment", ONE write, then `Assert.True(signal.Wait(5000))`. On macOS a brand-new
+temp directory carries 4-20s of FSEvents cold-start latency, so the write that
+mattered could land before the watcher was live and never be reported at all.
+The immediate fix was to write repeatedly via `probeLoop`; this makes writing the
+bad version impossible instead.
+
+`tests/FsHotWatch.Tests/WatchedDir.fs` splits the lifetime in two, so a path
+exists only where an unguarded write is honest:
+
+- `UnwatchedDir` — before anything watches it. `Root` / `PathTo` / `Seed`.
+- `WatchedDir` — while it IS watched. **No path is exposed.** The only mutation
+  is `WriteUntil(relative, contents, observed)`, which writes repeatedly and
+  returns whether the event was actually seen.
+
+"Write once and hope" and "wait, then assert something else" are both
+unwriteable now, rather than merely discouraged.
+
+`FSHW-WAIT-001` (a fourth house analyzer, beside CLAIM/CLOCK/VERDICT) flags, in
+test sources only, a `Thread.Sleep` followed by a fixed-budget event wait inside
+an assertion. A deliberate sleep — asserting a NEGATIVE within a window — opts
+out with a greppable `// FSHW-WAIT-001 ok: <reason>`; two exist today.
+
+Both narrowings were measured rather than assumed: without the
+"inside an assertion" clause the rule fired 13 times repo-wide, nearly all
+sanctioned (teardown waits, and bounded-response assertions whose budget IS the
+claim). A proposed extension to also flag the unit-returning `waitUntil` was
+measured too — 3 fires, every one a deliberate teardown drain after the real
+assertions, zero true positives — and declined, with the measurement and a
+reopen condition recorded on the rule rather than shipping something that cries
+wolf.
+
 > ### ⚠️ Breaking changes, at a glance
 >
 > **If you run `fshw` in CI or from a script, read these four:**
