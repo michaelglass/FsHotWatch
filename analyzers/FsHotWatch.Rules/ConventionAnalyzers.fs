@@ -23,6 +23,17 @@
 ///   folds to green (AUTOMATION-272). No signature can distinguish the two
 ///   questions while one predicate is the honest answer to both — so the *fold*
 ///   is what gets named here.
+///
+///   FSHW-WAIT-001 — in TEST sources: no `Thread.Sleep` standing in for
+///   synchronisation with an event the test then asserts on. The sleep is a bet
+///   on latency, and when it loses the test produces a red that names a
+///   production bug which does not exist (2026-08-12: two watcher tests, 4-20s
+///   of FSEvents cold-start on a fresh temp dir). The fix — write REPEATEDLY
+///   until the event arrives — is a fixture, `WatchedDir`, whose only mutation
+///   does exactly that; this rule is the residue, because "call the fixture" is
+///   not something a signature can insist on. See `Detect.sleepSynchronisations`
+///   for exactly what fires, what was measured and declined, and how a
+///   deliberate sleep opts out.
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK
@@ -199,6 +210,112 @@ module Detect =
     let private mentionsVerification (ids: Ident list) =
         ids |> List.exists (fun i -> isVerificationName i.idText)
 
+    // --- FSHW-WAIT-001: sleeping instead of synchronising (test sources) ---
+
+    /// The one greppable escape hatch for FSHW-WAIT-001. Put it on the sleep's
+    /// own line, or anywhere in the contiguous comment block directly above it,
+    /// with the reason:
+    ///
+    ///     // FSHW-WAIT-001 ok: negative assertion — nothing may arrive in 500ms
+    ///     Thread.Sleep(500)
+    ///     Assert.False(signal.Wait(0))
+    ///
+    /// `rg "FSHW-WAIT-001 ok"` then lists every sanctioned sleep in the suite,
+    /// which is the property that matters: the exceptions have to be countable.
+    [<Literal>]
+    let OptOutMarker = "FSHW-WAIT-001 ok"
+
+    /// Which files this rule polices. Deliberately name-based rather than
+    /// project-based: an analyzer sees one file at a time and its `FileName` is
+    /// the only thing that survives into the AST, and everything the rule names
+    /// as the fix (`probeLoop`, `waitUntilTrue`, `withWatchedDir`) lives in the
+    /// test assemblies.
+    let isTestSource (fileName: string) : bool =
+        let normalized = fileName.Replace('\\', '/')
+        let name = normalized.Split('/') |> Array.tryLast |> Option.defaultValue ""
+
+        name.EndsWith("Tests.fs", System.StringComparison.Ordinal)
+        || name.StartsWith("TestHelpers", System.StringComparison.Ordinal)
+        || normalized.Contains("/tests/")
+
+    let private isThreadSleepPath (ids: Ident list) =
+        match List.rev ids |> List.map (fun i -> i.idText) with
+        | "Sleep" :: "Thread" :: _ -> true
+        | _ -> false
+
+    /// A `Thread.Sleep …` CALL, in any spelling that reaches the same method:
+    /// `Thread.Sleep 10`, `System.Threading.Thread.Sleep(10)`,
+    /// `Threading.Thread.Sleep(ts)`. A bare `Thread.Sleep` passed as a function
+    /// value is not a call and is not this rule's business.
+    let private threadSleepCall (e: SynExpr) : range option =
+        match e with
+        | SynExpr.App(funcExpr = f) ->
+            match unwrapParen f with
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when isThreadSleepPath ids -> Some e.Range
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when lastIs "Sleep" ids -> Some e.Range
+            | _ -> None
+        | _ -> None
+
+    let private isFixedBudgetWaitName (ids: Ident list) =
+        match List.tryLast ids with
+        | Some id ->
+            id.idText = "Wait"
+            || id.idText = "WaitOne"
+            || id.idText = "WaitAny"
+            || id.idText = "WaitAll"
+        | None -> false
+
+    /// A one-shot wait on a signal whose budget is fixed — `signal.Wait(5000)`,
+    /// `handle.WaitOne(…)`, `WaitHandle.WaitAll(…)` — or a bare read of `.IsSet`,
+    /// which is the same question asked without a budget. Only the ones sitting
+    /// INSIDE an assertion make a preceding sleep a synchronisation device; see
+    /// `sleepSynchronisations`.
+    let private eventWaitInExpr (e: SynExpr) : range option =
+        match e with
+        | SynExpr.App(funcExpr = f) ->
+            match unwrapParen f with
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when isFixedBudgetWaitName ids -> Some e.Range
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when isFixedBudgetWaitName ids -> Some e.Range
+            | _ -> None
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when lastIs "IsSet" ids -> Some e.Range
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when lastIs "IsSet" ids -> Some e.Range
+        | _ -> None
+
+    /// The sanctioned polling constructs. A `signal.IsSet` that is the PREDICATE
+    /// of one of these is not a fixed-budget wait — it is the poll — so an
+    /// unrelated earlier sleep must not be flagged because of it.
+    let private isPollingCallName (name: string) =
+        name = "probeLoop"
+        || name = "probeUntilEvent"
+        || name = "waitUntil"
+        || name = "waitUntilTrue"
+        || name = "waitForTerminalStatus"
+        || name = "WriteUntil"
+        || name = "WriteEachUntil"
+
+    let rec private isPollingCall (e: SynExpr) : bool =
+        match unwrapParen e with
+        | SynExpr.App(funcExpr = f) -> isPollingCall f
+        | SynExpr.TypeApp(expr = inner) -> isPollingCall inner
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> ids |> List.exists (fun i -> isPollingCallName i.idText)
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            ids |> List.exists (fun i -> isPollingCallName i.idText)
+        | SynExpr.Ident id -> isPollingCallName id.idText
+        | _ -> false
+
+    /// An ASSERTION: Unquote's `test <@ … @>`, or any `Assert.*` call. The
+    /// discriminator that makes this rule shippable — see `sleepSynchronisations`.
+    let rec private isAssertionCall (e: SynExpr) : bool =
+        match unwrapParen e with
+        | SynExpr.App(funcExpr = f) -> isAssertionCall f
+        | SynExpr.TypeApp(expr = inner) -> isAssertionCall inner
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            match ids with
+            | first :: _ :: _ -> first.idText = "Assert"
+            | _ -> false
+        | SynExpr.Ident id -> id.idText = "test"
+        | _ -> false
+
     let private posLeq (aLine: int, aCol: int) (bLine: int, bCol: int) =
         aLine < bLine || (aLine = bLine && aCol <= bCol)
 
@@ -222,10 +339,37 @@ module Detect =
         /// somewhere would blind the rule exactly where both bugs lived.
         member val DecisionScopes = ResizeArray<range>()
 
+        /// FSHW-WAIT-001 material: every `Thread.Sleep` call, every fixed-budget
+        /// event wait, every sanctioned polling call (whose interior waits do NOT
+        /// count), every assertion (only waits INSIDE one count), and every
+        /// binding body (the "same function" scope).
+        member val Sleeps = ResizeArray<range>()
+
+        member val EventWaits = ResizeArray<range>()
+        member val PollingScopes = ResizeArray<range>()
+        member val AssertionScopes = ResizeArray<range>()
+        member val BindingScopes = ResizeArray<range>()
+
         override this.WalkExpr(_path, expr) =
             match discardedClaimInExpr expr with
             | Some r -> this.DiscardedClaims.Add r
             | None -> ()
+
+            match threadSleepCall expr with
+            | Some r -> this.Sleeps.Add r
+            | None -> ()
+
+            match eventWaitInExpr expr with
+            | Some r -> this.EventWaits.Add r
+            | None -> ()
+
+            match expr with
+            | SynExpr.App _ when isPollingCall expr -> this.PollingScopes.Add expr.Range
+            | _ -> ()
+
+            match expr with
+            | SynExpr.App _ when isAssertionCall expr -> this.AssertionScopes.Add expr.Range
+            | _ -> ()
 
             match localClockInExpr expr with
             | Some r -> this.LocalClocks.Add r
@@ -251,6 +395,10 @@ module Detect =
             | _ -> ()
 
         override this.WalkBinding(_path, binding) =
+            // Every binding is a "same function" scope for the sleep rule —
+            // members included, which is what the `RealWatchTests` class needs.
+            this.BindingScopes.Add binding.RangeOfBindingWithRhs
+
             match binding with
             | SynBinding(headPat = pat; expr = body) when isWildPat pat && isRunExclusiveCall body ->
                 this.DiscardedClaims.Add binding.RangeOfBindingWithRhs
@@ -290,6 +438,112 @@ module Detect =
                     guards |> List.exists (rangeContains innermost)
 
         c.PassFolds |> List.ofSeq |> List.filter (guardedInScope >> not)
+
+    /// FSHW-WAIT-001. Ranges where a TEST source sleeps as a way of synchronising
+    /// with an event it then ASSERTS on.
+    ///
+    /// WHAT FIRES, and why it is this narrow. A bare `Thread.Sleep` is not
+    /// reported: most are legitimate (letting a debounce window elapse, letting
+    /// a plugin drain before a temp dir is deleted, asserting a NEGATIVE — that
+    /// nothing arrives inside a window). The bug class is the sleep that stands
+    /// in for synchronisation, and its signature is the pair:
+    ///
+    ///     Thread.Sleep(100)                    // "give the watcher a moment"
+    ///     File.WriteAllText(path, contents)    // ONE write
+    ///     Assert.True(signal.Wait(5000), …)    // one fixed budget, one chance
+    ///
+    /// So a sleep is flagged only when a fixed-budget event wait (`.Wait(…)`,
+    /// `.WaitOne(…)`, `.WaitAll(…)`, or a bare `.IsSet`) appears LATER IN THE
+    /// SAME BINDING BODY *and* that wait is INSIDE AN ASSERTION (`Assert.…` or
+    /// Unquote's `test`). Two exclusions do the real work, both measured against
+    /// this suite rather than guessed:
+    ///
+    ///   * waits inside a sanctioned polling call (`probeLoop`, `probeUntilEvent`,
+    ///     `waitUntil`, `waitUntilTrue`, `WatchedDir.WriteUntil`) never count —
+    ///     there the `.IsSet` IS the poll's predicate. This is also what keeps the
+    ///     rule silent on `TestHelpers`' own polling primitives.
+    ///   * waits outside an assertion never count. Without this the rule fired on
+    ///     13 sites across the suite, and the ones inspected were teardown
+    ///     (`task.Wait(5s)` in a `finally`) or a bounded-response assertion whose
+    ///     budget IS the claim (`IpcTests`' concurrent-status test) — i.e. an
+    ///     Error-severity rule whose fires were almost all sanctioned, which is a
+    ///     rule that gets suppressed rather than obeyed.
+    ///
+    /// HOW A DELIBERATE SLEEP OPTS OUT: the `FSHW-WAIT-001 ok: <reason>` comment
+    /// (see `OptOutMarker`) on the sleep's line or the line above. A comment, not
+    /// a helper function, on purpose — the reason is the entire point (a negative
+    /// assertion has to say what must NOT happen, and inside what window), and it
+    /// is greppable: `rg "FSHW-WAIT-001 ok"` enumerates every sanctioned sleep in
+    /// the suite. Exceptions that cannot be counted are not exceptions.
+    ///
+    /// DECLINED, with the measurement. `waitUntil` (unit-returning, gives up
+    /// silently) belongs to the same bug class as this sleep — which is why
+    /// `waitUntilTrue` now exists beside it — and the obvious second arm is "a
+    /// test whose last act is `waitUntil`". Implemented and measured: it fires 3
+    /// times in this suite (CoveragePluginTests ×2, PluginFrameworkTests ×1) and
+    /// every one is a deliberate teardown drain — "let the check settle so the
+    /// temp dir can be cleaned" — after the real assertions have already run.
+    /// Zero true positives, three sanctioned fires, so it is not shipped (same
+    /// standard FSHW-VERDICT-001 applies to its own declined widening). The
+    /// silent-give-up that WOULD be worth catching is `waitUntil` whose condition
+    /// nothing afterwards asserts, and in this suite that set is exactly the
+    /// drains. Reopen on evidence: a flake traced to a `waitUntil` that a test
+    /// depended on.
+    ///
+    /// `getLine` is 1-based and must return "" out of range; the analyzer feeds
+    /// it from `context.SourceText`, keeping this function pure.
+    let sleepSynchronisations (getLine: int -> string) (input: ParsedInput) : range list =
+        if not (isTestSource input.FileName) then
+            []
+        else
+            let c = collect input
+            let scopes = List.ofSeq c.BindingScopes
+            let polling = List.ofSeq c.PollingScopes
+            let assertions = List.ofSeq c.AssertionScopes
+
+            let budgetedWaits =
+                c.EventWaits
+                |> Seq.filter (fun w ->
+                    assertions |> List.exists (fun a -> rangeContains a w)
+                    && not (polling |> List.exists (fun p -> rangeContains p w)))
+                |> List.ofSeq
+
+            // The sleep's own line, then upward through the comment block attached
+            // to it — a real reason rarely fits on one line, and an opt-out that
+            // only works on the last line of its own explanation is an opt-out
+            // people quietly give up on.
+            let optedOut (sleep: range) =
+                let rec scan (line: int) (remaining: int) =
+                    if remaining <= 0 || line < 1 then
+                        false
+                    else
+                        let text = getLine line
+
+                        if text.Contains(OptOutMarker) then
+                            true
+                        elif line = sleep.StartLine || text.TrimStart().StartsWith("//") then
+                            scan (line - 1) (remaining - 1)
+                        else
+                            false
+
+                scan sleep.StartLine 25
+
+            let synchronises (sleep: range) =
+                scopes
+                |> List.filter (fun s -> rangeContains s sleep)
+                |> function
+                    | [] -> false
+                    | containing ->
+                        let innermost = containing |> List.maxBy (fun s -> (s.StartLine, s.StartColumn))
+
+                        budgetedWaits
+                        |> List.exists (fun w ->
+                            rangeContains innermost w
+                            && posLeq (sleep.EndLine, sleep.EndColumn) (w.StartLine, w.StartColumn))
+
+            c.Sleeps
+            |> List.ofSeq
+            |> List.filter (fun sleep -> synchronises sleep && not (optedOut sleep))
 
 [<CliAnalyzer("RunClaimDiscardedAnalyzer",
               "A RunClaim (RunExclusive's result) must be matched, never discarded — a dropped SlotBusy is dropped work (AUTOMATION-99)")>]
@@ -337,6 +591,35 @@ let runVerdictFoldAnalyzer: Analyzer<CliContext> =
                       Message =
                         "forall over TestResult.isPassed is not a run-level verdict. isPassed is deliberately TRUE for TestsNoMatch, so a run in which every project matched zero tests folds to green having executed no test (AUTOMATION-272). Ask verificationOf (→ RunVerification) instead — or state the run-level guard beside this fold, which is what silences this rule."
                       Code = "FSHW-VERDICT-001"
+                      Severity = Severity.Error
+                      Range = range
+                      Fixes = [] })
+        }
+
+[<CliAnalyzer("SleepSynchronisationAnalyzer",
+              "In test sources: forbids Thread.Sleep used to synchronise with an event assertion — a bet on FSEvents latency, not a wait")>]
+let sleepSynchronisationAnalyzer: Analyzer<CliContext> =
+    fun (context: CliContext) ->
+        async {
+            // 1-based, "" out of range — the shape `Detect.sleepSynchronisations`
+            // documents. Defensive: an analyzer that throws takes the whole run's
+            // findings with it, and no opt-out comment is worth that.
+            let getLine (line: int) =
+                try
+                    if line >= 1 && line <= context.SourceText.GetLineCount() then
+                        context.SourceText.GetLineString(line - 1)
+                    else
+                        ""
+                with _ ->
+                    ""
+
+            return
+                Detect.sleepSynchronisations getLine context.ParseFileResults.ParseTree
+                |> List.map (fun range ->
+                    { Type = "Sleep used as synchronisation"
+                      Message =
+                        "Thread.Sleep before an event assertion is not synchronisation — it is a bet on latency. A brand-new temp dir carries 4-20s of FSEvents cold-start on macOS, so the single write behind this sleep can land before the watcher is live and never be reported, and the red then names a production bug that does not exist. Write REPEATEDLY until the event arrives: WatchedDir.withWatchedDir + WriteUntil (tests/FsHotWatch.Tests/WatchedDir.fs), or probeLoop / waitUntilTrue directly. A sleep that is deliberate (asserting a NEGATIVE inside a window) opts out with a `// FSHW-WAIT-001 ok: <reason>` comment on this line or the one above."
+                      Code = "FSHW-WAIT-001"
                       Severity = Severity.Error
                       Range = range
                       Fixes = [] })
