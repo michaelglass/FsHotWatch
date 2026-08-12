@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.8 - 2026-08-12
+
 - fix: **the wedge detector no longer fails a healthy check of a large repo.** It
   compared the set of busy plugin NAMES across polls and called an unchanged set a
   stall. That set does not change while a single plugin drains a long
