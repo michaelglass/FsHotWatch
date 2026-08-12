@@ -1014,12 +1014,20 @@ let internal waitForAllTerminalCore
                 Some(formatPluginWait now name since subtasks)
             | _ -> None)
 
+    /// Is anything Running? `getRunningPlugins` answers this too, but pays for a
+    /// per-plugin activity snapshot (copying up to 64 log lines and a 16-element
+    /// history array) and builds a formatted wait string for each — all of which
+    /// the 50ms poll loop then throws away. This asks only the question.
+    let anyRunning () =
+        host.GetAllStatuses()
+        |> Map.exists (fun _ s ->
+            match s with
+            | Running _ -> true
+            | _ -> false)
+
     let formatTimeoutDetail () =
         match getRunningPlugins () with
-        | running when not running.IsEmpty ->
-            let joined = running |> String.concat ", "
-            $"still running: %s{joined}"
-        | _ ->
+        | [] ->
             // Nothing is Running, so the wait died on one of the OTHER legs that
             // `allPluginsAtRest` requires. "all terminal but quiescence check
             // failed" used to cover all of them at once, which left the reader
@@ -1033,31 +1041,37 @@ let internal waitForAllTerminalCore
 
             let hasVerdict = statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
 
-            let reasons =
-                [ if not busy.IsEmpty then
-                      $"""plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{String.concat ", " busy}"""
+            if statuses.IsEmpty then
+                // Not one reason among several — it is the whole answer, and it
+                // implies the verdict reason below, which would otherwise be
+                // printed alongside it saying the same thing twice.
+                "nothing running, and no plugins are registered"
+            else
+                let busyNames = String.concat ", " busy
 
-                  if sinceActivity < waitForAllTerminalQuiescenceWindow then
-                      $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
+                let reasons =
+                    [ if not busy.IsEmpty then
+                          $"plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{busyNames}"
 
-                  if requireVerdict && not hasVerdict then
-                      "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report"
+                      if sinceActivity < waitForAllTerminalQuiescenceWindow then
+                          $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
 
-                  if statuses.IsEmpty then
-                      "no plugins are registered" ]
+                      if requireVerdict && not hasVerdict then
+                          "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report" ]
 
-            match reasons with
-            | [] ->
-                // Every named leg looks satisfiable, yet the loop did not exit:
-                // report the raw state rather than a reassuring summary.
-                let dump =
-                    statuses
-                    |> Map.toList
-                    |> List.map (fun (n, s) -> $"%s{n}=%A{s}")
-                    |> String.concat ", "
+                match reasons with
+                | [] ->
+                    // Every named leg looks satisfiable, yet the loop did not exit:
+                    // report the raw state rather than a reassuring summary.
+                    let dump =
+                        statuses
+                        |> Map.toList
+                        |> List.map (fun (n, s) -> $"%s{n}=%A{s}")
+                        |> String.concat ", "
 
-                $"all legs appear satisfied yet the wait did not resolve — statuses: %s{dump}"
-            | rs -> "nothing running, but " + String.concat "; " rs
+                    $"all legs appear satisfied yet the wait did not resolve — statuses: %s{dump}"
+                | rs -> "nothing running, but " + String.concat "; " rs
+        | running -> $"""still running: %s{String.concat ", " running}"""
 
     let logRunningPlugins () =
         let now = System.DateTime.UtcNow
@@ -1072,12 +1086,19 @@ let internal waitForAllTerminalCore
             // at debug. A healthy run emits it for minutes at a stretch while a
             // plugin drains a large FileChecked backlog — alarming to read, and
             // wrong: it is not the wedge signature. A dead agent is identified
-            // by a plugin going SILENT while the host still counts it busy, not
-            // by this line. It is still printed in full where it decides
-            // something: the timeout message and the wedge failure below.
-            if not (List.isEmpty (getRunningPlugins ())) then
+            // by the plugin SAYING SO (`FaultedPlugins`), not by this line. It is
+            // still printed in full where it decides something: the timeout
+            // message and the wedge failure below.
+            //
+            // `Logging.debug` takes an ALREADY-BUILT string, so guard the debug
+            // arm on the level: otherwise, at the default Info level, the whole
+            // detail is computed every 10s and thrown away — a status
+            // round-trip, an activity snapshot per running plugin, and in the
+            // all-legs-satisfied case a reflection-based `%A` dump of every
+            // status, the slowest formatter F# has.
+            if anyRunning () then
                 Logging.info "wait" (formatTimeoutDetail ())
-            else
+            elif Logging.isEnabled Logging.LogLevel.Debug then
                 Logging.debug "wait" (formatTimeoutDetail ())
 
     let isQuiescent () =
@@ -1137,37 +1158,71 @@ let internal waitForAllTerminalCore
             || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
         && isQuiescent ()
 
-    // Wedge detection state: the busy set we last saw, and when it last CHANGED.
-    // Comparing the set (not just "is anything busy") means a plugin that is
-    // churning through queued events keeps resetting the clock, while one that
-    // is truly stuck does not.
-    let mutable lastBusySet: string list = []
-    let mutable lastBusyChangeAt = System.DateTime.UtcNow
+    // Wedge detection state: how much work the host had FINISHED when we last
+    // saw progress, and when that was.
+    //
+    // Progress, not busy-set identity. The set of busy plugin NAMES is not a
+    // progress signal: one plugin draining a long `FileChecked` backlog is busy
+    // continuously, with nothing Running, and the set stays exactly
+    // `["test-prune"]` for the whole drain — so a clock keyed on that set never
+    // resets and the detector fires on a perfectly healthy check of a large
+    // repo. Observed: three uninterrupted minutes of that state on a green run.
+    // `CompletedDispatches` moves on every event a plugin finishes, so a drain
+    // can never look stalled and a stopped agent always does.
+    let mutable lastProgress = -1L
+    let mutable lastProgressAt = System.DateTime.UtcNow
 
     let checkForWedgedPlugin () =
-        let running = getRunningPlugins ()
-        let busy = host.BusyPluginNames()
-
-        if busy <> lastBusySet then
-            lastBusySet <- busy
-            lastBusyChangeAt <- System.DateTime.UtcNow
-
-        // Only meaningful when NOTHING is Running: a busy plugin that is also
-        // Running is simply working.
-        if
-            running.IsEmpty
-            && not busy.IsEmpty
-            && System.DateTime.UtcNow - lastBusyChangeAt >= stallThreshold
-        then
-            let joined = String.concat ", " busy
-
+        // A plugin whose message loop died reports work in flight forever, so
+        // waiting on it can only ever time out. It says so itself now, and this
+        // is both the cheapest check and the only certain one — no threshold, no
+        // inference from silence. Everything below is the heuristic backstop for
+        // a stall we have no direct report of.
+        match host.FaultedPlugins() with
+        | (name, ex) :: _ ->
             raise (
                 System.TimeoutException(
-                    $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %O{stallThreshold} with nothing Running. "
-                    + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
-                    + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
+                    $"WaitForComplete: plugin '%s{name}' is DEAD — its message loop crashed, so it will report work in flight forever and this wait can never resolve. "
+                    + $"The crash: %s{ex.Message}. "
+                    + "This is a bug in fshw, not in the tree being checked. See logs/daemon.log for the full stack, then `fshw stop` to reclaim the daemon."
                 )
             )
+        | [] ->
+
+            // Cheapest test first, and it is the one that is false almost always.
+            // `AnyPluginBusy` is N volatile reads with short-circuiting and no
+            // allocation; everything below it costs a blocking round-trip to the
+            // status agent, and this runs 20x a second for the whole wait — which is
+            // designed to last up to an hour. Asking the expensive questions first
+            // would spend ~72,000 status round-trips an hour, each copying every
+            // running plugin's activity tail, to answer a question the first line
+            // already settles.
+            let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
+
+            let progress = host.CompletedDispatches()
+
+            if progress <> lastProgress then
+                lastProgress <- progress
+                lastProgressAt <- System.DateTime.UtcNow
+
+            // Only meaningful when NOTHING is Running: a busy plugin that is also
+            // Running is simply working. `anyRunning` is checked LAST because it is
+            // the dearest of the three and, given no progress for the threshold, the
+            // rarest to change the answer.
+            if
+                not busy.IsEmpty
+                && System.DateTime.UtcNow - lastProgressAt >= stallThreshold
+                && not (anyRunning ())
+            then
+                let joined = String.concat ", " busy
+
+                raise (
+                    System.TimeoutException(
+                        $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %s{formatElapsed stallThreshold} with nothing Running and no event finishing anywhere in the host. "
+                        + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
+                        + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
+                    )
+                )
 
     let rec loop () =
         async {
