@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- chore: **two temporary log lines so a duplicate-daemon report can be diagnosed
+  from `daemon.log` rather than from `ps` archaeology** (AUTOMATION-289; the
+  source carries the condition for removing them).
+
+  Duplicate `FsHotWatch.Cli` processes were seen alive for one repo root, and the
+  investigation stalled on a question nothing could answer after the fact: were
+  they daemons, or one daemon plus a long-running client? `fshw confirm` is the
+  same binary in the same working directory and can run 20+ minutes, and the
+  processes were gone before their argv was captured. (A live `confirm` has since
+  been observed fitting exactly that shape, so the duplicate-daemon premise is
+  itself unconfirmed.)
+
+  The daemon that wins the singleton lock now records its pid and full argv, and
+  the one that is REFUSED records the same into `daemon.log`. That refusal
+  previously went only to the losing process's stderr — the caller's console — so
+  `daemon.log` held 46 "Starting daemon" lines and zero refusals, which reads as
+  "the singleton never fires" when it may simply never have been recorded.
+
+  Verified with two real processes rather than assumed: a second `start` is
+  refused, and both lines land.
+
+- test: widen the wedge drain test's margins (100 x 20ms against a 500ms stall
+  threshold, was 25 x 40ms against 200ms). Two ratios have to hold at once: the gap
+  BETWEEN completions must stay well under the threshold, or a healthy drain trips
+  the detector; and the whole drain must run well over it, or the detector could
+  not have fired even if broken. The old shape left only 5 finished events per
+  threshold window; it now leaves 25.
+
+  Deliberately NOT raising the file-watcher budgets. That was tried and reverted:
+  a watcher test raised to 45s then failed at 45.6s, having taken ~22 probe writes
+  across those seconds without receiving a single event. A watcher that delivers
+  nothing over 45s is not slow, it is not working — so a larger budget buys a
+  slower red and hides the breakage. Tracked in AUTOMATION-294.
+
 ## 0.14.0-alpha.13 - 2026-08-12
 
 - chore(deps): **the `SQLitePCLRaw.lib.e_sqlite3` pin is removed — `TestPrune.Core`

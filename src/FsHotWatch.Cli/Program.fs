@@ -1457,6 +1457,20 @@ let executeCommand
                     with :? IOException ->
                         None
 
+                // Which process is which, when two exist for one repo root
+                // (AUTOMATION-289). `ps` could not answer that after the fact:
+                // `confirm` is the same binary in the same cwd as a daemon and runs
+                // for 20+ minutes, so "two FsHotWatch.Cli processes" may be one
+                // daemon plus a client. argv settles it.
+                //
+                // Not a separate log write: a launched daemon's stderr IS
+                // daemon.log (`LaunchDaemon` runs `nohup … >> logFile 2>&1`), so
+                // both lines below already land there for the nohup-launched
+                // population this is about.
+                let argvLine =
+                    let argv = Environment.GetCommandLineArgs() |> String.concat " "
+                    $"pid=%d{Environment.ProcessId} argv=%s{argv}"
+
                 match acquired with
                 | None ->
                     let pidInfo =
@@ -1465,16 +1479,16 @@ let executeCommand
                         else
                             ""
 
-                    eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
+                    eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo} — refused %s{argvLine}"
                     0
                 | Some lockStream ->
                     use _lock = lockStream
-                    eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
+                    eprintfn $"Starting FsHotWatch daemon for %s{repoRoot} — claimed the singleton lock, %s{argvLine}"
                     eprintfn $"Pipe: %s{pipeName}"
 
                     // Write our own PID so killStaleDaemon can find the actual daemon process,
                     // not the nohup wrapper that launched us.
-                    File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+                    File.WriteAllText(pidFile, string Environment.ProcessId)
 
                     // Record THIS binary's identity BEFORE the IPC pipe starts
                     // listening, so a CLI that observes a live pipe always finds the
