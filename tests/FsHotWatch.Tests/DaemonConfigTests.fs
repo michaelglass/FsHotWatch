@@ -1405,6 +1405,7 @@ type RealWatchTests() =
             File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
             use signal = new System.Threading.ManualResetEventSlim(false)
             use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
+
             probeLoop
                 (fun _ -> File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}"""))
                 (fun () -> signal.IsSet)
