@@ -540,19 +540,30 @@ let internal publishVerdict
             else
                 Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
 
+        let command = Verdict.Command.ofCheckMode checkMode
+
+        // AUTOMATION-258. `confirm` escalates a filtered scope to a forced full run and
+        // never accepts the filtered one — but when that forced run does not COMPLETE (a
+        // build that failed, so its tests never ran), the daemon's `test-scope` still
+        // answers with the PRE-escalation coverage: the scope is a projection of
+        // `LastCoverage` (`TestPrunePlugin`) and no later run finished to move it.
+        // Recorded verbatim that produced `command: confirm, scope: {kind: "filtered",
+        // 5/6}`, which reads cold as "confirm settled for 5 of 6 projects" — the opposite
+        // of what confirm did.
+        //
+        // Only the RECORD is corrected. `verdictOutcome` and `exitCode` are untouched: a
+        // confirm that hit compile errors is a RED and must stay one, or a deploy preflight
+        // would read "retry" over a tree that is broken and stop nothing.
+        let runReport =
+            { runReport with
+                Scope = Verdict.scopeToRecord command runReport.Scope }
+
         // `create` REFUSES a green carrying a failing plugin. It cannot fire from here —
         // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
         // `pluginVerdicts` renders — but if the two ever drift apart, fshw stops rather
         // than stamping the contradiction on disk.
         let v =
-            Verdict.create
-                (Verdict.Command.ofCheckMode checkMode)
-                runReport
-                atWrite
-                verdictOutcome
-                exitCode
-                plugins
-                suites
+            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites
 
         Verdict.write repoRoot v
 

@@ -734,10 +734,13 @@ let ``a full-suite check is not nagged, and a confirm never is`` () =
             Command = Verdict.Check
             Scope = FullSuite 6 }
 
+    // A confirm that did NOT reach full-suite scope — the escalation-failure shape, which
+    // now records `ScopeUnreadable` rather than the filtered reading it was left holding
+    // (AUTOMATION-258). Still never nagged to "use `fshw confirm`": it IS confirm.
     let confirmed =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Confirm
-            Scope = ImpactFiltered(2, 6) }
+            Scope = ScopeUnreadable "confirm forced the full suite and that run did not complete" }
 
     test <@ not ((hintsFor full |> String.concat "\n").Contains "fshw confirm") @>
     test <@ not ((hintsFor confirmed |> String.concat "\n").Contains "fshw confirm") @>
@@ -844,10 +847,14 @@ let ``the verdict file and the agent status line resolve a plugin identically`` 
 [<Fact>]
 let ``every scope round-trips through the file`` () =
     withTempDir "verdict-scopes" (fun root ->
+        // Under `check`, which is the ONE command every scope is legal on: `confirm` may not
+        // record an `ImpactFiltered` (AUTOMATION-258), so a confirm fixture could not
+        // exercise the whole wire format this test exists to pin.
         let roundTrip (scope: TestScope) =
             writeSpec
                 root
                 { greenVerdict "sha256:abc" 1 with
+                    Command = Verdict.Check
                     Scope = scope }
 
             match Verdict.read root with
@@ -989,6 +996,161 @@ let ``a verdict file that says GREEN while a plugin says FAIL is not a verdict �
         match contradictory "running" with
         | Verdict.Reading.Found _ -> ()
         | other -> failwithf "a green carrying a running plugin must READ, got %A" other)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-258 — a CONFIRM verdict may not carry an impact-filtered scope.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``Verdict.create refuses a CONFIRM carrying an impact-filtered scope`` () =
+    // `confirm` never accepts a filtered run: it DETECTS one and escalates
+    // (`CheckVerdict.confirmNeedsFullRun`), and `CheckVerdict.verdict` has no branch that
+    // reaches `Clean` without a `FullSuite`. So the pair can only ever be the reading of the
+    // run confirm REFUSED — and a reader who lifted `scope: filtered` off a `command:
+    // confirm` record reported that confirm was impact-filtering, the exact opposite of what
+    // it had just done.
+    let spec = greenVerdict "sha256:abc" 1
+
+    raises<ArgumentException>
+        <@
+            build
+                { spec with
+                    Scope = ImpactFiltered(5, 6)
+                    Outcome = Verdict.Red
+                    ExitCode = 1 }
+        @>
+
+    // The rule is about the PAIR, not about being non-green: an INCOMPLETE confirm cannot
+    // record a filtered scope either, and that is the shape the escalation failure produced.
+    raises<ArgumentException>
+        <@
+            build
+                { spec with
+                    Scope = ImpactFiltered(5, 6)
+                    Outcome = Verdict.Incomplete "the tests that ran were impact-filtered"
+                    ExitCode = 3 }
+        @>
+
+    // CONTROLS. Without these, a `create` that had simply started refusing everything would
+    // pass both `raises` above. `confirm` + full suite is the verdict the verb exists to
+    // produce...
+    test <@ (build { spec with Scope = FullSuite 6 }).Scope = FullSuite 6 @>
+
+    // ...and `check` + filtered is not merely tolerated, it is what the inner loop IS. The
+    // rule must not over-fire onto the one command whose whole point is filtering.
+    test
+        <@
+            (build
+                { spec with
+                    Command = Verdict.Check
+                    Scope = ImpactFiltered(5, 6) })
+                .Scope = ImpactFiltered(5, 6)
+        @>
+
+[<Fact>]
+let ``a legacy confirm+filtered verdict FILE is UNREADABLE — it is re-earned, never migrated`` () =
+    // Such files exist on disk: this is what `confirm` wrote whenever its forced full run
+    // failed to complete. Refusing them costs nothing real — a confirm+filtered verdict can
+    // never have been GREEN (`CheckVerdict.verdict` routes `Confirmation, ImpactFiltered` to
+    // `UnearnedScope`), so no earned green is discarded, and `priorConfirmation` already
+    // answered `MustEarn` for every one of them. And refusing is a `Reading.Unreadable`, not
+    // a throw: the consumer re-earns the verdict instead of crashing on the way in.
+    withTempDir "verdict-legacy-confirm-filtered" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        let legacy (command: string) =
+            File.WriteAllText(
+                Verdict.path root,
+                $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"{{command}}",
+                    "scope":{"kind":"filtered","ranProjects":5,"totalProjects":6},
+                    "outcome":{"kind":"red"},"exitCode":1,"plugins":[]}"""
+            )
+
+            Verdict.read root
+
+        match legacy "confirm" with
+        | Verdict.Reading.Unreadable reason ->
+            test <@ reason.Contains "CONFIRM verdict cannot carry an impact-filtered scope" @>
+            // The refusal quotes the counts it refused, so the file it rejected is still
+            // diagnosable from the message alone.
+            test <@ reason.Contains "5/6" @>
+        | other -> failwithf "a confirm carrying a filtered scope must be UNREADABLE, got %A" other
+
+        // The control, and the whole reason the rule is on the PAIR: the byte-identical file
+        // under `command: check` is an ordinary inner-loop record and still reads.
+        match legacy "check" with
+        | Verdict.Reading.Found v -> test <@ v.Scope = ImpactFiltered(5, 6) @>
+        | other -> failwithf "a check carrying a filtered scope must READ, got %A" other)
+
+[<Fact>]
+let ``a confirm whose forced full run did not complete records no filtered scope — and keeps its red`` () =
+    // THE REGRESSION, and why the constructor test above is not enough on its own: with only
+    // the `create` rule, `publishVerdict` would still assemble the refused value, turning the
+    // lie into an `ArgumentException` escaping a handler that catches only IO faults — a
+    // crash instead of a wrong file, which is worse for the caller.
+    //
+    // So this drives the PRODUCER with the observed input: the daemon's `test-scope` answers
+    // with the PRE-escalation coverage whenever the forced run never finished (the scope is a
+    // projection of `LastCoverage`), and publishing must not write that down verbatim.
+    withTempDir "verdict-confirm-escalation" (fun root ->
+        let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
+            IpcOutput.publishVerdict root [] mode false { Scope = scope; RunId = None } Map.empty outcome
+
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v
+            | other -> failwithf "publishVerdict must leave a READABLE verdict, got %A" other
+
+        // The observed artifact: confirm escalated, the forced full run died on compile
+        // errors, and the only scope on record was the earlier 5-of-6 run.
+        let red =
+            publish CheckVerdict.Confirmation (ImpactFiltered(5, 6)) CheckVerdict.CheckOutcome.FailuresFound
+
+        test <@ red.Command = Verdict.Confirm @>
+        test <@ not (TestScope.isFullSuite red.Scope) @>
+
+        match red.Scope with
+        | ImpactFiltered _ -> failwith "a confirm verdict must never record a filtered scope"
+        // The record explains itself without the log beside it — the failure that motivated
+        // the ticket was a reader who had only the file.
+        | s -> test <@ (TestScope.describe s).Contains "did not complete" @>
+
+        // The RED is PRESERVED, deliberately. Downgrading it to `incomplete` would tell a
+        // deploy preflight to retry a tree whose build is broken.
+        test <@ red.Outcome = Verdict.Red @>
+        test <@ red.ExitCode = 1 @>
+
+        // The same escalation failure with nothing actually failing. `UnearnedScope` is
+        // already an incomplete; its SCOPE must not be filtered either.
+        let unearned =
+            publish
+                CheckVerdict.Confirmation
+                (ImpactFiltered(5, 6))
+                (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(5, 6)))
+
+        match unearned.Outcome with
+        | Verdict.Incomplete _ -> ()
+        | other -> failwithf "an unearned confirm scope must be INCOMPLETE, got %A" other
+
+        test <@ unearned.ExitCode = 3 @>
+
+        match unearned.Scope with
+        | ImpactFiltered _ -> failwith "a confirm verdict must never record a filtered scope"
+        | _ -> ()
+
+        // CONTROLS. The producer rewrites ONE pair, not every scope it is handed — without
+        // these, a producer that blanked every scope would pass everything above.
+        let earned =
+            publish CheckVerdict.Confirmation (FullSuite 6) CheckVerdict.CheckOutcome.Clean
+
+        test <@ earned.Scope = FullSuite 6 @>
+        test <@ earned.Outcome = Verdict.Green @>
+
+        // ...and `check` KEEPS its filtered scope. Hiding it would be the same lie reversed.
+        let inner =
+            publish CheckVerdict.InnerLoop (ImpactFiltered(5, 6)) CheckVerdict.CheckOutcome.Clean
+
+        test <@ inner.Command = Verdict.Check @>
+        test <@ inner.Scope = ImpactFiltered(5, 6) @>)
 
 [<Fact>]
 let ``an outcome this build cannot read is Unreadable, never a green`` () =
@@ -1780,6 +1942,13 @@ let ``AUTOMATION-161: a verdict from a DIFFERENT fshw binary is never satisfied`
 let ``AUTOMATION-161: an impact-filtered green is NOT the claim confirm makes`` () =
     // The UnearnedScope rule, on the fast path. "Your change didn't break anything I
     // chose to look at" is not "the suite is green", however current the tree is.
+    //
+    // The subject is a CHECK verdict, and that is the whole point (AUTOMATION-258): a
+    // filtered green is what the inner loop legitimately writes, so this is the artifact
+    // that really turns up on disk and really has to be refused. `confirm` cannot even
+    // produce one — `CheckVerdict.verdict` routes `Confirmation, ImpactFiltered` to
+    // `UnearnedScope`, and `Verdict.create` now refuses the pair outright. `isFullSuiteGreen`
+    // stays deliberately blind to the command, so it is THIS record its scope check guards.
     withTempDir "confirm-filtered" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
@@ -1787,6 +1956,7 @@ let ``AUTOMATION-161: an impact-filtered green is NOT the claim confirm makes`` 
         writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
+                Command = Verdict.Check
                 Scope = ImpactFiltered(1, 4) }
 
         test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
