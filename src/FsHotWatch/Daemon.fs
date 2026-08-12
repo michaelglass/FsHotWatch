@@ -915,6 +915,23 @@ let formatPluginWait
 let internal waitForAllTerminalQuiescenceWindow =
     System.TimeSpan.FromMilliseconds(200.0)
 
+/// How long "nothing is Running, yet some plugin still reports work in flight"
+/// may persist before the wait declares that plugin WEDGED and fails.
+///
+/// This state is legitimate only for the hand-off between a run finishing and
+/// its completion message being handled — milliseconds. While a run is genuinely
+/// executing the plugin's status is `Running`, which is a different branch
+/// entirely, so a long test suite never trips this.
+///
+/// It exists because the alternative is what actually happened: a plugin whose
+/// inflight count never drained held `WaitForComplete` for the FULL hour-long
+/// timeout and then reported "all terminal but quiescence check failed" — an
+/// hour spent to learn nothing, three times over, and a `check` that cannot
+/// complete blocks every deploy behind it. Failing in five minutes NAMING the
+/// plugin turns an outage into a bug report.
+let internal waitForAllTerminalBusyStallThreshold =
+    System.TimeSpan.FromMinutes(5.0)
+
 /// Sentinel message for shutdown-driven cancellation. Anything that surfaces
 /// this is a daemon-teardown event, not a plugin failure.
 [<Literal>]
@@ -960,6 +977,7 @@ let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
     (requireVerdict: bool)
+    (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
     // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
@@ -997,24 +1015,62 @@ let internal waitForAllTerminalCore
                 Some(formatPluginWait now name since subtasks)
             | _ -> None)
 
+    let formatTimeoutDetail () =
+        match getRunningPlugins () with
+        | running when not running.IsEmpty ->
+            let joined = running |> String.concat ", "
+            $"still running: %s{joined}"
+        | _ ->
+            // Nothing is Running, so the wait died on one of the OTHER legs that
+            // `allPluginsAtRest` requires. "all terminal but quiescence check
+            // failed" used to cover all of them at once, which left the reader
+            // no way to tell a stuck inflight counter from a quiescence window
+            // that never closes from an unmet verdict guard — three different
+            // bugs wearing one sentence. Name the one that actually blocked.
+            let busy = host.BusyPluginNames()
+            let sinceActivity = System.DateTime.UtcNow - host.LastActivityAt()
+
+            let statuses = host.GetAllStatuses()
+
+            let hasVerdict =
+                statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
+
+            let reasons =
+                [ if not busy.IsEmpty then
+                      $"""plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{String.concat ", " busy}"""
+
+                  if sinceActivity < waitForAllTerminalQuiescenceWindow then
+                      $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
+
+                  if requireVerdict && not hasVerdict then
+                      "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report"
+
+                  if statuses.IsEmpty then
+                      "no plugins are registered" ]
+
+            match reasons with
+            | [] ->
+                // Every named leg looks satisfiable, yet the loop did not exit:
+                // report the raw state rather than a reassuring summary.
+                let dump =
+                    statuses
+                    |> Map.toList
+                    |> List.map (fun (n, s) -> $"%s{n}=%A{s}")
+                    |> String.concat ", "
+
+                $"all legs appear satisfied yet the wait did not resolve — statuses: %s{dump}"
+            | rs -> "nothing running, but " + String.concat "; " rs
+
     let logRunningPlugins () =
         let now = System.DateTime.UtcNow
 
         if (now - lastLogTime).TotalSeconds >= 10.0 then
             lastLogTime <- now
 
-            match getRunningPlugins () with
-            | [] -> Logging.info "wait" "All plugins terminal, waiting for quiescence..."
-            | plugins ->
-                let joined = plugins |> String.concat ", "
-                Logging.info "wait" $"Waiting for plugins: %s{joined}"
-
-    let formatTimeoutDetail () =
-        match getRunningPlugins () with
-        | [] -> "all terminal but quiescence check failed"
-        | running ->
-            let joined = running |> String.concat ", "
-            $"still running: %s{joined}"
+            // Say what is actually blocking, every time. A wait that repeats
+            // "waiting for quiescence" for an hour and only then reveals it was
+            // a stuck plugin is a wait nobody can diagnose while it happens.
+            Logging.info "wait" (formatTimeoutDetail ())
 
     let isQuiescent () =
         System.DateTime.UtcNow - host.LastActivityAt()
@@ -1073,12 +1129,46 @@ let internal waitForAllTerminalCore
             || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
         && isQuiescent ()
 
+    // Wedge detection state: the busy set we last saw, and when it last CHANGED.
+    // Comparing the set (not just "is anything busy") means a plugin that is
+    // churning through queued events keeps resetting the clock, while one that
+    // is truly stuck does not.
+    let mutable lastBusySet: string list = []
+    let mutable lastBusyChangeAt = System.DateTime.UtcNow
+
+    let checkForWedgedPlugin () =
+        let running = getRunningPlugins ()
+        let busy = host.BusyPluginNames()
+
+        if busy <> lastBusySet then
+            lastBusySet <- busy
+            lastBusyChangeAt <- System.DateTime.UtcNow
+
+        // Only meaningful when NOTHING is Running: a busy plugin that is also
+        // Running is simply working.
+        if
+            running.IsEmpty
+            && not busy.IsEmpty
+            && System.DateTime.UtcNow - lastBusyChangeAt >= stallThreshold
+        then
+            let joined = String.concat ", " busy
+
+            raise (
+                System.TimeoutException(
+                    $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %O{stallThreshold} with nothing Running. "
+                    + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
+                    + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
+                )
+            )
+
     let rec loop () =
         async {
             // Catches the race between cancellation and the first Async.Sleep —
             // see waitForAllTerminal's doc-comment for the full contract.
             if ct.IsCancellationRequested then
                 raise (System.OperationCanceledException(daemonShuttingDownMessage, ct))
+
+            checkForWedgedPlugin ()
 
             if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
                 let detail = formatTimeoutDetail ()
@@ -1109,14 +1199,14 @@ let internal waitForAllTerminalCore
 /// on a legitimately never-run plugin. Defers to `waitForAllTerminalCore` with
 /// `requireVerdict=false`.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout false ct
+    waitForAllTerminalCore host timeout false waitForAllTerminalBusyStallThreshold ct
 
 /// Verdict-bearing wait used ONLY by the `WaitForComplete` RPC path: resolves
 /// only once at least one plugin has produced a real verdict (Completed/Failed),
 /// so a cold/never-ran daemon does not report a vacuous clean. Defers to
 /// `waitForAllTerminalCore` with `requireVerdict=true`.
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout true ct
+    waitForAllTerminalCore host timeout true waitForAllTerminalBusyStallThreshold ct
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by
