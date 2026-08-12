@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.9 - 2026-08-12
+
 - chore(deps): **the `SQLitePCLRaw.lib.e_sqlite3` pin is removed — `TestPrune.Core`
   carries that floor itself now.** The pin existed because `TestPrune.Core`'s
   `SqliteSymbolStore` pulled `lib.e_sqlite3` 2.1.11 transitively, which carries
