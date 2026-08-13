@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.20 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.7.0-alpha.19 - 2026-08-06
 
 - confirm: force a REAL build — a cache hit must not assert freshness it never verified (AUTOMATION-224)

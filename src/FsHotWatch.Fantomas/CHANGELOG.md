@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.17 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.7.0-alpha.16 - 2026-08-03
 
 - chore(deps): update dev-tools + external dependencies

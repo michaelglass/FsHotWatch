@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.14 - 2026-08-13
+
 - chore: **two temporary log lines so a duplicate-daemon report can be diagnosed
   from `daemon.log` rather than from `ps` archaeology** (AUTOMATION-289; the
   source carries the condition for removing them).

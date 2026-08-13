@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.25 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.7.0-alpha.24 - 2026-08-11
 
 - fix: **a promoted finding says `[promoted from warning]`, not `[warning]`.**

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.18 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.7.0-alpha.17 - 2026-08-11
 
 - **fix: a run that executed no test no longer reaches a coverage verdict.**

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.10 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.13.0-alpha.9 - 2026-08-12
 
 - chore(deps): **the `SQLitePCLRaw.lib.e_sqlite3` pin is removed — `TestPrune.Core`
