@@ -560,12 +560,25 @@ let internal publishVerdict
                 plugins
                 suites
 
+        // Capture what is on disk BEFORE overwriting it. When this run executed no
+        // tests, the prior verdict is the only thing that can answer the reader's
+        // next question — "was this tree already verified, and by what?" — and the
+        // write below destroys it. Read first, or the answer is gone.
+        //
+        // `Unreadable` is deliberately folded into `None`: a verdict this build
+        // cannot parse must not be paraphrased into a reassuring sentence.
+        let priorVerdict =
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found p -> Some p
+            | Verdict.Reading.Missing
+            | Verdict.Reading.Unreadable _ -> None
+
         Verdict.write repoRoot v
 
         if not UI.isInteractive then
             eprintfn ""
 
-            for line in ProgressRenderer.AgentHints.forVerdict v do
+            for line in ProgressRenderer.AgentHints.forVerdict priorVerdict v do
                 eprintfn "%s" line
     with
     | :? System.IO.IOException as ex ->
