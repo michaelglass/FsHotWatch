@@ -157,6 +157,33 @@ type SuiteVerdict =
         Skipped: int
     }
 
+/// One diagnostic that CONTRIBUTED to a red, as the verdict records it.
+///
+/// AUTOMATION-303 case 3. A `confirm` returned exit 1 with all four plugins `ok` and
+/// 9,064 passed / 0 failed. The red was real — ~51 FCS diagnostics in the ledger — but
+/// FCS is not a plugin: the daemon reports its diagnostics under the pseudo-source
+/// `fcs` (`PluginActivity.FcsPluginName`), which has no `PluginStatus` and therefore no
+/// line in `plugins[]`. Every surface the verdict offered said "fine", and the exit code
+/// said "broken", so the only way to find out which was true was to open the daemon log.
+///
+/// So the file now names them. `Source` is the LEDGER KEY that reported the entry — a
+/// plugin name, or `fcs` — precisely because the interesting case is the one that is not
+/// a plugin.
+type RedCause =
+    {
+        Source: string
+        /// Repo-relative where the ledger gave one; otherwise as reported.
+        File: string
+        Severity: string
+        Message: string
+    }
+
+/// How many causes a verdict lists before it starts counting instead. A red from a
+/// cross-file FCS fault arrives in the dozens, and a verdict file that is mostly one
+/// repeated message is not more informative than a verdict file that says so.
+[<Literal>]
+let MaxRedCauses = 10
+
 /// The verdict itself. `Incomplete` is the third answer: nothing is known to be broken,
 /// and nothing is known to be sound either — a `confirm` that ran impact-filtered tests
 /// lands here, and so does a check whose coverage could not be confirmed. NEVER a green.
@@ -447,6 +474,16 @@ type Verdict =
             plugins: PluginVerdict list
             suites: SuiteVerdict list
             comparison: CheckComparison
+            /// AUTOMATION-303. The failing ledger diagnostics this verdict's exit code
+            /// was computed from, truncated to `MaxRedCauses`. Empty on a green — and
+            /// empty on a red means the red came from a failing PLUGIN, which
+            /// `plugins[]` already names.
+            redCauses: RedCause list
+            /// How many failing diagnostics there were before `redCauses` was
+            /// truncated. A count, not a length: `redCauses.Length` answers "how many
+            /// are printed here", which is a different question and the one nobody
+            /// asked.
+            redCauseCount: int
             /// The change that SELECTED this run's tests, truncated. Empty when
             /// nothing selected it (an unfiltered run), when no run has happened, and
             /// when the daemon predates the field — all of which must read as silence.
@@ -497,6 +534,13 @@ type Verdict =
 
     /// What the impact-scoped run concluded, when there was one.
     member this.ImpactScopedRun = this.comparison.ImpactScoped
+
+    /// AUTOMATION-303. The failing ledger diagnostics behind a red exit code — including
+    /// the ones no plugin owns (`fcs`). Empty on a green.
+    member this.RedCauses = this.redCauses
+
+    /// How many failing diagnostics there were before `RedCauses` was truncated.
+    member this.RedCauseCount = this.redCauseCount
 
     /// The change that selected this run's tests (truncated; see `TriggerCount`).
     member this.Trigger = this.trigger
@@ -623,6 +667,11 @@ let create
     (plugins: PluginVerdict list)
     (suites: SuiteVerdict list)
     (comparison: CheckComparison)
+    // AUTOMATION-303. EVERY failing ledger diagnostic the exit code was computed from,
+    // untruncated — `create` does the truncating, so a caller cannot quietly report a
+    // short list as the whole story. Required, not optional: a caller that could omit it
+    // is a caller that can produce a red naming nothing, which is the defect.
+    (redCauses: RedCause list)
     : Verdict =
     let candidate =
         { producedAt = DateTime.UtcNow
@@ -638,6 +687,8 @@ let create
           plugins = plugins
           suites = suites
           comparison = comparison
+          redCauses = redCauses |> List.truncate MaxRedCauses
+          redCauseCount = List.length redCauses
           trigger = runReport.Seeds
           triggerCount = runReport.SeedCount }
 
@@ -768,6 +819,17 @@ let serialize (v: Verdict) : string =
                      passed = s.Passed
                      failed = s.Failed
                      skipped = s.Skipped |} ]
+           // AUTOMATION-303. What reddened this verdict, when the answer is not in
+           // `plugins[]`. Always present — an empty array on a green is a statement, and
+           // a reader that has to distinguish "no causes" from "this build did not
+           // record any" is back where it started.
+           reddenedBy =
+            [ for c in v.RedCauses ->
+                  {| source = c.Source
+                     file = c.File
+                     severity = c.Severity
+                     message = c.Message |} ]
+           reddenedByCount = v.RedCauseCount
            trigger = v.Trigger |> List.toArray
            triggerCount = v.TriggerCount |}
 
@@ -1074,6 +1136,21 @@ let read (repoRoot: string) : Reading =
                           plugins = plugins
                           suites = suites
                           comparison = parseCheckComparison root
+                          // AUTOMATION-303. Absent in verdicts written before the field
+                          // existed, which is silence, not a claim that nothing reddened
+                          // them — so it does not make those files Unreadable.
+                          redCauses =
+                            (match tryProp root "reddenedBy" with
+                             | Some arr when arr.ValueKind = JsonValueKind.Array ->
+                                 arr.EnumerateArray()
+                                 |> Seq.map (fun el ->
+                                     { Source = tryString el "source" |> Option.defaultValue "(unnamed source)"
+                                       File = tryString el "file" |> Option.defaultValue ""
+                                       Severity = tryString el "severity" |> Option.defaultValue "error"
+                                       Message = tryString el "message" |> Option.defaultValue "" })
+                                 |> Seq.toList
+                             | _ -> [])
+                          redCauseCount = tryInt root "reddenedByCount" |> Option.defaultValue 0
                           // Absent in every verdict written before this field existed,
                           // so it defaults to empty rather than making those files
                           // Unreadable. A diagnostic may not retroactively invalidate

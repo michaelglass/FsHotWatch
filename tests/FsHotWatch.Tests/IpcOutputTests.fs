@@ -864,3 +864,57 @@ let ``refusing unknown tokens is NOT a blanket — a known ran token is still a 
         """{"elapsed":"1.0s","coverage":"ran-full-suite","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
+
+// --- AUTOMATION-303: the verdict's causes come from the SAME entries as its count ---
+
+[<Fact(Timeout = 15000)>]
+let ``redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invisible`` () =
+    // FCS is not a plugin: the daemon reports its diagnostics under the pseudo-source
+    // `fcs`, which has no PluginStatus and so no line in `plugins[]`. That is the class
+    // of red that produced exit 1 beside four `ok` plugins and 9,064 passing tests.
+    let resp =
+        { Count = 2
+          Files =
+            Map.ofList
+                [ "src/Lib/Thing.fs",
+                  [ { Plugin = "fcs"
+                      Message = "internal error: Object reference not set to an instance of an object."
+                      Severity = DiagnosticSeverity.Error
+                      Line = 12
+                      Column = 4
+                      Detail = None } ]
+                  "src/Lib/Other.fs",
+                  [ { Plugin = "analyzers"
+                      Message = "MGA-001: wildcard on a DU"
+                      Severity = DiagnosticSeverity.Warning
+                      Line = 3
+                      Column = 1
+                      Detail = None } ] ]
+          Statuses = Map.empty
+          Coverage = Complete }
+
+    let causes = redCausesOf false resp
+
+    // The count that decides the exit code and the causes the verdict records come from
+    // ONE traversal, so they agree by construction — asserted, not assumed.
+    test <@ List.length causes = exitCodeFromResponse false resp * 2 @>
+    test <@ causes |> List.exists (fun c -> c.Source = "fcs" && c.File = "src/Lib/Thing.fs") @>
+    test <@ causes |> List.exists (fun c -> c.Message.Contains "internal error") @>
+
+    // `--no-warn-fail` drops the warning from BOTH — the causes may never name something
+    // the exit code did not count, or the file would explain a red it does not have.
+    let errorsOnly = redCausesOf true resp
+    test <@ List.length errorsOnly = 1 @>
+    test <@ errorsOnly |> List.forall (fun c -> c.Severity = "error") @>
+
+[<Fact(Timeout = 15000)>]
+let ``redCausesOf reports NOTHING on a clean ledger`` () =
+    // The positive control for the assertions above is that they found entries at all;
+    // this is the other direction — a clean run may not accumulate phantom causes.
+    let clean =
+        { Count = 0
+          Files = Map.empty
+          Statuses = Map.empty
+          Coverage = Complete }
+
+    test <@ List.isEmpty (redCausesOf false clean) @>

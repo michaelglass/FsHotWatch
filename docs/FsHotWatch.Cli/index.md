@@ -176,9 +176,20 @@ sufficient.
     { "project": "Intelligence.Tests.Unit",
       "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
       "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 }
-  ]
+  ],
+  "reddenedBy": [],
+  "reddenedByCount": 0
 }
 ```
+
+**A red says what reddened it.** `reddenedBy` lists the failing ledger diagnostics the
+exit code was computed from — `{ "source", "file", "severity", "message" }` — and
+`reddenedByCount` is how many there were before the list was truncated to ten. `source`
+is the ledger key, so a diagnostic that belongs to no plugin reports as `fcs`: that is
+the whole point. A `confirm` once exited 1 with every plugin `ok` and 9,064 tests
+passed, because ~51 FCS diagnostics were reddening it and no field named them. An empty
+array on a red means the red came from a failing **plugin**, which `plugins[]` already
+names.
 
 **A missing number is never zero.** `elapsedMs` is `null` when a plugin produced no
 measurement (`0` means "instantaneous" — a different fact). A suite entry whose counts

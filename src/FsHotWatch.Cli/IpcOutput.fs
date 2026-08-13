@@ -69,9 +69,13 @@ let formatDiagnosticsResponse
         sb.ToString().TrimEnd('\n', '\r')
 
 /// The failing entries in a DiagnosticsResponse's ledger (warnings respecting
-/// `noWarnFail`). HALF of "did check find real problems" — the other half is
-/// `CheckInputs.anyPluginFailed`. Never used alone; see `checkInputs`.
-let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+/// `noWarnFail`), each paired with the file it was reported against.
+///
+/// ONE traversal, so the COUNT that decides the exit code and the CAUSES the verdict
+/// file records are the same entries by construction (AUTOMATION-303). Two predicates
+/// would be two chances to disagree, and "exit 1 with nothing named" is exactly what
+/// disagreement looks like from outside.
+let internal failingDiagnosticEntries (noWarnFail: bool) (resp: DiagnosticsResponse) : (string * DiagnosticEntry) list =
     let isFailure (e: DiagnosticEntry) =
         match e.Severity with
         | Error -> true
@@ -82,7 +86,25 @@ let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse
         // verdict to `Incomplete`/exit 2 via `WaitingOnBuild`, not to a red.
         | Deferred -> false
 
-    resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
+    resp.Files
+    |> Map.toList
+    |> List.collect (fun (file, entries) -> entries |> List.filter isFailure |> List.map (fun e -> file, e))
+
+/// HALF of "did check find real problems" — the other half is
+/// `CheckInputs.anyPluginFailed`. Never used alone; see `checkInputs`.
+let private failingDiagnosticCount (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    failingDiagnosticEntries noWarnFail resp |> List.length
+
+/// The failing ledger entries as the verdict records them. `Plugin` is the LEDGER KEY,
+/// so an FCS diagnostic — which belongs to no plugin — names `fcs` and stops being
+/// invisible.
+let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdict.RedCause list =
+    failingDiagnosticEntries noWarnFail resp
+    |> List.map (fun (file, e) ->
+        { Verdict.Source = e.Plugin
+          Verdict.File = file
+          Verdict.Severity = DiagnosticSeverity.toString e.Severity
+          Verdict.Message = e.Message })
 
 /// Any "waiting on build" deferral in the ledger? A `Deferred`-severity entry
 /// means a test project's build artifact wasn't ready, so its tests DID NOT run:
@@ -528,6 +550,11 @@ let internal publishVerdict
     // (see `Verdict.Divergence.NoImpactScopedRun`).
     (impactScoped: Verdict.ImpactScopedRun option)
     (statuses: Map<string, ParsedPluginStatus>)
+    // AUTOMATION-303. The failing ledger diagnostics the exit code was computed from —
+    // including the ones no plugin owns (`fcs`), which is the whole point: a `confirm`
+    // returned exit 1 with every plugin `ok` and 9,064 tests passed, and the file it
+    // wrote named nothing at all.
+    (redCauses: Verdict.RedCause list)
     (outcome: CheckVerdict.CheckOutcome)
     : unit =
     try
@@ -579,7 +606,7 @@ let internal publishVerdict
         // `pluginVerdicts` renders — but if the two ever drift apart, fshw stops rather
         // than stamping the contradiction on disk.
         let v =
-            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites comparison
+            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites comparison redCauses
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
         // tests, the prior verdict is the only thing that can answer the reader's
@@ -665,6 +692,11 @@ let pollAndRender
     // see a different daemon.
     let finalStatuses = ref Map.empty
 
+    // AUTOMATION-303. Captured with the statuses, at every read, from the SAME response
+    // the failing count comes from — so the verdict names the entries its own exit code
+    // was computed from rather than a second query's.
+    let finalCauses: Verdict.RedCause list ref = ref []
+
     // The placeholder before anything has been ASKED. It reaches `publishVerdict` only
     // on the abort paths below (a wedged plugin, a daemon that shut down mid-wait), and
     // on those paths it must not say "the daemon reported no scope" — nobody asked it.
@@ -688,6 +720,7 @@ let pollAndRender
         let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
         eprintfn "%s" firstOutput
         finalStatuses.Value <- firstResp.Statuses
+        finalCauses.Value <- redCausesOf noWarnFail firstResp
 
         // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
         // not just report" step). Invoked only when the first read is
@@ -708,6 +741,7 @@ let pollAndRender
             eprintfn "%s" output
             let run = getTestRun ()
             finalStatuses.Value <- resp.Statuses
+            finalCauses.Value <- redCausesOf noWarnFail resp
             finalRun.Value <- run
             checkInputs noWarnFail run.Scope resp
 
@@ -763,6 +797,7 @@ let pollAndRender
             finalRun.Value
             impactScoped.Value
             finalStatuses.Value
+            finalCauses.Value
             outcome
 
         match outcome with
@@ -816,6 +851,7 @@ let pollAndRender
             finalRun.Value
             impactScoped.Value
             finalStatuses.Value
+            finalCauses.Value
             (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
@@ -831,6 +867,7 @@ let pollAndRender
             finalRun.Value
             impactScoped.Value
             finalStatuses.Value
+            finalCauses.Value
             (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail

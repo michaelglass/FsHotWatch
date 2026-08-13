@@ -276,6 +276,29 @@ type UnanalyzableFile =
         Reason: string
     }
 
+/// Drop the unanalysable-file entries whose file is no longer on disk.
+///
+/// AUTOMATION-303 case 4. An entry leaves `UnanalyzableFiles` when the file analyses
+/// CLEANLY — and a DELETED file never analyses again, because no `FileChecked` will
+/// ever arrive for a path that is gone. So one deleted file left its warning in the
+/// ledger for the rest of the daemon's life, and under the default warn-fail policy
+/// that warning denied every subsequent check its green while ALSO widening every run
+/// to the whole suite (AUTOMATION-113's coarse fallback). Deleting a file is not a
+/// defect in the tree, and there is nothing left to fix.
+///
+/// This is the ONLY other way out, and it is deliberately narrow: the condition
+/// "TestPrune cannot see this file's symbols" is discharged by the file ceasing to
+/// exist, not merely by time passing. An entry whose file is still there survives
+/// untouched, however old.
+///
+/// `exists` is a parameter so the rule is testable without a filesystem, and so the
+/// production caller names the one predicate it uses.
+let internal pruneDeletedUnanalyzable
+    (exists: string -> bool)
+    (files: Map<string, UnanalyzableFile>)
+    : Map<string, UnanalyzableFile> =
+    files |> Map.filter (fun _ u -> exists u.File)
+
 /// A red this plugin still OWES the user: a test failure (or a project that produced
 /// no verdict at all) that no run COVERING it has passed since.
 ///
@@ -679,6 +702,66 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
             sb.Append('\n') |> ignore
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
+
+/// The files that DECLARE what gets compiled. An F# source file only enters a build
+/// because one of these names it — F# has no globbed compile items, since compilation
+/// order is part of the language — and `Directory.Build.props` can add items to every
+/// project at once.
+let private structureFilePatterns =
+    [ "*.fsproj"; "*.csproj"; "Directory.Build.props" ]
+
+/// Content merkle of the files that decide WHAT IS COMPILED.
+///
+/// AUTOMATION-303 case 1. The `BuildCompleted` cache key is a merkle over the CHANGED
+/// SYMBOLS, and on a scan `BuildCompleted` is dispatched BEFORE the FCS pass — so that
+/// term is empty whatever the tree holds. A tree that has just GAINED a test file and
+/// its `<Compile Include=…>` therefore computes the SAME key as the tree without it,
+/// hits the entry an earlier green wrote, and replays it: the handler is skipped, no
+/// test process starts, `LastCoverage` still describes the earlier run, and the verdict
+/// reports that run's full-suite green over a tree it never saw. Observed 2026-08-12 —
+/// 21 new tests, none executed, `outcome: green`, `scope: {kind: full, 6/6}`.
+///
+/// Hashing the project files closes exactly that hole: a compile item cannot be added,
+/// removed, or reordered without moving this hash, so a STRUCTURAL change is a
+/// guaranteed cache MISS and the handler runs.
+///
+/// DELIBERATELY NOT the whole tree. A source EDIT is already covered by the symbol-diff
+/// pipeline that runs after `BuildCompleted` and supersedes the entry; what that
+/// pipeline cannot rescue is a file it has never seen. Hashing source content here would
+/// invalidate every cached verdict on every keystroke for a guarantee already held.
+///
+/// TOTAL, and fails toward a re-run: `ContentHash.ofFile` answers with its unreadable
+/// sentinel rather than throwing, and that sentinel differs from the file's readable
+/// hash — so a project file we cannot read MOVES the key (a miss, a genuine run) rather
+/// than being skipped as if it did not exist. Build output (`bin`/`obj`) is excluded via
+/// `SourceExcludedDirs`, so a restore that regenerates project files under `obj/` cannot
+/// invalidate every entry in the repo.
+let internal projectStructureHash (repoRoot: string) : string =
+    let rootFull = Path.GetFullPath repoRoot
+
+    let files =
+        structureFilePatterns
+        |> List.collect (fun pattern ->
+            SafeWalk.enumerateFilePaths SafeWalk.SourceExcludedDirs pattern rootFull
+            |> List.ofSeq)
+        |> List.distinct
+        |> List.map (fun abs -> Path.GetRelativePath(rootFull, abs).Replace('\\', '/'), abs)
+        // Ordinal, so the merkle is reproducible across machines and locales.
+        |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+
+    let sb = System.Text.StringBuilder()
+
+    for (rel, abs) in files do
+        // Length-prefixed, like every other merkle here: a separator that can occur
+        // inside a field lets two different trees produce one byte stream.
+        sb.Append(rel.Length) |> ignore
+        sb.Append(':') |> ignore
+        sb.Append(rel) |> ignore
+        sb.Append('@') |> ignore
+        sb.Append(ContentHash.ofFile abs) |> ignore
+        sb.Append('\n') |> ignore
+
+    FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
 /// What a run actually VERIFIED.
 ///
@@ -2359,6 +2442,16 @@ let internal cacheKeyFor
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
+    // AUTOMATION-303 case 1. The content merkle of the repo's PROJECT FILES — the files
+    // that declare what is compiled (`projectStructureHash`). Not optional and not
+    // omittable: every repo has a structure, and an omitted entry is what let a tree
+    // that had just gained a `<Compile Include=…>` compute the key of the tree without
+    // it and replay a green that never ran the new tests.
+    //
+    // Adding this entry ORPHANS every `outcomeKey` entry written before it, which is
+    // exactly right — those entries assert a verdict over a structure they never
+    // recorded — so no `plugin-version` bump is needed on top.
+    (projectStructureHash: unit -> string)
     // AUTOMATION-112. `Some "full"` while the caller has asked for the whole suite;
     // `None` for the impact-filtered inner loop. Without it, `confirm` on an unchanged
     // tree HITS the entry written by an earlier impact-filtered run and replays a
@@ -2423,6 +2516,10 @@ let internal cacheKeyFor
             [ "plugin-version", "test-prune-merkle-v2"
               "event", "BuildCompleted"
               "changed-symbols", changedSymbolsHash ()
+              // AUTOMATION-303. The one term that pins the SHAPE of the tree. The
+              // changed-symbols term cannot: on a scan this event is dispatched before
+              // the FCS pass, so it is empty whatever the tree holds.
+              "project-structure", projectStructureHash ()
               "build-outcome", buildOutcome ]
             @ optionalEntry "pending-queue" (pendingQueueHash ())
             @ optionalEntry "depends-on" (dependsOnHash ())
@@ -4390,10 +4487,16 @@ let create
                             "test-prune"
                             $"%d{carriedFailures.Length} failure(s) from an earlier run were NOT covered by this one (%s{OutstandingFailure.summarize carriedFailures}) — they stay RED until a run that executes them passes"
 
+                    // AUTOMATION-303. Discharged HERE, immediately before the ledger
+                    // rewrite, because this is the one place the outstanding set is
+                    // recomputed — pruning anywhere else would leave the ledger and the
+                    // state disagreeing about what is still owed.
+                    let unanalyzable = pruneDeletedUnanalyzable File.Exists state.UnanalyzableFiles
+
                     // The ONLY path to the ledger: clear the slate, re-report the whole
                     // outstanding set. There is no wholesale clear a filtered run can
                     // reach for.
-                    reportOutstanding ctx state.UnanalyzableFiles outstandingFailures
+                    reportOutstanding ctx unanalyzable outstandingFailures
                     Volatile.Write(&outstandingFailuresRef, outstandingFailures)
 
                     // AUTOMATION-161. THIS is the moment the process acquires test
@@ -4410,7 +4513,11 @@ let create
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
-                            LastCoverage = coverage }
+                            LastCoverage = coverage
+                            // Carried with them: the pruned map is what the ledger was
+                            // just written from, so the next run's coarse-fallback
+                            // widening reads the same set the user was shown.
+                            UnanalyzableFiles = unanalyzable }
 
                     // Outcome-conditional, per-project green-commit. A launched
                     // symbol leaves the needs-testing queue ONLY when the run
@@ -4966,10 +5073,16 @@ let create
                 Set.isEmpty runnableProjects
                 || not (Set.isEmpty (RunCoverage.coveredProjects (Volatile.Read(&sessionCoverageRef))))
 
+            // AUTOMATION-303. A full-repo walk of the project files, so it is a thunk
+            // like the rest: `FileChecked` fires once per file on every scan and must
+            // not pay for an input it never splices.
+            let structureHash () = projectStructureHash repoRoot
+
             cacheKeyFor
                 changedSymbolsHash
                 pendingQueueHash
                 dependsOnHash
+                structureHash
                 fullSuiteScopeHash
                 hasOutstandingFailures
                 sessionHasTestEvidence

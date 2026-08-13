@@ -116,12 +116,17 @@ let internal forceFullRun (daemon: Daemon.Daemon) : unit =
     with ex ->
         Logging.warn "cli-confirm" $"could not settle after the forced full-suite run: %s{ex.Message}"
 
-/// The plugins' failing-diagnostic count — HALF of "did this run find real
-/// problems". The other half is `CheckVerdict.CheckInputs.anyPluginFailed`: a plugin
-/// can reach `Failed` without writing a single `ErrorEntry` (the framework's
-/// crash-nets force exactly that), so both terms are needed. Never used alone; see
-/// `reread` below.
-let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
+/// The failing ledger entries, each as `(file, (source, entry))`.
+///
+/// ONE traversal, feeding both `failingCount` (which decides the exit code) and
+/// `redCauses` (which the verdict file records), so the number and the reasons cannot
+/// disagree — "exit 1 with nothing named" is what disagreement looks like from outside
+/// (AUTOMATION-303).
+let private failingEntries
+    (daemon: Daemon.Daemon)
+    (noWarnFail: bool)
+    (pluginName: string option)
+    : (string * (string * ErrorEntry)) list =
     let allErrors =
         match pluginName with
         | Some name ->
@@ -131,9 +136,30 @@ let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName:
 
     allErrors
     |> Map.toList
-    |> List.collect snd
-    |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
-    |> List.length
+    |> List.collect (fun (file, entries) ->
+        entries
+        |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
+        |> List.map (fun sourced -> file, sourced))
+
+/// The plugins' failing-diagnostic count — HALF of "did this run find real
+/// problems". The other half is `CheckVerdict.CheckInputs.anyPluginFailed`: a plugin
+/// can reach `Failed` without writing a single `ErrorEntry` (the framework's
+/// crash-nets force exactly that), so both terms are needed. Never used alone; see
+/// `reread` below.
+let private failingCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
+    failingEntries daemon noWarnFail pluginName |> List.length
+
+/// AUTOMATION-303. The in-process twin of `IpcOutput.redCausesOf`: the failing ledger
+/// entries the exit code was computed from, as the verdict records them. Derived from
+/// the SAME traversal as the count, so the two transports — and the file and the exit
+/// code — cannot disagree about what reddened the run.
+let private redCauses (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) =
+    failingEntries daemon noWarnFail pluginName
+    |> List.map (fun (file, (source, e)) ->
+        { Verdict.Source = source
+          Verdict.File = file
+          Verdict.Severity = DiagnosticSeverity.toString e.Severity
+          Verdict.Message = e.Message })
 
 /// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry
 /// (tests did not run because the build artifact wasn't ready)? The in-process
@@ -305,6 +331,7 @@ let runOnceAndVerdict
             finalRun.Value
             impactScoped
             finalStatuses.Value
+            (redCauses daemon noWarnFail pluginName)
             outcome
 
         match outcome with

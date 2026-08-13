@@ -81,6 +81,8 @@ type private Spec =
         Plugins: Verdict.PluginVerdict list
         Suites: Verdict.SuiteVerdict list
         Comparison: Verdict.CheckComparison
+        /// AUTOMATION-303. The failing ledger diagnostics behind a red. Defaults empty.
+        RedCauses: Verdict.RedCause list
         /// The change that selected this run's tests. Defaults empty; set it to
         /// exercise the trigger line in the no-suite report.
         Seeds: string list
@@ -103,6 +105,7 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Plugins
         s.Suites
         s.Comparison
+        s.RedCauses
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
@@ -117,6 +120,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
       Comparison = Verdict.CheckComparison.notRecorded
+      RedCauses = []
       Seeds = []
       SeedTotal = 0
       Tree =
@@ -1277,7 +1281,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
     // projection of `LastCoverage`), and publishing must not write that down verbatim.
     withTempDir "verdict-confirm-escalation" (fun root ->
         let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
-            IpcOutput.publishVerdict root [] mode false (TestRunReport.ofScopeOnly scope) None Map.empty outcome
+            IpcOutput.publishVerdict root [] mode false (TestRunReport.ofScopeOnly scope) None Map.empty [] outcome
 
             match Verdict.read root with
             | Verdict.Reading.Found v -> v
@@ -1370,6 +1374,7 @@ let private publishConfirm
         (TestRunReport.ofScopeOnly finalScope)
         impactScoped
         Map.empty
+        []
         outcome
 
     match Verdict.read root with
@@ -2576,3 +2581,105 @@ let ``a red run that names NOTHING says so — a tidy block with a non-zero exit
 
     test <@ joined.Contains "UNEXPLAINED" @>
     test <@ joined.Contains "do NOT read this as a pass" @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-303 case 3 — the verdict must explain its own exit code
+// ---------------------------------------------------------------------------
+//
+// 2026-08-12: `fshw confirm` exited 1 with all four plugins `ok` and 9,064 passed /
+// 0 failed. The red was real — ~51 FCS diagnostics in the ledger — but FCS is not a
+// plugin: the daemon reports its diagnostics under the pseudo-source `fcs`, which has
+// no `PluginStatus` and so no line in `plugins[]`. Every field of the verdict said
+// "fine" while its own `exitCode` said "broken", and the only way to find out which
+// was true was to read the daemon log.
+
+let private fcsCause (message: string) : Verdict.RedCause =
+    { Source = "fcs"
+      File = "src/Lib/Thing.fs"
+      Severity = "error"
+      Message = message }
+
+[<Fact>]
+let ``AUTOMATION-303: a red with every plugin ok NAMES the diagnostics that reddened it`` () =
+    withTempDir "verdict-red-causes" (fun root ->
+        let spec =
+            { greenVerdict "deadbeef" 10 with
+                Outcome = Verdict.Red
+                ExitCode = 1
+                Suites = allSuitesGreen
+                RedCauses = [ fcsCause "internal error: Object reference not set to an instance of an object." ] }
+
+        let json = serializeSpec spec
+        test <@ json.Contains "reddenedBy" @>
+        test <@ json.Contains "internal error: Object reference not set" @>
+        test <@ json.Contains "\"source\": \"fcs\"" @>
+
+        // It ROUND-TRIPS: a consumer reading the file back gets the causes, not just a
+        // string it has to grep.
+        writeSpec root spec
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v.RedCauseCount = 1 @>
+            test <@ v.RedCauses |> List.exists (fun c -> c.Source = "fcs") @>
+        | other -> failwithf "the verdict must read back, got %A" other
+
+        // The steering block names it too, and therefore no longer calls it unexplained.
+        let joined = String.Join("\n", hintsFor spec)
+        test <@ joined.Contains "REDDENED" @>
+        test <@ joined.Contains "fcs" @>
+        test <@ not (joined.Contains "UNEXPLAINED") @>)
+
+[<Fact>]
+let ``AUTOMATION-303: the UNEXPLAINED hint still fires when nothing at all is named`` () =
+    // THE POSITIVE CONTROL for the `not (joined.Contains "UNEXPLAINED")` assertion
+    // above. An absence test over a detector that cannot fire is worth nothing: this is
+    // the same verdict with the causes removed, and it must still say so loudly.
+    let joined =
+        String.Join(
+            "\n",
+            hintsFor
+                { greenVerdict "deadbeef" 10 with
+                    Outcome = Verdict.Red
+                    ExitCode = 1
+                    Plugins = []
+                    Suites = allSuitesGreen
+                    RedCauses = [] }
+        )
+
+    test <@ joined.Contains "UNEXPLAINED" @>
+    test <@ not (joined.Contains "REDDENED") @>
+
+[<Fact>]
+let ``AUTOMATION-303: a flood of causes is truncated but its true count is not`` () =
+    // A cross-file FCS fault arrives in the dozens (51 of them, that day). The file
+    // records a readable sample and the REAL total — `redCauses.Length` answers "how
+    // many are printed", which is a different question and the one nobody asked.
+    let many = [ for i in 1..25 -> fcsCause $"diagnostic %d{i}" ]
+
+    let spec =
+        { greenVerdict "deadbeef" 10 with
+            Outcome = Verdict.Red
+            ExitCode = 1
+            Suites = allSuitesGreen
+            RedCauses = many }
+
+    let v = build spec
+
+    test <@ List.length v.RedCauses = Verdict.MaxRedCauses @>
+    test <@ v.RedCauseCount = 25 @>
+
+    let joined = String.Join("\n", hintsFor spec)
+    test <@ joined.Contains "and 15 more" @>
+
+[<Fact>]
+let ``AUTOMATION-303: a GREEN verdict names no causes`` () =
+    // The other direction: `reddenedBy` is not a place to accumulate noise. A green run
+    // reddened by nothing says exactly that.
+    let v =
+        build
+            { greenVerdict "deadbeef" 10 with
+                Suites = allSuitesGreen }
+
+    test <@ List.isEmpty v.RedCauses @>
+    test <@ v.RedCauseCount = 0 @>
