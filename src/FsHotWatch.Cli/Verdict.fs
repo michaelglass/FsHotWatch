@@ -304,27 +304,70 @@ type Verdict =
     member this.Plugins = this.plugins
     member this.Suites = this.suites
 
-/// The one invariant: a GREEN verdict may not contain a failing plugin.
+/// The invariants. TWO, and they are the same lie in two places: a record whose own
+/// fields disagree, so that reading any ONE of them cold gives the wrong answer.
+///
+///   * a GREEN verdict may not contain a failing plugin;
+///   * a CONFIRM verdict may not carry an `ImpactFiltered` scope.
 ///
 /// Both construction sites — `create` (producing) and `read` (rehydrating from disk) —
 /// go through this, so a hand-edited or hostile verdict file is refused on the way IN
 /// as well as being impossible on the way out.
 let private validate (v: Verdict) : Result<Verdict, string> =
-    match v.Outcome with
-    | Red
-    | Incomplete _ -> Ok v
-    | Green ->
-        match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
-        | [] -> Ok v
-        | failing ->
-            let named =
-                failing
-                |> List.map (fun p -> $"%s{p.Name} (%s{PluginOutcome.token p.Outcome})")
-                |> String.concat ", "
-
+    // AUTOMATION-258. `confirm` never accepts a filtered run: it DETECTS one and escalates
+    // to the full suite (`CheckVerdict.confirmNeedsFullRun`), and `CheckVerdict.verdict`
+    // has no branch that reaches `Clean` without a `FullSuite`. So `command: confirm`
+    // beside `scope: {kind: "filtered"}` never records evidence confirm settled for — it
+    // records the reading of the run confirm REJECTED, left behind because the forced full
+    // run did not complete. A reader took that pair cold, reported that `confirm` was
+    // impact-filtering, and only the prose log disproved it.
+    let scopeAgreesWithCommand () =
+        match v.Command, v.Scope with
+        | Confirm, ImpactFiltered(ran, total) ->
             Error
-                $"a GREEN verdict cannot contain failing plugins — %s{named}. A check that says green on one \
-                   surface and fail on another has not checked anything; it has produced two answers."
+                $"a CONFIRM verdict cannot carry an impact-filtered scope (%d{ran}/%d{total} projects) — \
+                   `confirm` escalates a filtered run to the full suite and has no branch that accepts one, so \
+                   this is not the evidence it settled for; it is the reading of the run it refused. A record \
+                   that says one thing cold and another beside the log has not recorded a verdict."
+        | _ -> Ok v
+
+    let outcomeAgreesWithPlugins () =
+        match v.Outcome with
+        | Red
+        | Incomplete _ -> Ok v
+        | Green ->
+            match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
+            | [] -> Ok v
+            | failing ->
+                let named =
+                    failing
+                    |> List.map (fun p -> $"%s{p.Name} (%s{PluginOutcome.token p.Outcome})")
+                    |> String.concat ", "
+
+                Error
+                    $"a GREEN verdict cannot contain failing plugins — %s{named}. A check that says green on one \
+                       surface and fail on another has not checked anything; it has produced two answers."
+
+    scopeAgreesWithCommand () |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
+
+/// The scope a `command`'s verdict may RECORD, given what the run actually reported.
+///
+/// The PRODUCING half of `validate`'s confirm-vs-filtered rule, and it lives next to that
+/// rule so the two cannot drift: `validate` says which pair is a lie, this says what to
+/// write instead. A producer that skipped it would not write the lie — `create` throws —
+/// but a crash is a worse answer for the caller than an honest record, so the rule and its
+/// remedy are one edit apart.
+///
+/// Only `confirm`'s filtered scope is rewritten. `check` KEEPS its `ImpactFiltered`: an
+/// impact-filtered green is the answer the inner loop wants, and a `check` that hid its own
+/// scope would be the same lie pointed the other way.
+let scopeToRecord (command: Command) (scope: TestScope) : TestScope =
+    match command, scope with
+    | Confirm, ImpactFiltered(ran, total) ->
+        ScopeUnreadable
+            $"confirm forced the full suite and that run did not complete — the only scope on record is an \
+               EARLIER impact-filtered run (%d{ran}/%d{total} projects), which is not this verdict's evidence"
+    | _ -> scope
 
 /// The ONLY constructor. Throws on the contradiction `validate` names, so a verdict
 /// that says green while one of its own plugins says fail cannot be written to disk,

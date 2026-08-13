@@ -83,6 +83,12 @@ type TestScope =
     ///
     /// Carries WHY: a check that starts refusing must be able to say what it could not
     /// read.
+    ///
+    /// Also the value a verdict RECORDS when the scope it can see does not describe the run
+    /// the verdict is about — `confirm` whose forced full run did not complete, left holding
+    /// the earlier filtered run's reading (`Verdict.scopeToRecord`, AUTOMATION-258), and a
+    /// check that aborted before anyone asked (`IpcOutput.pollAndRender`). Same fact in
+    /// every case: THIS verdict has no scope reading of its own, and the reason says so.
     | ScopeUnreadable of reason: string
 
 module TestScope =
