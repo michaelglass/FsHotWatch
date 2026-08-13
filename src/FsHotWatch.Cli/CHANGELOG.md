@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.16 - 2026-08-13
+
+- merge: the no-tests-ran report names the prior verdict and the change that triggered it, into main
+- test-prune report: name the CHANGE that triggered the prior run
+- test-prune report: name the prior verdict when a run selects no tests
+- AUTOMATION-259: confirm records the check-scoped run it already computed
+
+
 ## 0.14.0-alpha.15 - 2026-08-13
 
 - AUTOMATION-258: a confirm verdict cannot record a filtered scope
