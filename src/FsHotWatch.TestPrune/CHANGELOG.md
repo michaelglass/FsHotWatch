@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.12 - 2026-08-13
+
+- test-prune report: name the CHANGE that triggered the prior run
+
+
 ## 0.13.0-alpha.11 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
