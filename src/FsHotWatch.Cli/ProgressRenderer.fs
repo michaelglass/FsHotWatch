@@ -592,8 +592,28 @@ module AgentHints =
             let projects = p.Suites |> List.map (fun s -> s.Project) |> String.concat ", "
             let at = p.ProducedAt.ToUniversalTime().ToString("u")
 
-            [ $"             tree unchanged since the verdict at %s{at} — %s{TestScope.describe p.Scope}"
-              $"             which ran %d{total} test(s) across %s{projects} (%d{failed} failed)" ]
+            // The CHANGE that selected those tests. This is the half of the answer
+            // that a reader actually acts on: "unchanged since 11:53" tells them
+            // when, but not what — and without the what, they cannot judge whether
+            // the run that happened was the run their edit deserved.
+            //
+            // Silent when empty: an unfiltered run has no trigger (nothing selected
+            // it), and a daemon older than the field sends none. Printing "triggered
+            // by nothing" for either would invent a fact.
+            let triggerLines =
+                match p.Trigger with
+                | [] -> []
+                | shown ->
+                    let listed = String.concat ", " shown
+                    let hidden = p.TriggerCount - List.length shown
+
+                    let suffix = if hidden > 0 then $" (and %d{hidden} more)" else ""
+
+                    [ $"             triggered by %s{listed}%s{suffix}" ]
+
+            [ $"             tree unchanged since the verdict at %s{at} — %s{TestScope.describe p.Scope}" ]
+            @ triggerLines
+            @ [ $"             which ran %d{total} test(s) across %s{projects} (%d{failed} failed)" ]
         | _ -> []
 
     /// The steering block for a completed check/confirm, naming this run's files.

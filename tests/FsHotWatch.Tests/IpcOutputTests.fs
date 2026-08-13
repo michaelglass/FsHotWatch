@@ -506,9 +506,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 waitForComplete
                 getStatus
                 getErrors
-                (fun () ->
-                    { IpcParsing.Scope = IpcParsing.FullSuite 1
-                      IpcParsing.RunId = None })
+                (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 triggerScan)
 
@@ -569,9 +567,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                 waitForComplete
                 getStatus
                 cleanDiagnostics
-                (fun () ->
-                    { IpcParsing.Scope = IpcParsing.FullSuite 1
-                      IpcParsing.RunId = None })
+                (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle"))
 
@@ -626,9 +622,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 waitForComplete
                 (fun () -> "{}") // getStatus
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
-                (fun () ->
-                    { IpcParsing.Scope = IpcParsing.FullSuite 1
-                      IpcParsing.RunId = None })
+                (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
@@ -681,9 +675,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 waitForComplete
                 (fun () -> "{}") // getStatus
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
-                (fun () ->
-                    { IpcParsing.Scope = IpcParsing.FullSuite 1
-                      IpcParsing.RunId = None })
+                (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
@@ -712,10 +704,9 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
 
     let getTestRun () : TestRunReport =
         if forceCalls > 0 then
-            { Scope = FullSuite 1; RunId = None }
+            TestRunReport.ofScopeOnly (FullSuite 1)
         else
-            { Scope = ImpactFiltered(0, 1)
-              RunId = None }
+            TestRunReport.ofScopeOnly (ImpactFiltered(0, 1))
 
     let exitCode =
         TestHelpers.withTempDir "ipcoutput-confirm-force" (fun repoRoot ->
@@ -768,7 +759,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> "idle")
                 (fun () -> "{}")
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
-                (fun () -> { Scope = FullSuite 1; RunId = None })
+                (fun () -> TestRunReport.ofScopeOnly (FullSuite 1))
                 (fun () -> forceCalls <- forceCalls + 1)
                 (fun () -> "idle"))
 

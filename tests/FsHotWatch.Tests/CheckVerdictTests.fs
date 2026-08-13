@@ -427,6 +427,49 @@ let ``parseTestRunReport: a none reply parses as NoTestsRun`` () =
     let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = NoTestsRun @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: seeds and their true count come through`` () =
+    let json =
+        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"],"seedCount":7}"""
+
+    let r = parseTestRunReport json
+    test <@ r.Seeds = [ "Lib.A.one"; "Lib.B.two" ] @>
+    // 7, not 2: the wire list is truncated, and a report that shows 2 while
+    // claiming that is all of them is the same lie as "no tests ran".
+    test <@ r.SeedCount = 7 @>
+
+/// THE compatibility guarantee for this field, and the reason it is safe to add to
+/// a reply that earns merge verdicts: a daemon older than `seeds` sends none, and
+/// that MUST degrade to silence — never to `ScopeUnreadable`, which both check and
+/// confirm refuse. A diagnostic nicety may not be able to turn a working check into
+/// a refusal.
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: a reply with no seeds still parses its scope`` () =
+    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    let r = parseTestRunReport json
+
+    test <@ r.Scope = FullSuite 3 @>
+    test <@ List.isEmpty r.Seeds @>
+    test <@ r.SeedCount = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: seedCount falls back to the seeds actually sent`` () =
+    // An older/odd daemon may send seeds without the count. Reporting 0 while
+    // holding two seeds would make the renderer compute a negative "and N more".
+    let json =
+        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one","Lib.B.two"]}"""
+
+    test <@ (parseTestRunReport json).SeedCount = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: non-string seed entries are dropped, not fatal`` () =
+    let json =
+        """{"scope":"filtered","ranProjects":1,"totalProjects":3,"seeds":["Lib.A.one",42,null,"Lib.B.two"]}"""
+
+    let r = parseTestRunReport json
+    test <@ r.Seeds = [ "Lib.A.one"; "Lib.B.two" ] @>
+    test <@ r.Scope = ImpactFiltered(1, 3) @>
+
 /// Did the parser fail to READ the reply (as opposed to reading an absent scope)?
 /// The shared, exhaustive predicate — this was a local copy with a `| _ ->` wildcard.
 let private isUnreadable = TestScope.isUnreadable
