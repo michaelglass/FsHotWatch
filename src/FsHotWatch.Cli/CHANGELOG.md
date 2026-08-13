@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.15 - 2026-08-13
+
 - AUTOMATION-258: a confirm verdict cannot record a filtered scope
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
