@@ -74,17 +74,35 @@ let private emptyRun (root: string) (runId: Guid) =
 /// hand-build `{outcome: green, plugins: [fail]}` would be testing a type that has been
 /// deliberately abolished.
 type private Spec =
-    { Command: Verdict.Command
-      RunId: Guid option
-      Scope: TestScope
-      Outcome: Verdict.Outcome
-      ExitCode: int
-      Plugins: Verdict.PluginVerdict list
-      Suites: Verdict.SuiteVerdict list
-      Tree: TreeHash.Tree }
+    {
+        Command: Verdict.Command
+        RunId: Guid option
+        Scope: TestScope
+        Outcome: Verdict.Outcome
+        ExitCode: int
+        Plugins: Verdict.PluginVerdict list
+        Suites: Verdict.SuiteVerdict list
+        /// The change that selected this run's tests. Defaults empty; set it to
+        /// exercise the trigger line in the no-suite report.
+        Seeds: string list
+        /// The TRUE seed count before truncation. Set it above `Seeds.Length` to
+        /// exercise the "and N more" suffix; 0 means "however many Seeds there are".
+        SeedTotal: int
+        Tree: TreeHash.Tree
+    }
 
 let private build (s: Spec) : Verdict.Verdict =
-    Verdict.create s.Command { Scope = s.Scope; RunId = s.RunId } s.Tree s.Outcome s.ExitCode s.Plugins s.Suites
+    Verdict.create
+        s.Command
+        { Scope = s.Scope
+          RunId = s.RunId
+          Seeds = s.Seeds
+          SeedCount = max s.SeedTotal (List.length s.Seeds) }
+        s.Tree
+        s.Outcome
+        s.ExitCode
+        s.Plugins
+        s.Suites
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
@@ -98,6 +116,8 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
+      Seeds = []
+      SeedTotal = 0
       Tree =
         { Hash = treeHash
           FileCount = fileCount } }
@@ -848,6 +868,67 @@ let ``a no-suite run does NOT name a prior verdict from a different tree`` () =
 
     test <@ not (text.Contains "tree unchanged since") @>
     test <@ not (text.Contains "Lib.Tests") @>
+
+/// Knowing WHEN the tree was last verified is only half an answer. The reader's
+/// actual question is whether the run that happened was the run their edit
+/// deserved, and they cannot judge that without knowing WHAT triggered it.
+[<Fact>]
+let ``a no-suite run names the CHANGE that triggered the prior run`` () =
+    let prior =
+        build
+            { greenVerdict "sha256:same" 12 with
+                Suites =
+                    [ { Project = "Lib.Tests"
+                        Ctrf = ".fshw/test-runs/cccccccc/Lib.Tests.ctrf.json"
+                        Total = 63
+                        Passed = 63
+                        Failed = 0
+                        Skipped = 0 } ]
+                Seeds = [ "Lib.Config.deployVars" ] }
+
+    let current =
+        build
+            { greenVerdict "sha256:same" 12 with
+                Suites = []
+                RunId = Some(Guid.NewGuid()) }
+
+    let text =
+        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        |> String.concat "\n"
+
+    test <@ text.Contains "triggered by Lib.Config.deployVars" @>
+
+/// The seed list is truncated on the wire, so the line must say how many it is
+/// NOT showing. A short list presented as the whole story is the same class of
+/// lie as "no tests ran" — technically true, and it sends the reader off with a
+/// wrong picture of what happened.
+[<Fact>]
+let ``a truncated trigger says how many seeds it is not showing`` () =
+    let prior =
+        build
+            { greenVerdict "sha256:same" 12 with
+                Suites =
+                    [ { Project = "Lib.Tests"
+                        Ctrf = ".fshw/test-runs/dddddddd/Lib.Tests.ctrf.json"
+                        Total = 4
+                        Passed = 4
+                        Failed = 0
+                        Skipped = 0 } ]
+                Seeds = [ "Lib.A.one"; "Lib.B.two" ]
+                SeedTotal = 5 }
+
+    let current =
+        build
+            { greenVerdict "sha256:same" 12 with
+                Suites = []
+                RunId = Some(Guid.NewGuid()) }
+
+    let text =
+        ProgressRenderer.AgentHints.forVerdict (Some prior) current
+        |> String.concat "\n"
+
+    test <@ text.Contains "Lib.A.one, Lib.B.two" @>
+    test <@ text.Contains "and 3 more" @>
 
 /// A prior verdict that ALSO ran no tests carries nothing to report. Naming it
 /// would answer "when was this last verified?" with "it wasn't" dressed up as an

@@ -426,7 +426,31 @@ type TestRunReport =
         /// `None` when no run has completed in this daemon session — in which case
         /// there is no run directory, and that ABSENCE is itself the fact.
         RunId: Guid option
+        /// The change that SELECTED the last run's tests, truncated on the wire.
+        /// Empty from a daemon older than this field, and empty when nothing has
+        /// triggered a run yet — both mean "cannot say", and both must render as
+        /// silence rather than as "nothing triggered it".
+        Seeds: string list
+        /// How many seeds there really were, before `Seeds` was truncated. Lets a
+        /// report say "and 12 more" instead of implying the short list is all of
+        /// them. Zero from an older daemon.
+        SeedCount: int
     }
+
+module TestRunReport =
+    /// A report carrying ONLY a scope — for the paths where no run was observed at
+    /// all: the command threw, the transport faulted, the check aborted before the
+    /// scope could be read.
+    ///
+    /// Exists so those sites state the one fact they have instead of spelling out
+    /// every empty field. Five of them had to be edited by hand when `Seeds` was
+    /// added; with this, the next field is one edit, and no call site can quietly
+    /// invent a value for something it never learned.
+    let ofScopeOnly (scope: TestScope) : TestRunReport =
+        { Scope = scope
+          RunId = None
+          Seeds = []
+          SeedCount = 0 }
 
 /// Parse the JSON reply from the test-prune `test-scope` command.
 ///
@@ -471,10 +495,36 @@ let parseTestRunReport (json: string) : TestRunReport =
                 | true, g -> Some g
                 | _ -> None)
 
-        { Scope = scope; RunId = runId }
+        // Absent seeds are NOT a shape this build fails to recognize — an older
+        // daemon simply does not send them. They must degrade to silence, never to
+        // `ScopeUnreadable`: a diagnostic nicety may not be able to turn a check
+        // into a refusal.
+        let seeds =
+            match root.TryGetProperty("seeds") with
+            | true, v when v.ValueKind = JsonValueKind.Array ->
+                v.EnumerateArray()
+                |> Seq.choose (fun el ->
+                    if el.ValueKind = JsonValueKind.String then
+                        Some(el.GetString())
+                    else
+                        None)
+                |> Seq.toList
+            | _ -> []
+
+        let seedCount =
+            match readInt "seedCount" with
+            | Some n when n >= 0 -> n
+            | _ -> List.length seeds
+
+        { Scope = scope
+          RunId = runId
+          Seeds = seeds
+          SeedCount = seedCount }
     with ex ->
         { Scope = ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
-          RunId = None }
+          RunId = None
+          Seeds = []
+          SeedCount = 0 }
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

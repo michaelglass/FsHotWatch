@@ -56,7 +56,7 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
                 $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a merge \
                    verdict cannot be earned here. `fshw confirm --run-once` will report NO VERDICT."
 
-            { Scope = ScopeUnknown; RunId = None }
+            TestRunReport.ofScopeOnly ScopeUnknown
         | Some reply -> parseTestRunReport reply
     with ex ->
         Logging.warn
@@ -64,8 +64,9 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
             $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
                report NO VERDICT rather than pass on a reading it does not have."
 
-        { Scope = ScopeUnreadable $"the plugin host's `%s{TestScopeCommand}` command threw: %s{ex.Message}"
-          RunId = None }
+        TestRunReport.ofScopeOnly (
+            ScopeUnreadable $"the plugin host's `%s{TestScopeCommand}` command threw: %s{ex.Message}"
+        )
 
 /// Turn impact filtering OFF for this process, BEFORE anything runs.
 ///

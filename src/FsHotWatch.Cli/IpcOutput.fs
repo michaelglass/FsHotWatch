@@ -660,9 +660,7 @@ let pollAndRender
     // on those paths it must not say "the daemon reported no scope" — nobody asked it.
     // A placeholder that reads as an answer is the same mistake one layer down.
     let finalRun =
-        ref
-            { Scope = ScopeUnreadable "the check aborted before the test scope could be read"
-              RunId = None }
+        ref (TestRunReport.ofScopeOnly (ScopeUnreadable "the check aborted before the test scope could be read"))
 
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)

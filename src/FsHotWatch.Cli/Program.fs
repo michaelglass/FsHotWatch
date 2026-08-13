@@ -521,7 +521,7 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
                 $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a merge \
                    verdict cannot be earned from it. `fshw confirm` will report NO VERDICT."
 
-            { Scope = ScopeUnknown; RunId = None }
+            IpcParsing.TestRunReport.ofScopeOnly ScopeUnknown
         else
             IpcParsing.parseTestRunReport reply
     with ex ->
@@ -530,8 +530,9 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
             $"could not read the test scope: %s{ex.Message}. This is NOT \"no tests were needed\" — the check will \
                report NO VERDICT rather than pass on a reading it does not have."
 
-        { Scope = ScopeUnreadable $"the `%s{TestScopeCommand}` request to the daemon faulted: %s{ex.Message}"
-          RunId = None }
+        IpcParsing.TestRunReport.ofScopeOnly (
+            ScopeUnreadable $"the `%s{TestScopeCommand}` request to the daemon faulted: %s{ex.Message}"
+        )
 
 /// Put the daemon's test-prune plugin into full-suite scope for the rest of this
 /// session. Called BEFORE `confirm` triggers its scan, so the test run the scan provokes
