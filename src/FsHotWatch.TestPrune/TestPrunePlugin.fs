@@ -338,6 +338,17 @@ type TestPruneState =
         /// `test-scope` so the verdict can DECLARE which reports are this run's,
         /// instead of inferring membership from mtimes. `None` until a run completes.
         LastRunId: Guid option
+        /// The seed symbols that SELECTED the last completed run — i.e. the change
+        /// that caused those tests to run. Empty for an unfiltered run (nothing
+        /// selected it; everything ran) and until a run completes.
+        ///
+        /// Retained because a later check that selects NOTHING has to be able to
+        /// answer "then what was the last change that did trigger tests?". The
+        /// seeds are computed per flush and were previously only logged, so that
+        /// question had no answer outside a daemon log — and a reader who cannot
+        /// tell "nothing needed running" from "nothing ran" goes looking for a bug
+        /// in the selector.
+        LastSeeds: string list
         /// True if a BuildCompleted arrived while a test run was in flight.
         /// The synchronous `Custom(TestsFinished)` handler reads this AFTER
         /// the run completes — at which point `state.ChangedSymbols` reflects
@@ -3013,10 +3024,23 @@ let create
 
         let allChangesUncovered = noCoveringTest && List.isEmpty unknownToIndex
 
+        // Remember the seeds ONLY when this selection actually has tests to run.
+        // The question the report has to answer is "what was the last change that
+        // DID trigger tests?" — a selection that chose nothing did not, and
+        // recording it would answer that question with the one change guaranteed
+        // to be irrelevant. Carrying the previous value forward is the point: it
+        // is what survives to be reported by a later check that selects nothing.
+        let seedsThatSelectedTests =
+            if List.isEmpty affectedTests then
+                flushedState.LastSeeds
+            else
+                List.sort symbols
+
         { flushedState with
             ChangedSymbols = remainingSymbols
             AffectedTests = Analyzed affectedTests
-            ChangedSymbolsAllUncovered = allChangesUncovered }
+            ChangedSymbolsAllUncovered = allChangesUncovered
+            LastSeeds = seedsThatSelectedTests }
 
     // Mutable snapshot of ChangedSymbols for the cache key function.
     // Updated from the Update handler so the cache intercept (which runs
@@ -3057,6 +3081,7 @@ let create
           ChangedFiles = []
           LastResults = None
           LastRunId = None
+          LastSeeds = []
           PendingRerun = false
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
@@ -3579,6 +3604,20 @@ let create
                         // (AUTOMATION-125). See `scopeOf`.
                         let projects = allConfigs |> List.map (fun c -> c.Project)
 
+                        // The change that selected the last run's tests. Sent so a
+                        // check that selects NOTHING can still say what the last
+                        // change that DID trigger tests was — otherwise that fact
+                        // exists only in a daemon log, which is exactly where a
+                        // reader will not look before concluding the selector is
+                        // broken.
+                        //
+                        // Truncated on the WIRE, with the full count beside it: a
+                        // pathological flush can carry thousands of seeds, and a
+                        // reply that grows without bound to serve a diagnostic line
+                        // is a new failure mode in the path that earns verdicts.
+                        let seeds = state.LastSeeds |> List.truncate 8 |> List.toArray
+                        let seedCount = List.length state.LastSeeds
+
                         if ctx.IsRunning "tests" then
                             return JsonSerializer.Serialize({| scope = "running"; runId = runId |})
                         else
@@ -3589,7 +3628,9 @@ let create
                                         {| scope = "full"
                                            ranProjects = n
                                            totalProjects = n
-                                           runId = runId |}
+                                           runId = runId
+                                           seeds = seeds
+                                           seedCount = seedCount |}
                                     )
                             | ScopeFiltered(ran, total) ->
                                 return
@@ -3597,7 +3638,9 @@ let create
                                         {| scope = "filtered"
                                            ranProjects = ran
                                            totalProjects = total
-                                           runId = runId |}
+                                           runId = runId
+                                           seeds = seeds
+                                           seedCount = seedCount |}
                                     )
                             | ScopeNone total ->
                                 return
@@ -3605,7 +3648,9 @@ let create
                                         {| scope = "none"
                                            ranProjects = 0
                                            totalProjects = total
-                                           runId = runId |}
+                                           runId = runId
+                                           seeds = seeds
+                                           seedCount = seedCount |}
                                     )
                     }
 

@@ -433,19 +433,33 @@ module Command =
 [<NoComparison>]
 type Verdict =
     private
-        { producedAt: DateTime
-          command: Command
-          producer: Producer
-          runId: Guid option
-          treeHash: string
-          treeHashAlgorithm: string
-          treeFileCount: int
-          scope: TestScope
-          outcome: Outcome
-          exitCode: int
-          plugins: PluginVerdict list
-          suites: SuiteVerdict list
-          comparison: CheckComparison }
+        {
+            producedAt: DateTime
+            command: Command
+            producer: Producer
+            runId: Guid option
+            treeHash: string
+            treeHashAlgorithm: string
+            treeFileCount: int
+            scope: TestScope
+            outcome: Outcome
+            exitCode: int
+            plugins: PluginVerdict list
+            suites: SuiteVerdict list
+            comparison: CheckComparison
+            /// The change that SELECTED this run's tests, truncated. Empty when
+            /// nothing selected it (an unfiltered run), when no run has happened, and
+            /// when the daemon predates the field — all of which must read as silence.
+            ///
+            /// Persisted because it answers a question only a LATER run asks: when a
+            /// check selects nothing, "what was the last change that did trigger
+            /// tests?" is answerable solely from the verdict left behind by the run
+            /// that did. In memory it dies with the daemon.
+            trigger: string list
+            /// The true seed count before `trigger` was truncated, so a report can say
+            /// "and N more" rather than implying the short list is all of them.
+            triggerCount: int
+        }
 
     member this.ProducedAt = this.producedAt
     member this.Command = this.command
@@ -483,6 +497,12 @@ type Verdict =
 
     /// What the impact-scoped run concluded, when there was one.
     member this.ImpactScopedRun = this.comparison.ImpactScoped
+
+    /// The change that selected this run's tests (truncated; see `TriggerCount`).
+    member this.Trigger = this.trigger
+
+    /// How many seeds there were before `Trigger` was truncated.
+    member this.TriggerCount = this.triggerCount
 
 /// The invariants. THREE, and they are the same lie in three places: a record whose own
 /// fields disagree, so that reading any ONE of them cold gives the wrong answer.
@@ -617,7 +637,9 @@ let create
           exitCode = exitCode
           plugins = plugins
           suites = suites
-          comparison = comparison }
+          comparison = comparison
+          trigger = runReport.Seeds
+          triggerCount = runReport.SeedCount }
 
     match validate candidate with
     | Ok v -> v
@@ -745,7 +767,9 @@ let serialize (v: Verdict) : string =
                      total = s.Total
                      passed = s.Passed
                      failed = s.Failed
-                     skipped = s.Skipped |} ] |}
+                     skipped = s.Skipped |} ]
+           trigger = v.Trigger |> List.toArray
+           triggerCount = v.TriggerCount |}
 
     JsonSerializer.Serialize(payload, jsonOptions)
 
@@ -1049,7 +1073,23 @@ let read (repoRoot: string) : Reading =
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins
                           suites = suites
-                          comparison = parseCheckComparison root }
+                          comparison = parseCheckComparison root
+                          // Absent in every verdict written before this field existed,
+                          // so it defaults to empty rather than making those files
+                          // Unreadable. A diagnostic may not retroactively invalidate
+                          // verdicts that are otherwise perfectly good.
+                          trigger =
+                            (match tryProp root "trigger" with
+                             | Some el when el.ValueKind = JsonValueKind.Array ->
+                                 el.EnumerateArray()
+                                 |> Seq.choose (fun e ->
+                                     if e.ValueKind = JsonValueKind.String then
+                                         Some(e.GetString())
+                                     else
+                                         None)
+                                 |> Seq.toList
+                             | _ -> [])
+                          triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0 }
 
                     match validate rehydrated with
                     | Ok v -> Reading.Found v

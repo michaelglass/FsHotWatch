@@ -544,17 +544,80 @@ let renderPlugin
 /// identical either way, and no check is stricter for an agent than for a human.
 module AgentHints =
 
+    /// When THIS run executed no tests, the reader's next question is always the
+    /// same one: was this tree ever verified at all? Answering with only "no tests
+    /// ran" conflates NOTHING WAS VERIFIED with NOTHING NEEDED RE-VERIFYING, and
+    /// leaves no way to tell which you got. `TestScope.NoTestsRun` says as much in
+    /// its own doc — "No test run has completed, OR the run executed no tests at
+    /// all" — and that `or` is the whole defect. It is the same conflation
+    /// AUTOMATION-150 already split apart for `ScopeUnknown`/`ScopeUnreadable`:
+    /// different facts are different values, and a report that merges them turns a
+    /// reader against the tool. Observed: an agent read the bare line, concluded it
+    /// had no evidence, and spent an afternoon hunting a phantom test-selection bug
+    /// while the passing run for that exact tree sat in `verdict.json`.
+    ///
+    /// So name the prior verdict — but ONLY when it genuinely applies:
+    ///   * same `treeHash`, or it is not about this code; and
+    ///   * it ran at least one suite, or it answers "when was this verified?" with
+    ///     a dressed-up "it wasn't".
+    /// Anything else prints nothing, per this module's standing rule that a hint
+    /// pointing somewhere useless teaches distrust — and stale evidence presented
+    /// as current would be the worse version of that.
+    ///
+    /// This is CONTEXT ON A REFUSAL, never a softening of one. The verdict line is
+    /// untouched, the exit code is untouched, and `NoTestsRun` remains outside
+    /// `TestScope.isEvidence`.
+    let private priorEvidenceLines (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
+        match prior with
+        | Some p when p.TreeHash = v.TreeHash && not (List.isEmpty p.Suites) ->
+            let total = p.Suites |> List.sumBy (fun s -> s.Total)
+            let failed = p.Suites |> List.sumBy (fun s -> s.Failed)
+            let projects = p.Suites |> List.map (fun s -> s.Project) |> String.concat ", "
+            let at = p.ProducedAt.ToUniversalTime().ToString("u")
+
+            // The CHANGE that selected those tests. This is the half of the answer
+            // that a reader actually acts on: "unchanged since 11:53" tells them
+            // when, but not what — and without the what, they cannot judge whether
+            // the run that happened was the run their edit deserved.
+            //
+            // Silent when empty: an unfiltered run has no trigger (nothing selected
+            // it), and a daemon older than the field sends none. Printing "triggered
+            // by nothing" for either would invent a fact.
+            let triggerLines =
+                match p.Trigger with
+                | [] -> []
+                | shown ->
+                    let listed = String.concat ", " shown
+                    let hidden = p.TriggerCount - List.length shown
+
+                    let suffix = if hidden > 0 then $" (and %d{hidden} more)" else ""
+
+                    [ $"             triggered by %s{listed}%s{suffix}" ]
+
+            [ $"             tree unchanged since the verdict at %s{at} — %s{TestScope.describe p.Scope}" ]
+            @ triggerLines
+            @ [ $"             which ran %d{total} test(s) across %s{projects} (%d{failed} failed)" ]
+        | _ -> []
+
     /// The steering block for a completed check/confirm, naming this run's files.
-    let forVerdict (v: Verdict.Verdict) : string list =
+    ///
+    /// `prior` is the verdict that was on disk BEFORE this run overwrote it. It has
+    /// to be an argument: the caller writes the new verdict before rendering, so by
+    /// the time this runs the file is already gone. Passing it in keeps this
+    /// function pure and makes that ordering impossible to get silently wrong.
+    let forVerdict (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
         // NEVER print a path for a file that was not written: a hint that sends you to an
         // empty directory teaches distrust of the tool.
         let suiteLines =
             match v.Suites, v.RunId with
             | [], None ->
-                [ "    suites   NO TEST RUN — nothing was verified by tests in this check (there is no run directory)" ]
+                "    suites   NO TEST RUN — nothing was verified by tests in this check (there is no run directory)"
+                :: priorEvidenceLines prior v
             | [], Some id ->
                 let dir = id.ToString("N")
-                [ $"    suites   NONE — the run executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)" ]
+
+                $"    suites   NONE — the run executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)"
+                :: priorEvidenceLines prior v
             | suites, _ ->
                 suites
                 |> List.mapi (fun i s ->
