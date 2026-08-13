@@ -4,6 +4,12 @@
 
 ## 0.7.0-alpha.17 - 2026-08-13
 
+- fix: unblock the release — coverage floor with real headroom, versions rolled back
+- Comment audit: cut AI thinking-out-loud from comments
+
+
+## 0.7.0-alpha.17 - 2026-08-13
+
 - Comment audit: cut AI thinking-out-loud from comments
 
 
