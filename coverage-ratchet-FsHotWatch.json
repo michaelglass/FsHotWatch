@@ -484,8 +484,8 @@
       },
       {
         "line": 84,
-        "branch": 78,
-        "reason": "AUTOMATION-15 daemon watchdog; same timer-scheduling jitter as macOS. Conservative floor pending a green Linux CI sample. || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "branch": 72,
+        "reason": "AUTOMATION-15 daemon watchdog; same timer-scheduling jitter as macOS. Conservative floor pending a green Linux CI sample. || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them. || Linux branch floor 78 -> 72 on 2026-08-13. 78 was set from a single CI measurement with ~2pp headroom and went red on the very next run at 76.9%. This file's own note says per-file coverage is load-dependent; a floor within a couple of points of the measurement will keep failing releases for no signal.",
         "platform": "linux"
       }
     ],
