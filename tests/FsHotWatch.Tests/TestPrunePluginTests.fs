@@ -3612,6 +3612,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     let mutable fullSuiteScopeCalls = 0
     let mutable outstandingCalls = 0
     let mutable sessionEvidenceCalls = 0
+    let mutable structureCalls = 0
 
     let key =
         cacheKeyFor
@@ -3624,6 +3625,9 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
             (fun () ->
                 dependsOnCalls <- dependsOnCalls + 1
                 Some "depends")
+            (fun () ->
+                structureCalls <- structureCalls + 1
+                "structure")
             (fun () ->
                 fullSuiteScopeCalls <- fullSuiteScopeCalls + 1
                 None)
@@ -3646,12 +3650,19 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     test <@ fullSuiteScopeCalls = 0 @>
     test <@ outstandingCalls = 0 @>
     test <@ sessionEvidenceCalls = 0 @>
+    // the structure hash is a FULL-REPO WALK plus a SHA-256 of every
+    // project file. Paid once per BuildCompleted it is nothing; paid once per checked
+    // file on a cold scan it is quadratic. The POSITIVE CONTROL for this zero is the
+    // BuildCompleted test below, which pins the same thunk at 3 calls — an absence over
+    // a thunk nothing ever calls would be worth nothing.
+    test <@ structureCalls = 0 @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
     // The other half: thunking must not have made the salt vanish on the arm it exists for.
     let mutable dependsOnCalls = 0
     let mutable changedSymbolsCalls = 0
+    let mutable structureCalls = 0
 
     let keyWith (dependsOn: string option) =
         cacheKeyFor
@@ -3662,6 +3673,9 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
             (fun () ->
                 dependsOnCalls <- dependsOnCalls + 1
                 dependsOn)
+            (fun () ->
+                structureCalls <- structureCalls + 1
+                "structure")
             (fun () -> None)
             (fun () -> false)
             (fun () -> true)
@@ -3673,6 +3687,9 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
 
     test <@ dependsOnCalls = 3 @>
     test <@ changedSymbolsCalls = 3 @>
+    // THE POSITIVE CONTROL for the `structureCalls = 0` assertion above: the same thunk
+    // IS read on the arm it exists for, once per key.
+    test <@ structureCalls = 3 @>
 
     // Editing a matched file moves the key: a miss, so a genuine re-run.
     test <@ salted <> resalted @>
@@ -3741,6 +3758,9 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
                 (fun () -> FsHotWatch.CheckCache.sha256Hex "")
                 (fun () -> None)
                 (fun () -> None)
+                // The same structure the live handler sees: the plugin hashes its own
+                // repoRoot, and this test's tmpDir holds no project files.
+                (fun () -> projectStructureHash tmpDir)
                 (fun () -> None)
                 (fun () -> false)
                 (fun () -> true)
@@ -6943,6 +6963,7 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
             (fun () -> "same-symbols")
             (fun () -> None)
             (fun () -> None)
+            (fun () -> "same-structure")
             (fun () -> fullSuiteScope)
             (fun () -> false)
             (fun () -> true)
@@ -6965,6 +6986,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> "s")
             (fun () -> None)
             (fun () -> Some "deps")
+            (fun () -> "struct")
             (fun () -> None)
             (fun () -> false)
             (fun () -> true)
@@ -6976,6 +6998,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             [ "plugin-version", "test-prune-merkle-v2"
               "event", "BuildCompleted"
               "changed-symbols", "s"
+              "project-structure", "struct"
               "build-outcome", "succeeded"
               "depends-on", "deps" ]
 
@@ -6998,6 +7021,7 @@ let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
             (fun () -> "same")
             (fun () -> None)
             (fun () -> None)
+            (fun () -> "same-structure")
             (fun () -> Some "full")
             (fun () -> false)
             (fun () -> true)
@@ -7015,6 +7039,7 @@ let ``cacheKeyFor refuses BuildCompleted while the process has NO test evidence`
             (fun () -> "same")
             (fun () -> None)
             (fun () -> None)
+            (fun () -> "same-structure")
             (fun () -> Some "full")
             (fun () -> false)
             (fun () -> hasEvidence)
@@ -7051,6 +7076,7 @@ let ``the TestsFinished WRITE is not gated on session evidence`` () =
             (fun () -> "same")
             (fun () -> None)
             (fun () -> None)
+            (fun () -> "same-structure")
             (fun () -> Some "full")
             (fun () -> false)
             // No evidence yet — this run is the one about to provide it.
@@ -8186,6 +8212,7 @@ let ``no cache participation while a red is outstanding`` () =
             (fun () -> "symbols")
             (fun () -> None)
             (fun () -> None)
+            (fun () -> "same-structure")
             (fun () -> None)
             (fun () -> hasOutstanding)
             (fun () -> true)
@@ -8311,43 +8338,53 @@ let ``a test run does not erase the unanalysable-file warning`` () =
     // dropped the warning that is supposed to deny the check its green verdict: the file
     // kept forcing full-suite runs (state) but nothing told anyone (ledger). The warning
     // leaves only when the CONDITION clears — the file analyses cleanly.
-    let handler =
-        create ":memory:" "/tmp" (Some [ projConfig "ProjA" ]) None None None None []
+    //
+    // The broken file is written to DISK (case 4). A path that does not
+    // exist has no condition left to discharge and is pruned, so a fixture naming an
+    // imaginary file would assert this invariant over an entry that is now correctly
+    // dropped — and pass or fail for the wrong reason.
+    withTempDir "tp-unanalysable" (fun tmpDir ->
+        let handler =
+            create ":memory:" tmpDir (Some [ projConfig "ProjA" ]) None None None None []
 
-    let broken =
-        { RelPath = "src/Broken.fs"
-          File = "/tmp/src/Broken.fs"
-          Reason = "FS3520: unexpected doc comment" }
+        let brokenFile = Path.Combine(tmpDir, "src", "Broken.fs")
+        Directory.CreateDirectory(Path.GetDirectoryName brokenFile) |> ignore
+        File.WriteAllText(brokenFile, "module Broken\n")
 
-    let stateWithUnanalysable =
-        { handler.Init with
-            UnanalyzableFiles = Map.ofList [ broken.RelPath, broken ] }
+        let broken =
+            { RelPath = "src/Broken.fs"
+              File = brokenFile
+              Reason = "FS3520: unexpected doc comment" }
 
-    let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
+        let stateWithUnanalysable =
+            { handler.Init with
+                UnanalyzableFiles = Map.ofList [ broken.RelPath, broken ] }
 
-    // The strongest green there is: a full-suite run in which everything passes.
-    let greenRun =
-        testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+        let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
 
-    handler.Update ctx stateWithUnanalysable greenRun
-    |> Async.RunSynchronously
-    |> ignore
+        // The strongest green there is: a full-suite run in which everything passes.
+        let greenRun =
+            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
 
-    let warnings =
-        ledger
-        |> Seq.collect (fun kv -> kv.Value)
-        |> Seq.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning)
-        |> Seq.toList
+        handler.Update ctx stateWithUnanalysable greenRun
+        |> Async.RunSynchronously
+        |> ignore
 
-    test <@ ledger.ContainsKey broken.File @>
-    test <@ warnings |> List.exists (fun e -> e.Message.Contains("src/Broken.fs")) @>
+        let warnings =
+            ledger
+            |> Seq.collect (fun kv -> kv.Value)
+            |> Seq.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning)
+            |> Seq.toList
 
-    // ... and it DOES go once the file analyses cleanly and the state drops it.
-    let ctx2, _statuses2, ledger2 = makeTestPruneRecordingCtx ()
+        test <@ ledger.ContainsKey broken.File @>
+        test <@ warnings |> List.exists (fun e -> e.Message.Contains("src/Broken.fs")) @>
 
-    handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
+        // ... and it DOES go once the file analyses cleanly and the state drops it.
+        let ctx2, _statuses2, ledger2 = makeTestPruneRecordingCtx ()
 
-    test <@ ledger2.Count = 0 @>
+        handler.Update ctx2 handler.Init greenRun |> Async.RunSynchronously |> ignore
+
+        test <@ ledger2.Count = 0 @>)
 
 [<Fact(Timeout = 10000)>]
 let ``RunCoverage.coversWholeSuite: only every project, each in FULL, is a whole-suite claim`` () =
@@ -8573,3 +8610,156 @@ let ``a self-referential property does not spin`` () =
         match ArtifactFreshness.Cache().Closure main with
         | Ok refs -> Assert.Fail($"a self-referential property must not resolve, got: %A{refs}")
         | Error _ -> ())
+
+// ---------------------------------------------------------------------------
+// case 1 — a STRUCTURAL change must MISS the BuildCompleted cache
+// ---------------------------------------------------------------------------
+//
+// 2026-08-12: a test file plus its `<Compile Include=…>` was added, `fshw check`
+// exited 0 with `outcome: green` and `scope: {kind: full, ranProjects: 6}`, and the 21
+// new tests never executed. The BuildCompleted key is a merkle over the CHANGED
+// SYMBOLS, and on a scan `BuildCompleted` is dispatched BEFORE the FCS pass — so that
+// term is empty whatever the tree holds, the tree WITH the new file computes the same
+// key as the tree without it, and the entry a previous green wrote replays. A replay
+// skips the handler, so no run happens and the plugin's `LastCoverage` still describes
+// the EARLIER run: the verdict reports that run's full-suite green over a tree it
+// never saw.
+//
+// Driven through the plugin's REAL cache-key closure and a REAL project file on disk,
+// not through `cacheKeyFor`'s thunks: the defect was that production never fed this
+// input in, which a test supplying it by hand cannot see.
+
+/// A minimal, well-formed `.fsproj` declaring `compiles` in order.
+let private fsprojWithCompiles (compiles: string list) : string =
+    let items =
+        compiles
+        |> List.map (fun f -> $"    <Compile Include=\"%s{f}\" />")
+        |> String.concat "\n"
+
+    $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n%s{items}\n  </ItemGroup>\n</Project>"
+
+[<Fact(Timeout = 20000)>]
+let ``adding a compile item moves the BuildCompleted cache key`` () =
+    withTempDir "tp-structure-key" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory projDir |> ignore
+        let proj = Path.Combine(projDir, "Lib.fsproj")
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs" ])
+
+        // Analysis-only (no test configs): with no runnable projects
+        // `sessionHasTestEvidence` is vacuously true, so BuildCompleted HAS a key —
+        // which is the value under test. With test configs a cold handler refuses the
+        // cache outright and there would be nothing to compare.
+        let handler =
+            create (Path.Combine(tmpDir, "tp.db")) tmpDir None None None None None []
+
+        let keyOf () =
+            handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+
+        let before = keyOf ()
+        test <@ before.IsSome @>
+
+        // POSITIVE CONTROL. "The key changed" is worth nothing from a key that changes
+        // on every call — that would be a cache that never hits, not a cache that is
+        // sound. On an untouched tree the key must be STABLE.
+        test <@ keyOf () = before @>
+
+        // The structural change: one new compile item. Nothing else moves — no symbol
+        // has been checked, no build outcome differs, the queue is still empty.
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs"; "NewTests.fs" ])
+
+        test <@ keyOf () <> before @>
+
+        // ... and removing one moves it too: a DELETED test file must not replay the
+        // green that ran it.
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs"; "NewTests.fs"; "More.fs" ])
+        let three = keyOf ()
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs"; "NewTests.fs" ])
+        test <@ keyOf () <> three @>)
+
+[<Fact(Timeout = 20000)>]
+let ``the structure hash sees a compile item, not a source edit`` () =
+    // The scope of the fix, pinned. Source EDITS are already covered by the symbol-diff
+    // pipeline that runs after BuildCompleted and supersedes the entry; what that
+    // pipeline cannot rescue is a file it has never seen. So the hash tracks the files
+    // that DECLARE what is compiled and deliberately not their contents — otherwise
+    // every keystroke would invalidate the whole test cache.
+    withTempDir "tp-structure-scope" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory projDir |> ignore
+        let proj = Path.Combine(projDir, "Lib.fsproj")
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs" ])
+        File.WriteAllText(Path.Combine(projDir, "A.fs"), "module A\nlet x = 1\n")
+
+        let before = projectStructureHash tmpDir
+
+        // A source edit: not a structural change.
+        File.WriteAllText(Path.Combine(projDir, "A.fs"), "module A\nlet x = 2\n")
+        test <@ projectStructureHash tmpDir = before @>
+
+        // POSITIVE CONTROL — the same hash over the same tree DOES move for the input
+        // it exists for, so the equality above is a scope statement and not a hash that
+        // never changes.
+        File.WriteAllText(proj, fsprojWithCompiles [ "A.fs"; "B.fs" ])
+        test <@ projectStructureHash tmpDir <> before @>
+
+        // Build output is excluded: a restore/rebuild dropping generated project files
+        // under `obj/` must not invalidate every cached verdict in the repo.
+        let objDir = Path.Combine(projDir, "obj")
+        Directory.CreateDirectory objDir |> ignore
+        let withItems = projectStructureHash tmpDir
+        File.WriteAllText(Path.Combine(objDir, "Generated.fsproj"), fsprojWithCompiles [ "Z.fs" ])
+        test <@ projectStructureHash tmpDir = withItems @>)
+
+// ---------------------------------------------------------------------------
+// case 4 — a DELETED file must not keep blocking the verdict
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``an unanalysable file that was DELETED stops blocking the verdict`` () =
+    // `UnanalyzableFiles` entries leave only when the file analyses CLEANLY
+    //and a deleted file never analyses again — no `FileChecked`
+    // will ever arrive for a path that is gone. So its warning was re-reported after
+    // every test run for the rest of the daemon's life, and under the default
+    // warn-fail policy it denied every check its green while ALSO widening every run to
+    // the full suite. Deleting a file is not a defect in the tree.
+    withTempDir "tp-deleted-unanalysable" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory srcDir |> ignore
+
+        let stillHere = Path.Combine(srcDir, "StillBroken.fs")
+        File.WriteAllText(stillHere, "module StillBroken\n")
+
+        let deleted = Path.Combine(srcDir, "Gone.fs")
+
+        let handler =
+            create ":memory:" tmpDir (Some [ projConfig "ProjA" ]) None None None None []
+
+        let entry (relPath: string) (file: string) =
+            relPath,
+            { RelPath = relPath
+              File = file
+              Reason = "FS3520: unexpected doc comment" }
+
+        let stateWithBoth =
+            { handler.Init with
+                UnanalyzableFiles = Map.ofList [ entry "src/StillBroken.fs" stillHere; entry "src/Gone.fs" deleted ] }
+
+        let ctx, _statuses, ledger = makeTestPruneRecordingCtx ()
+
+        let greenRun =
+            testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+
+        let after = handler.Update ctx stateWithBoth greenRun |> Async.RunSynchronously
+
+        // POSITIVE CONTROL FIRST. The warning for a file that IS still on disk is still
+        // reported — so "the deleted one is absent" is a fact about deletion and not
+        // about a detector that stopped firing. Without this the assertion below would
+        // pass just as well if the ledger were empty for every reason.
+        test <@ ledger.ContainsKey stillHere @>
+        test <@ after.UnanalyzableFiles.ContainsKey "src/StillBroken.fs" @>
+
+        // The finding: a path that no longer exists is neither a warning nor a reason to
+        // widen the next run.
+        test <@ not (ledger.ContainsKey deleted) @>
+        test <@ not (after.UnanalyzableFiles.ContainsKey "src/Gone.fs") @>)
