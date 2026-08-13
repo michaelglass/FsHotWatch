@@ -642,14 +642,42 @@ module AgentHints =
         // A red verdict that names nothing is worse than a red verdict: it looks like
         // a clean report that happens to be non-zero. If neither a plugin nor a suite
         // accounts for the failure, say so rather than printing a tidy block.
+        // AUTOMATION-303. The red that reddened a `confirm` with all four plugins `ok`
+        // and 9,064 tests passed lived in the ledger under `fcs` — a SOURCE that is not a
+        // plugin and so has no line above. Naming it here (and in `reddenedBy` in the
+        // file) is what turns "unexplained" into an answer.
+        let ledgerCauseLines =
+            match v.RedCauses with
+            | [] -> []
+            | causes ->
+                let shown =
+                    causes
+                    |> List.mapi (fun i (c: Verdict.RedCause) ->
+                        let label = if i = 0 then "REDDENED" else "        "
+                        let msg = c.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
+                        $"    %s{label} %s{c.Source}:%s{c.File}: %s{c.Severity} %s{msg}")
+
+                let more = v.RedCauseCount - List.length causes
+
+                if more > 0 then
+                    shown
+                    @ [ $"             … and %d{more} more (see `reddenedBy` in %s{Verdict.RelativePath})" ]
+                else
+                    shown
+
         let unexplainedRed =
             let isRed = v.ExitCode <> 0
 
             let anySuiteFailed = v.Suites |> List.exists (fun s -> s.Failed > 0)
 
-            if isRed && List.isEmpty failingPluginLines && not anySuiteFailed then
-                [ $"    UNEXPLAINED  exit %d{v.ExitCode} with no failing plugin and no failing suite — \
-                     do NOT read this as a pass; open %s{Verdict.RelativePath}" ]
+            if
+                isRed
+                && List.isEmpty failingPluginLines
+                && not anySuiteFailed
+                && List.isEmpty ledgerCauseLines
+            then
+                [ $"    UNEXPLAINED  exit %d{v.ExitCode} with no failing plugin, no failing suite and no failing \
+                     diagnostic — do NOT read this as a pass; open %s{Verdict.RelativePath}" ]
             else
                 []
 
@@ -668,6 +696,7 @@ module AgentHints =
           $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against the \
              tree on disk; exit 4 = stale, do not reuse)" ]
         @ failingPluginLines
+        @ ledgerCauseLines
         @ unexplainedRed
         @ suiteLines
         @ scopeAdvice
