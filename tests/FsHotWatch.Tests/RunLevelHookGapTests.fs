@@ -445,6 +445,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                      Summary = Some "ok" } ]
                 : FsHotWatch.Cli.Verdict.PluginVerdict list)
                 []
+                FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
 
         FsHotWatch.Cli.Verdict.write root verdict
 

@@ -707,6 +707,72 @@ let ``the inner loop NEVER forces a full suite`` () =
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
 
+/// The same drive, but the VERDICT FILE is read before the temp dir goes away.
+///
+/// AUTOMATION-259 lives or dies in the wiring: `publishVerdict` will happily classify a
+/// `None` it was handed, so a transport that captured nothing at the escalation would
+/// record `no-impact-scoped-run` on a confirm that plainly escalated — and every
+/// producer-level test would still pass.
+let private driveConfirmForVerdict (checkMode: CheckVerdict.CheckMode) (firstScope: TestScope) : Verdict.Verdict =
+    let mutable forceCalls = 0
+
+    let getTestRun () : TestRunReport =
+        if forceCalls > 0 then
+            { Scope = FullSuite 1; RunId = None }
+        else
+            { Scope = firstScope; RunId = None }
+
+    TestHelpers.withTempDir "ipcoutput-confirm-259" (fun repoRoot ->
+        pollAndRender
+            ProgressRenderer.Agent
+            checkMode
+            repoRoot
+            []
+            (fun _ -> [])
+            false
+            (fun () -> "idle")
+            (fun () -> "idle")
+            (fun () -> "{}")
+            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+            getTestRun
+            (fun () -> forceCalls <- forceCalls + 1)
+            (fun () -> "idle")
+        |> ignore
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v -> v
+        | other -> failwithf "the drive must leave a readable verdict, got %A" other)
+
+[<Fact(Timeout = 15000)>]
+let ``an escalating confirm records the impact-scoped reading it escalated away from`` () =
+    let v = driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(0, 1))
+
+    // Both runs were clean, so this is the ordinary sample the feature exists to collect.
+    test <@ v.Divergence = Verdict.Divergence.Agreed @>
+
+    match v.ImpactScopedRun with
+    // The scope the daemon reported BEFORE the force — not the full suite the verdict
+    // itself rests on.
+    | Some pre -> test <@ pre.Scope = ImpactFiltered(0, 1) @>
+    | None -> failwith "an escalating confirm must record the reading it escalated away from"
+
+[<Fact(Timeout = 15000)>]
+let ``a confirm that never escalated says so, and a check records no comparison at all`` () =
+    // The controls for the test above, one on each side. Without them, a transport that
+    // recorded a reading unconditionally, or one that recorded nothing ever, would still
+    // satisfy it.
+    let noEscalation = driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite 1)
+
+    test <@ noEscalation.Divergence = Verdict.Divergence.NoImpactScopedRun @>
+    test <@ noEscalation.ImpactScopedRun = None @>
+
+    // `check` never escalates, so it never has a comparison to make — confirm-only, and
+    // `Verdict.create` refuses a check that claims otherwise.
+    let inner = driveConfirmForVerdict CheckVerdict.InnerLoop (ImpactFiltered(0, 1))
+
+    test <@ inner.Command = Verdict.Check @>
+    test <@ inner.Divergence = Verdict.Divergence.NotRecorded @>
+
 // ---------------------------------------------------------------------------
 // The `coverage` token is what a CURRENT daemon sends. These cover the other side of the
 // contract: a CLI talking to an OLDER daemon that omits it. The rule the fallback holds is

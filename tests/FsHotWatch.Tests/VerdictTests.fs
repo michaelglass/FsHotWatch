@@ -79,10 +79,19 @@ type private Spec =
       ExitCode: int
       Plugins: Verdict.PluginVerdict list
       Suites: Verdict.SuiteVerdict list
+      Comparison: Verdict.CheckComparison
       Tree: TreeHash.Tree }
 
 let private build (s: Spec) : Verdict.Verdict =
-    Verdict.create s.Command { Scope = s.Scope; RunId = s.RunId } s.Tree s.Outcome s.ExitCode s.Plugins s.Suites
+    Verdict.create
+        s.Command
+        { Scope = s.Scope; RunId = s.RunId }
+        s.Tree
+        s.Outcome
+        s.ExitCode
+        s.Plugins
+        s.Suites
+        s.Comparison
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
@@ -96,6 +105,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
+      Comparison = Verdict.CheckComparison.notRecorded
       Tree =
         { Hash = treeHash
           FileCount = fileCount } }
@@ -1094,7 +1104,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
     // projection of `LastCoverage`), and publishing must not write that down verbatim.
     withTempDir "verdict-confirm-escalation" (fun root ->
         let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
-            IpcOutput.publishVerdict root [] mode false { Scope = scope; RunId = None } Map.empty outcome
+            IpcOutput.publishVerdict root [] mode false { Scope = scope; RunId = None } None Map.empty outcome
 
             match Verdict.read root with
             | Verdict.Reading.Found v -> v
@@ -1151,6 +1161,329 @@ let ``a confirm whose forced full run did not complete records no filtered scope
 
         test <@ inner.Command = Verdict.Check @>
         test <@ inner.Scope = ImpactFiltered(5, 6) @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 — the check-vs-confirm sample a `confirm` leaves behind.
+// ---------------------------------------------------------------------------
+
+/// The pre-escalation reading, built the way the transports build it. Deliberately NOT a
+/// hand-stamped `Outcome`: the claim under test is that the sub-record is graded as
+/// `check` would grade it (`InnerLoop`), and a test that stamped the answer would pass
+/// even if production graded it as `Confirmation` — which refuses every filtered scope and
+/// would make the sample say "no verdict" every single time.
+let private impactScopedReading (root: string) (scope: TestScope) (failingDiagnostics: int) (coverage: Coverage) =
+    Verdict.impactScopedRun
+        root
+        { Scope = scope; RunId = None }
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = failingDiagnostics
+          WaitingOnBuild = false
+          Coverage = coverage
+          Scope = scope }
+
+/// Drive the PRODUCER, as the 258 tests do: the transports hand `publishVerdict` what they
+/// observed, and what lands on disk is what a reader gets.
+let private publishConfirm
+    (root: string)
+    (finalScope: TestScope)
+    (impactScoped: Verdict.ImpactScopedRun option)
+    (outcome: CheckVerdict.CheckOutcome)
+    : Verdict.Verdict =
+    IpcOutput.publishVerdict
+        root
+        []
+        CheckVerdict.Confirmation
+        false
+        { Scope = finalScope; RunId = None }
+        impactScoped
+        Map.empty
+        outcome
+
+    match Verdict.read root with
+    | Verdict.Reading.Found v -> v
+    | other -> failwithf "publishVerdict must leave a READABLE verdict, got %A" other
+
+[<Fact>]
+let ``an escalated confirm records what the impact-scoped run concluded, and that they AGREED`` () =
+    withTempDir "verdict-259-agreed" (fun root ->
+        // The observed shape: a warm daemon whose last run was 5 of 6 projects and clean,
+        // `confirm` escalating past it, and the forced full suite agreeing.
+        let earned =
+            publishConfirm
+                root
+                (FullSuite 6)
+                (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 Complete))
+                CheckVerdict.CheckOutcome.Clean
+
+        test <@ earned.Outcome = Verdict.Green @>
+        test <@ earned.Scope = FullSuite 6 @>
+        test <@ earned.Divergence = Verdict.Divergence.Agreed @>
+
+        // The sub-record is where being impact-filtered is CORRECT — the top-level scope
+        // may not say it (AUTOMATION-258), and the counts now live here rather than in
+        // anyone's prose.
+        match earned.ImpactScopedRun with
+        | Some pre ->
+            test <@ pre.Scope = ImpactFiltered(5, 6) @>
+            test <@ pre.Outcome = Verdict.Green @>
+            test <@ List.isEmpty pre.FailingSuites @>
+        | None -> failwith "an escalated confirm must record the run it escalated away from")
+
+[<Fact>]
+let ``check green + confirm red records CHECK MISSED FAILURES — the fshw defect, named`` () =
+    withTempDir "verdict-259-missed" (fun root ->
+        // AUTOMATION-160: this is not a merge saved, it is a SELECTOR BUG — `check` told
+        // someone their change was fine and the full suite says it is not. The one case the
+        // whole record exists to surface, so it gets its own token rather than "diverged".
+        let earned =
+            publishConfirm
+                root
+                (FullSuite 6)
+                (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 Complete))
+                CheckVerdict.CheckOutcome.FailuresFound
+
+        test <@ earned.Outcome = Verdict.Red @>
+        test <@ earned.Divergence = Verdict.Divergence.CheckMissedFailures @>
+
+        // And the mirror image, which is a different fact with a different cause (a stale
+        // red, a flake, a test-isolation defect) and must not share a token with it. Without
+        // this, a classifier that returned `CheckMissedFailures` for ANY disagreement would
+        // pass the assertion above.
+        let reversed =
+            publishConfirm
+                root
+                (FullSuite 6)
+                (Some(impactScopedReading root (ImpactFiltered(5, 6)) 3 Complete))
+                CheckVerdict.CheckOutcome.Clean
+
+        test <@ reversed.Divergence = Verdict.Divergence.CheckOnlyFailures @>
+
+        match reversed.ImpactScopedRun with
+        | Some pre -> test <@ pre.Outcome = Verdict.Red @>
+        | None -> failwith "the impact-scoped reading must survive a disagreement")
+
+[<Fact>]
+let ``a confirm that did NOT escalate records the fact POSITIVELY — absence is never agreement`` () =
+    withTempDir "verdict-259-noescalation" (fun root ->
+        // THE requirement most easily got wrong. If a non-escalating confirm simply omitted
+        // the record, "the run was already full-suite" and "nobody recorded anything" would
+        // be the same bytes, and an analysis counting samples could not tell them apart.
+        let earned = publishConfirm root (FullSuite 6) None CheckVerdict.CheckOutcome.Clean
+
+        // ASSERTED ON THE VALUE, not on the absence of one.
+        test <@ earned.Divergence = Verdict.Divergence.NoImpactScopedRun @>
+
+        // ...and it is a DIFFERENT value from "nothing was recorded here", which is what a
+        // pre-259 verdict reads as. Same field, two distinct facts, neither of them
+        // agreement — see the round-trip and legacy-file tests below.
+        test <@ earned.Divergence <> Verdict.Divergence.NotRecorded @>
+        test <@ earned.Divergence <> Verdict.Divergence.Agreed @>
+        test <@ earned.ImpactScopedRun = None @>
+
+        // It reaches DISK as its own token, not as an omitted key.
+        let json = Verdict.serialize earned
+        test <@ json.Contains "\"no-impact-scoped-run\"" @>)
+
+[<Fact>]
+let ``an escalated run that never completed records COULD-NOT-COMPARE, never agreement`` () =
+    withTempDir "verdict-259-incomparable" (fun root ->
+        // The observed artifact from AUTOMATION-258: confirm escalated, the forced full run
+        // died on compile errors, and the daemon's `test-scope` still answered with the
+        // PRE-escalation coverage. There is no full-suite reading to compare with — and
+        // "could not compare" collapsing into "agreed" is the same trap as an omitted
+        // record, one field along.
+        let stalled =
+            publishConfirm
+                root
+                (ImpactFiltered(5, 6))
+                (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 Complete))
+                (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(5, 6)))
+
+        match stalled.Divergence with
+        | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "escalated full-suite run" @>
+        | other -> failwithf "an escalated run with no result must be INCOMPARABLE, got %A" other
+
+        // The reading confirm escalated away from is STILL recorded — the sample survives
+        // even though the comparison does not, which is the whole point of keeping the two
+        // as separate fields.
+        match stalled.ImpactScopedRun with
+        | Some pre -> test <@ pre.Scope = ImpactFiltered(5, 6) @>
+        | None -> failwith "the impact-scoped reading must survive an incomplete escalation"
+
+        // AUTOMATION-258's rewrite still stands, and its prose no longer restates the counts
+        // — they are typed, one nesting down, in the record above.
+        test <@ not (TestScope.isFullSuite stalled.Scope) @>
+        test <@ (TestScope.describe stalled.Scope).Contains "5/6" |> not @>
+        test <@ (TestScope.describe stalled.Scope).Contains "impactScopedRun" @>
+
+        // The other side of "no answer to compare": the ESCALATED run settled, but the
+        // impact-scoped one had never reached a verdict of its own.
+        let preNeverSettled =
+            publishConfirm
+                root
+                (FullSuite 6)
+                (Some(impactScopedReading root (ImpactFiltered(5, 6)) 0 (Incomplete 4)))
+                CheckVerdict.CheckOutcome.Clean
+
+        match preNeverSettled.Divergence with
+        | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "impact-scoped run" @>
+        | other -> failwithf "an unsettled impact-scoped reading must be INCOMPARABLE, got %A" other)
+
+[<Fact>]
+let ``every comparison round-trips through the verdict JSON`` () =
+    withTempDir "verdict-259-roundtrip" (fun root ->
+        let withRun (d: Verdict.Divergence) : Verdict.CheckComparison =
+            { Divergence = d
+              ImpactScoped =
+                Some
+                    { Scope = ImpactFiltered(5, 6)
+                      Outcome = Verdict.Red
+                      FailingSuites = [ "Lib.Tests"; "Api.Tests" ] } }
+
+        let cases =
+            [ withRun Verdict.Divergence.Agreed
+              withRun Verdict.Divergence.CheckMissedFailures
+              withRun Verdict.Divergence.CheckOnlyFailures
+              withRun (Verdict.Divergence.Incomparable "the escalated full-suite run reached no verdict")
+              { Divergence = Verdict.Divergence.NoImpactScopedRun
+                ImpactScoped = None }
+              Verdict.CheckComparison.notRecorded ]
+
+        for comparison in cases do
+            writeSpec
+                root
+                { greenVerdict "sha256:rt" 1 with
+                    Comparison = comparison }
+
+            match Verdict.read root with
+            // Structural equality on the WHOLE value: scope, outcome and the suite names
+            // all have to survive, not just the classification token.
+            | Verdict.Reading.Found v -> test <@ v.Comparison = comparison @>
+            | other -> failwithf "a verdict carrying %A must read back, got %A" comparison other)
+
+[<Fact>]
+let ``a verdict written before AUTOMATION-259 still reads — as NOT RECORDED, never as agreement`` () =
+    withTempDir "verdict-259-legacy" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        // A verdict file that predates the field. It is not corrupt and it is not a schema
+        // break (the field is additive), so it must READ — and the one thing it may never
+        // read as is a comparison that happened.
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+                "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
+                "outcome":{"kind":"green"},"exitCode":0,"plugins":[]}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v.Divergence = Verdict.Divergence.NotRecorded @>
+            test <@ v.ImpactScopedRun = None @>
+            // The fast path still works on it: an old green is still a green, and 259 is
+            // not allowed to invalidate evidence that was honestly earned.
+            test <@ Verdict.isFullSuiteGreen v @>
+        | other -> failwithf "a pre-259 verdict must still read, got %A" other
+
+        // A classification from a LATER build is not "not recorded" either: something WAS
+        // written here and this build cannot read it. Neither fact is agreement, and the
+        // two must not share a value.
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+                "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
+                "outcome":{"kind":"green"},"exitCode":0,"plugins":[],
+                "checkComparison":{"divergence":{"kind":"agreed-modulo-flakes"}}}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            match v.Divergence with
+            | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "agreed-modulo-flakes" @>
+            | other -> failwithf "an unknown classification must never be readable as agreement, got %A" other
+        | other -> failwithf "an unknown classification must not make the verdict unreadable, got %A" other)
+
+[<Fact>]
+let ``a verdict cannot claim a comparison it did not make`` () =
+    // The classification and the reading are ONE fact in two fields, so `validate` — the
+    // choke point both `create` and `read` pass through — refuses the two pairs that state
+    // it inconsistently. Without this, `{"divergence":"agreed"}` with no reading beside it
+    // would count as a sample in an analysis that only reads the token.
+    let spec = greenVerdict "sha256:abc" 1
+
+    let reading: Verdict.ImpactScopedRun option =
+        Some
+            { Scope = ImpactFiltered(5, 6)
+              Outcome = Verdict.Green
+              FailingSuites = [] }
+
+    // Claims a comparison, records nothing to have compared against.
+    raises<ArgumentException>
+        <@
+            build
+                { spec with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.Agreed
+                          ImpactScoped = None } }
+        @>
+
+    // ...and the mirror: records a reading under a classification that says there was none.
+    raises<ArgumentException>
+        <@
+            build
+                { spec with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.NoImpactScopedRun
+                          ImpactScoped = reading } }
+        @>
+
+    // `check` never escalates (`CheckVerdict.confirmNeedsFullRun` is false in `InnerLoop`),
+    // so it never has a second reading and may not claim one. Confirm-only in the type.
+    raises<ArgumentException>
+        <@
+            build
+                { spec with
+                    Command = Verdict.Check
+                    Scope = ImpactFiltered(5, 6)
+                    Comparison =
+                        { Divergence = Verdict.Divergence.Agreed
+                          ImpactScoped = reading } }
+        @>
+
+    // CONTROLS. Without these, a `create` that had started refusing every comparison would
+    // pass all three `raises` above.
+    test
+        <@
+            (build
+                { spec with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.Agreed
+                          ImpactScoped = reading } })
+                .Divergence = Verdict.Divergence.Agreed
+        @>
+
+    test
+        <@
+            (build
+                { spec with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.NoImpactScopedRun
+                          ImpactScoped = None } })
+                .Divergence = Verdict.Divergence.NoImpactScopedRun
+        @>
+
+    // `Incomparable` is permissive in BOTH directions, and deliberately: confirm escalated
+    // and the reading is there, or the classification came from a build this one cannot read
+    // and it is not.
+    for impactScoped in [ reading; None ] do
+        let v =
+            build
+                { spec with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.Incomparable "no full-suite result"
+                          ImpactScoped = impactScoped } }
+
+        test <@ v.ImpactScopedRun = impactScoped @>
 
 [<Fact>]
 let ``an outcome this build cannot read is Unreadable, never a green`` () =

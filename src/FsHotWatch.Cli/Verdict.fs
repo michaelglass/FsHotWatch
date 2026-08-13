@@ -206,6 +206,174 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         Incomplete
             $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 — the check-vs-confirm sample every `confirm` already had
+// ---------------------------------------------------------------------------
+
+/// What the IMPACT-SCOPED run concluded — the run `confirm` graded BEFORE it escalated to
+/// the full suite.
+///
+/// `confirm` does not start with a full run. It grades what the daemon already has, sees
+/// that it was filtered (`CheckVerdict.confirmNeedsFullRun`), says so, and runs the whole
+/// suite to earn a verdict. That first reading existed in-process and survived only as a
+/// log line.
+///
+/// It is also the ONE reading fshw cannot get any other way. `check` and `confirm` are
+/// separate invocations, so comparing them means comparing two trees: a full day of
+/// running them side by side (2026-08-06) produced not one clean pair, because the tree
+/// moved between every invocation. Recorded here, the two readings share a tree, a daemon,
+/// a scan generation and an instant — for free, because nothing extra runs.
+///
+/// Graded in `InnerLoop` mode, deliberately — see `impactScopedRun`.
+type ImpactScopedRun =
+    {
+        Scope: TestScope
+        Outcome: Outcome
+        /// Projects whose CTRF report recorded at least one failing test IN THAT RUN.
+        /// Names only: the counts live in the run's own reports, and a second copy here
+        /// would be a second thing to keep in step.
+        FailingSuites: string list
+    }
+
+/// How the impact-scoped reading compared with the full-suite verdict `confirm` went on to
+/// earn.
+///
+/// NOT a bool. A bool has one way of being false, and there are three different ways of
+/// not having an agreement — one of which is an fshw DEFECT and two of which are not a
+/// comparison at all. Collapsing them is the same mistake as `Coverage.Unknown` reading as
+/// `Complete`: the states that mean "we do not know" must not be spendable as the state
+/// that means "we checked".
+[<RequireQualifiedAccess>]
+type Divergence =
+    /// Both readings existed and answered the same — both clean, or both red. THE data
+    /// point: same tree, same daemon, same instant.
+    | Agreed
+    /// The impact-scoped run was GREEN and the full suite was RED: the selector did not
+    /// choose a test that fails. Per AUTOMATION-160 this is an fshw DEFECT, not a merge
+    /// saved — `check` told someone their change was fine and it was not. The case this
+    /// whole record exists to surface.
+    | CheckMissedFailures
+    /// The impact-scoped run was RED and the full suite was GREEN: a stale red, a flake, or
+    /// a test-isolation defect (a test that only passes with company). `check` may well be
+    /// the honest one here — what it is not is agreement.
+    | CheckOnlyFailures
+    /// `confirm` did not escalate: the run it graded was ALREADY full-suite, so there is no
+    /// impact-scoped reading beside it to compare with.
+    ///
+    /// STATED, never left as an absence. `confirm` sends `set-scope full` before it scans
+    /// (`Program.ensureAndQueryErrors`, `RunOnceCheck.runOnceAndVerdict`), so any run its
+    /// own scan provokes is unfiltered — which is why this is the COMMON case in CI and why
+    /// it must not be counted as an agreement: nothing was compared.
+    | NoImpactScopedRun
+    /// One of the two readings reached no answer to compare. An escalated run that dies on
+    /// compile errors produces no full-suite result, and "could not compare" may never
+    /// collapse into "agreed".
+    | Incomparable of reason: string
+    /// NO comparison is on record: the verdict predates AUTOMATION-259, or it is a `check`,
+    /// which never escalates and so never makes one.
+    ///
+    /// This is what an ABSENT field reads as. It is deliberately distinct from every case
+    /// above, so "nobody recorded anything" can never be read as "they agreed".
+    | NotRecorded
+
+module Divergence =
+    /// The wire token. Total.
+    let token (d: Divergence) : string =
+        match d with
+        | Divergence.Agreed -> "agreed"
+        | Divergence.CheckMissedFailures -> "check-missed-failures"
+        | Divergence.CheckOnlyFailures -> "check-only-failures"
+        | Divergence.NoImpactScopedRun -> "no-impact-scoped-run"
+        | Divergence.Incomparable _ -> "incomparable"
+        | Divergence.NotRecorded -> "not-recorded"
+
+    /// Does this classification CLAIM that two readings were compared — and therefore
+    /// require the impact-scoped one to be recorded beside it?
+    ///
+    /// Total, so a new case must be classified by an explicit edit rather than defaulting
+    /// to "needs nothing", which is how a record claiming a comparison it never made gets
+    /// written.
+    let claimsAComparison (d: Divergence) : bool =
+        match d with
+        | Divergence.Agreed
+        | Divergence.CheckMissedFailures
+        | Divergence.CheckOnlyFailures -> true
+        | Divergence.NoImpactScopedRun
+        | Divergence.Incomparable _
+        | Divergence.NotRecorded -> false
+
+    /// Does this classification ASSERT that there was nothing to compare — and therefore
+    /// require that no impact-scoped run is recorded beside it?
+    ///
+    /// `Incomparable` is in NEITHER predicate, deliberately: `confirm` escalated and the
+    /// reading is there, or the classification came from a build this one cannot read and
+    /// it is not. Both are honest `Incomparable`s.
+    let assertsNothingToCompare (d: Divergence) : bool =
+        match d with
+        | Divergence.NoImpactScopedRun
+        | Divergence.NotRecorded -> true
+        | Divergence.Agreed
+        | Divergence.CheckMissedFailures
+        | Divergence.CheckOnlyFailures
+        | Divergence.Incomparable _ -> false
+
+/// The AUTOMATION-259 sample as ONE value: the classification, and the reading it
+/// classified. They are only meaningful together, so they travel together and `validate`
+/// refuses the two pairs that are self-contradictory (see `divergenceAgreesWithRecord`).
+type CheckComparison =
+    { Divergence: Divergence
+      ImpactScoped: ImpactScopedRun option }
+
+module CheckComparison =
+    /// What a `check` records, and what a verdict written before AUTOMATION-259 reads as.
+    let notRecorded: CheckComparison =
+        { Divergence = Divergence.NotRecorded
+          ImpactScoped = None }
+
+    /// The one thing the two runs can be compared ON: did it find failures? `Incomplete` is
+    /// neither a yes nor a no — it is the ABSENCE of an answer, and folding it into "found
+    /// nothing" is exactly how "the escalated run died on compile errors" would come to
+    /// read as agreement.
+    let private failuresFound (o: Outcome) : bool option =
+        match o with
+        | Green -> Some false
+        | Red -> Some true
+        | Incomplete _ -> None
+
+    let private whyNoAnswer (o: Outcome) : string =
+        match o with
+        | Incomplete reason -> reason
+        | Green
+        | Red -> Outcome.tag o
+
+    /// THE classification, and the only door into a `CheckComparison` that claims one.
+    ///
+    /// `earned` is the outcome THIS verdict records — the full-suite result `confirm` went
+    /// and got — not the pre-escalation one.
+    let ofRun (impactScoped: ImpactScopedRun option) (earned: Outcome) : CheckComparison =
+        let divergence =
+            match impactScoped with
+            | None -> Divergence.NoImpactScopedRun
+            | Some pre ->
+                match failuresFound pre.Outcome, failuresFound earned with
+                | Some checkFoundFailures, Some confirmFoundFailures ->
+                    match checkFoundFailures, confirmFoundFailures with
+                    | false, true -> Divergence.CheckMissedFailures
+                    | true, false -> Divergence.CheckOnlyFailures
+                    | _ -> Divergence.Agreed
+                // The escalated run is checked FIRST: when neither side answered, the fact
+                // worth recording is that the run `confirm` FORCED produced nothing, which
+                // is the failure mode the case was named for.
+                | _, None ->
+                    Divergence.Incomparable
+                        $"the escalated full-suite run reached no verdict to compare with (%s{whyNoAnswer earned})"
+                | None, _ ->
+                    Divergence.Incomparable
+                        $"the impact-scoped run reached no verdict of its own (%s{whyNoAnswer pre.Outcome})"
+
+        { Divergence = divergence
+          ImpactScoped = impactScoped }
+
 /// The identity of the fshw that produced a verdict — `DaemonIdentity.BinaryIdentity`
 /// reused, not a fourth identity type.
 ///
@@ -276,7 +444,8 @@ type Verdict =
           outcome: Outcome
           exitCode: int
           plugins: PluginVerdict list
-          suites: SuiteVerdict list }
+          suites: SuiteVerdict list
+          comparison: CheckComparison }
 
     member this.ProducedAt = this.producedAt
     member this.Command = this.command
@@ -304,11 +473,23 @@ type Verdict =
     member this.Plugins = this.plugins
     member this.Suites = this.suites
 
-/// The invariants. TWO, and they are the same lie in two places: a record whose own
+    /// AUTOMATION-259. How the impact-scoped reading `confirm` escalated away from compared
+    /// with the verdict it then earned. ALWAYS a named case — a verdict that made no
+    /// comparison says so (`NotRecorded` / `NoImpactScopedRun`) rather than staying silent.
+    member this.Comparison = this.comparison
+
+    /// The classification on its own, for the consumer that only wants to count.
+    member this.Divergence = this.comparison.Divergence
+
+    /// What the impact-scoped run concluded, when there was one.
+    member this.ImpactScopedRun = this.comparison.ImpactScoped
+
+/// The invariants. THREE, and they are the same lie in three places: a record whose own
 /// fields disagree, so that reading any ONE of them cold gives the wrong answer.
 ///
 ///   * a GREEN verdict may not contain a failing plugin;
-///   * a CONFIRM verdict may not carry an `ImpactFiltered` scope.
+///   * a CONFIRM verdict may not carry an `ImpactFiltered` scope;
+///   * a check-vs-confirm classification may not disagree with the reading beside it.
 ///
 /// Both construction sites — `create` (producing) and `read` (rehydrating from disk) —
 /// go through this, so a hand-edited or hostile verdict file is refused on the way IN
@@ -348,7 +529,37 @@ let private validate (v: Verdict) : Result<Verdict, string> =
                     $"a GREEN verdict cannot contain failing plugins — %s{named}. A check that says green on one \
                        surface and fail on another has not checked anything; it has produced two answers."
 
-    scopeAgreesWithCommand () |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
+    // AUTOMATION-259. The classification and the reading it classified are ONE fact split
+    // across two fields, and the two pairs below are the ways of stating it wrong:
+    // claiming a comparison with nothing to have compared, and recording a reading under a
+    // classification that says there was none. Either would let an analysis counting
+    // `agreed` count a `confirm` that compared nothing.
+    let divergenceAgreesWithRecord () =
+        match v.Command with
+        // `check` never escalates (`CheckVerdict.confirmNeedsFullRun` is `false` in
+        // `InnerLoop`), so it never HAS a second reading to compare against and may not
+        // record one. Confirm-only, in the type rather than by convention.
+        | Check when v.Divergence <> Divergence.NotRecorded || v.ImpactScopedRun.IsSome ->
+            Error
+                $"a CHECK verdict cannot carry a check-vs-confirm comparison (%s{Divergence.token v.Divergence}) — \
+                   `check` never escalates, so it never ran a second time to compare against. Only `confirm` can \
+                   make this claim."
+        | Check -> Ok v
+        | Confirm ->
+            match v.ImpactScopedRun with
+            | None when Divergence.claimsAComparison v.Divergence ->
+                Error
+                    $"a verdict classified '%s{Divergence.token v.Divergence}' records no impact-scoped run — it \
+                       claims a comparison with nothing to have compared against."
+            | Some _ when Divergence.assertsNothingToCompare v.Divergence ->
+                Error
+                    $"a verdict classified '%s{Divergence.token v.Divergence}' says there was nothing to compare, \
+                       yet records an impact-scoped run. One of the two is wrong and a reader cannot tell which."
+            | _ -> Ok v
+
+    scopeAgreesWithCommand ()
+    |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
+    |> Result.bind (fun _ -> divergenceAgreesWithRecord ())
 
 /// The scope a `command`'s verdict may RECORD, given what the run actually reported.
 ///
@@ -361,12 +572,19 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 /// Only `confirm`'s filtered scope is rewritten. `check` KEEPS its `ImpactFiltered`: an
 /// impact-filtered green is the answer the inner loop wants, and a `check` that hid its own
 /// scope would be the same lie pointed the other way.
+/// AUTOMATION-259 took the COUNTS out of this string. They were the one thing here a
+/// machine wanted, they had to be re-derived by parsing prose, and they now live in
+/// `checkComparison.impactScopedRun.scope` as a typed `ImpactFiltered` — the same filtered
+/// reading, in the one place where being filtered is correct rather than a lie. Restating
+/// them here would be a second copy of a number, drifting from a DIFFERENT read (this
+/// scope is the FINAL read; the sub-record is the PRE-escalation one).
 let scopeToRecord (command: Command) (scope: TestScope) : TestScope =
     match command, scope with
-    | Confirm, ImpactFiltered(ran, total) ->
+    | Confirm, ImpactFiltered _ ->
         ScopeUnreadable
-            $"confirm forced the full suite and that run did not complete — the only scope on record is an \
-               EARLIER impact-filtered run (%d{ran}/%d{total} projects), which is not this verdict's evidence"
+            "confirm forced the full suite and that run did not complete — the only scope on record is an EARLIER \
+             impact-filtered run, which is not this verdict's evidence. That run is recorded, with its counts, under \
+             `checkComparison.impactScopedRun`"
     | _ -> scope
 
 /// The ONLY constructor. Throws on the contradiction `validate` names, so a verdict
@@ -384,6 +602,7 @@ let create
     (exitCode: int)
     (plugins: PluginVerdict list)
     (suites: SuiteVerdict list)
+    (comparison: CheckComparison)
     : Verdict =
     let candidate =
         { producedAt = DateTime.UtcNow
@@ -397,7 +616,8 @@ let create
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
-          suites = suites }
+          suites = suites
+          comparison = comparison }
 
     match validate candidate with
     | Ok v -> v
@@ -454,6 +674,36 @@ let private outcomeJson (outcome: Outcome) : obj =
            reason = reason |}
         :> obj
 
+/// AUTOMATION-259 on the wire. Tagged with `kind` like every other sum in this file, so a
+/// consumer reads ONE field and never has to parse prose to learn what happened. `reason`
+/// appears only where there is one.
+let private divergenceJson (d: Divergence) : obj =
+    match d with
+    | Divergence.Incomparable reason ->
+        {| kind = Divergence.token d
+           reason = reason |}
+        :> obj
+    | Divergence.Agreed
+    | Divergence.CheckMissedFailures
+    | Divergence.CheckOnlyFailures
+    | Divergence.NoImpactScopedRun
+    | Divergence.NotRecorded -> {| kind = Divergence.token d |} :> obj
+
+/// The sub-record, nested under `checkComparison` beside its classification. Not spliced
+/// into the top level: `scope` and `outcome` up there describe the verdict that was
+/// EARNED, and two same-named fields one nesting apart is how a reader lifts the wrong one.
+let private checkComparisonJson (c: CheckComparison) : obj =
+    {| divergence = divergenceJson c.Divergence
+       impactScopedRun =
+        (match c.ImpactScoped with
+         | Some r ->
+             box
+                 {| scope = scopeJson r.Scope
+                    outcome = outcomeJson r.Outcome
+                    failingSuites = r.FailingSuites |}
+         | None -> null) |}
+    :> obj
+
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
 /// Render the verdict as JSON. Pure, so the contract is testable without a disk.
@@ -474,6 +724,7 @@ let serialize (v: Verdict) : string =
            treeFileCount = v.TreeFileCount
            scope = scopeJson v.Scope
            outcome = outcomeJson v.Outcome
+           checkComparison = checkComparisonJson v.Comparison
            exitCode = v.ExitCode
            plugins =
             [ for p in v.Plugins ->
@@ -568,6 +819,65 @@ let private parseOutcome (el: JsonElement) : Outcome option =
     | Some "red" -> Some Red
     | Some "incomplete" -> Some(Incomplete(tryString el "reason" |> Option.defaultValue "no reason recorded"))
     | _ -> None
+
+/// AUTOMATION-259, read back. Every way of not getting a classification lands on a case
+/// that is NOT `Agreed` — an unreadable comparison is not an agreement, exactly as an
+/// unreadable plugin outcome is not a pass.
+let private parseDivergence (el: JsonElement) : Divergence =
+    match tryString el "kind" with
+    | Some "agreed" -> Divergence.Agreed
+    | Some "check-missed-failures" -> Divergence.CheckMissedFailures
+    | Some "check-only-failures" -> Divergence.CheckOnlyFailures
+    | Some "no-impact-scoped-run" -> Divergence.NoImpactScopedRun
+    | Some "not-recorded" -> Divergence.NotRecorded
+    | Some "incomparable" -> Divergence.Incomparable(tryString el "reason" |> Option.defaultValue "no reason recorded")
+    // A token from another version, or none at all. `Incomparable` rather than
+    // `NotRecorded`: something WAS recorded here and this build cannot read it, which is a
+    // different fact from nobody having recorded anything — and neither is agreement.
+    | Some other ->
+        Divergence.Incomparable $"the recorded classification is '%s{other}', which this build does not understand"
+    | None -> Divergence.Incomparable "the recorded comparison does not say which classification it is"
+
+let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
+    if el.ValueKind <> JsonValueKind.Object then
+        None
+    else
+        let failingSuites =
+            match tryProp el "failingSuites" with
+            | Some arr when arr.ValueKind = JsonValueKind.Array ->
+                arr.EnumerateArray()
+                |> Seq.choose (fun e ->
+                    if e.ValueKind = JsonValueKind.String then
+                        Some(e.GetString())
+                    else
+                        None)
+                |> List.ofSeq
+            | _ -> []
+
+        Some
+            { Scope = tryProp el "scope" |> Option.map parseScope |> Option.defaultValue ScopeUnknown
+              // Fails CLOSED, like every other outcome read in this file: an outcome this
+              // build cannot make sense of is an `Incomplete`, never a green, so a
+              // malformed sub-record cannot manufacture a "check was clean" reading.
+              Outcome =
+                tryProp el "outcome"
+                |> Option.bind parseOutcome
+                |> Option.defaultValue (
+                    Incomplete "the recorded impact-scoped outcome is not a shape this build recognizes"
+                )
+              FailingSuites = failingSuites }
+
+/// The whole `checkComparison` block. An ABSENT block is `NotRecorded` — the verdict
+/// predates AUTOMATION-259, which is not corruption and is not agreement.
+let private parseCheckComparison (root: JsonElement) : CheckComparison =
+    match tryProp root "checkComparison" with
+    | Some el when el.ValueKind = JsonValueKind.Object ->
+        { Divergence =
+            tryProp el "divergence"
+            |> Option.map parseDivergence
+            |> Option.defaultValue (Divergence.Incomparable "the recorded comparison has no classification")
+          ImpactScoped = tryProp el "impactScopedRun" |> Option.bind parseImpactScopedRun }
+    | _ -> CheckComparison.notRecorded
 
 /// A plugin outcome token this build does not recognize is NOT dropped and NOT
 /// rounded to `Ok` — it becomes `Fail`. An unknown state is not a passing state.
@@ -738,7 +1048,8 @@ let read (repoRoot: string) : Reading =
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins
-                          suites = suites }
+                          suites = suites
+                          comparison = parseCheckComparison root }
 
                     match validate rehydrated with
                     | Ok v -> Reading.Found v
@@ -983,3 +1294,23 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
               Passed = r.Summary.Passed
               Failed = r.Summary.Failed
               Skipped = r.Summary.Skipped })
+
+/// AUTOMATION-259. Turn what a transport observed just BEFORE `confirm` escalated into the
+/// sub-record the verdict carries.
+///
+/// GRADED IN `InnerLoop`, and that is the whole design. `CheckVerdict.verdict` with
+/// `Confirmation` routes every non-full scope to `UnearnedScope` — a REFUSAL, not a
+/// reading — so a sub-record graded that way would say "no verdict" on every single sample
+/// and the comparison would never have two answers to compare. `InnerLoop` over the SAME
+/// inputs is, by definition, what `check` computes: same statuses, same ledger, same
+/// coverage, same scope.
+///
+/// Costs one directory listing of a run whose reports are already on disk, on the
+/// escalating-`confirm` path only. Nothing is re-run: the reading itself was in memory.
+let impactScopedRun (repoRoot: string) (runReport: TestRunReport) (inputs: CheckVerdict.CheckInputs) : ImpactScopedRun =
+    { Scope = runReport.Scope
+      Outcome = outcomeOfCheck (CheckVerdict.verdict CheckVerdict.InnerLoop inputs)
+      FailingSuites =
+        suiteVerdicts repoRoot runReport.RunId
+        |> List.filter (fun s -> s.Failed > 0)
+        |> List.map (fun s -> s.Project) }
