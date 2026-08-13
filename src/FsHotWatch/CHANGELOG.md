@@ -2,13 +2,8 @@
 
 ## Unreleased
 
-## 0.10.0-alpha.9 - 2026-08-13
-
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
 - Comment audit: cut AI thinking-out-loud from comments
-
-
-## 0.10.0-alpha.9 - 2026-08-13
 
 - Comment audit: cut AI thinking-out-loud from comments
 

@@ -2,19 +2,11 @@
 
 ## Unreleased
 
-## 0.14.0-alpha.15 - 2026-08-13
-
 - AUTOMATION-258: a confirm verdict cannot record a filtered scope
-
-
-## 0.14.0-alpha.14 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
 - chore: log which process claims the daemon singleton, and who is refused
 - Comment audit: cut AI thinking-out-loud from comments
-
-
-## 0.14.0-alpha.14 - 2026-08-13
 
 - chore: **two temporary log lines so a duplicate-daemon report can be diagnosed
   from `daemon.log` rather than from `ps` archaeology** (AUTOMATION-289; the
@@ -49,6 +41,7 @@
   across those seconds without receiving a single event. A watcher that delivers
   nothing over 45s is not slow, it is not working — so a larger budget buys a
   slower red and hides the breakage. Tracked in AUTOMATION-294.
+
 
 ## 0.14.0-alpha.13 - 2026-08-12
 
