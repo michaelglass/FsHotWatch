@@ -523,6 +523,10 @@ let internal publishVerdict
     (checkMode: CheckVerdict.CheckMode)
     (noWarnFail: bool)
     (runReport: TestRunReport)
+    // AUTOMATION-259. What the impact-scoped run concluded, when `confirm` escalated away
+    // from one. `None` means it did not — which is a FACT the verdict states, not a silence
+    // (see `Verdict.Divergence.NoImpactScopedRun`).
+    (impactScoped: Verdict.ImpactScopedRun option)
     (statuses: Map<string, ParsedPluginStatus>)
     (outcome: CheckVerdict.CheckOutcome)
     : unit =
@@ -558,12 +562,24 @@ let internal publishVerdict
             { runReport with
                 Scope = Verdict.scopeToRecord command runReport.Scope }
 
+        // AUTOMATION-259. Classified against `verdictOutcome` — the outcome this verdict
+        // RECORDS, including the tree-moved-underneath downgrade above, because that is the
+        // answer `confirm` actually earned and therefore the only one worth comparing with.
+        //
+        // `check` gets `notRecorded`, not a classification of `None`: it never escalates,
+        // so it never had a second reading, and saying "nothing to compare" of a command
+        // that never compares would be a fact about the verb, not about this run.
+        let comparison =
+            match command with
+            | Verdict.Check -> Verdict.CheckComparison.notRecorded
+            | Verdict.Confirm -> Verdict.CheckComparison.ofRun impactScoped verdictOutcome
+
         // `create` REFUSES a green carrying a failing plugin. It cannot fire from here —
         // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
         // `pluginVerdicts` renders — but if the two ever drift apart, fshw stops rather
         // than stamping the contradiction on disk.
         let v =
-            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites
+            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites comparison
 
         Verdict.write repoRoot v
 
@@ -645,6 +661,12 @@ let pollAndRender
             { Scope = ScopeUnreadable "the check aborted before the test scope could be read"
               RunId = None }
 
+    // AUTOMATION-259. Set once, at the escalation below, and read again on every publish
+    // path INCLUDING the abort handlers: a `confirm` that escalated and then lost its
+    // daemon is precisely the "the escalated run never completed" sample, and dropping the
+    // record there would make it indistinguishable from a confirm that never escalated.
+    let impactScoped: Verdict.ImpactScopedRun option ref = ref None
+
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
@@ -692,8 +714,19 @@ let pollAndRender
         //
         // So: no full-suite evidence ⇒ go and produce some. Then re-settle and re-read,
         // because a forced run can fail, and its failures are the answer.
+        // The reading `confirm` is about to throw away. Hoisted out of the `else` branch
+        // below because BOTH branches need it now: one grades it, the other escalates past
+        // it — and AUTOMATION-259 records what it said either way.
+        let preEscalation = checkInputs noWarnFail firstRun.Scope firstResp
+
         let initialRead =
             if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope then
+                // AUTOMATION-259. Captured BEFORE the forced run, from state that already
+                // exists: same tree, same daemon, same scan generation, same instant as the
+                // verdict below. Two separate `check`/`confirm` invocations cannot produce
+                // that pair — the tree moves in between.
+                impactScoped.Value <- Some(Verdict.impactScopedRun repoRoot firstRun preEscalation)
+
                 eprintfn
                     "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
                     (TestScope.describe firstRun.Scope)
@@ -706,12 +739,20 @@ let pollAndRender
                 // computed — and PUBLISHED — from what the forced run actually did.
                 reread ()
             else
-                checkInputs noWarnFail firstRun.Scope firstResp
+                preEscalation
 
         let outcome =
             CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
 
-        publishVerdict repoRoot excludePatterns checkMode noWarnFail finalRun.Value finalStatuses.Value outcome
+        publishVerdict
+            repoRoot
+            excludePatterns
+            checkMode
+            noWarnFail
+            finalRun.Value
+            impactScoped.Value
+            finalStatuses.Value
+            outcome
 
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
@@ -762,6 +803,7 @@ let pollAndRender
             checkMode
             noWarnFail
             finalRun.Value
+            impactScoped.Value
             finalStatuses.Value
             (CheckVerdict.CheckOutcome.Incomplete -1)
 
@@ -776,6 +818,7 @@ let pollAndRender
             checkMode
             noWarnFail
             finalRun.Value
+            impactScoped.Value
             finalStatuses.Value
             (CheckVerdict.CheckOutcome.Incomplete -1)
 

@@ -225,17 +225,31 @@ let runOnceAndVerdict
         // here and nothing more runs. This is the backstop for the cases where it is not
         // (a replayed cache entry, a skipped launch) — it costs nothing when the
         // mechanism worked.
+
+        // The reading `confirm` is about to throw away. `reread` OBSERVES — no scan, no run
+        // — so taking it here costs nothing and gives both branches the same starting fact.
+        let preEscalation = reread ()
+
+        // AUTOMATION-259. Captured BEFORE the forced run, from state that already exists:
+        // same tree, same host, same instant as the verdict below. `None` when no
+        // escalation was needed, which the verdict RECORDS rather than omitting.
+        let impactScoped =
+            if CheckVerdict.confirmNeedsFullRun checkMode preEscalation.Scope then
+                Some(Verdict.impactScopedRun repoRoot finalRun.Value preEscalation)
+            else
+                None
+
         let initialRead =
-            if CheckVerdict.confirmNeedsFullRun checkMode finalRun.Value.Scope then
+            match impactScoped with
+            | Some _ ->
                 eprintfn
                     "  Confirm: the tests that ran were %s — running the FULL suite to earn a verdict..."
-                    (TestScope.describe finalRun.Value.Scope)
+                    (TestScope.describe preEscalation.Scope)
 
                 forceFullRun daemon
-
-            // Reads the host either way — after a forced run (whose failures ARE the
-            // answer) or after the scan alone.
-            reread ()
+                // Re-read: the forced run's failures ARE the answer.
+                reread ()
+            | None -> preEscalation
 
         // The SAME convergence the daemon path runs: an incomplete-but-clean read is
         // re-scanned (up to a budget) before it is called un-completable.
@@ -282,7 +296,15 @@ let runOnceAndVerdict
         // it, from the same `CheckOutcome` the exit code below comes from, so
         // `fshw verdict` after a CI run has a machine-readable answer that matches the
         // exit code.
-        IpcOutput.publishVerdict repoRoot config.Exclude checkMode noWarnFail finalRun.Value finalStatuses.Value outcome
+        IpcOutput.publishVerdict
+            repoRoot
+            config.Exclude
+            checkMode
+            noWarnFail
+            finalRun.Value
+            impactScoped
+            finalStatuses.Value
+            outcome
 
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
