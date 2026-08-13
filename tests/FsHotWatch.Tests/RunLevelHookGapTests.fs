@@ -433,7 +433,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
         let verdict =
             FsHotWatch.Cli.Verdict.create
                 FsHotWatch.Cli.Verdict.Confirm
-                ({ Scope = FullSuite 1; RunId = None }: TestRunReport)
+                (TestRunReport.ofScopeOnly (FullSuite 1))
                 ({ Hash = tree.Hash
                    FileCount = tree.FileCount }
                 : TreeHash.Tree)
