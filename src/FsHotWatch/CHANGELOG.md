@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.9 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.10.0-alpha.8 - 2026-08-12
 
 - fix: **the wedge detector no longer fails a healthy check of a large repo.** It

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.19 - 2026-08-13
+
+- Comment audit: cut AI thinking-out-loud from comments
+
+
 ## 0.7.0-alpha.18 - 2026-08-11
 
 - chore(deps): TestPrune.Core 6.1.2, FSharpLint 0.27.0, and two others
