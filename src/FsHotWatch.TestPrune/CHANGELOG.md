@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- refactor: **the freshness sidecar's verdict over an emptied index is now a decision,
+  not a by-product (AUTOMATION-277).** `.fshw/test-prune/file-freshness.json` carries no
+  schema version and sits beside a `test-impact.db` that deletes and recreates itself on
+  a `SchemaVersion` bump — the same shape that let `pending-verification.json` discharge
+  real test debt as a zero-test green (AUTOMATION-275). Measured against a real recreate
+  rather than a simulated one: the sidecar survives saying `Clean` about rows the index
+  no longer holds. **No behaviour changed, because that case was already resolving the
+  right way** — diffing against an empty row set makes every symbol read as added, which
+  widens the run. What was missing was anything saying so: the widening fell out of
+  `detectChanges`' handling of an empty list, and a refactor that gated `Clean` on stored
+  rows existing (the way `Unknown` already is) would have flipped it to *under*-testing
+  with no test failing. The three-way `Freshness` verdict plus one structural fact — does
+  the index still hold rows for this file — now resolves through
+  `FileFreshness.trustStoredRows` to a named `StoredRowTrust`, and `EverySymbolIsNew` is
+  the arm a recreate lands on. Follows AUTOMATION-275's landed shape rather than its
+  first draft: ask the index what it HOLDS, never how it came to be that way.
+  `Database.WasRecreated` is deliberately not an input — it is also true for a first-ever
+  creation, so it cannot tell a schema bump from a fresh clone, and it says nothing about
+  an individual file. A mutation test pins the polarity: flipping the `Clean`-over-nothing
+  arm to the narrow answer fails three tests, while the genuinely-current sidecar keeps
+  buying the cheap diff.
+
 ## 0.13.0-alpha.12 - 2026-08-13
 
 - test-prune report: name the CHANGE that triggered the prior run

@@ -4064,47 +4064,33 @@ let create
                             // Can the stored rows be diffed against? The CURRENT
                             // extraction must be FCS-clean (a dirty current result means
                             // the just-extracted symbols are themselves suspect); given
-                            // that, the STORED side is trusted per
-                            // `FileFreshness.classify`:
-                            //
-                            //   Clean   — explicit clean stamp → diff.
-                            //   Unknown — NO sidecar record. Over a NON-EMPTY stored row
-                            //             set this is a seeded test-impact.db (ADR-010)
-                            //             whose sidecar did not travel into this fresh
-                            //             workspace. ADR-010 guarantees a seeded DB
-                            //             over-indexes but never serves a stale verdict,
-                            //             so DIFF the seeded rows — bypassing here
-                            //             silently UNDER-selects, and a real edit in a
-                            //             seeded workspace then runs zero tests. Gated on
-                            //             stored rows existing: an EMPTY stored set is a
-                            //             genuine cold scan with no baseline to diff, and
-                            //             stays no-diff so it doesn't select the whole
-                            //             suite.
-                            //   Dirty   — explicit `fcsClean = false`: the stored rows
-                            //             were written during an FCS-error extraction and
-                            //             may be PARTIAL. Diffing against them yields a
-                            //             phantom "all symbols changed" delta (measured
-                            //             once at 4,921 affected tests). Bypass.
-                            let storedTrustedForDiff =
-                                match storedFreshness with
-                                | FileFreshness.Clean -> true
-                                | FileFreshness.Unknown -> not storedSymbols.IsEmpty
-                                | FileFreshness.Dirty -> false
+                            // that, `FileFreshness.trustStoredRows` decides, from the
+                            // sidecar's verdict plus whether the index still HOLDS rows
+                            // for this file. Both arms of that pair are load-bearing and
+                            // both are documented there — in particular AUTOMATION-277's
+                            // `EverySymbolIsNew`, which is what a `Clean` stamp means once
+                            // a schema recreate has emptied the index underneath it.
+                            let storedTrust =
+                                FileFreshness.trustStoredRows storedFreshness (not storedSymbols.IsEmpty)
 
                             let (changedNames, suppressedDiff) =
-                                if currentClean && storedTrustedForDiff then
-                                    // detectChanges filters externs internally; no pre-filter needed here.
+                                // `EverySymbolIsNew` diffs against the empty stored set on
+                                // purpose rather than listing `normalizedSymbols` directly:
+                                // detectChanges filters externs internally, and an extern
+                                // has no body to have changed. Same call, named outcome.
+                                match currentClean, storedTrust with
+                                | true, (FileFreshness.DiffAgainstStored | FileFreshness.EverySymbolIsNew) ->
                                     let (changes, _events) = detectChanges normalizedSymbols storedSymbols
 
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, trust=%A{storedTrust}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
 
                                     changedSymbolNames changes, false
-                                else
+                                | _ ->
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
+                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, trust=%A{storedTrust}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
 
                                     [], true
 

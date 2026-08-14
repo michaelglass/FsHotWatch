@@ -124,6 +124,26 @@ The whole-session view is unchanged where it stays live: every unformatted file 
 error-ledger entry, and the `unformatted` command still answers with the accumulated set.
 A run that compared nothing now says `no files to check` rather than `format OK`.
 
+### test-prune: the freshness sidecar's verdict over an emptied index is a decision, not a by-product
+
+`.fshw/test-prune/file-freshness.json` carries no schema version and sits beside a
+`test-impact.db` that deletes and recreates itself on a `SchemaVersion` bump — the same
+shape that let `pending-verification.json` discharge real test debt as a zero-test green
+(AUTOMATION-275). Measured against a real recreate rather than a simulated one: the
+sidecar survives, still saying `Clean` about rows the index no longer holds.
+
+**No behaviour changed**, because that case was already resolving the right way —
+diffing against an empty row set makes every symbol read as added, which *widens* the
+run. What was missing was anything saying so. The widening fell out of `detectChanges`'
+handling of an empty list, and a refactor that gated `Clean` on stored rows existing (the
+way `Unknown` already is) would have flipped it to under-testing with no test failing.
+
+The sidecar's verdict plus one structural fact — does the index still hold rows for this
+file — now resolves through `FileFreshness.trustStoredRows` to a named `StoredRowTrust`,
+and `EverySymbolIsNew` is the arm a recreate lands on. `Database.WasRecreated` is
+deliberately not an input: it is also true for a first-ever creation, so it cannot tell a
+schema bump from a fresh clone, and it says nothing about an individual file.
+
 ### tests: a watched-dir fixture, and FSHW-WAIT-001 to keep the flaky shape out
 
 Two tests flaked on the same shape: `Thread.Sleep(100)` to "give the watcher a

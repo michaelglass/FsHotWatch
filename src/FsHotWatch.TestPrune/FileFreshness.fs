@@ -217,6 +217,66 @@ let classify (relPath: string) (store: Store) : Freshness =
     | Some _ -> Dirty
     | None -> Unknown
 
+/// What may be done with the symbol rows `test-impact.db` currently holds for one
+/// file. The `detectChanges` call site in `TestPrunePlugin` matches on this instead
+/// of on a bare bool, so every arm has to be named — and so the arm that is only
+/// reachable after the database threw its rows away cannot be reached by accident.
+type StoredRowTrust =
+    /// The stored rows are a usable baseline: diff the current extraction against them.
+    | DiffAgainstStored
+    /// The index holds NO rows for this file, but the sidecar vouches for the check
+    /// that produced them. Diffing against nothing is the widest possible answer —
+    /// every symbol currently in the file reads as added — and that is the intended
+    /// outcome, not a side effect. See `trustStoredRows`.
+    | EverySymbolIsNew
+    /// The stored rows may not be diffed against, and there is nothing to widen to
+    /// either: contribute no changed symbols for this file.
+    | NoDiff
+
+/// Decide what the stored rows are good for, from the sidecar's verdict plus the one
+/// structural fact the sidecar cannot know — whether the index actually holds rows
+/// for this file right now.
+///
+/// AUTOMATION-277. `file-freshness.json` carries no schema version and lives beside a
+/// `test-impact.db` that DELETES AND RECREATES itself on a `SchemaVersion` bump. The
+/// sidecar survives that, so a `Clean` stamp can outlive the rows it was a statement
+/// about. AUTOMATION-275 is the same shape one file over, and there it discharged real
+/// test debt as a green that ran zero tests.
+///
+/// The fix follows AUTOMATION-275's landed shape rather than its first draft: ask the
+/// index what it HOLDS, never how it came to be that way. `Database.WasRecreated` is
+/// deliberately NOT an input here —
+///   * it is also true for a first-ever creation (`TestPrune.Database`:
+///     "the file did not exist, or an incompatible schema forced a delete+recreate"),
+///     so it cannot distinguish the two, and
+///   * it is a fact about this session's open, while the question is about one file.
+///     A seeded database missing rows for one file needs the same answer and has no
+///     recreate to point at.
+/// The row count answers the real question in every one of those cases at once.
+///
+/// The polarity is the load-bearing part, and it is not merely the safe direction — it
+/// is the CORRECT one. `Clean` over an empty row set is the honest reading "this index
+/// has never seen this file", and every symbol in it therefore is new. That also covers
+/// the case that has nothing to do with a recreate: a clean-checked file that genuinely
+/// held no symbols and has just gained some. Routing either to `NoDiff` would drop the
+/// file's changes silently — under-testing, which `PendingVerification.fs`'s header
+/// forbids ("widen, never wipe"). The `Clean` arm is therefore load-bearing for
+/// correctness, not an optimisation; `trustStoredRows: a Clean stamp can never buy the
+/// NARROW answer` is the test that says so.
+///
+/// `Unknown` keeps AUTOMATION-67's asymmetry on purpose: with rows it is a seeded
+/// `test-impact.db` (ADR-010) whose sidecar did not travel into a fresh workspace, and
+/// those rows are a real prior extraction worth diffing; with none it is an ordinary
+/// cold scan whose full-suite baseline runs anyway, so widening would buy nothing and
+/// cost a whole-suite selection on every cold start.
+let trustStoredRows (freshness: Freshness) (storedRowsExist: bool) : StoredRowTrust =
+    match freshness, storedRowsExist with
+    | Clean, true -> DiffAgainstStored
+    | Clean, false -> EverySymbolIsNew
+    | Unknown, true -> DiffAgainstStored
+    | Unknown, false -> NoDiff
+    | Dirty, _ -> NoDiff
+
 /// True iff the sidecar has an explicit "ended clean" record for `relPath`.
 /// Absent entries return false — the conservative default for the `markClean` gate.
 /// Must NOT be used to gate `detectChanges`: that call site needs the three-way
