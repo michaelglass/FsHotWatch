@@ -18,6 +18,33 @@ module AnalysisError =
         | ProjectBuildFailed(project, exitCode) -> $"Project build failed for '%s{project}' (exit code %d{exitCode})"
         | DatabaseError(operation, ex) -> $"Database error during '%s{operation}': %s{ex.Message}"
 
+/// The `[<TestPrune.CompositionRoot>]` marker, as the reverse-walk sees it.
+///
+/// A composition root names the whole application (a routing table, a DI
+/// registration block) instead of using any part of it. Its edges are real, which
+/// is why the walk traverses them and why one edited handler currently reaches
+/// every test whose fixture boots the app. The marker says: do not propagate
+/// relevance THROUGH this symbol — but a change TO it still propagates, because
+/// "the app is wired differently now" is what host-booting tests check.
+///
+/// Matched by attribute NAME, mirroring how `ImpactAnalysis` resolves
+/// `DependsOnFile`: the stored `DisplayName` sheds its namespace, and a consumer
+/// that would rather not reference TestPrune.Attributes from production code can
+/// declare its own `CompositionRootAttribute`. `Names` is the pair to match
+/// against; it is the single source of truth shared by the SQLite walk in
+/// `Database.QueryAffectedTests` and the in-memory walk in `InMemoryStore`, which
+/// must agree or the soundness harness is checking a different selector than the
+/// one that ships.
+module CompositionRoot =
+
+    /// Both spellings FCS may store for the marker, with and without the
+    /// conventional `Attribute` suffix.
+    let Names = [ "CompositionRootAttribute"; "CompositionRoot" ]
+
+    /// Does this stored attribute name mark a composition root?
+    let isMarker (attributeName: string) =
+        Names |> List.exists (fun n -> n = attributeName)
+
 type ChangeKind =
     | Modified
     | Added

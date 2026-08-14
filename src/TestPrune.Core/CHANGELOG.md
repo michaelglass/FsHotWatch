@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+- feat: **`[<TestPrune.CompositionRoot>]` — stop an application composition root
+  propagating relevance through itself.** An app's routing table or
+  DI registration block references every handler in the codebase in order to *wire
+  them up*, and an integration fixture that boots the app depends on it. The
+  reverse-walk therefore reaches every fixture-using test from every handler: on the
+  intelligence consumer, editing one line of `AdminJournal.translate` selected **537
+  integration tests across 57 classes** — the entire suite, browser tests included,
+  about four minutes per gate. Four unrelated handlers returned the identical number,
+  so this was the normal case, not an edge.
+
+  Every edge on that path is *true* (`productHandler` really does reference
+  `translate`; the fixture really does boot the app). What is false is the conclusion.
+  Nothing in the graph distinguishes "wires X up" from "calls X", so the application
+  author marks the composition root and the walk declines to carry relevance through
+  it.
+
+  The semantics are deliberately **asymmetric**, and both halves matter:
+
+  - Relevance does **not** propagate *through* a marked symbol. Reached from
+    something it aggregates, it is still reported affected, but the walk stops there.
+  - Relevance **does** propagate *from a change to* it. Marked symbol in the change
+    set ⇒ ordinary seed, full walk. "The app is wired differently now" is precisely
+    what host-booting tests verify.
+
+  That asymmetry is what lets one marker serve two opposed requirements: a handler
+  edit must not reach the whole suite, while a startup/config edit must. Verified on
+  the real 29 906-symbol graph — `AntiforgeryConfig.configure`, `TestServer.Start`
+  and `productHandler` itself all select the same 537 tests before and after, while
+  `AdminJournal.translate` drops **537 → 4**, exactly its own `JournalTranslateTests`.
+  Across all 178 route handlers: 41 narrowed, 137 unchanged, **0 widened, 0 dropped
+  to zero**, 95 587 → 74 706 selected integration tests (−21.8%).
+
+  **Opt-in and name-matched.** An un-annotated repository takes a single cheap
+  `EXISTS` and then the historical code path unchanged — asserted symbol-by-symbol,
+  and the 200-case randomised soundness harness now doubles as proof of it. The
+  attribute is matched by NAME exactly as `DependsOnFile` is, so a codebase that
+  would rather not reference `TestPrune.Attributes` from production code can declare
+  its own three-line `CompositionRootAttribute`.
+
+  **Fail-safe: a barrier may narrow a test project's selection, never empty it.**
+  The narrowing is only sound while some *other* attribution still reaches the
+  covering tests — TestPrune.Falco's route→test edges, in the case this was built
+  for. That attribution is not total: Falco attributes 29 of intelligence's 32
+  handler files, and the three it misses are covered by browser tests that navigate
+  by **clicking** (`page.ClickAsync "#stop-impersonating"`) rather than naming the
+  URL. Barriering alone answers "no integration tests affected" for those — a green
+  gate that verified nothing. A global "is the answer empty?" guard is not enough
+  either: `CompanyProfile.saveProducts` keeps 4 unit tests, which would mask all 537
+  integration tests vanishing. So the rule is per project, and it is why
+  `saveProducts` measures 537 → 537 rather than 537 → 0.
+
+  **Residual, stated rather than implied.** If a route has *some* attributed test and
+  another that only clicks, the second is still dropped: the project is non-empty, so
+  nothing fires. Closing that needs Falco to attribute click-driven navigation.
+  **Until it does, do not mark a composition root in a repo whose browser tests
+  navigate by UI interaction** — the mechanism is sound, the attribution feeding it
+  is not yet complete.
+
 - chore(deps): **`SQLitePCLRaw.lib.e_sqlite3` 3.50.3 → 3.53.3.** The pin exists because
   the SQLitePCLRaw bundle pulls native `lib.e_sqlite3` 2.1.11, flagged High by
   GHSA-2m69-gcr7-jv3q; the native binary re-versions onto SQLite's own line

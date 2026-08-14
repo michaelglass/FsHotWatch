@@ -638,7 +638,13 @@ type Database(dbPath: string) =
             raise ex
 
     /// Find test methods transitively depending on the given changed symbol names.
-    member _.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
+    ///
+    /// `applyBarriers` decides whether `[<TestPrune.CompositionRoot>]` markers are
+    /// honoured. `QueryAffectedTests` runs it `true` and retries `false` if that
+    /// answered "no tests at all" — see the fail-safe there.
+    member private _.QueryAffectedTestsCore
+        (changedSymbolNames: string list, applyBarriers: bool)
+        : TestMethodInfo list =
         if changedSymbolNames.IsEmpty then
             []
         else
@@ -666,6 +672,35 @@ type Database(dbPath: string) =
             // unrelated module siblings.
             let typeKindStr = symbolKindToString Type
 
+            // Composition-root barriers. A symbol marked `[<TestPrune.CompositionRoot>]`
+            // (a routing table, a DI registration block) references the whole application
+            // in order to WIRE IT UP, so an integration fixture that boots the app depends
+            // on it and every handler transitively reaches every fixture-using test. The
+            // edges are real; the relevance they imply is not, and nothing in the graph
+            // tells composition apart from use — hence the marker.
+            //
+            // `barriers` excludes anything in `expanded`, and that exclusion is the whole
+            // asymmetry: a barrier REACHED from something it aggregates stops the walk,
+            // while a barrier that CHANGED is an ordinary seed whose dependents are walked
+            // in full. The wiring changing IS what host-booting tests verify.
+            //
+            // The barrier is still reported affected (it enters `transitive_deps` by the
+            // ordinary branches); only its own outward expansion is withheld. Any other,
+            // non-barrier path to the same dependents is unaffected — this is a set union,
+            // so blocking one route never removes what another route supplies.
+            //
+            // Un-annotated codebases have an empty `barriers`, making the WHERE clause
+            // vacuous and the result identical to the unbarriered walk.
+            // `applyBarriers = false` selects no barrier rows at all, so the WHERE
+            // clause below is vacuous and the walk is exactly the historical one.
+            let markerPlaceholders =
+                if applyBarriers then
+                    Domain.CompositionRoot.Names
+                    |> List.mapi (fun i _ -> $"@cr%d{i}")
+                    |> fun ps -> String.Join(", ", ps)
+                else
+                    "NULL"
+
             cmd.CommandText <-
                 $"""
                 WITH after_lift AS (
@@ -686,6 +721,12 @@ type Database(dbPath: string) =
                     WHERE parent.id IN (SELECT id FROM after_lift)
                       AND parent.kind = @typeKind
                 ),
+                barriers AS (
+                    SELECT sa.symbol_id AS id
+                    FROM symbol_attributes sa
+                    WHERE sa.attribute_name IN (%s{markerPlaceholders})
+                      AND sa.symbol_id NOT IN (SELECT id FROM expanded)
+                ),
                 transitive_deps AS (
                     -- Seed inclusion: the changed/expanded symbols are themselves
                     -- in the affected set, not only their dependents. A changed
@@ -695,11 +736,14 @@ type Database(dbPath: string) =
                     -- (FsHotWatch ISSUE B: a fixed test stayed pinned red.)
                     SELECT id AS from_symbol_id FROM expanded
                     UNION
+                    -- Direct dependents of the seeds, barrier or not: a barrier is
+                    -- reported affected, it just doesn't expand below.
                     SELECT from_symbol_id FROM dependencies
                     WHERE to_symbol_id IN (SELECT id FROM expanded)
                     UNION
                     SELECT d.from_symbol_id FROM dependencies d
                     JOIN transitive_deps td ON d.to_symbol_id = td.from_symbol_id
+                    WHERE td.from_symbol_id NOT IN (SELECT id FROM barriers)
                 )
                 SELECT DISTINCT s.full_name, tm.test_project, tm.test_class, tm.test_method
                 FROM transitive_deps td
@@ -710,6 +754,10 @@ type Database(dbPath: string) =
             bindPlaceholders cmd changedSymbolNames
             cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
+            if applyBarriers then
+                Domain.CompositionRoot.Names
+                |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@cr%d{i}", name) |> ignore)
+
             use reader = cmd.ExecuteReader()
 
             readAll reader (fun r ->
@@ -717,6 +765,75 @@ type Database(dbPath: string) =
                   TestProject = r.GetString(1)
                   TestClass = r.GetString(2)
                   TestMethod = r.GetString(3) })
+
+    /// Is any symbol carrying the composition-root marker? One indexed-ish lookup
+    /// over `symbol_attributes`, kept separate so an un-annotated repo pays a
+    /// single cheap EXISTS and then takes exactly the historical code path.
+    member private _.HasCompositionRoots() : bool =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        let markerPlaceholders =
+            Domain.CompositionRoot.Names
+            |> List.mapi (fun i _ -> $"@cr%d{i}")
+            |> fun ps -> String.Join(", ", ps)
+
+        cmd.CommandText <-
+            $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerPlaceholders}))"
+
+        Domain.CompositionRoot.Names
+        |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@cr%d{i}", name) |> ignore)
+
+        match cmd.ExecuteScalar() with
+        | :? int64 as n -> n <> 0L
+        | _ -> false
+
+    /// Find test methods transitively depending on the given changed symbol names.
+    member this.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
+        if changedSymbolNames.IsEmpty || not (this.HasCompositionRoots()) then
+            // No markers: one walk, byte-for-byte the historical behaviour.
+            this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = false)
+        else
+            let barriered =
+                this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = true)
+
+            let unbarriered =
+                this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = false)
+
+            // FAIL-SAFE, per test project.
+            //
+            // A composition-root barrier is only sound while some OTHER attribution
+            // still reaches the tests covering the changed symbol — TestPrune.Falco's
+            // route→test edges, in the case this was built for. That attribution is
+            // NOT total. Measured against the intelligence consumer (2026-08-14),
+            // Falco attributes 29 of 32 handler files; the three it misses are
+            // covered by browser tests that navigate by CLICKING
+            // (`page.ClickAsync "#stop-impersonating"`) instead of naming the URL.
+            //
+            // Barriering alone answers "no integration tests affected" for those —
+            // a green gate that verified nothing, which is far worse than the
+            // over-selection being fixed. A global "is the answer empty?" guard is
+            // not enough either: `CompanyProfile.saveProducts` keeps 4 unit tests,
+            // so the whole 537-test integration suite would vanish behind a
+            // non-empty total.
+            //
+            // Hence PER PROJECT: a barrier may narrow a project's selection, never
+            // empty it. A project the unbarriered walk covers and the barriered one
+            // does not is a project whose markers cannot be trusted for this change,
+            // so its unbarriered rows are restored. Same conservative-fallback shape
+            // as `EdgeEmission.resolveTargets` widening to the full candidate set.
+            //
+            // NOT a completeness guarantee. If a route has SOME attributed test and
+            // another that only clicks, the second is still dropped — the project is
+            // non-empty, so nothing fires. This bounds the blast radius; closing it
+            // needs Falco to attribute click-driven navigation. See the CHANGELOG.
+            let barrieredProjects = barriered |> List.map _.TestProject |> Set.ofList
+
+            let restored =
+                unbarriered
+                |> List.filter (fun t -> not (Set.contains t.TestProject barrieredProjects))
+
+            barriered @ restored
 
     /// Return all symbols stored for a given source file path.
     member _.GetSymbolsInFile(sourceFile: string) : SymbolInfo list =

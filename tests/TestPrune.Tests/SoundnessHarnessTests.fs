@@ -316,6 +316,185 @@ let ``soundness: RunAll is always sound`` () =
     test <@ selectedTestNames (RunAll(NewFileNotIndexed "src/New.fs")) = None @>
 
 // ---------------------------------------------------------------------------
+// The composition-root barrier, held to the same one-sided standard
+// ---------------------------------------------------------------------------
+//
+// `[<TestPrune.CompositionRoot>]` is the first feature that makes
+// selection NARROWER, so it is the first that can under-select. The property
+// above already covers the un-annotated case — every corpus it generates carries
+// no attributes, so its 200 cases now double as proof that an un-annotated repo
+// selects exactly what it always did.
+//
+// This is the annotated half. The oracle is again independent: the same BFS as
+// `trulyAffectedTests`, with one rule added — do not expand out of the barrier.
+// Writing it separately matters, because the interesting mistakes are all
+// off-by-one against that rule: blocking ENTRY to the barrier instead of exit
+// (drops the barrier's own dependents entirely), forgetting the seed exemption
+// (a change to the root would stop dead), or blocking every path to a node
+// rather than the one through the barrier (a set union does not work that way).
+
+/// Tests that must still run when `changed` changes, given `barrier` is a
+/// composition root. Independent walk: the barrier is VISITED but not EXPANDED,
+/// and it is exempt when it is itself a seed.
+let private trulyAffectedWithBarrier (corpus: Corpus) (barrier: string) (changed: Set<string>) : Set<string> =
+    let reverse =
+        [ for KeyValue(from, tos) in corpus.Edges do
+              for t in tos do
+                  yield t, from ]
+        |> List.groupBy fst
+        |> List.map (fun (k, pairs) -> k, pairs |> List.map snd)
+        |> Map.ofList
+
+    let barrierApplies = not (changed.Contains barrier)
+
+    let rec walk (frontier: Set<string>) (seen: Set<string>) =
+        if Set.isEmpty frontier then
+            seen
+        else
+            let next =
+                frontier
+                |> Set.toList
+                |> List.collect (fun s ->
+                    if barrierApplies && s = barrier then
+                        []
+                    else
+                        reverse |> Map.tryFind s |> Option.defaultValue [])
+                |> Set.ofList
+
+            let fresh = Set.difference next seen
+            walk fresh (Set.union seen fresh)
+
+    Set.intersect (walk changed changed) corpus.TestSymbols
+
+/// Attach the marker to one symbol of a generated corpus.
+let private withCompositionRoot (barrier: string) (corpus: Corpus) =
+    { corpus with
+        Result =
+            { corpus.Result with
+                Attributes =
+                    [ { SymbolFullName = barrier
+                        AttributeName = "CompositionRootAttribute"
+                        ArgsJson = "[]" } ] } }
+
+[<Fact>]
+let ``soundness: a composition-root marker never drops a test off the barrier path`` () =
+    let seed = 20260814
+    let rng = Random(seed)
+
+    let outcomes =
+        [ for case in 1..200 do
+              let n = 3 + (case % 24)
+              let bare = generateCorpus rng n
+
+              // Any symbol may be the root; the interesting cases are the ones
+              // where it sits between a change and some tests.
+              let barrier = bare.AllSymbols[rng.Next(0, List.length bare.AllSymbols)]
+              let corpus = withCompositionRoot barrier bare
+
+              let changed =
+                  corpus.AllSymbols
+                  |> List.filter (fun _ -> rng.Next(0, 5) = 0)
+                  |> function
+                      | [] -> [ List.head corpus.AllSymbols ]
+                      | xs -> xs
+                  |> Set.ofList
+
+              let store = fromAnalysisResults [ corpus.Result ]
+              let currentSymbols = mutatedSymbolsByFile corpus changed
+
+              let changedFiles =
+                  changed
+                  |> Set.toList
+                  |> List.map (fun s ->
+                      corpus.Result.Symbols |> List.find (fun sym -> sym.FullName = s) |> _.SourceFile)
+                  |> List.distinct
+
+              let selection, _ = selectTests store changedFiles currentSymbols
+              let expected = trulyAffectedWithBarrier corpus barrier changed
+
+              match selectedTestNames selection with
+              | None -> yield case, SkippedRunAll
+              | Some selected ->
+                  let missing = Set.difference expected selected
+
+                  if not (Set.isEmpty missing) then
+                      yield
+                          case,
+                          UnderSelected
+                              $"UNDER-SELECTION with barrier %s{barrier}: %d{Set.count missing} test(s) dropped.\n\
+                                 missing:  %A{Set.toList missing}\n\
+                                 changed:  %A{Set.toList changed}\n\
+                                 selected: %A{Set.toList selected}"
+                  elif Set.isEmpty expected then
+                      yield case, CheckedEmpty
+                  else
+                      yield case, CheckedSubset ]
+
+    let failures =
+        outcomes
+        |> List.choose (fun (case, outcome) ->
+            match outcome with
+            | UnderSelected report -> Some $"[seed=%d{seed} case=%d{case}]\n%s{report}"
+            | _ -> None)
+
+    test <@ List.isEmpty failures @>
+
+    // Same non-vacuity demand as the property above.
+    let realChecks =
+        outcomes
+        |> List.filter (fun (_, o) ->
+            match o with
+            | CheckedSubset -> true
+            | _ -> false)
+        |> List.length
+
+    test <@ realChecks >= 20 @>
+
+[<Fact>]
+let ``soundness: the barrier property detects a marker that blocks a seed change`` () =
+    // THE POSITIVE CONTROL for the property above. The single most likely way to
+    // get the barrier wrong is to drop the seed exemption, so a change TO the
+    // composition root stops at itself and selects nothing downstream. Build a
+    // corpus where that distinction is observable and prove the oracle demands
+    // the un-barriered answer — so the property above would fail if the
+    // implementation lost the exemption.
+    let rng = Random(7)
+
+    let case =
+        [ 1..200 ]
+        |> List.tryPick (fun _ ->
+            let corpus = generateCorpus rng 14
+
+            corpus.AllSymbols
+            |> List.tryPick (fun barrier ->
+                let changed = Set.singleton barrier
+                let viaSeed = trulyAffectedWithBarrier corpus barrier changed
+
+                // Observable only when the root actually has dependent tests.
+                if Set.isEmpty viaSeed then
+                    None
+                else
+                    Some(corpus, barrier, changed, viaSeed)))
+
+    match case with
+    | None ->
+        failwith "generator produced no corpus where a seeded barrier has dependent tests — the control cannot run"
+    | Some(corpus, barrier, changed, viaSeed) ->
+        // The oracle requires the FULL downstream set for a change to the root...
+        test <@ viaSeed = trulyAffectedTests corpus changed @>
+        test <@ not (Set.isEmpty viaSeed) @>
+
+        // ...and the implementation must actually deliver it.
+        let store = fromAnalysisResults [ (withCompositionRoot barrier corpus).Result ]
+
+        let selected =
+            store.QueryAffectedTests(Set.toList changed)
+            |> List.map _.SymbolFullName
+            |> Set.ofList
+
+        test <@ Set.isEmpty (Set.difference viaSeed selected) @>
+
+// ---------------------------------------------------------------------------
 // Not covered yet — deliberately recorded rather than implied
 // ---------------------------------------------------------------------------
 //

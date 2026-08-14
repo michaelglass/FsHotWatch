@@ -77,3 +77,60 @@ type DependsOnFileAttribute(path: string) =
 type DependsOnGlobAttribute(pattern: string) =
     inherit Attribute()
     member _.Pattern = pattern
+
+/// Declares the annotated symbol an APPLICATION COMPOSITION ROOT: a symbol that
+/// names the whole application rather than using any part of it.
+///
+/// The archetype is a routing table — `let handler route = match route with
+/// | Home -> Handlers.home | Admin -> Handlers.admin | ...` — which references
+/// every handler in the codebase for the sole purpose of wiring them up. DI
+/// container registration and a top-level `composeApp` are the same shape.
+///
+/// Why TestPrune needs to be told. Such a symbol is a genuine dependency edge, so
+/// the reverse-walk is right to traverse it, and that is exactly the problem: an
+/// integration-test fixture that boots the app depends on the composition root,
+/// so EVERY handler transitively reaches EVERY fixture-using test. One edited
+/// handler selects the whole suite. The edge is true; the relevance it implies is
+/// not. Nothing in the graph distinguishes "wires X up" from "calls X", so the
+/// application author has to say which symbol is the wiring.
+///
+/// SEMANTICS — read both halves, they are not symmetric:
+///
+///   * Relevance does not propagate THROUGH the annotated symbol. When the walk
+///     REACHES it from something it aggregates, the symbol is still reported
+///     affected, but the walk stops there: tests reached only by continuing past
+///     it are not selected on that basis.
+///   * Relevance does propagate FROM a change TO it. When the annotated symbol is
+///     itself in the change set, the walk proceeds normally and reaches
+///     everything downstream. "The app is wired up differently now" is precisely
+///     what host-booting tests verify, and they must run.
+///
+/// SAFETY. This narrows selection, so it is the direction that can silently skip
+/// a failing test. It is opt-in and applies to nothing else: an un-annotated
+/// codebase selects exactly what it selected before. Annotate ONLY a symbol whose
+/// references are pure composition — if callers depend on what it COMPUTES rather
+/// than on which parts it wires together, annotating it will drop real tests.
+/// Before annotating, make sure the coupling it carries is covered another way
+/// (TestPrune.Falco's route→test edges are the worked example: they attribute
+/// each route to its own tests directly, so the composition edge is redundant).
+///
+/// TestPrune matches this attribute BY NAME, exactly as it does `DependsOnFile`.
+/// Referencing this package is the convenient way to get it, not the only one — a
+/// codebase that would rather not take the dependency in production code can
+/// declare its own three-line equivalent and TestPrune will honour it:
+///
+///   type CompositionRootAttribute() =
+///       inherit System.Attribute()
+///
+/// Example:
+///   [&lt;TestPrune.CompositionRoot&gt;]
+///   let endpointsFor (route: Route) : HttpHandler = ...
+[<AttributeUsage(AttributeTargets.Method
+                 ||| AttributeTargets.Property
+                 ||| AttributeTargets.Class
+                 ||| AttributeTargets.Struct
+                 ||| AttributeTargets.Interface,
+                 AllowMultiple = false,
+                 Inherited = false)>]
+type CompositionRootAttribute() =
+    inherit Attribute()

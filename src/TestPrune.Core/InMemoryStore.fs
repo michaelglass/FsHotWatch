@@ -61,7 +61,17 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let testMethodNames = allTests |> List.map (fun t -> t.SymbolFullName) |> Set.ofList
     let allSymbolNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
-    let transitiveClosure (edges: Map<string, Set<string>>) (seeds: string list) : Set<string> =
+    /// Transitive closure over `edges`, stopping at `barriers`.
+    ///
+    /// A barrier node is VISITED (it is genuinely affected) but not EXPANDED: the
+    /// walk does not continue to whatever depends on it. Mirrors the `barriers`
+    /// CTE in `Database.QueryAffectedTests` — the two must agree, or the soundness
+    /// harness measures a different selector than the one that ships.
+    let transitiveClosureWithBarriers
+        (edges: Map<string, Set<string>>)
+        (barriers: Set<string>)
+        (seeds: string list)
+        : Set<string> =
         let rec walk visited frontier =
             match frontier with
             | [] -> visited
@@ -71,12 +81,29 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
                 else
                     let visited = Set.add node visited
 
-                    let neighbors = edges |> Map.tryFind node |> Option.defaultValue Set.empty
+                    let neighbors =
+                        if Set.contains node barriers then
+                            Set.empty
+                        else
+                            edges |> Map.tryFind node |> Option.defaultValue Set.empty
 
                     let newFrontier = Set.toList (neighbors - visited) @ rest
                     walk visited newFrontier
 
         walk Set.empty seeds
+
+    let transitiveClosure (edges: Map<string, Set<string>>) (seeds: string list) : Set<string> =
+        transitiveClosureWithBarriers edges Set.empty seeds
+
+    /// Symbols carrying the `[<TestPrune.CompositionRoot>]` marker. Computed once;
+    /// the per-query part is only subtracting that query's seeds.
+    let compositionRoots =
+        attrsBySymbol
+        |> Map.toList
+        |> List.filter (fun (_, attrs) ->
+            attrs |> List.exists (fun a -> Domain.CompositionRoot.isMarker a.AttributeName))
+        |> List.map fst
+        |> Set.ofList
 
     // Mirrors the aggregate-type expansion in Database.QueryAffectedTests — see the
     // CTE there for the two-phase lift/expand rationale.
@@ -115,8 +142,33 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
       QueryAffectedTests =
         fun changedNames ->
             let seeds = expandChanged changedNames
-            let affected = transitiveClosure reverseEdges seeds
-            allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
+
+            // A composition root that CHANGED is an ordinary seed — the walk runs
+            // past it in full, because rewired composition is exactly what
+            // host-booting tests verify. Only a root REACHED from something it
+            // aggregates stops the walk.
+            let barriers = Set.difference compositionRoots (Set.ofList seeds)
+
+            let testsIn (affected: Set<string>) =
+                allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
+
+            if Set.isEmpty compositionRoots then
+                testsIn (transitiveClosure reverseEdges seeds)
+            else
+                let barriered = testsIn (transitiveClosureWithBarriers reverseEdges barriers seeds)
+                let unbarriered = testsIn (transitiveClosure reverseEdges seeds)
+
+                // Same per-project fail-safe as `Database.QueryAffectedTests`, and it
+                // has to be the same rule or the soundness harness grades a more
+                // permissive selector than the one that ships: a barrier may narrow a
+                // project's selection, never empty it.
+                let barrieredProjects = barriered |> List.map _.TestProject |> Set.ofList
+
+                let restored =
+                    unbarriered
+                    |> List.filter (fun t -> not (Set.contains t.TestProject barrieredProjects))
+
+                barriered @ restored
       GetAllSymbols = fun () -> allSymbols
       GetAllSymbolNames = fun () -> allSymbolNames
       GetReachableSymbols =
