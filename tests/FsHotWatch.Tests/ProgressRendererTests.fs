@@ -547,8 +547,13 @@ let ``agent fail summary uses first non-empty line`` () =
     // quoted summary. What matters is that the output stays a single line.
     test <@ not (lines.[0].Contains "\n") @>
 
+/// AUTOMATION-201. The budget is still 80 characters — this is a fixed-width status
+/// line — but the marker must NAME the omission. The reported symptom was
+/// `4 waiting on build (tests did not run): Intelligence.Build.Dev.Tests, Intelli...`,
+/// where a bare `"..."` is indistinguishable from prose and the reader concludes they
+/// have seen the whole list. A stated count cannot be misread that way.
 [<Fact(Timeout = 15000)>]
-let ``agent fail summary truncated to roughly 80 chars`` () =
+let ``agent fail summary truncates to 80 chars and NAMES what it dropped`` () =
     let long = String.replicate 200 "x"
     let lines = agentLine "lint" (failStatus long)
     let line = lines.[0]
@@ -556,7 +561,33 @@ let ``agent fail summary truncated to roughly 80 chars`` () =
     test <@ m.Success @>
     let summary = m.Groups.[1].Value
     test <@ summary.Length <= 80 @>
-    test <@ summary.EndsWith "..." @>
+
+    // Not a bare ellipsis: the omitted count is stated, so a shortened summary can
+    // never read as a complete one.
+    test <@ not (summary.EndsWith "...") @>
+    test <@ summary.EndsWith "more)" @>
+
+    // And the count is HONEST — kept + omitted is the whole original string.
+    let omitted =
+        System.Text.RegularExpressions.Regex.Match(summary, @"\(\+(\d+) more\)$").Groups.[1].Value
+        |> int
+
+    let kept = summary.Substring(0, summary.IndexOf '…')
+    test <@ kept.Length + omitted = long.Length @>
+
+/// A summary already inside the budget is passed through untouched — no marker, no
+/// ellipsis. Without this, a truncator that mangled every string would pass the test
+/// above just as well.
+[<Fact(Timeout = 15000)>]
+let ``agent fail summary under the budget is left exactly as-is`` () =
+    let short = "lint failed on 2 files"
+    let lines = agentLine "lint" (failStatus short)
+
+    let m =
+        System.Text.RegularExpressions.Regex.Match(lines.[0], "summary=\"([^\"]*)\"")
+
+    test <@ m.Success @>
+    test <@ m.Groups.[1].Value = short @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent fail summary escapes embedded double quotes`` () =

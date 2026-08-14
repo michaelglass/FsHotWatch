@@ -46,6 +46,7 @@
     <Compile Include="IpcTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
     <Compile Include="FlakinessTests.fs" />

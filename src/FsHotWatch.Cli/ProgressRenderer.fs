@@ -34,8 +34,25 @@ let private padName (name: string) = name.PadRight(24)
 /// daemon's timestamps).
 let private clock (t: DateTime) = t.ToString("HH:mm:ss")
 
+/// Shorten to the 80-character budget this fixed-width surface has, NAMING what was
+/// dropped (AUTOMATION-201).
+///
+/// A bare `"..."` is indistinguishable from prose. The reported symptom was a status
+/// line reading `4 waiting on build (tests did not run): Intelligence.Build.Dev.Tests,
+/// Intelli...` — a reader cannot tell a shortened list from a complete one, so the
+/// natural conclusion is that they have seen the whole story. Stating the omitted
+/// count makes that impossible; the untruncated text is always in the ledger entry
+/// and the log, which is where the remedy lives too.
 let private truncateTo80 (s: string) : string =
-    if s.Length <= 80 then s else s.Substring(0, 77) + "..."
+    if s.Length <= 80 then
+        s
+    else
+        // The marker's own length is computed from the WORST case (dropping the whole
+        // string), so its digit count can only shrink and the result is never longer
+        // than the 80 the contract promises.
+        let marker (omitted: int) = $"… (+%d{omitted} more)"
+        let keep = max 0 (80 - (marker s.Length).Length)
+        s.Substring(0, keep) + marker (s.Length - keep)
 
 /// Truncate a potentially multi-line error to its first non-empty line, then
 /// shorten to roughly 80 printable characters.

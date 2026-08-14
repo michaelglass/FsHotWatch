@@ -8812,3 +8812,181 @@ let ``AUTOMATION-303: an unanalysable file that was DELETED stops blocking the v
         // widen the next run.
         test <@ not (ledger.ContainsKey deleted) @>
         test <@ not (after.UnanalyzableFiles.ContainsKey "src/Gone.fs") @>)
+
+// =============================================================================
+// AUTOMATION-201 — the stale-artifact PREFLIGHT.
+//
+// `ArtifactFreshness.stale` was always right about WHAT was stale; it was asked too
+// late. Its single call site sat inside the per-config body of the PARALLEL run loop,
+// so a group-A project wrote its report before group B's staleness had been looked at
+// — a three-minute partial-execution red that reads like progress.
+//
+// These tests are about ORDER, and they settle it with a file on disk rather than an
+// assertion about intent: each runner is a real `sh` process that `touch`es a marker.
+// A marker that exists is a suite that ran. Nothing here trusts a log line.
+// =============================================================================
+
+/// A synthetic two-project repo in the real MSBuild output layout, with runners that
+/// leave evidence. `Common` is referenced by both test projects and its DLL is copied
+/// into each of their output dirs — the copy that goes stale in the field.
+type private PreflightSynth =
+    { Root: string
+      P1Proj: string
+      P2Proj: string
+      P1Marker: string
+      P2Marker: string
+      P2Src: string
+      P2Dll: string
+      CommonDll: string
+      CommonCopyInP2: string
+      BuiltAt: DateTime }
+
+let private preflightSynth (root: string) : PreflightSynth =
+    let builtAt = DateTime.UtcNow.AddHours(-1.0)
+    let sourcedAt = builtAt.AddMinutes(-10.0)
+
+    let commonDir = Path.Combine(root, "Common")
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
+
+    writeAt (Path.Combine(commonDir, "Common.fsproj")) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+    writeAt (Path.Combine(commonDir, "Common.fs")) "module Common" sourcedAt
+    writeAt (Path.Combine(commonOut, "Common.dll")) "COMMON-V2" builtAt
+
+    let mkTestProject (name: string) =
+        let dir = Path.Combine(root, name)
+        let out = p [ dir; "bin"; "Debug"; "net10.0" ]
+
+        writeAt
+            (Path.Combine(dir, $"{name}.fsproj"))
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Common/Common.fsproj\" />\n  </ItemGroup>\n</Project>"
+            sourcedAt
+
+        writeAt (Path.Combine(dir, $"{name}.fs")) $"module {name}" sourcedAt
+        writeAt (Path.Combine(out, name)) "" builtAt // apphost — the presence probe's target
+        writeAt (Path.Combine(out, $"{name}.dll")) "" builtAt
+        writeAt (Path.Combine(out, "Common.dll")) "COMMON-V2" builtAt // a CURRENT copy
+        dir, out
+
+    let p1Dir, _ = mkTestProject "P1"
+    let p2Dir, p2Out = mkTestProject "P2"
+
+    { Root = root
+      P1Proj = Path.Combine(p1Dir, "P1.fsproj")
+      P2Proj = Path.Combine(p2Dir, "P2.fsproj")
+      P1Marker = Path.Combine(root, "p1-ran")
+      P2Marker = Path.Combine(root, "p2-ran")
+      P2Src = Path.Combine(p2Dir, "P2.fs")
+      P2Dll = Path.Combine(p2Out, "P2.dll")
+      CommonDll = Path.Combine(commonOut, "Common.dll")
+      CommonCopyInP2 = Path.Combine(p2Out, "Common.dll")
+      BuiltAt = builtAt }
+
+/// A runner that leaves proof it ran, and carries the `--project` the freshness gate
+/// derives its target from. `sh` ignores the trailing args (they become positional
+/// params of the `-c` script), so the process is a plain `touch` either way.
+let private markerRunner (project: string) (marker: string) (projFile: string) : TestConfig =
+    { Project = project
+      Command = "sh"
+      Args = $"-c \"touch {marker}; exit 0\" run --project {projFile} --no-build"
+      Group = "default"
+      Environment = []
+      FilterTemplate = None
+      ClassJoin = " "
+      TimeoutSec = None
+      ReportVerificationFormat = Disabled }
+
+/// Drive one real run of both projects and return the repo root's marker facts.
+/// Seeds a covering symbol per project and a pending queue naming both, so a
+/// `BuildCompleted` runs BOTH — the two-suite shape the ordering bug needs.
+let private drivePreflightRun (tmpDir: string) (s: PreflightSynth) =
+    let dbPath = Path.Combine(tmpDir, "tp.db")
+    let db = Database.create dbPath
+    // DISTINCT source files per symbol: two symbols sharing one file collapse into a
+    // single affected test, which would select only ONE project and quietly turn the
+    // "the fresh project did not run" assertion into "the fresh project was never
+    // selected" — a test that passes for the wrong reason.
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.a" "A.fs" "P1" "P1Tests" "aTest"
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.b" "B.fs" "P2" "P2Tests" "bTest"
+    FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.a"; "Lib.b" ])
+
+    let configs =
+        [ markerRunner "P1" s.P1Marker s.P1Proj; markerRunner "P2" s.P2Marker s.P2Proj ]
+
+    let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+    let handler = create dbPath tmpDir (Some configs) None None None None []
+    host.RegisterHandler(handler)
+
+    let await = beginAwaitNextTerminal host "test-prune"
+    host.EmitBuildCompleted(BuildSucceeded)
+    await.Wait(TimeSpan.FromSeconds 25.0) |> ignore
+    waitForQuiescent host 5000
+
+/// POSITIVE CONTROL, and it comes first on purpose. Every assertion below about a
+/// suite NOT running is worthless without it: a preflight that refused everything —
+/// or a harness that never launched anything — would satisfy those tests trivially.
+/// This pins that the very same path DOES run both suites when the tree is fresh.
+[<Fact(Timeout = 40000)>]
+let ``AUTOMATION-201: POSITIVE CONTROL — a fresh tree runs every suite`` () =
+    withTempDir "tp-preflight-fresh" (fun tmpDir ->
+        let s = preflightSynth tmpDir
+        drivePreflightRun tmpDir s
+
+        // Both processes really ran. This is the control the refusal tests lean on.
+        test <@ File.Exists s.P1Marker @>
+        test <@ File.Exists s.P2Marker @>)
+
+/// THE ORDERING TEST. P2's source is edited after its assembly was compiled — the
+/// unhealable `AssemblyOlderThanSource` case, which only a real build can clear.
+///
+/// RED BEFORE THE FIX: with the freshness gate living inside the parallel per-config
+/// body, P1 was examined, found fresh and LAUNCHED, and only then was P2 examined and
+/// deferred — so `p1-ran` existed and this test failed on its first assertion. That is
+/// the three-minute partial-execution red, reproduced in miniature.
+[<Fact(Timeout = 40000)>]
+let ``AUTOMATION-201: a stale project refuses the run BEFORE any suite executes`` () =
+    withTempDir "tp-preflight-stale" (fun tmpDir ->
+        let s = preflightSynth tmpDir
+
+        // The trigger from the field: a source edit under a live daemon. P2's compile
+        // has not run since, so its assembly cannot be trusted.
+        File.SetLastWriteTimeUtc(s.P2Src, s.BuiltAt.AddMinutes 30.0)
+
+        drivePreflightRun tmpDir s
+
+        // NOTHING launched — not the stale project, and not the fresh one either.
+        // A run whose tree is provably not built cannot reach a green verdict, so
+        // spending minutes on the projects that happen to be fresh buys nothing but
+        // the appearance of progress.
+        test <@ not (File.Exists s.P2Marker) @>
+        test <@ not (File.Exists s.P1Marker) @>)
+
+/// The heal, end to end. P2's copy of `Common.dll` holds bytes no current build output
+/// holds — the same-timestamp/different-bytes inversion MSBuild's incremental copy
+/// leaves behind. The repair is provably complete (write the origin's bytes across),
+/// so the preflight fixes it, re-reads the bytes, and lets the run proceed.
+///
+/// RED BEFORE THE FIX: P2 was deferred as "waiting on build" and never ran, so
+/// `p2-ran` was absent. Nothing repaired anything.
+[<Fact(Timeout = 40000)>]
+let ``AUTOMATION-201: a stale build-output COPY is repaired and the run proceeds`` () =
+    withTempDir "tp-preflight-heal" (fun tmpDir ->
+        let s = preflightSynth tmpDir
+
+        // The inversion: different bytes, and the mtime MSBuild would compare as equal,
+        // so no plain incremental build re-copies it.
+        File.WriteAllText(s.CommonCopyInP2, "COMMON-V1-STALE")
+        File.SetLastWriteTimeUtc(s.CommonCopyInP2, s.BuiltAt)
+
+        drivePreflightRun tmpDir s
+
+        // Repaired, so BOTH suites ran ...
+        test <@ File.Exists s.P1Marker @>
+        test <@ File.Exists s.P2Marker @>
+
+        // ... the bytes are the origin's ...
+        test <@ File.ReadAllText s.CommonCopyInP2 = File.ReadAllText s.CommonDll @>
+
+        // ... and the repair was RECORDED, not just done. A heal that fires every run
+        // is itself the finding, and nobody greps history for it.
+        let ledger = FsHotWatch.TestPrune.StaleArtifactPreflight.loadLedger tmpDir
+        test <@ ledger |> List.exists (fun r -> r.File = s.CommonCopyInP2) @>)
