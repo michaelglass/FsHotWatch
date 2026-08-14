@@ -134,7 +134,15 @@ let private renderCompact
                 | Some t -> $" %s{t}"
                 | None -> ""
 
-            let glyph = if withIssues then Glyph.warn else Glyph.check
+            // Fail closed, second rule: a run that VERIFIED NOTHING is not a ✓ either
+            // (AUTOMATION-198). The status stays `Completed` — nothing failed — so the
+            // glyph is what has to stop reading as success; the words are already in the
+            // summary, which says so in its first two.
+            let glyph =
+                if withIssues || ParsedPluginStatus.verifiedNothing parsed then
+                    Glyph.warn
+                else
+                    Glyph.check
 
             $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
         | StatusView.Failed(err, _) ->
@@ -212,6 +220,9 @@ let private renderCompact
 let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
     match parsed.Status with
     | StatusView.Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
+    // A run that VERIFIED NOTHING is not a success — same rule as compact
+    // (AUTOMATION-198), asked through the one predicate so the two cannot drift.
+    | StatusView.Completed _ when ParsedPluginStatus.verifiedNothing parsed -> Glyph.warn
     | StatusView.Completed _ -> Glyph.check
     | StatusView.Failed _ when isTimedOut parsed -> Glyph.timeout
     | StatusView.Failed _ -> Glyph.cross

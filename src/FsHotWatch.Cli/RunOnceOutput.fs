@@ -68,6 +68,24 @@ type ParsedPluginStatus =
       LastRun: RunRecord option
       Diagnostics: DiagnosticCounts }
 
+module ParsedPluginStatus =
+    /// Did the run behind this status VERIFY NOTHING — did it complete having executed
+    /// no test at all (AUTOMATION-198)?
+    ///
+    /// Read off the run record's summary through `RunSummary.saysNothingVerified`, the
+    /// one reader for the one writer. THE definition, so the three surfaces that must
+    /// refuse a `✓` for it — compact, verbose, and `pluginOutcomeOf` (which drives both
+    /// agent mode and `plugins[]` in the verdict file) — cannot disagree about which
+    /// runs those are.
+    ///
+    /// FALSE when there is no run record: that absence is its own fail-closed rule
+    /// (`CompletedNoRecordText`), with its own words, and answering "verified nothing"
+    /// here would put the wrong sentence on it.
+    let verifiedNothing (parsed: ParsedPluginStatus) : bool =
+        match parsed.LastRun with
+        | Some { Summary = Some s } -> RunSummary.saysNothingVerified s
+        | _ -> false
+
 /// Describes a FileCommand-style plugin run for staleness detection: when did
 /// it last start, and what input files (relative to repoRoot) does it depend on?
 type PluginRunInfo =
