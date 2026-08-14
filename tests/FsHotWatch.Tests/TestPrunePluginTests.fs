@@ -7687,9 +7687,54 @@ let ``AUTOMATION-125: the zero-affected skip (0 ran, green) cannot launder an ou
     test <@ final.OutstandingFailures |> List.exists (fun f -> f.Project = "ProjA") @>
     test <@ ledgerFilesOf ledger |> List.exists (fun f -> f.Contains("ProjA")) @>
 
+    // `Failed`, specifically: the OUTSTANDING RED is what makes this one a red. A run
+    // that executes nothing with NO red outstanding is non-green for a different reason
+    // and in a different way — `Completed` carrying a verified-nothing verdict, which the
+    // AUTOMATION-198 test below pins. Neither may be a green.
     match lastStatus statuses with
     | PluginStatus.Failed _ -> ()
-    | other -> Assert.Fail($"a run that executed nothing must not go green over an outstanding red, got %A{other}")
+    | other -> Assert.Fail($"a run that executed nothing must not launder an outstanding red, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-198: a run that executed NO project records a verdict that says nothing was verified`` () =
+    // The same degenerate skip lifecycle as the AUTOMATION-125 test above, minus the
+    // outstanding red: empty results, empty selection, `Normal` outcome, nothing owed.
+    // This is the state that put `✓ test-prune — 0 passed, 0 failed in 0 projects` on a
+    // check that verified nothing and then (correctly) refused to certify it.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let _ctx, statuses, _ledger, _final =
+        driveRuns handler [ testsFinishedEvent [] emptyLaunch ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) ->
+        // The STATUS stays `Completed` — nothing failed, and a `Failed` would turn
+        // `check`'s honest exit 3 (NO VERDICT) into an exit 1 (failures found). The
+        // VERDICT is what has to stop reading as a pass; every renderer glyphs off it.
+        test <@ RunSummary.saysNothingVerified verdict.Summary @>
+        // Never the counts line: "0 passed, 0 failed" is a pass report, and `in 0
+        // projects` is the only part of it that says otherwise.
+        test <@ not (verdict.Summary.Contains "0 passed") @>
+    | other -> Assert.Fail($"a run that executed nothing must complete, not fail, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-198: a run that DID execute keeps its counts verdict`` () =
+    // Positive control for the test above: the same path, one project that actually ran.
+    // Without this, "the verdict says nothing was verified" would pass just as well if
+    // every run started claiming it.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let _ctx, statuses, _ledger, _final =
+        driveRuns handler [ testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]) ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) ->
+        test <@ not (RunSummary.saysNothingVerified verdict.Summary) @>
+        test <@ verdict.Summary.Contains "1 passed, 0 failed" @>
+        test <@ verdict.Summary.Contains "in 1 projects" @>
+    | other -> Assert.Fail($"a run that executed and passed must complete green, got %A{other}")
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not a class-filtered one`` () =

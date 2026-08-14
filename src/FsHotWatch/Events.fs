@@ -116,6 +116,39 @@ module RunVerdict =
 
         { summary = summary; elapsed = elapsed }
 
+/// The vocabulary a TERMINAL status uses to say "this run VERIFIED NOTHING".
+///
+/// A run can finish without failing and still prove nothing — no test project was
+/// selected, so no test binary was invoked. The STATUS for that is `Completed`:
+/// nothing FAILED, and reporting `Failed` would both claim a failure that did not
+/// happen and turn `check`'s honest exit 3 ("NO VERDICT — the tests that ran were no
+/// tests ran") into an exit 1 ("failures found"). But no surface may render it as a
+/// bare `✓` either: a reader scanning plugin glyphs would see success for a run that
+/// executed nothing (AUTOMATION-198).
+///
+/// The renderer's only channel to a plugin's terminal is the run summary, so the
+/// marker is WRITTEN here by one constructor and READ here by one predicate — the
+/// same single-writer/single-reader discipline as `RunVerification.token`/`tryParse`.
+/// A producer that hand-wrote the sentence and a consumer that hand-matched it are
+/// how the two ends drift, and the drift fails OPEN (back to a ✓).
+module RunSummary =
+    /// Leads the summary, so the fact survives truncation and so the reader meets it
+    /// before any count. Upper-case because it is the headline, not a footnote.
+    [<Literal>]
+    let private NothingVerifiedPrefix = "NOTHING VERIFIED: "
+
+    /// The summary for a run that proved nothing. `detail` states what it did instead
+    /// — e.g. "0 test project(s) ran, no test executed".
+    let nothingVerified (detail: string) : string = NothingVerifiedPrefix + detail
+
+    /// Does this summary state that the run verified nothing?
+    ///
+    /// `StartsWith`, not equality: the cache-replay path APPENDS " (cached)" to the
+    /// summary it replays (`PluginFramework.markCached`), and a replayed nothing-run
+    /// verified exactly as much as the original did.
+    let saysNothingVerified (summary: string) : bool =
+        summary.StartsWith(NothingVerifiedPrefix, System.StringComparison.Ordinal)
+
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
 type PluginStatus =

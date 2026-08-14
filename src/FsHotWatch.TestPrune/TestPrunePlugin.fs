@@ -4762,8 +4762,32 @@ let create
                                 // itself. There is no separate summary channel left to
                                 // forget or contradict (AUTOMATION-99).
                                 if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit && carriedCount = 0 then
+                                    // AUTOMATION-198. Nothing failed, nothing is owed — and on a
+                                    // run that EXECUTED NOTHING that is not a pass, it is an
+                                    // absence of evidence. `runSummary` would report it as
+                                    // "0 passed, 0 failed in 0 projects", which is how a plugin
+                                    // line goes `✓` for a check that verified nothing while the
+                                    // verdict layer is (correctly) refusing it exit 0.
+                                    //
+                                    // The STATUS stays `Completed`: nothing failed, and a
+                                    // `Failed` here would claim one — turning `check`'s honest
+                                    // exit 3 "NO VERDICT" into an exit 1 "failures found". It is
+                                    // the SUMMARY that carries the fact, and every renderer keys
+                                    // its glyph off it (`ParsedPluginStatus.verifiedNothing`).
+                                    //
+                                    // Asked of `RunVerification`, THE derivation, so this is a
+                                    // question about the RUN ("did anything execute?") and not
+                                    // about one selection bug: any future path that lands an
+                                    // executed-nothing run here is covered without a new arm.
+                                    let verdictSummary =
+                                        if RunVerification.verifiedNothing (verificationOf results.Results) then
+                                            RunSummary.nothingVerified
+                                                $"%d{total} test project(s) ran, no test executed"
+                                        else
+                                            runSummary
+
                                     ctx.ReportStatus(
-                                        Completed(DateTime.UtcNow, RunVerdict.create runSummary results.Elapsed)
+                                        Completed(DateTime.UtcNow, RunVerdict.create verdictSummary results.Elapsed)
                                     )
                                 elif failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
                                     // AUTOMATION-125. Everything this run RAN passed, the

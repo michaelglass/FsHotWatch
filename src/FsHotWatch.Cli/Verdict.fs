@@ -86,7 +86,11 @@ module PluginOutcome =
 ///
 ///   * a plugin Running past the wedge bound is `Wedged`, never merely `running`;
 ///   * a `Completed` carrying NO run record can never token as `ok` — a ✓ with no
-///     `elapsed:` is not evidence. No record ⇒ no green.
+///     `elapsed:` is not evidence. No record ⇒ no green;
+///   * a `Completed` whose run record says the run VERIFIED NOTHING can never token as
+///     `ok` either — a run that executed no test is an absence of evidence, not a pass
+///     (AUTOMATION-198). `Warn`, not `Fail`: nothing broke, so this must not redden a
+///     verdict that the scope layer is already refusing with its own exit 3.
 let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : PluginOutcome option =
     let okOrDiag () =
         if ErrorLedger.DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
@@ -120,6 +124,13 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
     // Fail closed: Completed with no run record can never be `ok`. A clean ledger
     // downgrades to `warn`; failing diagnostics still take precedence.
     | StatusView.Completed _ when parsed.LastRun.IsNone ->
+        match okOrDiag () with
+        | PluginOutcome.Ok -> Some PluginOutcome.Warn
+        | other -> Some other
+    // Same fail-closed shape for a run that VERIFIED NOTHING: a clean ledger downgrades
+    // to `warn` (the summary says what happened), failing diagnostics still take
+    // precedence.
+    | StatusView.Completed _ when ParsedPluginStatus.verifiedNothing parsed ->
         match okOrDiag () with
         | PluginOutcome.Ok -> Some PluginOutcome.Warn
         | other -> Some other

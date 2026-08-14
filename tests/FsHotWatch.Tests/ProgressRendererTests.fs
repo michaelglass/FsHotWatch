@@ -864,3 +864,129 @@ let ``verbose Completed with zero elapsed states it in words instead of omitting
     let lines = renderPlugin Verbose true now "build" parsed |> stripMany
     test <@ lines |> List.exists (fun l -> l.Contains "elapsed: not measured") @>
     test <@ lines |> List.exists (fun l -> l.Contains "started:") @>
+
+// ---------------- AUTOMATION-198: a run that verified nothing is not a success ----------------
+//
+// The observed defect: `fshw check` on a diff with four brand-new tests rendered
+// `✓ test-prune — 0 passed, 0 failed in 0 projects` and then refused to certify (exit 3,
+// NO VERDICT). A reader scanning plugin glyphs saw success; only the verdict disagreed.
+//
+// Every one of these has a PAIRED positive control on the same rendering path: "it isn't
+// green" passes trivially if the renderer stopped emitting ✓ at all.
+
+/// A terminal that carries the verified-nothing verdict — the summary the test-prune
+/// plugin records for a run that executed no project. Built through `RunSummary`, the
+/// producer's own constructor, so a change to the marker breaks the test rather than
+/// silently making it assert nothing.
+let private verifiedNothingStatus () : ParsedPluginStatus =
+    okStatus (Some(RunSummary.nothingVerified "0 test project(s) ran, no test executed"))
+
+/// The control: a run that DID execute, worded exactly as the healthy line is. Note it
+/// carries `selected: no` too — that is a MODE flag, not a count, and no surface may
+/// read a verdict out of it.
+let private genuinePassStatus () : ParsedPluginStatus =
+    okStatus (Some "6 passed, 0 failed in 6 projects (selected: no, slowest: Unit 12.0s)")
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: compact renders a verified-nothing run as warn, never a check`` () =
+    let lines =
+        renderPlugin Compact true now "test-prune" (verifiedNothingStatus ())
+        |> stripMany
+
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "✓") @>
+    test <@ lines.[0].Contains "NOTHING VERIFIED" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: compact still renders a run that DID execute as a check`` () =
+    // Positive control for the test above.
+    let lines =
+        renderPlugin Compact true now "test-prune" (genuinePassStatus ()) |> stripMany
+
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].Contains "✓" @>
+    test <@ not (lines.[0].Contains "⚠") @>
+    test <@ lines.[0].Contains "6 passed, 0 failed in 6 projects" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: verbose renders a verified-nothing run as warn, never a check`` () =
+    let lines =
+        renderPlugin Verbose true now "test-prune" (verifiedNothingStatus ())
+        |> stripMany
+
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "✓") @>
+    test <@ lines |> List.exists (fun l -> l.Contains "NOTHING VERIFIED") @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: verbose still renders a run that DID execute as a check`` () =
+    // Positive control for the test above.
+    let lines =
+        renderPlugin Verbose true now "test-prune" (genuinePassStatus ()) |> stripMany
+
+    test <@ lines.[0].Contains "✓" @>
+    test <@ not (lines.[0].Contains "⚠") @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: agent tokens a verified-nothing run as warn, never ok`` () =
+    let lines = agentLine "test-prune" (verifiedNothingStatus ())
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].StartsWith "test-prune: warn" @>
+    test <@ lines.[0].Contains "NOTHING VERIFIED" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: agent still tokens a run that DID execute as ok`` () =
+    // Positive control for the test above.
+    let lines = agentLine "test-prune" (genuinePassStatus ())
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].StartsWith "test-prune: ok" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: a REPLAYED verified-nothing run is not a check either`` () =
+    // The cache-replay path appends " (cached)" to the summary it replays. A replay of a
+    // run that executed nothing verified exactly as much as the original did, so the
+    // marker is matched on the PREFIX, not by equality.
+    let replayed =
+        okStatus (
+            Some(
+                RunSummary.nothingVerified "0 test project(s) ran, no test executed"
+                + " (cached)"
+            )
+        )
+
+    let lines = renderPlugin Compact true now "test-prune" replayed |> stripMany
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "✓") @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: a verified-nothing run warns without reddening the verdict`` () =
+    // `Warn`, not `Fail`: nothing BROKE. The scope layer already refuses this run its
+    // exit 0 (`CheckOutcome.UnearnedScope NoTestsRun`, exit 3 — NO VERDICT); tokening it
+    // `fail` here would convert that honest refusal into a claim that tests failed.
+    let outcome =
+        FsHotWatch.Cli.Verdict.pluginOutcomeOf true now (verifiedNothingStatus ())
+
+    test <@ outcome = Some FsHotWatch.Cli.Verdict.PluginOutcome.Warn @>
+
+    test <@ outcome |> Option.map FsHotWatch.Cli.Verdict.PluginOutcome.isFailing = Some false @>
+
+    // Control: the executing run still tokens `Ok` on the same path.
+    test
+        <@
+            FsHotWatch.Cli.Verdict.pluginOutcomeOf true now (genuinePassStatus ()) = Some
+                FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-198: agent nextStep after a verified-nothing run points at status, never done`` () =
+    // End of the same thread: an agent that reads `next: done` off a run that executed
+    // no test has been told the check is finished and clean. It is neither.
+    let lines = agentAll [ "test-prune", verifiedNothingStatus () ]
+    let next = lines |> List.last
+    test <@ next.Contains "status" @>
+    test <@ not (next.Contains "done") @>
+
+    // Control: the executing run still ends the loop.
+    let done_ = agentAll [ "test-prune", genuinePassStatus () ] |> List.last
+    test <@ done_.Contains "done" @>
