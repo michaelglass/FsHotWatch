@@ -33,6 +33,50 @@ Also: `waiting on build` no longer says only "re-run once the build settles" —
 instruction that could not work. It now names `fshw confirm` as the escape and says
 that restarting the daemon is not one (the task cache is on disk and survives `stop`).
 
+### test-prune: stale build output is caught before the suite runs, and repaired
+
+A stale test-output dependency used to surface roughly three minutes into a run.
+The freshness gate itself was right — it refuses to run `--no-build` against bytes
+that do not match the sources — but its only call site sat inside the per-config
+body of the PARALLEL run loop. A project in group A had already run its suite and
+written its report before group B's staleness was even looked at, so the result was
+a partial-execution red that reads like progress. It was hit three times in one
+day, and the third trigger was a plain `jj` merge of `main` into a workspace: no
+edit at all, just a working copy rewritten under a live daemon.
+
+The comparison is pure file I/O and takes milliseconds, so it now runs as a
+PREFLIGHT over every configured project before anything launches. If anything is
+stale, nothing spawns.
+
+It also repairs what is provably repairable. When a dependency assembly or fixture
+in a test project's output dir holds bytes that no current build output holds —
+MSBuild's incremental copy comparing equal timestamps and skipping the copy — the
+preflight writes the origin's bytes across, re-reads them, and lets the run
+proceed. Exactly that one case is repaired: a stale COMPILE and an unreadable
+project file are refused instead, because there is no file on disk holding the
+bytes they need and inventing them is how silent degradation starts.
+
+Every repair is logged by name AND recorded to `.fshw/test-prune/stale-heals.json`,
+which drives a circuit breaker: ten repairs of one file inside two days stop being
+a repair and become a finding, so the run refuses and names the file and the count
+rather than absorbing the inversion forever. The breaker gates the REPAIR, not the
+run, so a tripped breaker on a clean tree changes nothing — and its message names
+its own reset (delete the ledger; the window also ages out on its own).
+
+Refusals now state a remedy. Every one names `dotnet build`, and the copy case adds
+that a timestamp-inverted copy needs `dotnet build --no-incremental`. None of them
+says "stop the daemon": the task cache is file-backed and survives a restart, so
+that folk remedy never cleared anything by itself.
+
+### cli: a shortened agent summary now says what it dropped
+
+The agent status line is a fixed-width surface and still truncates to 80
+characters, but a bare `...` is indistinguishable from prose — a reader seeing
+`4 waiting on build (tests did not run): Intelligence.Build.Dev.Tests, Intelli...`
+has no way to tell a shortened list from a complete one. Truncation now states the
+omitted count instead, and the untruncated detail is in the ledger entry and log
+where the remedy also lives.
+
 ### cli/test-prune: a run that tested nothing no longer renders as a ✓
 
 `fshw check` on a run that selected ZERO test projects printed
