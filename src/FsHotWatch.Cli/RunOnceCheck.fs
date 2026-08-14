@@ -348,7 +348,9 @@ let runOnceAndVerdict
             UI.fail
                 "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
                  tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
-                 the build settles."
+                 the build settles.\nIf an otherwise-unchanged re-run says this again, the build is serving a \
+                 cached result its outputs no longer support: run `fshw confirm`, which forces a real build. \
+                 Restarting the daemon does NOT — the task cache is on disk."
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
             // Its own words, not `confirm`'s: not "the run was too narrow" but "we could
             // not see what the run was".

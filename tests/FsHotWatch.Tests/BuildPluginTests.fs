@@ -1261,3 +1261,169 @@ let ``the build plugin's force-rebuild command matches the name the CLI sends`` 
     let names = handler.Commands |> List.map fst
     let expected = FsHotWatch.Cli.IpcParsing.ForceRebuildCommand
     test <@ names |> List.contains expected @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-245 — re-verify the ARTIFACTS at cache-REPLAY time, not only on the
+// real-build path.
+//
+// 224 gave `confirm` an escape hatch. `check` kept the deadlock, and it is reachable
+// without anyone killing a build: the cache key is a content merkle over SOURCES, so a
+// file rewritten to byte-identical content (a formatter's no-op pass), a `bin/` from
+// another workspace, or a checkout with no `bin/` at all leaves the key unmoved. The
+// stored `BuildPassed` replays as "built N projects (cached)", TestPrune's freshness
+// gate compares MTIMES, correctly finds the output older than its source, and defers.
+// Neither side is wrong and neither side moves — and because nothing in the loop is a
+// function of the previous attempt, re-running `check` reproduces it verbatim.
+//
+// The arbiter is the artifacts: a cache hit may not assert freshness it has never
+// confirmed. Every absence assertion below ("the cache is NOT served") is paired with a
+// positive control on the SAME detector ("with fresh artifacts it IS served"), because a
+// gate that suppressed the key unconditionally would satisfy the absence half while
+// turning every check into a full rebuild.
+// ---------------------------------------------------------------------------
+
+/// A one-project graph on disk: `MyLib.fsproj` + `Lib.fs` + a fake DLL at exactly the
+/// canonical path `GetCanonicalDllPath` computes. The DLL starts NEWER than the source
+/// (i.e. fresh), so each test states its own staleness rather than inheriting it.
+let private withOneProjectGraph (label: string) (body: ProjectGraph * string * string -> 'a) : 'a =
+    withTempDir label (fun tmpDir ->
+        let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
+        let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
+        System.IO.Directory.CreateDirectory(dllDir) |> ignore
+
+        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+        System.IO.File.WriteAllText(dllPath, "fake-dll")
+
+        let now = DateTime.UtcNow
+        System.IO.File.SetLastWriteTimeUtc(srcPath, now - TimeSpan.FromMinutes 10.0)
+        System.IO.File.SetLastWriteTimeUtc(dllPath, now)
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(projPath) |> ignore
+        body (graph, srcPath, dllPath))
+
+/// The terminal verdict summary the UI would render; "" while non-terminal.
+let private terminalSummary (host: PluginHost) =
+    match host.GetStatus("build") with
+    | Some(Completed(_, v)) -> v.Summary
+    | Some(Failed(_, _, v)) -> v.Summary
+    | _ -> ""
+
+[<Fact(Timeout = 15000)>]
+let ``a source touched after the build bypasses the cache, though the merkle cannot see it`` () =
+    // THE WEDGE, at the key. Before this gate the lookup returned the same key it always
+    // had and the stale outputs replayed as a pass.
+    withOneProjectGraph "replay-stale" (fun (graph, srcPath, dllPath) ->
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        let cacheKeyFn = handler.CacheKey.Value
+        let fileEvt = FileChanged(SourceChanged [ srcPath ])
+        let storeEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
+
+        // POSITIVE CONTROL (inline): with the outputs fresh, this very detector serves
+        // the cache. Without it the assertion below would also pass against a gate that
+        // had simply gone blind and suppressed every key.
+        let served = cacheKeyFn fileEvt
+        test <@ served.IsSome @>
+
+        // Touch the source WITHOUT changing a byte — a formatter's no-op rewrite.
+        let merkleBefore = cacheKeyFn storeEvt
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
+        let merkleAfter = cacheKeyFn storeEvt
+
+        // The content merkle CANNOT see it — the deadlock's other half, pinned so a
+        // future key change cannot make this test vacuous by moving the key instead.
+        test <@ merkleBefore = merkleAfter @>
+
+        let wedged = cacheKeyFn fileEvt
+        test <@ wedged.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a checkout with no build output at all bypasses the cache`` () =
+    // The first `check` in a brand-new `jj workspace add`: sources byte-identical to the
+    // workspace whose entry it therefore hits, and no `bin/` whatsoever. "built 21
+    // projects (cached)" was being asserted about outputs that had never existed here.
+    withOneProjectGraph "replay-missing" (fun (graph, srcPath, dllPath) ->
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        let cacheKeyFn = handler.CacheKey.Value
+        let fileEvt = FileChanged(SourceChanged [ srcPath ])
+
+        // POSITIVE CONTROL: served while the DLL is there. Bound outside the quotation —
+        // Unquote cannot splice an inner generic call.
+        let withDll = cacheKeyFn fileEvt
+        test <@ withDll.IsSome @>
+
+        System.IO.File.Delete dllPath
+        let withoutDll = cacheKeyFn fileEvt
+        test <@ withoutDll.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``stale artifacts suppress the cache LOOKUP only, never the STORE`` () =
+    // Same asymmetry `force-rebuild` relies on: suppressing the store too would make
+    // every recovered build permanently uncacheable — a correctness fix that pays for
+    // itself forever in the inner loop.
+    withOneProjectGraph "replay-store" (fun (graph, srcPath, dllPath) ->
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        let cacheKeyFn = handler.CacheKey.Value
+
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
+
+        let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+        test <@ lookupKey.IsNone @>
+        test <@ storeKey.IsSome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a warm cache does not replay a pass over stale outputs — the build recovers itself`` () =
+    // END TO END, through the framework's real replay path with a real task cache: warm
+    // the cache with a passing build, then make the outputs stale WITHOUT moving the
+    // merkle. Before the fix this replayed `built … (cached)` forever and only
+    // `dotnet fshw stop` appeared to break it. `touch <dll>` stands in for a build that
+    // actually re-emits its artifact, so the recovery is observable.
+    withOneProjectGraph "replay-e2e" (fun (graph, srcPath, dllPath) ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+        let handler = BuildPlugin.create "touch" dllPath [] graph [] None [] None
+        host.RegisterHandler(handler)
+
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+        let warm = terminalSummary host
+        test <@ not (warm.Contains "(cached)") @>
+
+        // POSITIVE CONTROL: nothing changed, so the very next dispatch MUST be served
+        // from the cache. This is what proves the "(cached)" detector below can fire —
+        // and that the gate has not quietly turned every check into a rebuild.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        let replayed =
+            waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 10000
+
+        test <@ replayed @>
+
+        // Now the wedge: touch the source, same bytes, so the merkle is unmoved and the
+        // stored entry still matches — but the DLL is older than its source.
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMilliseconds 1.0)
+
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        // A REAL build ran: `touch` moved the DLL past its source again.
+        let rebuilt =
+            waitUntilTrue
+                (fun () -> System.IO.File.GetLastWriteTimeUtc dllPath > System.IO.File.GetLastWriteTimeUtc srcPath)
+                15000
+
+        test <@ rebuilt @>
+        waitForSettled host "build" 15000
+
+        // …and the verdict is a fresh one, not a replayed pass.
+        let recovered = terminalSummary host
+        test <@ not (recovered.Contains "(cached)") @>)
