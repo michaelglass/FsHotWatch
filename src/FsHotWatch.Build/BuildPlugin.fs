@@ -248,6 +248,19 @@ let create
         | DllOlderThanSources(dllTime, srcTime) ->
             sprintf "%s: DLL %O older than newest source %O" s.Project dllTime srcTime
 
+    /// The same stale-artifact list phrased as a cache-BYPASS diagnostic.
+    ///
+    /// Distinct from `staleDiagnostic`, which condemns a build that just RAN. This one
+    /// explains why no stored result was served, and it says the recovery out loud:
+    /// the rebuild it triggers IS the fix. The wedge this closes cost ~90 minutes of a
+    /// night to the belief that `dotnet fshw stop` was required (it is not, and the
+    /// on-disk task cache survives a restart anyway — so that folklore was never even
+    /// a reliable cure).
+    let replayBypassDiagnostic (stale: StaleArtifact list) : string =
+        "Build cache bypassed: a stored result may not be replayed over outputs it no\n"
+        + "longer describes. Rebuilding now — no daemon restart is needed.\n\n"
+        + (stale |> List.map formatStaleArtifact |> String.concat "\n")
+
     /// Wrap a stale-artifact list in a "MSBuild lied" diagnostic suitable for
     /// the error ledger / BuildFailed payload.
     let staleDiagnostic (stale: StaleArtifact list) : string =
@@ -730,6 +743,9 @@ let create
         // → a real build runs and re-emits the test DLL before it's executed.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
+        let merkleKey () =
+            Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
+
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
             // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
             // `None` is the framework's documented "outputs missing" bypass — skip
@@ -741,9 +757,47 @@ let create
             // Suppressing both would make every forced build permanently uncached.
             match event with
             | FileChanged _ when forceRebuild.Value -> None
-            | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
+
+            // Re-verify the ARTIFACTS at cache-replay time, not only after a real
+            // build (AUTOMATION-245).
+            //
+            // Two correct answers, deadlocked. The key below is a content merkle over
+            // SOURCES, so it is structurally blind to what happened to the OUTPUTS —
+            // a `bin/` deleted, half-written, produced by another workspace, or a
+            // source rewritten to byte-identical content with a NEW mtime all leave it
+            // unmoved, and the entry replays "built N projects (cached)" without
+            // looking at a single artifact. TestPrune's freshness gate then compares
+            // MTIMES, correctly finds the output older than the source, and refuses to
+            // run `--no-build` on stale code. Both are right; together they never move,
+            // and re-running `check` reproduces it verbatim because nothing in the loop
+            // is a function of the previous attempt.
+            //
+            // `verifyArtifactsFresh` is the arbiter because outputs are the ground
+            // truth for a claim ABOUT outputs: a cache hit may not assert freshness it
+            // has never confirmed. This is the SAME predicate the real-build path runs
+            // (`verifyAndDemote`), so cache-hit and real-build become genuinely
+            // indistinguishable downstream — and no repo can be newly condemned to
+            // rebuild-every-time by it, because a repo whose artifacts fail this
+            // predicate after a build was already being demoted to
+            // `BuildArtifactsStale` (i.e. permanently red) today.
+            //
+            // Cheap on the hot path: N stat calls against a merkle that SHA-256s every
+            // source file. Ordered BEFORE the merkle so a bypass skips that hash
+            // entirely — the wedge path is now cheaper than the warm path, not dearer.
+            | FileChanged _ ->
+                match verifyArtifactsFresh () with
+                | [] -> merkleKey ()
+                | stale ->
+                    info "build" (replayBypassDiagnostic stale)
+                    None
+            | _ -> merkleKey ()
 
         Some cacheKey
-      // Cold start is a framework gate: cache replay is suppressed until this
-      // plugin completes once in-session, so all plugins share one contract.
+      // There is NO cold-start gate in the framework — a comment here used to claim
+      // one ("replay is suppressed until this plugin completes once in-session"), and
+      // nothing in `PluginFramework`/`PluginHost` implements it. The task cache is
+      // file-backed (`FileTaskCache`), so it also survives `fshw stop`: the FIRST
+      // dispatch of a brand-new daemon can and does replay a stored build. The gate
+      // above is the only thing standing between a stored verdict and a `bin/` that
+      // never earned it.
       Teardown = None }

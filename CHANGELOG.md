@@ -4,6 +4,35 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### build: a cache hit may not assert freshness it has never confirmed
+
+`check` could wedge and stay wedged. The build cache key is a content merkle over
+SOURCES, so it is structurally blind to what happened to the OUTPUTS: a file rewritten
+to byte-identical content with a new mtime (a formatter's no-op pass), a `bin/` written
+by another workspace, or a fresh `jj workspace add` with no `bin/` at all all leave the
+key unmoved. The stored `BuildPassed` replayed as `built N projects (cached)` without
+running, TestPrune's freshness gate compared mtimes, correctly found the output older
+than its source, and deferred every affected project as `waiting on build`. Both sides
+were right, neither moved, and because nothing in the loop depended on the previous
+attempt, re-running `check` reproduced it verbatim — for as long as you were willing to
+keep re-running it.
+
+`BuildPlugin` now runs the same artifact verification the real-build path runs
+(`verifyAndDemote`) before it will serve a cached result. Stale or missing outputs
+suppress the LOOKUP only — the store still happens, so a recovered build is cached
+again immediately and the inner loop keeps its cache. Cache-hit and real-build are now
+indistinguishable to downstream plugins, which is what AUTOMATION-224 asked for and
+only gave `confirm`.
+
+Cost is a stat per project, ordered BEFORE the merkle, so the bypass path skips the
+SHA-256 of every source file — the wedge path is now cheaper than the warm path, not
+dearer. No repo is newly condemned to rebuild-every-time: one whose artifacts fail this
+predicate after a build was already being demoted to `BuildArtifactsStale`.
+
+Also: `waiting on build` no longer says only "re-run once the build settles" — the one
+instruction that could not work. It now names `fshw confirm` as the escape and says
+that restarting the daemon is not one (the task cache is on disk and survives `stop`).
+
 ### tests: a watched-dir fixture, and FSHW-WAIT-001 to keep the flaky shape out
 
 Two tests flaked on the same shape: `Thread.Sleep(100)` to "give the watcher a

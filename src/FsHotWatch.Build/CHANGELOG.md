@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: re-verify artifacts at cache-REPLAY time, so a cache hit can never assert
+  freshness it has not confirmed (AUTOMATION-245)
+
 ## 0.7.0-alpha.21 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
