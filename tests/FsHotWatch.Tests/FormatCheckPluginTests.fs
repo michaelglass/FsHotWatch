@@ -442,6 +442,147 @@ let ``format check clears errors when file becomes formatted`` () =
             Directory.Delete(tmpDir, true)
 
 // ---------------------------------------------------------------------------
+// AUTOMATION-191 — a cached format-check verdict may only assert what its key covers.
+// ---------------------------------------------------------------------------
+//
+// Format-check subscribes to `FileChanged`, which the framework keys as a
+// WHOLE-RUN entry (`File = None`), so its stored verdict replays VERBATIM — the
+// AUTOMATION-186 derive-from-ledger path only ever reached per-file entries.
+// A verbatim replay is only honest if the summary is a function of the key, and
+// the key is a content merkle of THIS event's files. So the invariant pinned
+// here is the one AUTOMATION-245 stated for the build cache: a cache hit must be
+// indistinguishable from having run.
+//
+// Both tests below compare a REPLAYED summary against the summary a cold-cache
+// run over the same inputs produces. The pair is deliberate: the first proves a
+// stale claim cannot survive the replay, the second proves the same comparison
+// still SEES a genuine finding — an equality that a summary frozen to one
+// constant would also satisfy is not a detector.
+
+/// Run one format-check session over `batches`, one `SourceChanged` per batch,
+/// waiting for each to land before the next is emitted (the summary observed
+/// otherwise belongs to whichever batch finished last). Returns the host so the
+/// caller can read the terminal summary and the ledger it must agree with.
+let private runFormatCheckBatches
+    (tmpDir: string)
+    (taskCache: FsHotWatch.TaskCache.ITaskCache option)
+    (batches: string list list)
+    : PluginHost =
+    let host =
+        match taskCache with
+        | Some cache -> PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
+        | None -> PluginHost(Unchecked.defaultof<_>, tmpDir)
+
+    host.RegisterHandler(createFormatCheck None)
+
+    for batch in batches do
+        host.EmitFileChanged(SourceChanged batch)
+
+        // `AnyPluginBusy` is raised synchronously by the emit, so this cannot
+        // pass on the PREVIOUS batch's still-standing `Completed`.
+        waitUntil
+            (fun () ->
+                (not (host.AnyPluginBusy()))
+                && (match host.GetStatus("format-check") with
+                    | Some(Completed _) -> true
+                    | _ -> false))
+            20000
+
+    host
+
+/// The terminal summary format-check is currently reporting.
+let private formatCheckSummary (host: PluginHost) : string =
+    match host.GetStatus("format-check") with
+    | Some(Completed(_, verdict)) -> verdict.Summary
+    | other -> failwith $"expected format-check Completed, got %A{other}"
+
+/// How many files the plugin's LIVE ledger — the set the verdict gates on —
+/// currently holds a format-check finding for.
+let private formatCheckLedgerCount (host: PluginHost) : int =
+    host.GetErrors()
+    |> Map.toList
+    |> List.sumBy (fun (_, entries) ->
+        entries
+        |> List.filter (fun (plugin, _) -> plugin = "format-check")
+        |> List.length)
+
+[<Fact(Timeout = 120000)>]
+let ``a replayed format-check verdict cannot claim files its cache key never covered`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-stale-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let bad = Path.Combine(tmpDir, "Bad.fs")
+        File.WriteAllText(bad, "module Bad\nlet   x=1\nlet   y   =   2\n")
+        let good = Path.Combine(tmpDir, "Good.fs")
+        File.WriteAllText(good, "module Good\n\nlet x = 1\n")
+
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        // Session 1 mints the entry for `Good` while ANOTHER file is unformatted.
+        // `Good`'s key covers `Good`'s bytes and nothing else, so anything the
+        // stored summary says about `Bad` is outside its scope.
+        runFormatCheckBatches tmpDir (Some cache) [ [ bad ]; [ good ] ] |> ignore
+
+        // What a run over `Good` alone actually finds, with no cache in play.
+        let fresh = runFormatCheckBatches tmpDir None [ [ good ] ]
+        let freshSummary = formatCheckSummary fresh
+        test <@ formatCheckLedgerCount fresh = 0 @>
+
+        // Same inputs, but served from session 1's entry.
+        let replayed = runFormatCheckBatches tmpDir (Some cache) [ [ good ] ]
+        let replayedSummary = formatCheckSummary replayed
+
+        // The replay landed a green ledger; a summary claiming otherwise would be
+        // a `summary:` line contradicting the verdict it sits beside.
+        test <@ formatCheckLedgerCount replayed = 0 @>
+        test <@ replayedSummary = freshSummary + " (cached)" @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 120000)>]
+let ``a replayed format-check verdict still reports a finding that is genuinely current`` () =
+    // The positive control for the test above. Same plugin, same replay path, same
+    // comparison — but the cached entry's claim is TRUE at replay time, so it must
+    // survive intact and still name the finding.
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-current-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let bad = Path.Combine(tmpDir, "Bad.fs")
+        File.WriteAllText(bad, "module Bad\nlet   x=1\nlet   y   =   2\n")
+
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        runFormatCheckBatches tmpDir (Some cache) [ [ bad ] ] |> ignore
+
+        let fresh = runFormatCheckBatches tmpDir None [ [ bad ] ]
+        let freshSummary = formatCheckSummary fresh
+        test <@ formatCheckLedgerCount fresh = 1 @>
+
+        let replayed = runFormatCheckBatches tmpDir (Some cache) [ [ bad ] ]
+        let replayedSummary = formatCheckSummary replayed
+
+        // Replayed from cache, and still red: the entry's error replay put the
+        // finding back in the ledger.
+        test <@ formatCheckLedgerCount replayed = 1 @>
+        test <@ replayedSummary = freshSummary + " (cached)" @>
+
+        // And the summary names it, rather than passing the comparison by being a
+        // constant that never mentions a finding at all.
+        test <@ replayedSummary.Contains "need formatting" @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+// ---------------------------------------------------------------------------
 // AUTOMATION-98 finding 1(a) — the FormatPreprocessor must be BOUNDED.
 // ---------------------------------------------------------------------------
 //

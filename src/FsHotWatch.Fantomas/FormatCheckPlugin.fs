@@ -123,6 +123,27 @@ let internal createFormatCheckWithSlowHook
 
                     let mutable timedOut = false
 
+                    // What THIS run compared, and what it found. The terminal summary
+                    // is built from these and never from `newUnformatted`, whose
+                    // whole-session count is not a function of this event.
+                    //
+                    // The framework keys a `FileChanged` event as a whole-run entry
+                    // (`File = None`), whose stored verdict replays VERBATIM — so a
+                    // summary drawn from session state would be re-asserted, unchanged,
+                    // in a later session over a different tree: "1 files need
+                    // formatting (cached)" beside an empty ledger and a green verdict
+                    // (AUTOMATION-191, the `File = None` half of AUTOMATION-186).
+                    // Counting only what this run touched keeps the summary a function
+                    // of the cache key — the same bytes the merkle covers — so the
+                    // replay says exactly what a cold run over those bytes says.
+                    //
+                    // The whole-session view is not lost, it moves to where it stays
+                    // LIVE: every unformatted file is a ledger entry (`fshw status`
+                    // lists them, and the verdict gates on them), and the `unformatted`
+                    // command still answers with the accumulated set.
+                    let mutable checkedInRun = 0
+                    let mutable unformattedInRun = 0
+
                     for file in files do
                         if File.Exists(file) && not (isIgnored file) && not failed && not timedOut then
                             let work (ct: System.Threading.CancellationToken) =
@@ -164,6 +185,11 @@ let internal createFormatCheckWithSlowHook
                                 | WorkCompleted(source, formatted) ->
                                     let isUnformatted = formatted.Code <> source
 
+                                    checkedInRun <- checkedInRun + 1
+
+                                    if isUnformatted then
+                                        unformattedInRun <- unformattedInRun + 1
+
                                     newUnformatted <-
                                         if isUnformatted then
                                             newUnformatted |> Set.add file
@@ -197,10 +223,15 @@ let internal createFormatCheckWithSlowHook
 
                     if not failed && not timedOut then
                         let summary =
-                            if newUnformatted.Count = 0 then
-                                "format OK"
+                            if checkedInRun = 0 then
+                                // Every file in the event was missing, ignored, or not
+                                // F#. "format OK" would be a green earned by checking
+                                // nothing.
+                                "no files to check"
+                            elif unformattedInRun = 0 then
+                                $"format OK (%d{checkedInRun} checked)"
                             else
-                                $"%d{newUnformatted.Count} files need formatting"
+                                $"%d{unformattedInRun} of %d{checkedInRun} files need formatting"
 
                         PluginCtxHelpers.completeWith ctx summary (DateTime.UtcNow - runStarted)
 

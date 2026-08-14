@@ -96,6 +96,34 @@ failure would turn the honest exit 3 (no verdict) into an exit 1 (failures found
 The refusal is asked of `RunVerification`, so it keys on "did anything execute?"
 rather than on any one selection bug.
 
+### format-check: a cached verdict can no longer claim files its key never covered
+
+AUTOMATION-191, the `File = None` half of AUTOMATION-186. Format-check subscribes to
+`FileChanged`, which the framework keys as a **whole-run** entry, so its stored verdict
+replays **verbatim** — the AUTOMATION-186 derive-from-ledger path only ever reached
+per-file entries. Verbatim replay is honest only when the summary is a function of the
+key, and the key is a content merkle of *that event's files*. The summary counted
+`state.Unformatted`, the whole-session accumulated set.
+
+So an entry minted for one clean file, in a session where a *different* file was
+unformatted, stored `1 files need formatting` — and replayed it, unchanged, into a later
+session whose ledger was empty and whose verdict was green. Reproduced against the real
+plugin: replayed `"1 files need formatting (cached)"` where a cold run over the same
+bytes says `"format OK"`.
+
+The summary now states what the run it is keyed on actually checked — `3 of 12 files need
+formatting`, `format OK (12 checked)` — so a cache hit says exactly what running it says,
+the invariant AUTOMATION-245 stated for the build cache. AUTOMATION-186's scope rule (*a
+cache entry may only assert facts derivable from its key's scope*) is enforced rather than
+weakened, and no framework, plugin-API or cache-format change was needed. The two
+mechanisms the ticket proposed — a general per-plugin "summary is ledger-derived"
+capability, and a narrow framework-side special-case — were measured and rejected in
+`docs/adr-014-a-plugin-summary-is-scoped-to-its-cache-key.md`.
+
+The whole-session view is unchanged where it stays live: every unformatted file is still an
+error-ledger entry, and the `unformatted` command still answers with the accumulated set.
+A run that compared nothing now says `no files to check` rather than `format OK`.
+
 ### tests: a watched-dir fixture, and FSHW-WAIT-001 to keep the flaky shape out
 
 Two tests flaked on the same shape: `Thread.Sleep(100)` to "give the watcher a

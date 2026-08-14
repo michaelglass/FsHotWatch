@@ -262,9 +262,11 @@
   - `FileTaskCache` serialization is versioned (format 2); pre-existing on-disk entries in
     the old shape deterministically miss (telemetry counter increments) rather than
     half-parsing. First check per workspace after upgrade is a cold cache — self-healing.
-  - Format-check has the same defect but sits on the shared `File=None` path and needs a
-    per-plugin "summary is ledger-derived" signal to distinguish it from Build; deliberately
-    scoped to a follow-up (AUTOMATION-191) rather than bundled here.
+  - Format-check has the same defect but sits on the shared `File=None` path; deliberately
+    scoped to a follow-up (AUTOMATION-191) rather than bundled here. *Closed since* — not by
+    the per-plugin "summary is ledger-derived" signal anticipated here, but by scoping
+    format-check's own summary to the run its key covers, so the rule below needed no
+    weakening. See `docs/adr-014-a-plugin-summary-is-scoped-to-its-cache-key.md`.
 
 ## 0.10.0-alpha.3 - 2026-07-15
 
