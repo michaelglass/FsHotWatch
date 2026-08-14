@@ -33,6 +33,25 @@ Also: `waiting on build` no longer says only "re-run once the build settles" —
 instruction that could not work. It now names `fshw confirm` as the escape and says
 that restarting the daemon is not one (the task cache is on disk and survives `stop`).
 
+### cli/test-prune: a run that tested nothing no longer renders as a ✓
+
+`fshw check` on a run that selected ZERO test projects printed
+`✓ test-prune — 0 passed, 0 failed in 0 projects` and then, correctly, refused to
+certify it (exit 3 — NO VERDICT, "the tests that ran were no tests ran"). The
+verdict was sound; the plugin line was not. A reader scanning glyphs saw success,
+and only the exit code disagreed.
+
+Such a run now records `NOTHING VERIFIED: 0 test project(s) ran, no test executed`
+as its verdict summary, and every surface refuses it a green: compact and verbose
+render `⚠` instead of `✓`, agent mode tokens it `warn` (so `next:` points at
+`status`, never `done`), and `plugins[]` in `.fshw/verdict.json` records `warn`
+instead of `ok`.
+
+The plugin STATUS stays `Completed` on purpose — nothing failed, and reporting a
+failure would turn the honest exit 3 (no verdict) into an exit 1 (failures found).
+The refusal is asked of `RunVerification`, so it keys on "did anything execute?"
+rather than on any one selection bug.
+
 ### tests: a watched-dir fixture, and FSHW-WAIT-001 to keep the flaky shape out
 
 Two tests flaked on the same shape: `Thread.Sleep(100)` to "give the watcher a
