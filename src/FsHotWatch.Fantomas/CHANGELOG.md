@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- fix!: **a cached format-check verdict can no longer claim files its cache key never
+  covered** (— the `File = None` half of). Format-check
+  subscribes to `FileChanged`, which the framework keys as a whole-run entry, so its
+  stored verdict replays verbatim. The summary counted `state.Unformatted` — the
+  whole-session accumulated set — while the key is a content merkle of *that event's*
+  files. An entry minted for one clean file while another file was unformatted therefore
+  stored "1 files need formatting", and replayed it, unchanged, into a later session whose
+  ledger was empty and green: a `summary:` line contradicting the verdict beside it.
+  - The summary now states what the run it is keyed on actually checked —
+    `3 of 12 files need formatting`, `format OK (12 checked)` — making it a function of
+    the same bytes the merkle covers, so a cache hit says exactly what a cold run over
+    those bytes says. the scope rule (*a cache entry may only assert facts
+    derivable from its key's scope*) is enforced rather than weakened; no framework,
+    plugin-API or cache-format change was needed. Road not taken in
+    `docs/adr-014-a-plugin-summary-is-scoped-to-its-cache-key.md`.
+  - The whole-session view is unchanged where it stays live: every unformatted file is
+    still an error-ledger entry (`fshw status` lists them, the verdict gates on them) and
+    the `unformatted` command still answers with the accumulated set.
+  - A run that compared nothing now reports `no files to check` instead of `format OK` —
+    a green earned by checking nothing is the shape the tracked issue exists to refuse.
+
 ## 0.7.0-alpha.18 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
