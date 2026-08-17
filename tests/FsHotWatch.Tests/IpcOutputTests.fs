@@ -765,6 +765,16 @@ let ``a confirm that never escalated says so, and a check records no comparison 
     test <@ inner.Divergence = Verdict.Divergence.NotRecorded @>
 
 // ---------------------------------------------------------------------------
+// NOTE: these payloads carried a `verifiedNothing` boolean that NO producer writes and
+// no consumer reads — `formatTestResultsJson` emits `elapsed`/`filter`/`noTestsMatched`/
+// `coverage`/`projects`, and the run-level "verified nothing" fact is already carried by
+// the `coverage` token (`RunVerification.verifiedNothing` derives it). It was removed
+// rather than emitted: a fixture asserting a field the wire does not have vouches for a
+// payload that never occurs, and a second serialized source of the same fact is the drift
+// this whole ticket family is about (AUTOMATION-278).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // The `coverage` token is what a CURRENT daemon sends. These cover the other side of the
 // contract: a CLI talking to an OLDER daemon that omits it. The rule the fallback holds is
 // that an ABSENT field must never read as "ran", or upgrading the CLI ahead of the daemon
@@ -773,8 +783,7 @@ let ``a confirm that never escalated says so, and a check records no comparison 
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult reads the coverage token when the daemon sends one`` () =
-    let json =
-        """{"elapsed":"0.0s","coverage":"no-projects-selected","verifiedNothing":true,"projects":[]}"""
+    let json = """{"elapsed":"0.0s","coverage":"no-projects-selected","projects":[]}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
@@ -782,7 +791,7 @@ let ``renderIpcResult reads the coverage token when the daemon sends one`` () =
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult reads coverage=all-zero-match as a refusal, not a pass`` () =
     let json =
-        """{"elapsed":"0.1s","coverage":"all-zero-match","verifiedNothing":true,"noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+        """{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
@@ -796,7 +805,7 @@ let ``renderIpcResult trusts a coverage token that ran, over an empty-looking pa
     // executed and passed is still a pass (AUTOMATION-282).
     for token in [ "ran-full-suite"; "ran-partial" ] do
         let json =
-            $"""{{"elapsed":"1.0s","coverage":"{token}","verifiedNothing":false,"projects":[{{"project":"P","status":"passed","output":"Passed! total: 3"}}]}}"""
+            $"""{{"elapsed":"1.0s","coverage":"{token}","projects":[{{"project":"P","status":"passed","output":"Passed! total: 3"}}]}}"""
 
         test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
 
@@ -807,7 +816,7 @@ let ``the retired bare "ran" token is refused, not read as a pass`` () =
     // nothing, so the token is refused rather than having a scope invented for it — a CLI
     // newer than its daemon gets one exit 3 and instructions to restart it.
     let json =
-        """{"elapsed":"1.0s","coverage":"ran","verifiedNothing":false,"projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+        """{"elapsed":"1.0s","coverage":"ran","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
 
@@ -827,6 +836,63 @@ let ``an OLDER daemon sending no coverage field still cannot report a no-op as a
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageZeroMatch = 3 @>
     // …and the fallback is still not a blanket refusal.
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass`` () =
+    // AUTOMATION-227. The residual vacuous green in the older-daemon fallback. This
+    // payload is neither empty nor all-zero-match, so neither guard above catches it —
+    // yet NOT ONE project executed a test. It used to fall to `RanPerCounts` → exit 0,
+    // printing "2 project(s): 1 matched nothing, 1 did not run" directly above a
+    // "✓ Tests passed". The per-project statuses that establish it were already in hand.
+    let mixedNoOp =
+        """{"elapsed":"0.2s","projects":[{"project":"A","status":"no-tests-matched","output":""},{"project":"B","status":"deferred","output":"apphost not produced"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false mixedNoOp = 3 @>
+
+    // Every all-non-executing combination, not just the one that was reported.
+    let deferredAndErrored =
+        """{"elapsed":"0.2s","projects":[{"project":"A","status":"errored","output":""},{"project":"B","status":"deferred","output":""}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 3 @>
+
+    // POSITIVE CONTROL: the refusal is derived from "nothing executed", not from "some
+    // project was not `passed`". One project that really ran keeps the run a pass.
+    let oneRealPass =
+        """{"elapsed":"0.2s","projects":[{"project":"A","status":"passed","output":"Passed! total: 3"},{"project":"B","status":"no-tests-matched","output":""}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false oneRealPass = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``an UNKNOWN per-project status does not count as having executed`` () =
+    // Fail-closed on the daemon-newer-than-CLI direction of the same skew: a status word
+    // this build does not know must not be summed into "something ran".
+    let unknownStatus =
+        """{"elapsed":"0.2s","projects":[{"project":"A","status":"quarantined","output":""}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false unknownStatus = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a project KILLED at its timeout is a failure, not a pass`` () =
+    // `hasFailed` matched only `"failed"`, so a timed-out project exited 0 with
+    // "✓ Tests passed" — while the daemon's own terminal status for the same run was
+    // `failedNow` + `CompleteWithTimeout`. Both wire shapes, because the token path and
+    // the older-daemon fallback reach the verdict by different routes.
+    let withToken =
+        """{"elapsed":"9.0s","coverage":"ran-partial","projects":[{"project":"P","status":"timed-out","output":"killed after 600s"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false withToken = 1 @>
+
+    let noToken =
+        """{"elapsed":"9.0s","projects":[{"project":"P","status":"timed-out","output":"killed after 600s"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noToken = 1 @>
+
+    // POSITIVE CONTROL: a run with no timeout in it is still a pass, so the assertions
+    // above are about the timeout and not about a blanket refusal.
+    let clean =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false clean = 0 @>
 
 // ---------------------------------------------------------------------------
 // The token was string-COMPARED, and anything unrecognized fell through an `else` to

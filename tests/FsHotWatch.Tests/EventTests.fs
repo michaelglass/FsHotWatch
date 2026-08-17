@@ -100,10 +100,66 @@ let ``TestResult.wasFiltered reflects the filter flag`` () =
     test <@ TestResult.wasFiltered (TestsPassed("ok", true, TimeSpan.Zero)) @>
     test <@ TestResult.wasFiltered (TestsFailed("bad", true, TimeSpan.Zero)) @>
 
+// AUTOMATION-278. The exhaustive table for THE per-project derivation.
+//
+// The FLOOR at the end is the point: without it, a seventh `TestResult` case could be
+// added, be classified by `verdict`'s catch-all-free match (which would fail to
+// compile — good) and then be omitted from this table (which would NOT), leaving a
+// green test that never looked at it. The floor turns "I found nothing" into a claim
+// this test is entitled to make.
 [<Fact(Timeout = 15000)>]
-let ``TestResult.isPassed distinguishes Passed and Failed`` () =
-    test <@ TestResult.isPassed (TestsPassed("ok", false, TimeSpan.Zero)) @>
-    test <@ not (TestResult.isPassed (TestsFailed("bad", false, TimeSpan.Zero))) @>
+let ``TestResult.verdict classifies every TestResult case`` () =
+    let cases =
+        [ TestsPassed("ok", false, TimeSpan.Zero), Verified
+          TestsFailed("bad", false, TimeSpan.Zero), Refuted
+          TestsTimedOut("stuck", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero), Refuted
+          // The three that verify NOTHING. A zero match sits here with the other two —
+          // that is the whole change: it used to be a sub-case of "passed".
+          TestsNoMatch("Zero tests ran", TimeSpan.Zero), NothingVerified
+          TestsDeferred "apphost not produced", NothingVerified
+          TestsErrored "no parseable report", NothingVerified ]
+
+    for (result, expected) in cases do
+        test <@ TestResult.verdict result = expected @>
+
+    let caseName (r: TestResult) =
+        let (info, _) =
+            Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(r, typeof<TestResult>)
+
+        info.Name
+
+    let declared =
+        Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(typeof<TestResult>)
+        |> Array.map (fun c -> c.Name)
+        |> Set.ofArray
+
+    let covered = cases |> List.map (fst >> caseName) |> Set.ofList
+
+    // FLOOR: every declared case appears above, and there are at least six of them —
+    // so a scan that silently degraded to looking at nothing cannot pass.
+    test <@ declared = covered @>
+    test <@ Set.count declared >= 6 @>
+
+[<Fact(Timeout = 15000)>]
+let ``TestResult.verifiedGreen is TRUE only for a project that executed and passed`` () =
+    test <@ TestResult.verifiedGreen (TestsPassed("ok", false, TimeSpan.Zero)) @>
+    test <@ not (TestResult.verifiedGreen (TestsFailed("bad", false, TimeSpan.Zero))) @>
+    // THE regression this ticket exists for. Its predecessor `TestResult.isPassed`
+    // answered TRUE here, which is what let a run that executed nothing be summed into
+    // a green by any aggregator that forgot to re-derive the fact from a string prefix.
+    test <@ not (TestResult.verifiedGreen (TestsNoMatch("Zero tests ran", TimeSpan.Zero))) @>
+    test <@ not (TestResult.verifiedGreen (TestsDeferred "apphost not produced")) @>
+    test <@ not (TestResult.verifiedGreen (TestsErrored "no parseable report")) @>
+
+// `verifiedGreen` is deliberately NOT the negation of "failed", and a fold that treats
+// it as one over-reports rather than under-reports — the safe direction. Pinned so the
+// next person to want a "not a failure" bool sees that the asymmetry is the design.
+[<Fact(Timeout = 15000)>]
+let ``a zero match is neither verified nor a failure`` () =
+    let noMatch = TestsNoMatch("Zero tests ran", TimeSpan.Zero)
+    test <@ not (TestResult.verifiedGreen noMatch) @>
+    test <@ TestResult.verdict noMatch <> Refuted @>
+    test <@ TestResult.isNoMatch noMatch @>
 
 // TestsDeferred means the apphost was missing and the tests never ran. It must
 // thread correctly through every TestResult helper.
@@ -116,7 +172,7 @@ let ``TestResult helpers handle the TestsDeferred case`` () =
     test <@ TestResult.wasFiltered deferred @>
     test <@ TestResult.elapsed deferred = TimeSpan.Zero @>
     // Must never count as passed: a never-ran project cannot produce a green verdict.
-    test <@ not (TestResult.isPassed deferred) @>
+    test <@ not (TestResult.verifiedGreen deferred) @>
     test <@ not (TestResult.isTimedOut deferred) @>
     test <@ TestResult.isDeferred deferred @>
     test <@ not (TestResult.isDeferred (TestsPassed("ok", false, TimeSpan.Zero))) @>

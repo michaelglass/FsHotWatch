@@ -1076,9 +1076,13 @@ let ``convention rules stay silent on conforming code`` () =
 
         test <@ findings.IsEmpty @>)
 
-/// Stand-in for the real `TestResult` seam, mirroring the one fact the rule turns on:
-/// `isPassed` is TRUE for the zero-match case. The rule is name-based, so a structurally
+/// Stand-in for the real `TestResult` seam. The rule is name-based, so a structurally
 /// identical local reproduces it.
+///
+/// `isPassed` is present here even though AUTOMATION-278 DELETED it from the real
+/// `TestResult`: the rule still names it, so that re-introducing the predicate whose
+/// TRUE-for-zero-match answer was the original defect is caught the moment someone folds
+/// it. `verifiedGreen` is the live predicate and the one the fixtures lead with.
 let private verdictPreamble =
     [ "module Test"
       "type TestResult ="
@@ -1086,10 +1090,17 @@ let private verdictPreamble =
       "    | TestsFailed"
       "    | TestsNoMatch"
       "module TestResult ="
+      // The live predicate: FALSE for the zero-match case. The fold over it is still
+      // not a run verdict — `Map.forall` is vacuously true for the empty map.
+      "    let verifiedGreen r ="
+      "        match r with"
+      "        | TestsPassed -> true"
+      "        | TestsFailed"
+      "        | TestsNoMatch -> false"
+      // The DELETED predicate, kept so the rule's memory of it can be pinned.
       "    let isPassed r ="
       "        match r with"
       "        | TestsFailed -> false"
-      // The whole hazard, in one line: a project that executed nothing passes.
       "        | TestsPassed"
       "        | TestsNoMatch -> true"
       "    let isNoMatch r ="
@@ -1108,30 +1119,34 @@ let private verdictPreamble =
       "    not results.IsEmpty && results |> Map.forall (fun _ r -> TestResult.isNoMatch r)" ]
 
 [<Fact(Timeout = 60000)>]
-let ``FSHW-VERDICT-001 fires on a run verdict folded from isPassed`` () =
+let ``FSHW-VERDICT-001 fires on a run verdict folded from a per-project pass predicate`` () =
     withAnalyzerGate (fun () ->
         let source =
             fsSource (
                 verdictPreamble
                 @ [ "let green (results: Map<string, TestResult>) ="
-                    "    results |> Map.forall (fun _ r -> TestResult.isPassed r)"
-                    "let green2 (results: TestResult list) = List.forall TestResult.isPassed results"
+                    "    results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)"
+                    "let green2 (results: TestResult list) = List.forall TestResult.verifiedGreen results"
                     "let green3 (results: Map<string, TestResult>) ="
-                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
-                    "    allPassed" ]
+                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)"
+                    "    allPassed"
+                    // The DELETED name. A positive control for the rule's memory: if this
+                    // stops firing, re-introducing `isPassed` is silent again.
+                    "let green4 (results: Map<string, TestResult>) ="
+                    "    results |> Map.forall (fun _ r -> TestResult.isPassed r)" ]
             )
 
         let findings =
             runRulesOn source
             |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
 
-        // One per fold: piped Map.forall, point-free List.forall, and a fold bound
-        // to a name whose decision asks nothing further.
-        test <@ findings.Length = 3 @>
+        // One per fold: piped Map.forall, point-free List.forall, a fold bound to a name
+        // whose decision asks nothing further, and the deleted-predicate control.
+        test <@ findings.Length = 4 @>
         test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
 
 [<Fact(Timeout = 60000)>]
-let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
+let ``FSHW-VERDICT-001 stays silent on the legitimate uses of the pass predicate`` () =
     withAnalyzerGate (fun () ->
         // Every shape here is live in TestPrunePlugin. A rule that fires on any of them
         // is a rule that gets suppressed rather than obeyed.
@@ -1141,25 +1156,34 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
                 @ [ // Filtering FOR the non-green (`recordRunOutcome`): selects what to
                     // report, does not infer a green.
                     "let nonGreen (results: Map<string, TestResult>) ="
-                    "    results |> Map.toList |> List.filter (fun (_, r) -> not (TestResult.isPassed r))"
+                    "    results |> Map.toList |> List.filter (fun (_, r) -> not (TestResult.verifiedGreen r))"
                     // Per-project, on a single result.
-                    "let projectPassed (r: TestResult) = TestResult.isPassed r"
+                    "let projectPassed (r: TestResult) = TestResult.verifiedGreen r"
                     // A forall whose predicate is a LOOKUP, not the pass predicate —
                     // the per-project green-commit fold.
+                    //
+                    // READ THIS ONE CAREFULLY. Until AUTOMATION-278 this exact shape,
+                    // with `isPassed` in the lookup, WAS the live pending-verification
+                    // false-green: a symbol's test debt discharged by a project that
+                    // executed zero tests. The rule was silent on it then and is silent
+                    // on it now, because the predicate is behind a `match` the syntactic
+                    // matcher cannot see through. That is the evidence for why the fix
+                    // had to be the TYPE and not this rule — an allow-list entry is not
+                    // a proof of safety, it is a proof the rule cannot look there.
                     "let covered (results: Map<string, TestResult>) (names: Set<string>) ="
                     "    names"
                     "    |> Set.forall (fun n ->"
                     "        match Map.tryFind n results with"
-                    "        | Some r -> TestResult.isPassed r"
+                    "        | Some r -> TestResult.verifiedGreen r"
                     "        | None -> false)"
                     // The cacheable-green gate: an all-passed fold that DOES ask the
                     // run-level question, in the same decision.
                     "let cacheable (results: Map<string, TestResult>) ="
-                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.isPassed r)"
+                    "    let allPassed = results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)"
                     "    let allZeroMatchRun = allZeroMatchOf results"
                     "    allPassed && not allZeroMatchRun"
                     // A bare SCOPE fold. Silence here is a decision, not an oversight —
-                    // see `isPassedPredicate` in ConventionAnalyzers.fs for why the two
+                    // see `passPredicate` in ConventionAnalyzers.fs for why the two
                     // folds are different bugs. Widening the rule to cover scope means
                     // deleting this assertion on purpose.
                     //
@@ -1174,7 +1198,27 @@ let ``FSHW-VERDICT-001 stays silent on the legitimate uses of isPassed`` () =
             runRulesOn source
             |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
 
-        test <@ findings.IsEmpty @>)
+        test <@ findings.IsEmpty @>
+
+        // FLOOR / POSITIVE CONTROL, in this test rather than only in its sibling.
+        // `findings.IsEmpty` is exactly what an analyzer that never LOADED returns, and
+        // what a fixture that failed to parse returns — so on its own the assertion above
+        // cannot tell "I looked at six shapes and none fired" from "I did not look".
+        // Appending ONE known-firing fold to the SAME source proves the rule was loaded
+        // and was reading this text.
+        let armed =
+            runRulesOn (
+                fsSource (
+                    verdictPreamble
+                    @ [ "let nonGreen (results: Map<string, TestResult>) ="
+                        "    results |> Map.toList |> List.filter (fun (_, r) -> not (TestResult.verifiedGreen r))"
+                        "let armed (results: Map<string, TestResult>) ="
+                        "    results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)" ]
+                )
+            )
+            |> List.filter (fun e -> e.Message.Contains "not a run-level verdict")
+
+        test <@ armed.Length = 1 @>)
 
 /// Stand-in for the assertion + polling names FSHW-WAIT-001 keys on. The rule is
 /// syntactic, so structurally identical locals reproduce it.

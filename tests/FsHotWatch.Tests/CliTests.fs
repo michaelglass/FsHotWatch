@@ -1940,3 +1940,164 @@ let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} pa
         use doc = System.Text.Json.JsonDocument.Parse(args)
         test <@ doc.RootElement.GetProperty("scope").GetString() = "full" @>
     | other -> failwith $"expected exactly one set-scope call, got %A{other}"
+
+/// Run `f`, capturing BOTH streams, and return (output, result).
+///
+/// Both, deliberately: `UI.fail` writes the verdict line to stderr while `UI.info`
+/// writes the evidence lines to stdout, so a stderr-only capture reads a refusal that
+/// named nothing — which is exactly the bug being pinned here.
+let private captureBothStreams (f: unit -> 'a) : string * 'a =
+    let originalOut = Console.Out
+    let originalErr = Console.Error
+    use sw = new StringWriter()
+    Console.SetOut(sw)
+    Console.SetError(sw)
+
+    try
+        let result = f ()
+        sw.Flush()
+        sw.ToString(), result
+    finally
+        Console.SetOut(originalOut)
+        Console.SetError(originalErr)
+
+// --- AUTOMATION-227/272: a refusal must name WHAT it searched for and WHERE ---
+//
+// These live here rather than in IpcOutputTests because they capture `Console.Error`,
+// a process-global, and this module is already in the serialized log-global collection.
+//
+// The acceptance clause both tickets were failed on: "exits non-zero with a message
+// naming the filter and the projects it searched". What shipped named a project COUNT
+// and pointed at `fshw status test-prune` — so the reader was left to distinguish a
+// typo, a renamed class, and a filter aimed at a project that does not contain it, which
+// is the three-way ambiguity that produced a wrong conclusion in the first place.
+
+[<Fact(Timeout = 15000)>]
+let ``a zero-match refusal names the filter and every project it searched`` () =
+    let json =
+        """{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"filter":"--filter-class *JudgeIntegrationTests","projects":[{"project":"Intelligence.Analyzers.Tests","status":"no-tests-matched","output":""},{"project":"Intelligence.Tests.Unit","status":"no-tests-matched","output":""}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 3 @>
+    test <@ stderr.Contains("--filter-class *JudgeIntegrationTests") @>
+    test <@ stderr.Contains("Intelligence.Analyzers.Tests") @>
+    test <@ stderr.Contains("Intelligence.Tests.Unit") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a refusal from a daemon that reports no filter says so, rather than claiming none was set`` () =
+    // "(none)" would be a LIE about an older daemon: an absent field means this daemon
+    // predates it, which is a different fact from "the run was unfiltered", and a refusal
+    // that guesses between them is how the next wrong conclusion gets drawn.
+    let json =
+        """{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 3 @>
+    test <@ stderr.Contains("not reported") @>
+    test <@ stderr.Contains("P") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a searched-project list is CAPPED, and says how many it left out`` () =
+    // A truncated list that does not say it was truncated reads as the whole selection.
+    let projects =
+        [ 1..14 ]
+        |> List.map (fun i -> $"""{{"project":"P%d{i}","status":"no-tests-matched","output":""}}""")
+        |> String.concat ","
+
+    let json =
+        $"""{{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"filter":"--filter-class *Nope","projects":[%s{projects}]}}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 3 @>
+    test <@ stderr.Contains("P1 (no-tests-matched)") @>
+    test <@ stderr.Contains("+4 more") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a mixed no-op refusal names each project and the status that made it a no-op`` () =
+    // The diagnosis IS the per-project statuses here, so they are printed rather than
+    // pointed at: "every project failed to execute a test" is not actionable without
+    // knowing which project deferred and which matched nothing.
+    let json =
+        """{"elapsed":"0.2s","coverage":"nothing-executed","projects":[{"project":"A","status":"no-tests-matched","output":""},{"project":"B","status":"deferred","output":"apphost not produced"}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 3 @>
+    test <@ stderr.Contains("A (no-tests-matched)") @>
+    test <@ stderr.Contains("B (deferred)") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a passing run does NOT print the search evidence`` () =
+    // POSITIVE CONTROL for the four above: without it, a change that printed the filter
+    // and project list unconditionally would satisfy every one of them while making the
+    // ordinary green noisier.
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","filter":"--filter-class *Real","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 0 @>
+    test <@ not (stderr.Contains("Searched:")) @>
+    test <@ not (stderr.Contains("Filter:")) @>
+
+// --- AUTOMATION-272 criterion 3: the CLI states per-project test counts ---
+//
+// "The missing summary line is the tell that separates a real pass from a vacuous one,
+// and it should not require reading the log to notice." Until now total/succeeded/failed
+// lived only in `daemon.log`, so noticing required going to look.
+
+[<Fact(Timeout = 15000)>]
+let ``a passing test-rerun prints total, succeeded and failed for every project it ran`` () =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Unit","status":"passed","output":"","counts":{"total":12,"succeeded":12,"failed":0,"skipped":0,"other":0}},{"project":"Integration","status":"passed","output":"","counts":{"total":6,"succeeded":5,"failed":0,"skipped":1,"other":0}}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 0 @>
+    test <@ stderr.Contains("Unit [passed] — total 12, 12 succeeded, 0 failed") @>
+    test <@ stderr.Contains("Integration [passed] — total 6, 5 succeeded, 0 failed, 1 skipped") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a project with NO test report says so, rather than printing zeros`` () =
+    // `total: 0, failed: 0` reads as "this suite ran cleanly" — the same vacuous green one
+    // level down. An unknown runner we never asked a report from, or a host that aborted
+    // before flushing one, must not be rendered as a clean empty suite.
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Custom","status":"passed","output":"","counts":null}]}"""
+
+    let stderr, _ =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ stderr.Contains("no test report — counts unknown (not zero)") @>
+    test <@ not (stderr.Contains("total 0")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a zero-match project reports its real total of zero, beside the refusal`` () =
+    // The whole ticket in one line of output: the run said "matched nothing", and the
+    // counts agree rather than being absent. A reader does not have to trust the status
+    // word — the number is there.
+    let json =
+        """{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"filter":"--filter-class *Nope","projects":[{"project":"P","status":"no-tests-matched","output":"","counts":{"total":0,"succeeded":0,"failed":0,"skipped":0,"other":0}}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    test <@ exitCode = 3 @>
+    test <@ stderr.Contains("P [no-tests-matched] — total 0, 0 succeeded, 0 failed") @>

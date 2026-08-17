@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: **a project that matched ZERO tests no longer discharges a symbol's test debt**
+  (AUTOMATION-278). The per-symbol green-commit folded `TestResult.isPassed` over the
+  projects covering a changed symbol, and that predicate was TRUE for a zero-match
+  result — so a symbol whose covering project ran under an impact-derived class filter
+  matching no test left `pending-verification.json` having been verified by a run that
+  executed nothing. The run-level verdict was correctly non-green throughout, which is
+  why it went unnoticed: only the queue was wrong. The commit now demands
+  `TestResult.verifiedGreen` (`Verified` only).
+- change: every fold over `TestResult` in the plugin — the cacheable-green gate, the
+  non-green report, the per-symbol commit, the unreadable-ledger discharge — is now
+  written out per `ProjectVerdict` case at its call site, with the reason. There is
+  deliberately no boolean that spans them.
+- feat: the `run-tests` reply carries the active `filter` so the CLI can quote it back
+  in a "no tests matched" refusal, and a per-project `counts` object
+  (`total`/`succeeded`/`failed`/`skipped`/`other`) read from the CTRF reports THIS RUN
+  wrote — located by run id, never by an mtime scan of a shared pile. A project that
+  produced no readable report gets `null`, never zeros.
+
 ## 0.13.0-alpha.13 - 2026-08-17
 
 - fix!: **stale build output is detected BEFORE any suite runs, and the provable case is
