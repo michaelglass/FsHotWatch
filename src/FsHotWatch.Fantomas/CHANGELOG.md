@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.19 - 2026-08-17
+
 - fix!: **a cached format-check verdict can no longer claim files its cache key never
   covered** (AUTOMATION-191 — the `File = None` half of AUTOMATION-186). Format-check
   subscribes to `FileChanged`, which the framework keys as a whole-run entry, so its

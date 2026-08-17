@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.13 - 2026-08-17
+
 - fix!: **stale build output is detected BEFORE any suite runs, and the provable case is
   repaired** (AUTOMATION-201). The freshness gate was right — it refuses to run
   `--no-build` against bytes that do not match the sources — but its only call site sat

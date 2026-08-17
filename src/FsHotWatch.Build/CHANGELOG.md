@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.22 - 2026-08-17
+
 - fix: re-verify artifacts at cache-REPLAY time, so a cache hit can never assert
   freshness it has not confirmed (AUTOMATION-245)
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.11 - 2026-08-17
+
 - feat: **`RunSummary.nothingVerified` — the marker a run uses to say it verified
   nothing** (AUTOMATION-198). A run that executed no test still `Completed`, so every
   surface rendered it `✓`: nothing failed, and nothing was checked either. The plugin

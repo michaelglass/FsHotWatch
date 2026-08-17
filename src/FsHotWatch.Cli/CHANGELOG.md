@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.17 - 2026-08-17
+
 - fix: **a run that tested nothing no longer renders as a `✓`** (AUTOMATION-198).
   `fshw check` on a run that selected ZERO test projects printed
   `✓ test-prune — 0 passed, 0 failed in 0 projects` and then, correctly, refused to
