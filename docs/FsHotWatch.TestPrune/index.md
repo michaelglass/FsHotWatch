@@ -36,6 +36,48 @@ replays are both gated on this queue being empty, so a green verdict always
 means "test-equivalent to the last green run", never "tests didn't happen to
 run". The queue can only err toward over-testing.
 
+### Stale build output is caught before anything runs
+
+Before a single suite launches, every configured project's build output is compared
+against its sources. If any of it is stale, **nothing spawns** — the whole run is
+refused and every project comes back deferred, naming its remedy. Running the projects
+that happen to be fresh would buy minutes of partial execution for signal the verdict
+cannot use.
+
+Exactly one stale case is **repaired** rather than refused: a dependency or fixture in a
+test project's output directory holding bytes no current build output holds, which is
+MSBuild's incremental copy comparing equal timestamps and skipping the copy. The origin
+bytes are written across, re-read, and the run proceeds. A stale *compile* is refused
+instead — no file on disk holds the bytes it would need, and inventing them is how
+silent degradation starts.
+
+Repairs are recorded to `.fshw/test-prune/stale-heals.json`, which drives a circuit
+breaker: **ten repairs of one file inside two days** stop being a repair and become a
+finding, so the run refuses and names the file and the count rather than absorbing the
+inversion forever. The breaker gates the *repair*, not the run, so a tripped breaker on
+a clean tree changes nothing. Delete the ledger to reset it; the window also ages out on
+its own.
+
+### When the symbol index is emptied under a live sidecar
+
+`.fshw/test-prune/file-freshness.json` records whether a file ended its last check
+FCS-clean. It carries no schema version and sits beside a `test-impact.db` that deletes
+and recreates itself on a `SchemaVersion` bump — so the sidecar can outlive the rows it
+describes and still say `Clean` about them.
+
+`FileFreshness.trustStoredRows` decides what may be done with that, from the sidecar's
+verdict plus one structural fact: **does the index still hold rows for this file.** It
+answers a named `StoredRowTrust` rather than a bare boolean, and a `Clean` stamp over an
+emptied index resolves to `EverySymbolIsNew` — every symbol reads as added, which
+**widens** the run. That is the safe direction and it was already the behaviour; naming
+it is what stops a future refactor from "tidying" it into under-selection with no test
+failing.
+
+Whether the database was recreated is deliberately **not** an input: that is also true
+of a first-ever creation, so it cannot tell a schema bump from a fresh clone, and it
+says nothing about an individual file. Ask the index what it *holds*, never how it came
+to be that way.
+
 ## Configuration
 
 In `.fshw.json`:

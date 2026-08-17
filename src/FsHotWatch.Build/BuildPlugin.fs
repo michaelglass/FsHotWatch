@@ -781,9 +781,15 @@ let create
             // predicate after a build was already being demoted to
             // `BuildArtifactsStale` (i.e. permanently red) today.
             //
-            // Cheap on the hot path: N stat calls against a merkle that SHA-256s every
-            // source file. Ordered BEFORE the merkle so a bypass skips that hash
-            // entirely — the wedge path is now cheaper than the warm path, not dearer.
+            // Cheap on the hot path, and it reads no file CONTENTS: two stats per
+            // project (canonical DLL) and per graph source (`GetMaxSourceMtime` walks
+            // every source of every project), so ~2 × (projects + sources) — measured
+            // at 0.46 ms for this repo's 14 projects / 135 sources against a merkle
+            // that SHA-256s 3.5 MB in 30-40 ms.
+            //
+            // Ordered BEFORE the merkle so a bypass skips that hash entirely: the
+            // WEDGE path is now cheaper than the warm path, not dearer. The warm path
+            // pays both and is ~1% slower — the trade this change buys.
             | FileChanged _ ->
                 match verifyArtifactsFresh () with
                 | [] -> merkleKey ()

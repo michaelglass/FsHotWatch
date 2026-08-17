@@ -102,7 +102,7 @@ This matters more than the feature list, so it is stated up front:
 | `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
 | `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |
-| `fshw stop` | Stop the running daemon. |
+| `fshw stop` | Stop the running daemon. **Not a cache reset** — the task cache is on disk and survives it; see below. |
 | `fshw format` | Format the code (Fantomas). |
 | `fshw test-rerun` | Rerun tests for an xUnit v3 `--filter-class` / `--filter-trait` slice. Add `--project <name>` (repeatable) to aim it at particular test projects — without it the filter is fanned out across every configured project, so a class living in one of them reports zero matches in all the others. |
 | `fshw rerun <plugin>` | Force one plugin to re-run, clearing its cached state. |
@@ -112,6 +112,13 @@ This matters more than the feature list, so it is stated up front:
 Add `-v` for debug logging or `-a` for agent-friendly, parseable output. Run
 `fshw --help` for the full list, and see the
 [CLI README](src/FsHotWatch.Cli/) for every verb and flag.
+
+> **If a check looks stuck or a result looks stale, do not run `fshw stop`.** The task
+> cache is on disk under `.fshw/` and survives a stop, a crash and a reboot, so a
+> restart throws away the warm compiler and then serves you the same cached answer. The
+> escape is **`fshw confirm`**, which forces a real build and refuses to replay a cached
+> verdict. If the cause is stale build *output*, `dotnet build` is the fix — and a copy
+> MSBuild skipped on equal timestamps needs `dotnet build --no-incremental`.
 
 ## Machine-readable state (for agents and CI)
 

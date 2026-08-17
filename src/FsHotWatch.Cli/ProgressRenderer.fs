@@ -112,6 +112,27 @@ let private terminalTimingStr (parsed: ParsedPluginStatus) : string option =
     | Some r when r.Elapsed > TimeSpan.Zero -> Some(UI.timing r.Elapsed)
     | _ -> None
 
+/// The glyph a terminal status earns. ONE decider, shared by compact and verbose —
+/// they are two renderings of one judgement, and every fail-closed rule (a ledger
+/// with failing diagnostics; a run that VERIFIED NOTHING, AUTOMATION-198) has to hold
+/// in both or it does not hold. Deciding it twice is how they drift.
+///
+/// `Completed` with no run record at all is handled by the callers, which have a
+/// sentence to print about it as well as a glyph to pick.
+let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
+    match parsed.Status with
+    | StatusView.Completed _ when
+        DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
+        || ParsedPluginStatus.verifiedNothing parsed
+        ->
+        Glyph.warn
+    | StatusView.Completed _ -> Glyph.check
+    | StatusView.Failed _ when isTimedOut parsed -> Glyph.timeout
+    | StatusView.Failed _ -> Glyph.cross
+    | StatusView.Unreadable _ -> Glyph.cross
+    | StatusView.Running _ -> Glyph.ellipsis
+    | StatusView.Idle -> Glyph.idle
+
 // ----- Compact -----
 
 let private renderCompact
@@ -151,17 +172,11 @@ let private renderCompact
                 | Some t -> $" %s{t}"
                 | None -> ""
 
-            // Fail closed, second rule: a run that VERIFIED NOTHING is not a ✓ either
-            // (AUTOMATION-198). The status stays `Completed` — nothing failed — so the
-            // glyph is what has to stop reading as success; the words are already in the
-            // summary, which says so in its first two.
-            let glyph =
-                if withIssues || ParsedPluginStatus.verifiedNothing parsed then
-                    Glyph.warn
-                else
-                    Glyph.check
-
-            $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
+            // The glyph comes from `glyphForParsed`, the shared decider — including the
+            // AUTOMATION-198 rule that a run which VERIFIED NOTHING is not a ✓. The
+            // status stays `Completed` (nothing failed), so the glyph is what has to
+            // stop reading as success; the words are already in the summary.
+            $"  %s{glyphForParsed warningsAreFailures parsed} %s{padded}%s{timingPart}%s{summary}"
         | StatusView.Failed(err, _) ->
             let short = summariseError err
 
@@ -233,19 +248,6 @@ let private renderCompact
     [ line ]
 
 // ----- Verbose -----
-
-let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
-    match parsed.Status with
-    | StatusView.Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
-    // A run that VERIFIED NOTHING is not a success — same rule as compact
-    // (AUTOMATION-198), asked through the one predicate so the two cannot drift.
-    | StatusView.Completed _ when ParsedPluginStatus.verifiedNothing parsed -> Glyph.warn
-    | StatusView.Completed _ -> Glyph.check
-    | StatusView.Failed _ when isTimedOut parsed -> Glyph.timeout
-    | StatusView.Failed _ -> Glyph.cross
-    | StatusView.Unreadable _ -> Glyph.cross
-    | StatusView.Running _ -> Glyph.ellipsis
-    | StatusView.Idle -> Glyph.idle
 
 let private verboseHeader
     (warningsAreFailures: bool)

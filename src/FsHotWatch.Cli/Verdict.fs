@@ -121,16 +121,14 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
     | StatusView.Unreadable _ -> Some PluginOutcome.Fail
     | StatusView.Failed _ when timedOutLastRun () -> Some PluginOutcome.TimedOut
     | StatusView.Failed _ -> Some PluginOutcome.Fail
-    // Fail closed: Completed with no run record can never be `ok`. A clean ledger
-    // downgrades to `warn`; failing diagnostics still take precedence.
-    | StatusView.Completed _ when parsed.LastRun.IsNone ->
-        match okOrDiag () with
-        | PluginOutcome.Ok -> Some PluginOutcome.Warn
-        | other -> Some other
-    // Same fail-closed shape for a run that VERIFIED NOTHING: a clean ledger downgrades
-    // to `warn` (the summary says what happened), failing diagnostics still take
-    // precedence.
-    | StatusView.Completed _ when ParsedPluginStatus.verifiedNothing parsed ->
+    // Fail closed on a `Completed` that is not evidence of a pass. Two reasons reach
+    // this, and they share one rule rather than one copy of it each:
+    //   * NO RUN RECORD at all — nothing to vouch for the completion;
+    //   * a run record saying the run VERIFIED NOTHING (AUTOMATION-198) — the summary
+    //     says what happened, and an absence of evidence is not a pass.
+    // Either way a clean ledger downgrades to `warn`; failing diagnostics still take
+    // precedence, so nothing here can hide a red.
+    | StatusView.Completed _ when parsed.LastRun.IsNone || ParsedPluginStatus.verifiedNothing parsed ->
         match okOrDiag () with
         | PluginOutcome.Ok -> Some PluginOutcome.Warn
         | other -> Some other
@@ -211,6 +209,53 @@ module Outcome =
         | Red -> "red"
         | Incomplete _ -> "incomplete"
 
+/// The words a non-green `CheckOutcome` is explained in — ONE copy, read by every
+/// surface that has to explain one: this file's structured `Outcome`, the daemon-path
+/// terminal (`IpcOutput`) and the daemon-less one (`RunOnceCheck`).
+///
+/// They lived as three hand-synced copies, and the `waiting on build` text is the
+/// reason that mattered: it is the message a WEDGED caller reads, so it is the one
+/// message that must never be the stale copy. AUTOMATION-245 had to edit all three to
+/// add the same two sentences, and a grep for the prose found only two of them.
+///
+/// Cause and remedy are separate bindings because the surfaces join them differently —
+/// the terminals put the remedy on its own line, the structured payload keeps one
+/// string — and that difference is presentation, which may vary. The words may not.
+module CheckProse =
+
+    /// What happened. Never a red: nothing failed, and nothing was verified either.
+    let waitingOnBuildCause =
+        "waiting on build — a test project's build artifact was not produced, so its \
+         tests did not run. Nothing was verified (not a pass) and nothing failed (not a \
+         red); re-run once the build settles."
+
+    /// What to DO about it — the half that had to be added because the cause alone left
+    /// the caller with an instruction that could not work.
+    ///
+    /// `fshw confirm` is the escape, and restarting the daemon explicitly is NOT one:
+    /// the task cache is `FileTaskCache` on disk under `.fshw/`, so it survives `fshw
+    /// stop` and a reboot. That folk remedy was advised for months and never cleared
+    /// anything by itself; saying so here is the only place a wedged caller will read it.
+    let waitingOnBuildRemedy =
+        "If an otherwise-unchanged re-run says this again, the build is serving a \
+         cached result its outputs no longer support: run `fshw confirm`, which forces \
+         a real build. Restarting the daemon does NOT — the task cache is on disk."
+
+    /// A scope that could not be READ. Its own words, never `confirm`'s: this is not
+    /// "the run was too narrow", it is "we could not see what the run was" — and a
+    /// consumer told the former would retry a broken check forever.
+    let scopeUnreadable (reason: string) =
+        $"NO VERDICT — the test scope could not be read (%s{reason}).\nThat is not the same as \"no tests were \
+           needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
+           may never mean. Nothing is reported broken, and nothing is reported sound either."
+
+    /// A scope that was read and is too narrow to support a merge claim.
+    let scopeTooNarrow (scope: TestScope) =
+        $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
+           not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
+           look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
+           reported sound either."
+
 /// Derive the file's outcome from the check's — the SAME value the exit code is
 /// derived from, so the two can never disagree.
 let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
@@ -226,8 +271,8 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         // A DISTINCT `incomplete` reason in `.fshw/verdict.json` — the deploy
         // preflight reads the structured outcome (`incomplete`, exit 2), never the
         // prose, so "waiting on build" is a retry signal, not "tests failed".
-        Incomplete
-            "waiting on build — a test project's build artifact was not produced, so its tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once the build settles. If an otherwise-unchanged re-run says this again, the build is serving a cached result its outputs no longer support: run `fshw confirm`, which forces a real build. Restarting the daemon does NOT — the task cache is on disk."
+        // One string here: this payload is a JSON field, not a terminal.
+        Incomplete $"%s{CheckProse.waitingOnBuildCause} %s{CheckProse.waitingOnBuildRemedy}"
     | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.
