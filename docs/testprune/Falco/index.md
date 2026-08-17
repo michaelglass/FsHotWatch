@@ -9,6 +9,10 @@ that connects Falco URL routes to integration tests. If you change the
 handler for `/api/users/{id}`, it finds the tests that make requests to
 that URL and runs just those.
 
+> **Status: early alpha.** This is a young project, substantially
+> AI-written, and still finding its shape. Behavior and APIs shift
+> between versions, so pin a version and expect surprises.
+
 ## Installation
 
 ```bash
@@ -22,7 +26,7 @@ dotnet add package TestPrune.Falco
 Routes are the one thing TestPrune cannot read out of your code — they
 live in a route DU plus runtime wiring, not in the symbol graph — so you
 seed them. `RouteStore` owns that table: it lives inside TestPrune's cache
-database, but TestPrune.Core knows nothing about it (core just hands out a
+database, but TestPrune.Core knows nothing about it (it just hands out a
 connection, via `toPluginStore`).
 
 Each entry is a `RouteHandlerEntry`; `Rebuild` clears and rewrites the
@@ -88,16 +92,25 @@ let edges =
    (`/api/users/{id}` matches `/api/users/123` in your test code)
 4. Returns the test classes from files that reference affected routes
    (`FindAffectedTestClasses`), or those couplings as graph edges
-   (`AnalyzeEdges`) — each route's tests scoped to the handler function
-   serving it, so a one-function change to a multi-route file no longer
-   drags in every route's tests
+   (`AnalyzeEdges`). A class or module counts as a test declaration only when its
+   own span carries a test attribute (`[<Fact>]`, `[<Theory>]`, a `FactAttribute`
+   subclass such as `[<SkippableFact>]`, the NUnit/MSTest equivalents) or — for a
+   class — an `inherit` clause, since xUnit runs test methods a base class
+   declares. Fixtures, `[<CollectionDefinition>]` markers and plain helpers
+   declare no tests and are never returned
 
-A class or module counts as a test declaration only when its own span carries a
-test attribute (`[<Fact>]`, `[<Theory>]`, a `FactAttribute` subclass such as
-`[<SkippableFact>]`, the NUnit/MSTest equivalents) or — for a class — an
-`inherit` clause, since xUnit also runs the test methods a base class declares.
-Fixtures, `[<CollectionDefinition>]` markers and plain helpers declare no tests
-and are never returned as affected test classes.
+## If you also mark a composition root
+
+TestPrune.Core lets you mark your route table with
+`[<TestPrune.CompositionRoot>]` so that editing one handler no longer selects
+every test whose fixture boots the app. That is only safe because *this*
+extension attributes each route to its own tests directly — cutting the
+composition edge leaves the route→test edge behind to select the right tests.
+
+The limit to know: this extension matches tests that **name** a URL. A browser
+test that reaches the route by clicking (`page.ClickAsync "#stop-impersonating"`)
+is not attributed, so a composition-root barrier would drop it. **Don't mark a
+composition root in a repo whose browser tests navigate by UI interaction.**
 
 ## Documentation
 

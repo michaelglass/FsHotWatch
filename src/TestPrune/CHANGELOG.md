@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- feat: **`run` and `status` honour `[<TestPrune.CompositionRoot>]`.** Mark the symbol
+  that wires your application together — a routing table, a DI registration block —
+  and `test-prune run` stops treating "the app names this handler" as a reason to run
+  every test whose fixture boots the app. Editing one handler in a Falco app measured
+  537 selected integration tests before, 4 after. Changing the marked symbol itself
+  still selects everything downstream, because rewired composition is what
+  host-booting tests verify.
+
+  Nothing to install and nothing to configure: the attribute is matched by type name,
+  so declare it in your own code (`type CompositionRootAttribute() = inherit
+  System.Attribute()`). A repo that annotates nothing selects exactly what it selected
+  before — verified symbol-by-symbol.
+
+  **Read the safety note before annotating.** This is the only setting that makes
+  `test-prune` run FEWER tests than the graph implies, so it is the only one that can
+  hide a failure. TestPrune.Core's changelog has the measured numbers, the per-project
+  fail-safe, and the case where you should not use it at all.
+- chore(deps): the bundled native SQLite (`SQLitePCLRaw.lib.e_sqlite3`) moves
+  3.50.3 → 3.53.3, clearing GHSA-2m69-gcr7-jv3q. No CLI behaviour change; your
+  `.test-prune.db` is unaffected and is not re-indexed.
+
 ## 6.1.2 - 2026-08-11
 
 - feat!: **Your `.test-prune.db` is rebuilt on first run (SchemaVersion 8→9).** The index now rejects unqualified symbol names at the database

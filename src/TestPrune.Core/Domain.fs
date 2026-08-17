@@ -30,20 +30,66 @@ module AnalysisError =
 /// Matched by attribute NAME, mirroring how `ImpactAnalysis` resolves
 /// `DependsOnFile`: the stored `DisplayName` sheds its namespace, and a consumer
 /// that would rather not reference TestPrune.Attributes from production code can
-/// declare its own `CompositionRootAttribute`. `Names` is the pair to match
-/// against; it is the single source of truth shared by the SQLite walk in
-/// `Database.QueryAffectedTests` and the in-memory walk in `InMemoryStore`, which
-/// must agree or the soundness harness is checking a different selector than the
-/// one that ships.
+/// declare its own `CompositionRootAttribute`.
+///
+/// This module is where the rule lives, so that the SQLite walk in
+/// `Database.QueryAffectedTests` and the in-memory walk in `InMemoryStore` cannot
+/// disagree about it. The two engines share the marker `Names` and the
+/// `restoreEmptiedProjects` fail-safe outright; only the graph traversal itself is
+/// written twice, once in SQL and once in F#. Those two traversals are held together
+/// by `CompositionRootSelectionTests`, which asserts both stores return the same rows
+/// case by case — the randomised soundness harness exercises the in-memory walk only,
+/// so it is that per-case assertion, not the harness, that keeps them honest.
 module CompositionRoot =
 
     /// Both spellings FCS may store for the marker, with and without the
-    /// conventional `Attribute` suffix.
-    let Names = [ "CompositionRootAttribute"; "CompositionRoot" ]
+    /// conventional `Attribute` suffix. A list rather than a set because
+    /// `Database` pairs it positionally with `@cr0`/`@cr1` SQL parameters.
+    let internal Names = [ "CompositionRootAttribute"; "CompositionRoot" ]
 
     /// Does this stored attribute name mark a composition root?
-    let isMarker (attributeName: string) =
-        Names |> List.exists (fun n -> n = attributeName)
+    let internal isMarker (attributeName: string) = Names |> List.contains attributeName
+
+    /// FAIL-SAFE: a barrier may NARROW a test project's selection, never empty it.
+    ///
+    /// Barriering is only sound while some OTHER attribution still reaches the tests
+    /// covering the changed symbol — TestPrune.Falco's route→test edges, in the case
+    /// this was built for. That attribution is not total, so a barriered walk can
+    /// answer "no tests affected" for a change that really does need testing: a green
+    /// gate that verified nothing, which is far worse than the over-selection being
+    /// fixed.
+    ///
+    /// A global "is the answer empty?" guard does NOT cover it. A change can keep a
+    /// handful of unit tests while every integration test vanishes, and the non-empty
+    /// total masks it. So the unit of the guard is the test PROJECT: a project the
+    /// unbarriered walk covers and the barriered one does not is a project whose
+    /// markers cannot be trusted for this change, and its unbarriered rows come back
+    /// wholesale.
+    ///
+    /// Two facts make the result obviously right, both worth stating because the
+    /// reader needs them: `barriered` is a subset of `unbarriered` (identical seeds,
+    /// strictly more restrictive expansion), so appending cannot duplicate a row; and
+    /// the projects present in `barriered` are exactly the projects the barrier did
+    /// not empty, so restoring the complement restores precisely the emptied ones.
+    ///
+    /// NOT a completeness guarantee, and its granularity is the CONSUMER'S: a repo
+    /// whose unit and integration tests share one test project gets "never select
+    /// nothing" rather than a per-project bound. Even with separate projects, a route
+    /// with one test that names its URL and another that only clicks through the UI
+    /// keeps the project non-empty and still drops the second. This bounds the blast
+    /// radius; closing it needs the route attribution to cover click-driven navigation.
+    let internal restoreEmptiedProjects
+        (testProjectOf: 'test -> string)
+        (barriered: 'test list)
+        (unbarriered: 'test list)
+        : 'test list =
+        let projectsTheBarrierKept = barriered |> List.map testProjectOf |> Set.ofList
+
+        let restoredForEmptiedProjects =
+            unbarriered
+            |> List.filter (fun t -> not (Set.contains (testProjectOf t) projectsTheBarrierKept))
+
+        barriered @ restoredForEmptiedProjects
 
 type ChangeKind =
     | Modified

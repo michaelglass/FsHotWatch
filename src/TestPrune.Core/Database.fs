@@ -135,13 +135,20 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
-let private buildPlaceholders (names: string list) =
-    let paramNames = names |> List.mapi (fun i _ -> $"@p%d{i}")
+/// `@<prefix>0, @<prefix>1, ...` for `names`, to interpolate into an `IN (...)` list.
+/// The prefix exists so one command can carry two independent lists without their
+/// parameter names colliding; `bindPlaceholdersNamed` must be called with the same one.
+let private buildPlaceholdersNamed (prefix: string) (names: string list) =
+    let paramNames = names |> List.mapi (fun i _ -> $"@%s{prefix}%d{i}")
     String.Join(", ", paramNames)
 
-let private bindPlaceholders (cmd: SqliteCommand) (names: string list) =
+let private bindPlaceholdersNamed (prefix: string) (cmd: SqliteCommand) (names: string list) =
     names
-    |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+    |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@%s{prefix}%d{i}", name) |> ignore)
+
+let private buildPlaceholders (names: string list) = buildPlaceholdersNamed "p" names
+
+let private bindPlaceholders (cmd: SqliteCommand) (names: string list) = bindPlaceholdersNamed "p" cmd names
 
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
@@ -640,8 +647,10 @@ type Database(dbPath: string) =
     /// Find test methods transitively depending on the given changed symbol names.
     ///
     /// `applyBarriers` decides whether `[<TestPrune.CompositionRoot>]` markers are
-    /// honoured. `QueryAffectedTests` runs it `true` and retries `false` if that
-    /// answered "no tests at all" — see the fail-safe there.
+    /// honoured. When any marker exists `QueryAffectedTests` runs this BOTH ways and
+    /// merges the two results per test project — see the fail-safe there. (It does not
+    /// "retry on empty": a global emptiness check is the version that was wrong, because
+    /// surviving unit tests mask an emptied integration project.)
     member private _.QueryAffectedTestsCore
         (changedSymbolNames: string list, applyBarriers: bool)
         : TestMethodInfo list =
@@ -689,15 +698,14 @@ type Database(dbPath: string) =
             // non-barrier path to the same dependents is unaffected — this is a set union,
             // so blocking one route never removes what another route supplies.
             //
-            // Un-annotated codebases have an empty `barriers`, making the WHERE clause
-            // vacuous and the result identical to the unbarriered walk.
-            // `applyBarriers = false` selects no barrier rows at all, so the WHERE
-            // clause below is vacuous and the walk is exactly the historical one.
+            // `applyBarriers = false` matches the marker against `NULL`, which SQLite never
+            // satisfies, so the `barriers` CTE selects no rows and the `NOT IN (barriers)`
+            // guard in the recursive branch holds for EVERY row — the walk is then exactly
+            // the historical one. (Note the CTE is still evaluated in that case; see the
+            // deliberately-not-taken optimisation noted on `HasCompositionRoots`.)
             let markerPlaceholders =
                 if applyBarriers then
-                    Domain.CompositionRoot.Names
-                    |> List.mapi (fun i _ -> $"@cr%d{i}")
-                    |> fun ps -> String.Join(", ", ps)
+                    buildPlaceholdersNamed "cr" Domain.CompositionRoot.Names
                 else
                     "NULL"
 
@@ -755,8 +763,7 @@ type Database(dbPath: string) =
             cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
             if applyBarriers then
-                Domain.CompositionRoot.Names
-                |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@cr%d{i}", name) |> ignore)
+                bindPlaceholdersNamed "cr" cmd Domain.CompositionRoot.Names
 
             use reader = cmd.ExecuteReader()
 
@@ -766,74 +773,54 @@ type Database(dbPath: string) =
                   TestClass = r.GetString(2)
                   TestMethod = r.GetString(3) })
 
-    /// Is any symbol carrying the composition-root marker? One indexed-ish lookup
-    /// over `symbol_attributes`, kept separate so an un-annotated repo pays a
-    /// single cheap EXISTS and then takes exactly the historical code path.
+    /// Is any symbol carrying the composition-root marker? Kept separate so an
+    /// un-annotated repo runs ONE walk and takes exactly the historical code path
+    /// rather than the two-walk fail-safe below.
+    ///
+    /// COST, measured rather than assumed: `symbol_attributes` is indexed on
+    /// `symbol_id` only (see `schema`), so this is a full table SCAN — ~0.45 ms over
+    /// 12k attribute rows, and proving ABSENCE is its worst case, which is the
+    /// un-annotated repo this is supposed to be cheap for. It is still far cheaper
+    /// than the second recursive walk it avoids. An index on `attribute_name` would
+    /// cut it ~14x and needs no `SchemaVersion` bump (the ctor re-runs `schema` on
+    /// every open); better still, a single fused query could derive the answer from
+    /// the `barriers` CTE it already scans and drop this probe altogether. Neither is
+    /// done here — both are performance work, tracked separately, not a correctness
+    /// concern.
     member private _.HasCompositionRoots() : bool =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
-        let markerPlaceholders =
-            Domain.CompositionRoot.Names
-            |> List.mapi (fun i _ -> $"@cr%d{i}")
-            |> fun ps -> String.Join(", ", ps)
+        let markerPlaceholders = buildPlaceholdersNamed "cr" Domain.CompositionRoot.Names
 
         cmd.CommandText <-
             $"SELECT EXISTS(SELECT 1 FROM symbol_attributes WHERE attribute_name IN (%s{markerPlaceholders}))"
 
-        Domain.CompositionRoot.Names
-        |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@cr%d{i}", name) |> ignore)
+        bindPlaceholdersNamed "cr" cmd Domain.CompositionRoot.Names
 
         match cmd.ExecuteScalar() with
         | :? int64 as n -> n <> 0L
         | _ -> false
 
     /// Find test methods transitively depending on the given changed symbol names.
+    ///
+    /// Three cases, one reason each. Nothing changed: no query. No composition-root
+    /// marker anywhere: one walk, the historical behaviour. Otherwise: walk it both
+    /// ways and let the shared fail-safe reconcile them per test project — the
+    /// unbarriered walk is what the fail-safe compares against, so it cannot be
+    /// skipped. `Domain.CompositionRoot.restoreEmptiedProjects` owns that rule, and
+    /// `InMemoryStore` calls the same function, so the two engines cannot drift on the
+    /// one part of this feature that can silently drop a real test.
     member this.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
-        if changedSymbolNames.IsEmpty || not (this.HasCompositionRoots()) then
-            // No markers: one walk, byte-for-byte the historical behaviour.
-            this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = false)
+        let walk applyBarriers =
+            this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers)
+
+        if changedSymbolNames.IsEmpty then
+            []
+        elif not (this.HasCompositionRoots()) then
+            walk false
         else
-            let barriered =
-                this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = true)
-
-            let unbarriered =
-                this.QueryAffectedTestsCore(changedSymbolNames, applyBarriers = false)
-
-            // FAIL-SAFE, per test project.
-            //
-            // A composition-root barrier is only sound while some OTHER attribution
-            // still reaches the tests covering the changed symbol — TestPrune.Falco's
-            // route→test edges, in the case this was built for. That attribution is
-            // NOT total. Measured against the intelligence consumer (2026-08-14),
-            // Falco attributes 29 of 32 handler files; the three it misses are
-            // covered by browser tests that navigate by CLICKING
-            // (`page.ClickAsync "#stop-impersonating"`) instead of naming the URL.
-            //
-            // Barriering alone answers "no integration tests affected" for those —
-            // a green gate that verified nothing, which is far worse than the
-            // over-selection being fixed. A global "is the answer empty?" guard is
-            // not enough either: `CompanyProfile.saveProducts` keeps 4 unit tests,
-            // so the whole 537-test integration suite would vanish behind a
-            // non-empty total.
-            //
-            // Hence PER PROJECT: a barrier may narrow a project's selection, never
-            // empty it. A project the unbarriered walk covers and the barriered one
-            // does not is a project whose markers cannot be trusted for this change,
-            // so its unbarriered rows are restored. Same conservative-fallback shape
-            // as `EdgeEmission.resolveTargets` widening to the full candidate set.
-            //
-            // NOT a completeness guarantee. If a route has SOME attributed test and
-            // another that only clicks, the second is still dropped — the project is
-            // non-empty, so nothing fires. This bounds the blast radius; closing it
-            // needs Falco to attribute click-driven navigation. See the CHANGELOG.
-            let barrieredProjects = barriered |> List.map _.TestProject |> Set.ofList
-
-            let restored =
-                unbarriered
-                |> List.filter (fun t -> not (Set.contains t.TestProject barrieredProjects))
-
-            barriered @ restored
+            Domain.CompositionRoot.restoreEmptiedProjects _.TestProject (walk true) (walk false)
 
     /// Return all symbols stored for a given source file path.
     member _.GetSymbolsInFile(sourceFile: string) : SymbolInfo list =

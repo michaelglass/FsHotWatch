@@ -34,12 +34,15 @@
   Across all 178 route handlers: 41 narrowed, 137 unchanged, **0 widened, 0 dropped
   to zero**, 95 587 → 74 706 selected integration tests (−21.8%).
 
-  **Opt-in and name-matched.** An un-annotated repository takes a single cheap
-  `EXISTS` and then the historical code path unchanged — asserted symbol-by-symbol,
-  and the 200-case randomised soundness harness now doubles as proof of it. The
-  attribute is matched by NAME exactly as `DependsOnFile` is, so a codebase that
-  would rather not reference `TestPrune.Attributes` from production code can declare
-  its own three-line `CompositionRootAttribute`.
+  **Opt-in and name-matched.** An un-annotated repository takes one extra `EXISTS`
+  probe and then the historical code path unchanged — asserted symbol-by-symbol, and
+  the 200-case randomised soundness harness now doubles as proof of it. (That probe
+  is honest but not yet fast: `symbol_attributes` is indexed on `symbol_id` only, so
+  it is a table scan. Indexing `attribute_name` needs no schema-version bump and is
+  tracked separately.) The attribute is matched by NAME exactly as `DependsOnFile`
+  is, so a codebase that would rather not reference `TestPrune.Attributes` from
+  production code can declare its own three-line `CompositionRootAttribute` — which
+  is the supported route, since that package is not published to NuGet.
 
   **Fail-safe: a barrier may narrow a test project's selection, never empty it.**
   The narrowing is only sound while some *other* attribution still reaches the
@@ -58,7 +61,14 @@
   nothing fires. Closing that needs Falco to attribute click-driven navigation.
   **Until it does, do not mark a composition root in a repo whose browser tests
   navigate by UI interaction** — the mechanism is sound, the attribution feeding it
-  is not yet complete.
+  is not yet complete. Note also that the fail-safe's granularity is *your* test-project
+  layout: the numbers above hold because unit and integration tests live in separate
+  projects, and a suite with a single test project gets the weaker "never select
+  nothing" guarantee instead.
+
+  The rule and the fail-safe live in `Domain.CompositionRoot` and are called by both
+  the SQLite and in-memory stores, so the selector that ships and the selector the
+  soundness harness grades cannot drift apart.
 
 - chore(deps): **`SQLitePCLRaw.lib.e_sqlite3` 3.50.3 → 3.53.3.** The pin exists because
   the SQLitePCLRaw bundle pulls native `lib.e_sqlite3` 2.1.11, flagged High by

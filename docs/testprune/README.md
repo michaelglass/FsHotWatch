@@ -90,9 +90,8 @@ broken one.
 ## Declarative dependencies
 
 For edges the analyzer can't see — reflection, DI-by-type, or non-F#
-files like snapshots, migrations, or config —
-[`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes)
-lets you declare them:
+files like snapshots, migrations, or config — declare them with marker
+attributes:
 
 ```fsharp
 open TestPrune
@@ -112,12 +111,92 @@ Glob dialect: `**` crosses path segments, `*` stays within one, `?` is
 a single non-`/` char. Paths are repo-relative and case-sensitive. The
 attributes are metadata — no runtime behavior.
 
+### You declare the attributes yourself
+
+TestPrune matches these **by type name**, read off the syntax tree. It
+never loads your assemblies, and the namespace is ignored — so there is
+nothing to install. Declare the ones you use anywhere in your own code:
+
+```fsharp
+namespace TestPrune   // any namespace; only the type name is matched
+
+open System
+
+type DependsOnAttribute(target: Type) =
+    inherit Attribute()
+    member _.Target = target
+
+type DependsOnFileAttribute(path: string) =
+    inherit Attribute()
+    member _.Path = path
+
+type DependsOnGlobAttribute(pattern: string) =
+    inherit Attribute()
+    member _.Pattern = pattern
+
+type CompositionRootAttribute() =
+    inherit Attribute()
+```
+
+Both spellings match, with and without the `Attribute` suffix — that is
+what lets you write `[<DependsOnFile ...>]`. The attribute does have to
+resolve for the compiler, so it must be declared somewhere.
+
+> This repo carries the same definitions in `src/TestPrune.Attributes`
+> for its own tests and examples, but **that package is not published to
+> NuGet.** Declaring them yourself is the supported route.
+
+## Composition roots
+
+A routing table or DI registration block names *every* handler in the
+codebase in order to wire them up, and an integration-test fixture that
+boots the app depends on it. So the walk reaches every fixture-using test
+from every handler: change one handler, select the whole integration
+suite. Every edge on that path is real — the conclusion isn't. Nothing in
+the graph distinguishes "wires X up" from "calls X", so you say which
+symbol is the wiring:
+
+```fsharp
+[<TestPrune.CompositionRoot>]
+let endpointsFor (route: Route) : HttpHandler =
+    match route with
+    | Home -> Handlers.home
+    | Admin -> Handlers.admin
+    // ... names every handler
+```
+
+The rule is **one-directional**, and both halves matter:
+
+- **Reached *through* it** — relevance stops. The root is still reported
+  affected, but tests reachable only by continuing past it are not
+  selected.
+- **Changed *itself*** — relevance flows on as usual. "The app is wired
+  differently now" is what host-booting tests exist to check, so they run.
+
+This is the one setting that makes TestPrune run *fewer* tests than the
+graph implies, so it is the one that can hide a real failure. Annotate
+only a symbol whose references are pure composition: if callers depend on
+what it *computes* rather than on which parts it *wires together*,
+annotating it drops real tests. Before annotating, make sure the coupling
+it carried is covered some other way —
+[`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco)
+attributes each route to its own tests directly, which is the worked
+example.
+
+A per-project fail-safe bounds the blast radius: a marked root may
+**narrow** a test project's selection, never **empty** it. If the barrier
+leaves a project with no tests at all, that project's full selection is
+restored. That is a bound, not a completeness guarantee — a route with one
+test that names its URL and another that only clicks through the UI still
+drops the second. **Until your browser tests name the URLs they visit,
+don't mark a composition root.**
+
 ## Packages
 
 | Package | What it's for |
 |---------|---------------|
 | [`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core) | The library — use this in your build system or editor |
-| [`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes) | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]` |
+| `TestPrune.Attributes` | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]`, `[<CompositionRoot>]`. **Not published** — the attributes are matched by name, so [declare them yourself](#you-declare-the-attributes-yourself) |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
 | [`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers) | Opt-in F# analyzer that flags anonymous records (invisible to impact analysis) |
 | `TestPrune` | CLI tool (reference implementation) |

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- docs: **route→test attribution is what makes `[<TestPrune.CompositionRoot>]` safe,
+  and this release states the limit.** TestPrune.Core can now be told to stop
+  propagating relevance through an application's composition root, which is only sound
+  while some *other* attribution still reaches the tests covering a changed handler.
+  This extension is that other attribution — it links each route to the tests that name
+  its URL, independently of the composition edge.
+
+  The gap to know about: a test that reaches a route by **clicking** rather than by
+  naming the URL (`page.ClickAsync "#stop-impersonating"`) is not attributed here, so
+  the composition-root barrier would drop it. Measured on the consumer this was built
+  for, 29 of 32 handler files were fully attributed and the three misses were exactly
+  those click-driven browser tests. **Do not mark a composition root in a repo whose
+  browser tests navigate by UI interaction** until this extension attributes
+  click-driven navigation. Core's per-project fail-safe bounds the damage but does not
+  close it.
+
+  No API or behaviour change in this package — the source diff since 3.1.0 is comment
+  rewrites only. Released to move the `TestPrune.Core` dependency floor onto the
+  version that has composition-root support.
+
 ## 3.1.0 - 2026-08-05
 
 - resolve Falco route non-literal navigation, dependency-free
