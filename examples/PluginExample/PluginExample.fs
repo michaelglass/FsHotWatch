@@ -19,6 +19,21 @@ let myPlugin: PluginHandler<MyState, unit> =
         fun ctx state event ->
             async {
                 match event with
+                // Most plugins care about only some of what they are handed. Say so
+                // out loud: a run that examined NOTHING must not render as a ✓, and
+                // the framework cannot infer that for you. `RunSummary.nothingVerified`
+                // is the marker every surface reads to downgrade the glyph to ⚠ (and
+                // the agent / verdict.json token to `warn`). The STATUS stays
+                // `Completed` — nothing failed.
+                | FileChecked result when not ((AbsFilePath.value result.File).EndsWith ".fs") ->
+                    ctx.ReportStatus(
+                        Completed(
+                            DateTime.UtcNow,
+                            RunVerdict.create (RunSummary.nothingVerified "not an F# source file") TimeSpan.Zero
+                        )
+                    )
+
+                    return state
                 | FileChecked result ->
                     let started = DateTime.UtcNow
 
@@ -29,7 +44,9 @@ let myPlugin: PluginHandler<MyState, unit> =
                     // A terminal status carries its verdict: what was done, and
                     // how long it took — MEASURED, never guessed. "Done with
                     // nothing to report" does not typecheck (`RunVerdict.create`
-                    // rejects an empty summary) — by design.
+                    // rejects an empty summary) — by design. An empty summary the
+                    // compiler catches; a MISLEADING one ("checked 0 files") it does
+                    // not, which is what the arm above exists to prevent.
                     ctx.ReportStatus(
                         Completed(
                             DateTime.UtcNow,

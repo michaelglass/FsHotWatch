@@ -66,6 +66,18 @@ summary is empty.
   disagree; there is no separate summary channel to set (or forget).
 - Per-file `ctx.Log` calls remain useful — they populate the verbose activity
   tail without being promoted to a summary.
+- **If the run verified nothing, say so.** Build the summary with
+  `RunSummary.nothingVerified "<why>"` instead of writing your own totals. It marks
+  the summary `NOTHING VERIFIED: …`, and every surface then refuses the run a green:
+  compact and verbose render `⚠` instead of `✓`, agent mode tokens it `warn`, and
+  `plugins[]` in `.fshw/verdict.json` records `warn` instead of `ok`.
+
+  Report the terminal as `Completed`, not `Failed` — nothing broke, and a failure
+  would turn an honest "no verdict" into "failures found".
+
+  This is a marker you must **set**; the framework cannot infer it. A plugin that
+  verifies nothing and does not say so still renders a `✓`, so treat "could this run
+  have checked zero things?" as a question every plugin owes an answer to.
 
 ### Per-event timeouts
 
