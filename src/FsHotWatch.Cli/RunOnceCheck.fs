@@ -343,29 +343,20 @@ let runOnceAndVerdict
                     "coverage could not be confirmed"
 
             UI.fail $"Check incomplete: %s{detail}"
+        // `Verdict.CheckProse`, verbatim — the same words the daemon path (`IpcOutput`)
+        // prints. `--run-once` differs in HOW the check ran, never in what it means.
         | CheckVerdict.CheckOutcome.WaitingOnBuild ->
             // Non-green, but "could not complete", never a red — see `CheckOutcome`.
             UI.fail
-                "Check incomplete: waiting on build — a test project's build artifact was not produced, so its \
-                 tests did not run. Nothing was verified (not a pass) and nothing failed (not a red); re-run once \
-                 the build settles.\nIf an otherwise-unchanged re-run says this again, the build is serving a \
-                 cached result its outputs no longer support: run `fshw confirm`, which forces a real build. \
-                 Restarting the daemon does NOT — the task cache is on disk."
+                $"Check incomplete: %s{Verdict.CheckProse.waitingOnBuildCause}\n%s{Verdict.CheckProse.waitingOnBuildRemedy}"
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
             // Its own words, not `confirm`'s: not "the run was too narrow" but "we could
             // not see what the run was".
-            UI.fail
-                $"NO VERDICT — the test scope could not be read (%s{reason}).\nThat is not the same as \"no tests were \
-                   needed\": a read that faulted cannot rule out that ZERO tests ran, which is the one thing a green \
-                   may never mean. Nothing is reported broken, and nothing is reported sound either."
+            UI.fail (Verdict.CheckProse.scopeUnreadable reason)
         | CheckVerdict.CheckOutcome.UnearnedScope scope ->
             // Nothing failed, and that is the point: the tests that ran do not support a
             // whole-suite claim, so there is no verdict to give. Never a green.
-            UI.fail
-                $"Confirm: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
-                   not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
-                   look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
-                   reported sound either."
+            UI.fail (Verdict.CheckProse.scopeTooNarrow scope)
         | CheckVerdict.CheckOutcome.Clean
         | CheckVerdict.CheckOutcome.FailuresFound -> ()
 

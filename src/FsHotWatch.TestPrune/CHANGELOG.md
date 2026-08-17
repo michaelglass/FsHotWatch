@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- fix!: **stale build output is detected BEFORE any suite runs, and the provable case is
+  repaired** (AUTOMATION-201). The freshness gate was right — it refuses to run
+  `--no-build` against bytes that do not match the sources — but its only call site sat
+  inside the per-config body of the PARALLEL run loop, so a project in group A had
+  already run its suite and written its report before group B's staleness was even
+  looked at. The result was a partial-execution red that reads like progress, surfacing
+  roughly three minutes in. Hit three times in one day; the third trigger was a plain
+  `jj` merge into a workspace — no edit at all, just a working copy rewritten under a
+  live daemon.
+  - The comparison is pure file I/O and takes milliseconds, so it now runs as a
+    **preflight over every configured project before anything launches**. If anything is
+    stale, **nothing spawns** and every project comes back deferred. This is the
+    behaviour change to know about: a run that previously produced a partial red now
+    refuses up front, and names its remedy.
+  - Exactly one stale case is REPAIRED: a dependency assembly or fixture in a test
+    project's output dir holding bytes no current build output holds (MSBuild's
+    incremental copy comparing equal timestamps and skipping the copy). The preflight
+    writes the origin's bytes across, re-reads them, and lets the run proceed. A stale
+    COMPILE and an unreadable project file are refused instead — there is no file on
+    disk holding the bytes they need, and inventing them is how silent degradation
+    starts.
+  - Every repair is logged by name AND recorded to `.fshw/test-prune/stale-heals.json`,
+    which drives a circuit breaker: ten repairs of one file inside two days stop being a
+    repair and become a finding, so the run refuses and names the file and the count.
+    The breaker gates the REPAIR, not the run, so a tripped breaker on a clean tree
+    changes nothing — and its message names its own reset.
+  - Refusals state a remedy. Every one names `dotnet build`, and the copy case adds that
+    a timestamp-inverted copy needs `dotnet build --no-incremental`. **None of them says
+    "stop the daemon"**: the task cache is file-backed and survives a restart, so that
+    folk remedy never cleared anything by itself.
+
 - refactor: **the freshness sidecar's verdict over an emptied index is now a decision,
   not a by-product (AUTOMATION-277).** `.fshw/test-prune/file-freshness.json` carries no
   schema version and sits beside a `test-impact.db` that deletes and recreates itself on

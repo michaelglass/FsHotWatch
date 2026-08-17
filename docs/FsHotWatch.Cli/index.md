@@ -101,6 +101,35 @@ and they get different advice, because different evidence is available:
 This is deliberately the same contract as `confirm`'s exit 3: **refuse to green without
 evidence.** Exit 0 would sail through any `&&` chain and any CI gate, and a run that
 verified nothing is exactly the run you least want reported as a pass.
+
+The same rule reaches the *display*. A `check` whose test plugin selected zero projects
+renders `⚠`, not `✓`, and reports `NOTHING VERIFIED: 0 test project(s) ran, no test
+executed`. Agent mode tokens it `warn` (so `next:` points at `status`, never `done`) and
+`plugins[]` in `.fshw/verdict.json` records `warn` rather than `ok`. The plugin's
+**status** stays `Completed` on purpose — nothing failed, and reporting a failure would
+turn an honest exit 3 (no verdict) into an exit 1 (failures found).
+
+### `waiting on build` — and why `fshw stop` is not the answer
+
+`check` can report **`waiting on build`** and exit **2**: a test project's build
+artifact was not produced, so its tests did not run. Nothing was verified (not a pass)
+and nothing failed (not a red), which is why it gets its own exit code — an autonomous
+loop or deploy preflight should **retry**, not treat it as a test failure.
+
+If an otherwise-unchanged re-run says it again, the build is serving a **cached result
+its outputs no longer support**. The escape is:
+
+```bash
+fshw confirm           # forces a real build; will not replay a cached verdict
+```
+
+**Restarting the daemon does not clear this, and never did.** The task cache is
+`FileTaskCache` — it lives on disk under `.fshw/` and survives `fshw stop`, a crash and
+a reboot. Stopping the daemon throws away the warm compiler and then reinstates the
+exact same cached answer, which is why the advice appeared to "sometimes work": you were
+waiting out something else. If the underlying cause is genuinely stale build **output**,
+`dotnet build` is the fix, and a copy MSBuild skipped on equal timestamps needs
+`dotnet build --no-incremental`.
 >
 > A CI checkout starts cold, so CI does not hit this. Change any source file and the
 > cache misses, the suite runs, and `confirm` decides normally.

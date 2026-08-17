@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- fix: **a run that tested nothing no longer renders as a `✓`** (AUTOMATION-198).
+  `fshw check` on a run that selected ZERO test projects printed
+  `✓ test-prune — 0 passed, 0 failed in 0 projects` and then, correctly, refused to
+  certify it (exit 3 — NO VERDICT). The verdict was sound; the plugin line was not, and
+  a reader scanning glyphs saw success while only the exit code disagreed. Every surface
+  now refuses it a green: compact and verbose render `⚠`, agent mode tokens `warn` (so
+  `next:` points at `status`, never `done`), and `plugins[]` in `.fshw/verdict.json`
+  records `warn` instead of `ok`. **If you branch on `plugins[].state == "ok"`, that run
+  stops matching** — the exit code was already `3`; only the per-plugin state was lying.
+
+- fix: **`waiting on build` names an escape that can actually work** (AUTOMATION-245).
+  The message said only "re-run once the build settles", which is the one instruction
+  that cannot clear it — the build was replaying a cached result its outputs no longer
+  supported, so re-running reproduced it verbatim. It now names `fshw confirm`, which
+  forces a real build, and states that **restarting the daemon is NOT an escape**: the
+  task cache is `FileTaskCache` on disk under `.fshw/` and survives `fshw stop` and a
+  reboot. That folk remedy has been advised for months and never cleared anything by
+  itself.
+
+- fix: **a shortened agent summary says what it dropped** (AUTOMATION-201). The agent
+  status line truncates to 80 characters, and a bare `…` is indistinguishable from
+  prose — a reader seeing `4 waiting on build (tests did not run): Intelligence.Build…`
+  had no way to tell a shortened list from a complete one. Truncation now states the
+  omitted count; the untruncated detail is in the ledger entry and log, where the remedy
+  also lives.
+
+- refactor: the `CheckOutcome` explanations live once, in `Verdict.CheckProse`, rather
+  than as hand-synced copies across the daemon path, the `--run-once` path and the
+  verdict file. Whether a daemon served the check is not something the explanation may
+  vary on; the `waiting on build` text in particular is what a WEDGED caller reads, so
+  it is the one message that must never be the stale copy. No output changed.
+
+- refactor: one decider for a terminal status glyph (`ProgressRenderer.glyphForParsed`),
+  called by compact and verbose alike. Every fail-closed rule now holds on both surfaces
+  or on neither, instead of being written twice and agreeing by hand.
+
 ## 0.14.0-alpha.16 - 2026-08-13
 
 - merge: the no-tests-ran report names the prior verdict and the change that triggered it, into main

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- feat: **`RunSummary.nothingVerified` — the marker a run uses to say it verified
+  nothing** (AUTOMATION-198). A run that executed no test still `Completed`, so every
+  surface rendered it `✓`: nothing failed, and nothing was checked either. The plugin
+  status was sound; the glyph was not.
+  - A summary minted through `RunSummary.nothingVerified` reads
+    `NOTHING VERIFIED: <detail>`, and `ParsedPluginStatus.verifiedNothing` is the one
+    predicate every consumer asks. The fact travels INSIDE the summary string
+    deliberately: `summary` is the only field that survives the IPC JSON, `FileTaskCache`
+    format 2 and `markCached`'s `" (cached)"` suffix, so no wire or cache-format change
+    was needed and there is no default for a daemon/CLI version skew to get wrong.
+  - The plugin STATUS deliberately stays `Completed`. Nothing failed, and reporting a
+    failure would turn an honest exit 3 (no verdict) into an exit 1 (failures found).
+  - Known gap, tracked rather than papered over: this is a marker a plugin *may* set,
+    not one it *must*. A plugin that verifies nothing and does not say so still renders
+    a `✓`. Making it structural means moving the fact into `RunVerdict.create`, which is
+    a wire + cache-format change and is deliberately not bundled into this release.
+
 ## 0.10.0-alpha.10 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back

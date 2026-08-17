@@ -246,14 +246,17 @@ let runWithBudget
         |> List.choose (fun (project, target) ->
             ArtifactFreshness.stale cache target |> Option.map (fun s -> project, s))
 
+    /// `healed` accumulates FORWARD, in repair order, so every exit can report it as-is.
+    /// It is bounded by the number of stale copies in one run and appended once per
+    /// round (`budget` rounds at most), so the append costs nothing worth a reversal
+    /// invariant that three exits would each have to unwind correctly.
     let rec round (remaining: int) (ledger: HealRecord list) (healed: string list) : Outcome =
         match detect () with
         | [] ->
             // Certified fresh — by a read of the bytes taken AFTER the last repair.
-            { Healed = List.rev healed
-              Refusals = [] }
+            { Healed = healed; Refusals = [] }
         | detected when remaining <= 0 ->
-            { Healed = List.rev healed
+            { Healed = healed
               Refusals =
                 detected
                 |> List.map (fun (project, s) ->
@@ -285,7 +288,7 @@ let runWithBudget
             if not (List.isEmpty unrepairable) || not (List.isEmpty tripped) then
                 // Nothing is repaired in a round that is going to refuse anyway: a
                 // repair whose run never launches is a ledger entry bought for nothing.
-                { Healed = List.rev healed
+                { Healed = healed
                   Refusals =
                     (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
                     @ (tripped
@@ -335,10 +338,10 @@ let runWithBudget
                     saveLedger repoRoot now ledger'
 
                 if not (List.isEmpty failures) then
-                    { Healed = List.rev (List.rev repaired @ healed)
+                    { Healed = healed @ repaired
                       Refusals = failures }
                 else
-                    round (remaining - 1) ledger' (List.rev repaired @ healed)
+                    round (remaining - 1) ledger' (healed @ repaired)
 
     round budget (loadLedger repoRoot) []
 

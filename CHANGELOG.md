@@ -4,6 +4,56 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+> ### ⚠️ Read this first if you run `fshw` in CI or from a script
+>
+> **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
+> told people to restart the daemon when a check looked wedged or a cached result
+> looked stale. It cannot work: the task cache is `FileTaskCache`, it lives on disk
+> under `.fshw/`, and it survives `stop`, a reboot, and a fresh daemon. A restart
+> throws away the warm compiler and reinstates the exact same cached answer.
+>
+> The escape is **`fshw confirm`** — it runs the full suite unfiltered and refuses to
+> replay a cached verdict. Every `waiting on build` message now says so in place of the
+> old "re-run once the build settles", which was the one instruction that could not
+> work. If a stale *build output* is the cause, `dotnet build` is the fix, and a
+> timestamp-inverted copy needs `dotnet build --no-incremental`.
+>
+> **Exit codes: four runs that used to be green can now be red.**
+>
+> 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
+>    (`gate` was introduced unreleased and never appeared in a published package, so
+>    there is **no published consumer to migrate**. It still bites anyone tracking
+>    `main` or running a local pack.)
+> 2. **`fshw check --run-once` can now exit `2` where it previously exited `0`.**
+>    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
+>    so it could not report an incomplete scan. It can now, and it does. A CI job that
+>    treats "not 0" as failure will start seeing red on trees it used to pass.
+> 3. **`fshw test-rerun` can now exit `3` where it previously exited `0`.** A run that
+>    executed no tests — the filter matched nothing, or no project was selected at all —
+>    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
+>    are exactly the ones that never verified anything.
+> 4. **`fshw check` can now exit `3` where it previously exited `0`** — but only when it
+>    could not READ what the tests covered (the `test-scope` command threw, the IPC call
+>    faulted, the reply was unparseable). A repo with no test projects configured is
+>    unaffected and still exits `0`. See below.
+>
+> **One machine-readable surface changed shape without changing an exit code:** a run
+> that selected zero test projects now records `warn` rather than `ok` in
+> `.fshw/verdict.json`'s `plugins[]`, and agent mode tokens it `warn` so `next:` points
+> at `status` instead of `done`. If you branch on `plugins[].state == "ok"`, that run
+> stops matching. The exit code was already `3`; only the per-plugin state was lying.
+>
+> **A whole test run can now be refused before any suite launches.** If a configured
+> test project's build output does not match its sources, nothing spawns and every
+> project comes back deferred — where previously the fresh projects ran first and the
+> refusal surfaced minutes in, as a partial red. The remedy is named in the message.
+>
+> The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
+> `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
+> in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
+> state that used to be a lie is now **unrepresentable**, so the migration is the
+> compiler telling you where you were guessing.
+
 ### build: a cache hit may not assert freshness it has never confirmed
 
 `check` could wedge and stay wedged. The build cache key is a content merkle over
@@ -96,6 +146,17 @@ failure would turn the honest exit 3 (no verdict) into an exit 1 (failures found
 The refusal is asked of `RunVerification`, so it keys on "did anything execute?"
 rather than on any one selection bug.
 
+**Where this rule does NOT yet hold, stated rather than implied.** `nothingVerified`
+is a marker a plugin *sets*; it is not something the framework can infer. A plugin
+that verifies nothing and does not say so still renders a `✓` — and two paths in this
+very release are exactly that: format-check's `no files to check` (below) is prose
+where this is structure, and test-prune's pure-`waiting on build` terminal reports
+`Completed` with a clean ledger. Both are one call to the constructor above, but both
+flip a glyph green→warn, so they are being landed with their own regression tests
+rather than slipped into a release-prep pass. Making the marker impossible to forget
+means moving the fact into `RunVerdict.create`, which is a wire *and* cache-format
+change and is deliberately not bundled here.
+
 ### format-check: a cached verdict can no longer claim files its key never covered
 
 AUTOMATION-191, the `File = None` half of AUTOMATION-186. Format-check subscribes to
@@ -177,33 +238,6 @@ measured too — 3 fires, every one a deliberate teardown drain after the real
 assertions, zero true positives — and declined, with the measurement and a
 reopen condition recorded on the rule rather than shipping something that cries
 wolf.
-
-> ### ⚠️ Breaking changes, at a glance
->
-> **If you run `fshw` in CI or from a script, read these four:**
->
-> 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
->    (`gate` was introduced unreleased and never appeared in a published package, so
->    there is **no published consumer to migrate**. It still bites anyone tracking
->    `main` or running a local pack.)
-> 2. **`fshw check --run-once` can now exit `2` where it previously exited `0`.**
->    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
->    so it could not report an incomplete scan. It can now, and it does. A CI job that
->    treats "not 0" as failure will start seeing red on trees it used to pass.
-> 3. **`fshw test-rerun` can now exit `3` where it previously exited `0`.** A run that
->    executed no tests — the filter matched nothing, or no project was selected at all —
->    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
->    are exactly the ones that never verified anything.
-> 4. **`fshw check` can now exit `3` where it previously exited `0`** — but only when it
->    could not READ what the tests covered (the `test-scope` command threw, the IPC call
->    faulted, the reply was unparseable). A repo with no test projects configured is
->    unaffected and still exits `0`. See below.
->
-> The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
-> `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
-> in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
-> state that used to be a lie is now **unrepresentable**, so the migration is the
-> compiler telling you where you were guessing.
 
 ### A scope `check` could not read stops reporting a pass
 

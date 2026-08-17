@@ -186,25 +186,23 @@ let markUnverified (relPath: string) (store: Store) : Store =
               LastCleanCheckAt = None }
             store
 
-/// Three-way trust classification for a file's stored symbol rows, consumed by
-/// the `detectChanges` call site to decide whether those rows can be diffed
-/// against. `Unknown` and `Dirty` must stay distinct — collapsing them is the
-/// seeded-DB under-selection bug:
+/// What the freshness sidecar RECORDS about a file's last check. This type is the
+/// evidence, not the decision — `trustStoredRows` below owns what may be done with
+/// it, and is the only thing that should be consulted for that. `Unknown` and
+/// `Dirty` must stay distinct: collapsing them is the seeded-DB under-selection bug.
 ///
-///   - `Clean`   — an explicit "ended its last check FCS-clean" record. Safe to
-///                 diff: the stored rows are a complete extraction.
+///   - `Clean`   — an explicit "ended its last check FCS-clean" record: the stored
+///                 rows were a complete extraction at the time they were written.
 ///   - `Dirty`   — an explicit `fcsClean = false` record. The stored rows were
 ///                 written while FCS reported errors and may be PARTIAL; diffing
 ///                 against them yields a phantom "all symbols changed" delta
-///                 (4921 affected tests, observed). Untrusted for diff.
+///                 (4921 affected tests, observed).
 ///   - `Unknown` — NO record at all. Dominant cause is a seeded `test-impact.db`
 ///                 (ADR-010) whose fshw-owned sidecar did not travel with it into
-///                 a fresh workspace: the stored rows are a real prior DB, safe to
-///                 diff. Treating it like `Dirty` (bypass → no-diff) silently
+///                 a fresh workspace, so the stored rows are a real prior DB.
+///                 Treating it like `Dirty` (bypass → no-diff) silently
 ///                 UNDER-selects, violating ADR-010's "a seeded DB over-indexes but
-///                 never serves a stale verdict". The call site therefore trusts
-///                 `Unknown` for diff *when stored rows exist* (a genuinely empty
-///                 DB / cold scan has no rows to diff and is handled separately).
+///                 never serves a stale verdict".
 type Freshness =
     | Clean
     | Dirty
