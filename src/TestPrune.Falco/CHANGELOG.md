@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.1.1 - 2026-08-17
+
 - docs: **route→test attribution is what makes `[<TestPrune.CompositionRoot>]` safe,
   and this release states the limit.** TestPrune.Core can now be told to stop
   propagating relevance through an application's composition root, which is only sound

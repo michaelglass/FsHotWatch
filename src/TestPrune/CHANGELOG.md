@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 7.0.0 - 2026-08-17
+
 - feat: **`run` and `status` honour `[<TestPrune.CompositionRoot>]`.** Mark the symbol
   that wires your application together — a routing table, a DI registration block —
   and `test-prune run` stops treating "the app names this handler" as a reason to run

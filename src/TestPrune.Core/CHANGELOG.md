@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 7.0.0 - 2026-08-17
+
 - feat: **`[<TestPrune.CompositionRoot>]` — stop an application composition root
   propagating relevance through itself.** An app's routing table or
   DI registration block references every handler in the codebase in order to *wire
