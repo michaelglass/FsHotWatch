@@ -115,6 +115,18 @@ let private generateCorpus (rng: Random) (n: int) : Corpus =
       TestSymbols = testSymbols
       AllSymbols = names }
 
+/// `to -> [from...]`, the generated corpus read backwards. Plumbing shared by both
+/// oracles below: it inverts the generated `Edges` map and decides nothing. The
+/// oracles' WALKS stay written out separately on purpose — that independence is the
+/// point of the harness — but inverting a map the same way twice proves nothing.
+let private reverseEdgesOf (corpus: Corpus) : Map<string, string list> =
+    [ for KeyValue(from, tos) in corpus.Edges do
+          for t in tos do
+              yield t, from ]
+    |> List.groupBy fst
+    |> List.map (fun (k, pairs) -> k, pairs |> List.map snd)
+    |> Map.ofList
+
 /// THE ORACLE. Which tests must run when `changed` changes?
 ///
 /// Independent breadth-first walk over the REVERSE edges: anything that depends
@@ -123,13 +135,7 @@ let private generateCorpus (rng: Random) (n: int) : Corpus =
 /// `Edges` map, never against the store — so a bug in the store's own closure
 /// shows up as a disagreement rather than being mirrored.
 let private trulyAffectedTests (corpus: Corpus) (changed: Set<string>) : Set<string> =
-    let reverse =
-        [ for KeyValue(from, tos) in corpus.Edges do
-              for t in tos do
-                  yield t, from ]
-        |> List.groupBy fst
-        |> List.map (fun (k, pairs) -> k, pairs |> List.map snd)
-        |> Map.ofList
+    let reverse = reverseEdgesOf corpus
 
     let rec walk (frontier: Set<string>) (seen: Set<string>) =
         if Set.isEmpty frontier then
@@ -337,13 +343,7 @@ let ``soundness: RunAll is always sound`` () =
 /// composition root. Independent walk: the barrier is VISITED but not EXPANDED,
 /// and it is exempt when it is itself a seed.
 let private trulyAffectedWithBarrier (corpus: Corpus) (barrier: string) (changed: Set<string>) : Set<string> =
-    let reverse =
-        [ for KeyValue(from, tos) in corpus.Edges do
-              for t in tos do
-                  yield t, from ]
-        |> List.groupBy fst
-        |> List.map (fun (k, pairs) -> k, pairs |> List.map snd)
-        |> Map.ofList
+    let reverse = reverseEdgesOf corpus
 
     let barrierApplies = not (changed.Contains barrier)
 

@@ -5,7 +5,7 @@
         <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
         <PackageId>TestPrune.Attributes</PackageId>
         <Authors>Michael Glass</Authors>
-        <Description>Consumer-side marker attributes for TestPrune. Let tests and production symbols declare cross-cutting dependencies that the static graph can't infer (reflection, DI registration by type, plug-ins, etc.).</Description>
+        <Description>Consumer-side marker attributes for TestPrune. Let tests and production symbols declare cross-cutting dependencies the static graph can't infer (reflection, DI registration by type, plug-ins), and mark an application composition root whose edges should not propagate relevance through it. TestPrune matches these by type name, so declaring your own equivalents works just as well as referencing this package.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
         <RepositoryType>git</RepositoryType>

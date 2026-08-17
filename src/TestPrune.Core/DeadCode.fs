@@ -58,7 +58,9 @@ let findDeadCode
     let unreachableNames = allNames - reachable
 
     // Excluded because they are not independently dead: test methods are themselves
-    // entry points, modules are containers, and a DU case belongs to its parent type.
+    // entry points, modules are containers, a DU case belongs to its parent type, and
+    // an extern is defined outside F#. Test sources are excluded wholesale unless
+    // `includeTests` asks for them.
     let unreachableSymbols =
         allSymbols
         |> List.filter (fun s ->

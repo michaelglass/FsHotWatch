@@ -127,6 +127,33 @@ safe fallback for `.fsproj` changes, brand-new files, or analysis
 failures — anything where TestPrune can't be sure what's affected. The
 `reason` says which.
 
+### Composition roots
+
+Everything above widens selection when in doubt. `[<TestPrune.CompositionRoot>]`
+is the one mechanism that narrows it, and it needs no API call — annotate the
+symbol in the indexed codebase and both stores honour it on the next
+`selectTests`/`QueryAffectedTests`.
+
+Use it on a symbol that names the whole application in order to wire it up (a
+route table, a DI registration block). Reached *through*, it stops the walk;
+*changed itself*, it propagates in full. A per-project fail-safe restores a test
+project's full selection if the barrier would have emptied it — note that the
+granularity of that guard is your test-project granularity, so a suite with a
+single test project effectively gets "never select nothing" rather than a
+per-project bound.
+
+The attribute is matched by type name (the namespace is ignored and your
+assemblies are never loaded), so declare it yourself:
+
+```fsharp
+type CompositionRootAttribute() =
+    inherit System.Attribute()
+```
+
+Read the safety note in the root [README](../README.md#composition-roots) first:
+this is the direction that can silently skip a failing test, and it is only sound
+while some other attribution still reaches the tests covering the change.
+
 ## 4. (Bonus) Find dead code
 
 The same dependency graph can find code that's never reached from your

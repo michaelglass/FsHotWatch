@@ -99,6 +99,19 @@ let edges =
    declares. Fixtures, `[<CollectionDefinition>]` markers and plain helpers
    declare no tests and are never returned
 
+## If you also mark a composition root
+
+TestPrune.Core lets you mark your route table with
+`[<TestPrune.CompositionRoot>]` so that editing one handler no longer selects
+every test whose fixture boots the app. That is only safe because *this*
+extension attributes each route to its own tests directly — cutting the
+composition edge leaves the route→test edge behind to select the right tests.
+
+The limit to know: this extension matches tests that **name** a URL. A browser
+test that reaches the route by clicking (`page.ClickAsync "#stop-impersonating"`)
+is not attributed, so a composition-root barrier would drop it. **Don't mark a
+composition root in a repo whose browser tests navigate by UI interaction.**
+
 ## Documentation
 
 - [Full documentation](https://michaelglass.github.io/TestPrune/Falco/)

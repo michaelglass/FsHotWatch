@@ -812,8 +812,6 @@ let private extractResults
                 | [] -> List.tryHead candidates
                 | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
 
-            let inline shortName (n: string) = canonicalShortName n
-
             let definitions =
                 allUses
                 |> List.choose (fun u ->
@@ -829,7 +827,7 @@ let private extractResults
                             // all DU cases and record fields, for a Function/Value it
                             // includes the attributes, so both affect the hash.
                             let hashStart, hashEnd =
-                                let sn = shortName fullName
+                                let sn = canonicalShortName fullName
 
                                 match kind with
                                 | Type ->
@@ -876,7 +874,7 @@ let private extractResults
                     // is ALWAYS dot-qualified (`M.f`, `M.T.Member`), so an unqualified
                     // Function/Value is by definition a local.
                     symbolInfo.FullName.Contains('.')
-                    && allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
+                    && allBindingRangeMap |> Map.containsKey (canonicalShortName symbolInfo.FullName)
                 | ExternRef -> false
 
             let symbols =
@@ -897,7 +895,7 @@ let private extractResults
             let definitionsByName =
                 definitions
                 |> List.choose (fun (si, _) ->
-                    let sn = shortName si.FullName
+                    let sn = canonicalShortName si.FullName
 
                     if
                         allBindingRangeMap |> Map.containsKey sn

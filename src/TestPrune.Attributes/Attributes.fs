@@ -40,6 +40,10 @@ type DependsOnAttribute(target: Type) =
 /// The path is repo-relative (same normalization TestPrune applies to source files) and
 /// matched exactly. For patterns, use `DependsOnGlobAttribute`.
 ///
+/// Matched by attribute NAME, so referencing this package is a convenience rather than a
+/// requirement — see `CompositionRootAttribute` for the full explanation and the
+/// declare-it-yourself form.
+///
 /// Example:
 ///   [&lt;TestPrune.DependsOnFile("tests/snapshots/api.snap.json")&gt;]
 ///   let ``api snapshot`` () = ...
@@ -63,6 +67,10 @@ type DependsOnFileAttribute(path: string) =
 ///   - `?` matches any single character except `/`
 /// All other characters are literal. No negation, character classes, or brace
 /// expansion. Paths are repo-relative forward-slash strings and case-sensitive.
+///
+/// Matched by attribute NAME, so referencing this package is a convenience rather than a
+/// requirement — see `CompositionRootAttribute` for the full explanation and the
+/// declare-it-yourself form.
 ///
 /// Example:
 ///   [&lt;TestPrune.DependsOnGlob("tests/fixtures/**/*.yaml")&gt;]
@@ -113,6 +121,16 @@ type DependsOnGlobAttribute(pattern: string) =
 /// Before annotating, make sure the coupling it carries is covered another way
 /// (TestPrune.Falco's route→test edges are the worked example: they attribute
 /// each route to its own tests directly, so the composition edge is redundant).
+///
+/// A fail-safe bounds the damage: a marker may NARROW a test project's selection,
+/// never empty it, so a change that would otherwise select nothing at all in a
+/// project gets that project's full unbarriered selection back. Two limits are
+/// worth knowing. Its granularity is YOUR test-project layout — a suite with one
+/// test project effectively gets "never select nothing" rather than a per-project
+/// bound. And it does not fire when a project keeps SOME tests, so a route with one
+/// test that names its URL and another that only clicks through the UI still drops
+/// the second. Do not mark a composition root in a repo whose browser tests
+/// navigate by UI interaction.
 ///
 /// TestPrune matches this attribute BY NAME, exactly as it does `DependsOnFile`.
 /// Referencing this package is the convenient way to get it, not the only one — a

@@ -65,8 +65,10 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     ///
     /// A barrier node is VISITED (it is genuinely affected) but not EXPANDED: the
     /// walk does not continue to whatever depends on it. Mirrors the `barriers`
-    /// CTE in `Database.QueryAffectedTests` — the two must agree, or the soundness
-    /// harness measures a different selector than the one that ships.
+    /// CTE in `Database.QueryAffectedTests`, and the two traversals must agree —
+    /// `CompositionRootSelectionTests` is what holds them to it, asserting both stores
+    /// return the same rows case by case. The randomised soundness harness drives THIS
+    /// walk only, so it cannot catch a divergence on its own.
     let transitiveClosureWithBarriers
         (edges: Map<string, Set<string>>)
         (barriers: Set<string>)
@@ -143,32 +145,27 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
         fun changedNames ->
             let seeds = expandChanged changedNames
 
-            // A composition root that CHANGED is an ordinary seed — the walk runs
-            // past it in full, because rewired composition is exactly what
-            // host-booting tests verify. Only a root REACHED from something it
-            // aggregates stops the walk.
-            let barriers = Set.difference compositionRoots (Set.ofList seeds)
-
             let testsIn (affected: Set<string>) =
                 allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
 
             if Set.isEmpty compositionRoots then
                 testsIn (transitiveClosure reverseEdges seeds)
             else
+                // A composition root that CHANGED is an ordinary seed — the walk runs
+                // past it in full, because rewired composition is exactly what
+                // host-booting tests verify. Only a root REACHED from something it
+                // aggregates stops the walk. Subtracting the seeds is that asymmetry,
+                // and it is the same exclusion the `barriers` CTE spells as
+                // `symbol_id NOT IN (SELECT id FROM expanded)`.
+                let barriers = Set.difference compositionRoots (Set.ofList seeds)
+
                 let barriered = testsIn (transitiveClosureWithBarriers reverseEdges barriers seeds)
                 let unbarriered = testsIn (transitiveClosure reverseEdges seeds)
 
-                // Same per-project fail-safe as `Database.QueryAffectedTests`, and it
-                // has to be the same rule or the soundness harness grades a more
-                // permissive selector than the one that ships: a barrier may narrow a
-                // project's selection, never empty it.
-                let barrieredProjects = barriered |> List.map _.TestProject |> Set.ofList
-
-                let restored =
-                    unbarriered
-                    |> List.filter (fun t -> not (Set.contains t.TestProject barrieredProjects))
-
-                barriered @ restored
+                // The fail-safe is shared with `Database.QueryAffectedTests` rather than
+                // restated, so the shipped selector and the one the soundness harness
+                // grades cannot drift apart.
+                Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
       GetAllSymbols = fun () -> allSymbols
       GetAllSymbolNames = fun () -> allSymbolNames
       GetReachableSymbols =
