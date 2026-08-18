@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `FsHotWatch.StructureFiles` — THE list of files that decide what is compiled
+  (`*.fsproj`, `*.csproj`, and MSBuild's implicit imports `Directory.Build.props`,
+  `Directory.Build.targets`, `Directory.Packages.props`), plus `implicitImportsFor`,
+  which resolves the ones that apply to a project by MSBuild's own nearest-ancestor rule
+  (AUTOMATION-303). The list previously existed twice, in the build plugin and in
+  test-prune, and the copies disagreed — which is how one cache misses on a structural
+  change while the other replays a green over a tree it never saw.
+
 - **BREAKING** — `TestResult.isPassed` is **deleted**. Replaced by
   `TestResult.verdict : TestResult -> ProjectVerdict` (`Verified` | `Refuted` |
   `NothingVerified`) plus the single derived bool `TestResult.verifiedGreen`

@@ -760,6 +760,130 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
         test <@ not (System.String.IsNullOrEmpty(withMissing)) @>
         test <@ withMissing <> onlyExists @>)
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-303 CASE 2 — a cached build may not hide a compile item it never saw.
+//
+// The incident: a new test file plus its `<Compile Include=…>` was reported as
+// `build ok — built 21 projects (cached)` while `[fcs]` reported the new module as
+// undefined. The FCS error was REAL. The build had never compiled the change, and
+// `test-rerun` "passing" was running against stale DLLs.
+//
+// AC1 asks for a test per case and case 2 had none: the landed fix declared it already
+// closed by the build plugin's project-file merkle. Half of that is true, and the two
+// tests below say WHICH half.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303 case 2: a compile item added to a PROJECT FILE moves the build merkle`` () =
+    // The half that was already closed. A project file is an input to the merkle, so its
+    // content moving moves the key by construction — but "by construction" is a claim
+    // about code that can be edited, and this is the case the ticket was opened on.
+    withTempDir "a303-case2-fsproj" (fun root ->
+        let proj = System.IO.Path.Combine(root, "Thing.fsproj")
+
+        System.IO.File.WriteAllText(proj, "<Project><ItemGroup><Compile Include=\"A.fs\" /></ItemGroup></Project>")
+
+        let source = System.IO.Path.Combine(root, "A.fs")
+        System.IO.File.WriteAllText(source, "let a = 1")
+
+        let hasher = BuildInputsHasher(stubGraph [ source ] [ proj ])
+        let before = hasher.Compute()
+
+        // THE POSITIVE CONTROL, and it comes first on purpose: prove the merkle is STABLE
+        // on an untouched tree before proving it MOVES, or "it changed" is just noise.
+        test <@ hasher.Compute() = before @>
+
+        System.IO.File.WriteAllText(
+            proj,
+            "<Project><ItemGroup><Compile Include=\"A.fs\" /><Compile Include=\"New.fs\" /></ItemGroup></Project>"
+        )
+
+        test <@ hasher.Compute() <> before @>)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303 case 2: a compile item added to Directory.Build.props moves the build merkle`` () =
+    // The half that was NOT closed, and it is the same defect through a wider door.
+    //
+    // MSBuild's implicit imports are inputs to every project beneath them, and they are
+    // neither compile items (so not in `GetAllFiles`) nor projects (so not in
+    // `GetAllProjects`) — so before this change they were in NEITHER list the merkle
+    // hashed. A `<Compile Include=…>` added there adds a file to the WHOLE REPO while the
+    // key stays byte-identical: `built N projects (cached)`, nothing compiled, and the
+    // FCS error beside it is real. That is case 2 exactly.
+    //
+    // RED before the fix: `after = before`, the two merkles byte-identical.
+    withTempDir "a303-case2-props" (fun root ->
+        let projDir = System.IO.Path.Combine(root, "src")
+        System.IO.Directory.CreateDirectory projDir |> ignore
+        let proj = System.IO.Path.Combine(projDir, "Thing.fsproj")
+        System.IO.File.WriteAllText(proj, "<Project />")
+
+        let source = System.IO.Path.Combine(projDir, "A.fs")
+        System.IO.File.WriteAllText(source, "let a = 1")
+
+        let props = System.IO.Path.Combine(root, "Directory.Build.props")
+        System.IO.File.WriteAllText(props, "<Project />")
+
+        let hasher = BuildInputsHasher(stubGraph [ source ] [ proj ])
+        let before = hasher.Compute()
+        test <@ hasher.Compute() = before @>
+
+        System.IO.File.WriteAllText(
+            props,
+            "<Project><ItemGroup><Compile Include=\"Generated.fs\" /></ItemGroup></Project>"
+        )
+
+        test <@ hasher.Compute() <> before @>)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303 case 2: Directory.Build.targets and Directory.Packages.props move it too`` () =
+    // The other two implicit imports, each on its own so a list that grew only one entry
+    // cannot pass. `Directory.Build.targets` is the one that matters most here: it is
+    // imported AFTER the project body, so it is where a generated-source item most often
+    // lives.
+    withTempDir "a303-case2-imports" (fun root ->
+        let projDir = System.IO.Path.Combine(root, "src")
+        System.IO.Directory.CreateDirectory projDir |> ignore
+        let proj = System.IO.Path.Combine(projDir, "Thing.fsproj")
+        System.IO.File.WriteAllText(proj, "<Project />")
+
+        let hasher = BuildInputsHasher(stubGraph [] [ proj ])
+
+        for name in [ "Directory.Build.targets"; "Directory.Packages.props" ] do
+            let before = hasher.Compute()
+            let path = System.IO.Path.Combine(root, name)
+            System.IO.File.WriteAllText(path, "<Project />")
+            let added = hasher.Compute()
+            test <@ added <> before @>
+
+            System.IO.File.WriteAllText(path, "<Project><ItemGroup><Compile Include=\"G.fs\" /></ItemGroup></Project>")
+            test <@ hasher.Compute() <> added @>)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303 case 2: an unrelated file beside the implicit imports does NOT move it`` () =
+    // THE FLOOR. The three tests above would all pass against a hasher that simply
+    // re-read the whole directory tree — and such a hasher would invalidate every build
+    // on every keystroke in any file anywhere, which is the failure that gets a cache key
+    // reverted. The merkle must move for the STRUCTURE and stay still for everything else.
+    withTempDir "a303-case2-floor" (fun root ->
+        let projDir = System.IO.Path.Combine(root, "src")
+        System.IO.Directory.CreateDirectory projDir |> ignore
+        let proj = System.IO.Path.Combine(projDir, "Thing.fsproj")
+        System.IO.File.WriteAllText(proj, "<Project />")
+
+        let hasher = BuildInputsHasher(stubGraph [] [ proj ])
+        let before = hasher.Compute()
+
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "README.md"), "# not an MSBuild import")
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "Directory.Build.props.bak"), "<Project />")
+        test <@ hasher.Compute() = before @>
+
+        // The control for THAT absence: the same hasher, the same tree, one real implicit
+        // import — and it moves. An "it did not move" assertion over a hasher that can
+        // never move is worth nothing, which is the whole bug class this ticket is about.
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "Directory.Build.props"), "<Project />")
+        test <@ hasher.Compute() <> before @>)
+
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
     // The "missing" sentinel must still be combined with the path, or two different missing

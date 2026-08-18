@@ -185,7 +185,105 @@ type RedCause =
         File: string
         Severity: string
         Message: string
+        /// Is this diagnostic a claim about THE TREE ON DISK — see `RedCauseKind`.
+        Kind: RedCauseKind
     }
+
+/// IS THIS RED A CLAIM ABOUT THIS TREE?
+///
+/// AUTOMATION-303's second failure direction, and the one its own fix left open. The
+/// ticket's premise is that a green must be earned; a RED must be earned in exactly the
+/// same sense, and two of the four incidents it records were reds that no longer
+/// described the tree they were reported against. A daemon that keeps asserting a
+/// diagnostic after the tree it came from is gone is making the same error as a cache
+/// that replays a green after the tree it ran on is gone — with the sign flipped, and
+/// with a worse consequence, because the operator's only escape (`fshw stop`) is exactly
+/// the one the tool never mentions.
+///
+/// Two of these are DECIDABLE from the diagnostic itself, and neither is a heuristic:
+///
+///   * a diagnostic reported against an ABSOLUTE path that is not on disk cannot be a
+///     claim about a tree in which that path does not exist;
+///   * an FCS `internal error:` is the CHECKER reporting its own crash. It is not a
+///     finding about the code — the check did not complete, so nothing was found.
+///
+/// Everything else is `AboutThisTree`, deliberately: this classification may only ever
+/// move a cause OUT of "your code is broken", so anything it cannot prove stays a red.
+and RedCauseKind =
+    /// A diagnostic that names a file present on disk, or that names no path at all
+    /// (`<build>`, a Cobertura filename). A genuine claim about this tree; the red is
+    /// earned. THE DEFAULT — nothing reaches the others without proof.
+    | AboutThisTree
+    /// The diagnostic names an absolute path that is NOT on disk. The daemon is
+    /// describing a tree that no longer exists. Case 4's stale symbol index, generalised
+    /// to the whole ledger: `pruneDeletedUnanalyzable` fixed the one map in test-prune
+    /// that produced it, and left the general shape — any source that pins a diagnostic
+    /// to a path and never re-runs for a file that is gone — intact.
+    | VanishedFile
+    /// An FCS `internal error:` — the checker faulted. Case 3: ~51 of these reddened a
+    /// `confirm` with four plugins `ok` and 9,064 tests passed, against code the session
+    /// had not touched and MSBuild compiled cleanly. `fshw scan` (the documented remedy)
+    /// did not clear them; `fshw stop` did, completely.
+    | CheckerFault
+
+module RedCauseKind =
+    /// The wire tag. Total.
+    let tag (k: RedCauseKind) : string =
+        match k with
+        | AboutThisTree -> "about-this-tree"
+        | VanishedFile -> "vanished-file"
+        | CheckerFault -> "checker-fault"
+
+    let ofTag (s: string) : RedCauseKind option =
+        match s with
+        | "about-this-tree" -> Some AboutThisTree
+        | "vanished-file" -> Some VanishedFile
+        | "checker-fault" -> Some CheckerFault
+        | _ -> None
+
+    /// Can this cause be a claim about the tree on disk? `false` for exactly the two
+    /// proven cases — so "unattributable" is the narrow set, never the residue.
+    let isAboutThisTree (k: RedCauseKind) : bool =
+        match k with
+        | AboutThisTree -> true
+        | VanishedFile
+        | CheckerFault -> false
+
+module RedCause =
+    /// The marker FCS puts on its own crashes. Matched case-insensitively on a trimmed
+    /// message, and ONLY for entries the checker itself reported (`fcs`) — a plugin that
+    /// happens to quote the phrase is not the compiler crashing.
+    [<Literal>]
+    let private checkerFaultMarker = "internal error:"
+
+    /// Classify one cause. `exists` is injected rather than called directly so a test can
+    /// pin the "the file is gone" branch without deleting anything, and — more to the
+    /// point — so the POSITIVE CONTROL (a present file still reddens) is expressible.
+    ///
+    /// Only ABSOLUTE paths are eligible for `VanishedFile`. The ledger's file key is
+    /// whatever the reporting source passed: `fcs` passes `AbsFilePath.value`, but
+    /// `BuildPlugin` passes the literal `<build>` and `CoveragePlugin` passes a Cobertura
+    /// filename. A relative or synthetic key that does not exist on disk proves nothing,
+    /// and treating it as proof would demote real reds.
+    let classifyWith (exists: string -> bool) (source: string) (file: string) (message: string) : RedCauseKind =
+        let isCheckerFault =
+            source = FsHotWatch.PluginActivity.FcsPluginName
+            && (message: string).TrimStart().StartsWith(checkerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
+
+        if isCheckerFault then
+            CheckerFault
+        elif
+            not (System.String.IsNullOrWhiteSpace file)
+            && System.IO.Path.IsPathRooted file
+            && not (exists file)
+        then
+            VanishedFile
+        else
+            AboutThisTree
+
+    /// `classifyWith` against the real filesystem.
+    let classify (source: string) (file: string) (message: string) : RedCauseKind =
+        classifyWith System.IO.File.Exists source file message
 
 /// How many causes a verdict lists before it starts counting instead. A red from a
 /// cross-file FCS fault arrives in the dozens, and a verdict file that is mostly one
@@ -241,6 +339,21 @@ module CheckProse =
          cached result its outputs no longer support: run `fshw confirm`, which forces \
          a real build. Restarting the daemon does NOT — the task cache is on disk."
 
+    /// AUTOMATION-303 AC5. The gate's own answer to "is `fshw stop` still needed?" —
+    /// stated by the tool, at the moment it is needed, instead of left in a ticket.
+    ///
+    /// It names the remedy AND rules out the wrong one. `fshw scan` is what the docs
+    /// advised for this class and it has never cleared it: the FCS internal-error storm
+    /// of 2026-08-12 survived a scan and vanished on a stop. An operator who tries the
+    /// documented remedy first loses another full gate cycle, so the sentence that saves
+    /// the cycle is the one that says which remedy does NOT work.
+    let staleDaemonState (unattributable: int) =
+        $"NO VERDICT — all %d{unattributable} failing diagnostic(s) are ones this run cannot attribute to the tree on \
+           disk: an FCS `internal error:` (the checker crashed, so it found nothing) or a diagnostic against a file \
+           that is no longer there.\nNothing is reported broken — do NOT go looking for a defect — and nothing is \
+           reported sound either. This is stale daemon state: run `fshw stop`, then re-run. `fshw scan` does NOT \
+           clear it. See `reddenedBy[].kind` in the verdict for which cause was which."
+
     /// A scope that could not be READ. Its own words, never `confirm`'s: this is not
     /// "the run was too narrow", it is "we could not see what the run was" — and a
     /// consumer told the former would retry a broken check forever.
@@ -288,6 +401,11 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     | CheckVerdict.CheckOutcome.UnearnedScope scope ->
         Incomplete
             $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
+    // AUTOMATION-303. `incomplete`, never `red`: the structured outcome is what a deploy
+    // preflight reads, and "the daemon is stale" must route to retry-after-stop, not to
+    // "tests failed". The prose is `CheckProse`'s single copy — the same words the two
+    // terminals print.
+    | CheckVerdict.CheckOutcome.StaleDaemonState n -> Incomplete(CheckProse.staleDaemonState n)
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-259 — the check-vs-confirm sample every `confirm` already had
@@ -884,7 +1002,12 @@ let serialize (v: Verdict) : string =
                   {| source = c.Source
                      file = c.File
                      severity = c.Severity
-                     message = c.Message |} ]
+                     message = c.Message
+                     // AUTOMATION-303. Whether this cause is a claim about the tree on
+                     // disk at all. Recorded per cause, not summarised, because the
+                     // interesting file is the MIXED one — some real, some not — and a
+                     // single flag would force the reader back to guessing which.
+                     kind = RedCauseKind.tag c.Kind |} ]
            reddenedByCount = v.RedCauseCount
            trigger = v.Trigger |> List.toArray
            triggerCount = v.TriggerCount |}
@@ -1203,7 +1326,16 @@ let read (repoRoot: string) : Reading =
                                      { Source = tryString el "source" |> Option.defaultValue "(unnamed source)"
                                        File = tryString el "file" |> Option.defaultValue ""
                                        Severity = tryString el "severity" |> Option.defaultValue "error"
-                                       Message = tryString el "message" |> Option.defaultValue "" })
+                                       Message = tryString el "message" |> Option.defaultValue ""
+                                       // A verdict written before `kind` existed said
+                                       // nothing about attribution, and "said nothing"
+                                       // must read as the CONSERVATIVE answer — a red is
+                                       // about this tree until something proves it is
+                                       // not. An unknown tag lands here too.
+                                       Kind =
+                                         tryString el "kind"
+                                         |> Option.bind RedCauseKind.ofTag
+                                         |> Option.defaultValue AboutThisTree })
                                  |> Seq.toList
                              | _ -> [])
                           redCauseCount = tryInt root "reddenedByCount" |> Option.defaultValue 0

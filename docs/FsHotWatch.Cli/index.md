@@ -134,6 +134,34 @@ waiting out something else. If the underlying cause is genuinely stale build **o
 > A CI checkout starts cold, so CI does not hit this. Change any source file and the
 > cache misses, the suite runs, and `confirm` decides normally.
 
+### a red that is not about your tree — and when `fshw stop` IS the answer
+
+The section above is about the build cache, which `fshw stop` cannot touch. This one is
+about the daemon's **in-memory diagnostic ledger**, which is the only thing `fshw stop`
+does clear — and the distinction matters, because the two look identical from outside.
+
+Two kinds of failing diagnostic are not claims about the tree on disk at all:
+
+* an FCS **`internal error:`** — the checker crashed, so it completed no analysis and
+  found nothing. Under heavy churn these arrive in dozens, naming files you never
+  touched, beside a build MSBuild compiled cleanly;
+* a diagnostic against an absolute path **that is no longer on disk** — the ledger is
+  still describing a tree you have already changed.
+
+`fshw` classifies each one (`reddenedBy[].kind` in the verdict) and says so on the
+`REDDENED` line. When **all** of them are of these kinds and no plugin failed, there is
+no verdict: **exit 3**, not exit 1. The gate still refuses; it just stops claiming your
+code is broken when it has no evidence that it is.
+
+```bash
+fshw stop              # then re-run. `fshw scan` does NOT clear these.
+```
+
+That is the honest answer to "is the `fshw stop` workaround still needed?": **for this
+one class, yes** — the FCS faults are upstream and fshw cannot prevent them. What it can
+do, and now does, is name the class and the remedy at the moment you hit it, instead of
+leaving you to work out which of the two opposite responses this red wants.
+
 ## Options
 
 | Flag | Description |
@@ -212,13 +240,29 @@ sufficient.
 ```
 
 **A red says what reddened it.** `reddenedBy` lists the failing ledger diagnostics the
-exit code was computed from — `{ "source", "file", "severity", "message" }` — and
+exit code was computed from — `{ "source", "file", "severity", "message", "kind" }` — and
 `reddenedByCount` is how many there were before the list was truncated to ten. `source`
 is the ledger key, so a diagnostic that belongs to no plugin reports as `fcs`: that is
 the whole point. A `confirm` once exited 1 with every plugin `ok` and 9,064 tests
 passed, because ~51 FCS diagnostics were reddening it and no field named them. An empty
 array on a red means the red came from a failing **plugin**, which `plugins[]` already
 names.
+
+**A red must be about this tree.** `kind` says whether each cause can be:
+
+| `kind` | Meaning |
+|--------|---------|
+| `about-this-tree` | A genuine claim about the tree on disk. The red is earned. The default — nothing reaches the others without proof. |
+| `vanished-file` | The diagnostic names an absolute path that is not on disk. The daemon is describing a tree that no longer exists. |
+| `checker-fault` | An FCS `internal error:` — the checker crashed, so it made no finding at all. |
+
+When **every** failing diagnostic is one of the latter two and no plugin failed, there
+is no verdict to give: the outcome is `incomplete` and the exit code is **3**, not 1.
+Nothing is reported broken — do not go looking for a defect — and nothing is reported
+sound either. That state is cleared by `fshw stop`, and **`fshw scan` does not clear
+it**; the tool says so on the spot rather than leaving it to be rediscovered. A single
+cause that IS about this tree keeps the whole run a red, because one real defect
+outranks any amount of stale state beside it.
 
 **A missing number is never zero.** `elapsedMs` is `null` when a plugin produced no
 measurement (`0` means "instantaneous" — a different fact). A suite entry whose counts

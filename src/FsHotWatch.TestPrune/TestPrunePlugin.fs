@@ -703,12 +703,16 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
-/// The files that DECLARE what gets compiled. An F# source file only enters a build
-/// because one of these names it — F# has no globbed compile items, since compilation
-/// order is part of the language — and `Directory.Build.props` can add items to every
-/// project at once.
-let private structureFilePatterns =
-    [ "*.fsproj"; "*.csproj"; "Directory.Build.props" ]
+/// The files that DECLARE what gets compiled — `FsHotWatch.StructureFiles.allPatterns`,
+/// not a second copy of it.
+///
+/// It WAS a second copy, and it was already wrong: `Directory.Build.targets` and
+/// `Directory.Packages.props` are implicit MSBuild imports exactly as
+/// `Directory.Build.props` is, and a `<Compile Include=…>` in either adds a file to
+/// every project in the repo without moving one project file. Sharing the list with the
+/// BUILD plugin's inputs merkle is the point: two caches that disagree about what
+/// "structural" means is how one misses while the other replays.
+let private structureFilePatterns = FsHotWatch.StructureFiles.allPatterns
 
 /// Content merkle of the files that decide WHAT IS COMPILED.
 ///

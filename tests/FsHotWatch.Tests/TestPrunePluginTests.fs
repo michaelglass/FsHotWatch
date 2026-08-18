@@ -8469,6 +8469,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                 FsHotWatch.Cli.CheckVerdict.Confirmation
                 { PluginStatuses = Map.empty
                   FailingDiagnostics = 0
+                  UnattributableDiagnostics = 0
                   WaitingOnBuild = false
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
@@ -8503,6 +8504,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
     let noTestsRan: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
@@ -8538,6 +8540,7 @@ let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, 
     let filtered: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
@@ -8926,6 +8929,32 @@ let ``AUTOMATION-303: the structure hash sees a compile item, not a source edit`
         let withItems = projectStructureHash tmpDir
         File.WriteAllText(Path.Combine(objDir, "Generated.fsproj"), fsprojWithCompiles [ "Z.fs" ])
         test <@ projectStructureHash tmpDir = withItems @>)
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-303: the structure hash sees EVERY MSBuild implicit import, not just Directory.Build.props`` () =
+    // The list this hash walks was a private copy that knew about `Directory.Build.props`
+    // and not about `Directory.Build.targets` or `Directory.Packages.props` — all three
+    // are implicit imports on identical terms, and each can carry a `<Compile Include=…>`
+    // that adds a file to every project in the repo. Two of the three doors were open.
+    //
+    // RED before the fix for the two new names: the hash was byte-identical across the
+    // edit, so a tree that had just gained a repo-wide compile item computed the key of
+    // the tree without it and replayed a green that never ran the new tests.
+    withTempDir "tp-structure-imports" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory projDir |> ignore
+        File.WriteAllText(Path.Combine(projDir, "Lib.fsproj"), fsprojWithCompiles [ "A.fs" ])
+
+        for name in FsHotWatch.StructureFiles.implicitImportNames do
+            let path = Path.Combine(tmpDir, name)
+            File.WriteAllText(path, "<Project />")
+            let before = projectStructureHash tmpDir
+
+            // POSITIVE CONTROL, before the claim: stable on an untouched tree.
+            test <@ projectStructureHash tmpDir = before @>
+
+            File.WriteAllText(path, "<Project><ItemGroup><Compile Include=\"Generated.fs\" /></ItemGroup></Project>")
+            test <@ projectStructureHash tmpDir <> before @>)
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-303 case 4 — a DELETED file must not keep blocking the verdict

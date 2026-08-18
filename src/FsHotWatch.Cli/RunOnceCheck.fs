@@ -159,7 +159,16 @@ let private redCauses (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: st
         { Verdict.Source = source
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = e.Message })
+          Verdict.Message = e.Message
+          Verdict.Kind = Verdict.RedCause.classify source file e.Message })
+
+/// AUTOMATION-303. How many failing entries are NOT claims about the tree on disk — the
+/// in-process twin of `IpcOutput.unattributableCountOf`, off the same traversal as
+/// `redCauses` so the two transports classify identically.
+let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
+    redCauses daemon noWarnFail pluginName
+    |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
+    |> List.length
 
 /// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry
 /// (tests did not run because the build artifact wasn't ready)? The in-process
@@ -238,6 +247,7 @@ let runOnceAndVerdict
 
             { PluginStatuses = finalStatuses.Value
               FailingDiagnostics = failingCount daemon noWarnFail pluginName
+              UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
               WaitingOnBuild = waitingOnBuild daemon pluginName
               Coverage = liveCoverage daemon
               Scope = finalRun.Value.Scope }
@@ -357,6 +367,10 @@ let runOnceAndVerdict
             // Nothing failed, and that is the point: the tests that ran do not support a
             // whole-suite claim, so there is no verdict to give. Never a green.
             UI.fail (Verdict.CheckProse.scopeTooNarrow scope)
+        | CheckVerdict.CheckOutcome.StaleDaemonState n ->
+            // AUTOMATION-303 AC5. The one place the operator will actually read it: the
+            // gate says `fshw stop` itself instead of leaving it to be rediscovered.
+            UI.fail (Verdict.CheckProse.staleDaemonState n)
         | CheckVerdict.CheckOutcome.Clean
         | CheckVerdict.CheckOutcome.FailuresFound -> ()
 

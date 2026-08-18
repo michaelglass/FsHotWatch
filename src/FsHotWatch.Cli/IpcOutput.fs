@@ -104,7 +104,17 @@ let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdic
         { Verdict.Source = e.Plugin
           Verdict.File = file
           Verdict.Severity = DiagnosticSeverity.toString e.Severity
-          Verdict.Message = e.Message })
+          Verdict.Message = e.Message
+          Verdict.Kind = Verdict.RedCause.classify e.Plugin file e.Message })
+
+/// How many of the failing entries are NOT claims about the tree on disk
+/// (AUTOMATION-303). From `redCausesOf` — the very list the verdict records — so the
+/// number that can turn a red into NO VERDICT and the reasons printed beside it are the
+/// same entries by construction, BEFORE `MaxRedCauses` truncation.
+let internal unattributableCountOf (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    redCausesOf noWarnFail resp
+    |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
+    |> List.length
 
 /// Any "waiting on build" deferral in the ledger? A `Deferred`-severity entry
 /// means a test project's build artifact wasn't ready, so its tests DID NOT run:
@@ -126,6 +136,7 @@ let private waitingOnBuild (resp: DiagnosticsResponse) : bool =
 let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: DiagnosticsResponse) : CheckVerdict.CheckInputs =
     { PluginStatuses = resp.Statuses
       FailingDiagnostics = failingDiagnosticCount noWarnFail resp
+      UnattributableDiagnostics = unattributableCountOf noWarnFail resp
       WaitingOnBuild = waitingOnBuild resp
       Coverage = resp.Coverage
       Scope = scope }
@@ -956,6 +967,11 @@ let pollAndRender
             // a claim about the whole suite and the tests that ran do not support one,
             // so it has no verdict to give. Say so; never launder it into a green.
             UI.fail (Verdict.CheckProse.scopeTooNarrow scope)
+        | CheckVerdict.CheckOutcome.StaleDaemonState n ->
+            // AUTOMATION-303 AC5. Every failing diagnostic was unattributable to this
+            // tree, so the run has no verdict — and the remedy is named HERE, where the
+            // person who needs it is looking, rather than in a ticket they have not read.
+            UI.fail (Verdict.CheckProse.staleDaemonState n)
         | CheckVerdict.CheckOutcome.Clean
         | CheckVerdict.CheckOutcome.FailuresFound -> ()
 

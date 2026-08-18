@@ -1354,6 +1354,7 @@ let private impactScopedReading (root: string) (scope: TestScope) (failingDiagno
         (TestRunReport.ofScopeOnly scope)
         { PluginStatuses = Map.empty
           FailingDiagnostics = failingDiagnostics
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = coverage
           Scope = scope }
@@ -2597,7 +2598,11 @@ let private fcsCause (message: string) : Verdict.RedCause =
     { Source = "fcs"
       File = "src/Lib/Thing.fs"
       Severity = "error"
-      Message = message }
+      Message = message
+      // Classified by PRODUCTION, not stamped: a fixture that hand-picked the kind
+      // would keep passing if `classify` stopped working, and these causes are the
+      // exact shape (`fcs` + `internal error:`) the classifier exists to recognise.
+      Kind = Verdict.RedCause.classify "fcs" "src/Lib/Thing.fs" message }
 
 [<Fact>]
 let ``AUTOMATION-303: a red with every plugin ok NAMES the diagnostics that reddened it`` () =
@@ -2683,3 +2688,183 @@ let ``AUTOMATION-303: a GREEN verdict names no causes`` () =
 
     test <@ List.isEmpty v.RedCauses @>
     test <@ v.RedCauseCount = 0 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-303 (QA rework) — AC5. IS THIS RED A CLAIM ABOUT THIS TREE?
+//
+// The landed fix made a red NAME its cause. It did not make the red EARNED: two of the
+// four incidents in the ticket were reds that no longer described the tree they were
+// reported against, and the one thing that cleared them — `fshw stop` — is the one thing
+// the output never said. AC5 asks for exactly that sentence.
+//
+// The classifier may only ever move a cause OUT of "your code is broken", so every test
+// below is paired with the control that keeps a real red red.
+// ---------------------------------------------------------------------------
+
+/// A filesystem oracle that says only these paths exist. Injected rather than probed so
+/// the "the file is gone" branch is pinned without deleting anything — and, far more
+/// importantly, so its POSITIVE CONTROL (a present file still reddens) is expressible at
+/// all.
+let private existsOnly (present: string list) : string -> bool =
+    fun p -> present |> List.exists (fun q -> String.Equals(q, p, StringComparison.Ordinal))
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: an FCS internal error is a CHECKER FAULT, not a finding`` () =
+    // Case 3, in one line. ~51 of these reddened a `confirm` with four plugins `ok` and
+    // 9,064 tests passed, against code the session had not touched. An `internal error:`
+    // is the checker reporting its OWN crash — the check did not complete, so nothing was
+    // found, so there is nothing here to fix in the tree.
+    let kind =
+        Verdict.RedCause.classifyWith
+            (existsOnly [])
+            "fcs"
+            "/repo/src/Thing.fs"
+            "internal error: Object reference not set to an instance of an object."
+
+    test <@ kind = Verdict.CheckerFault @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: an ORDINARY fcs error against a present file stays a red`` () =
+    // THE POSITIVE CONTROL, and the one that matters most: case 2 was a REAL compile
+    // error arriving on the same `fcs` channel, and demoting it is how the gate ships a
+    // non-compiling tree. Same source, same file, ordinary message — still a claim.
+    let kind =
+        Verdict.RedCause.classifyWith
+            (existsOnly [ "/repo/src/Thing.fs" ])
+            "fcs"
+            "/repo/src/Thing.fs"
+            "The value, namespace, type or module 'TextLimits' is not defined."
+
+    test <@ kind = Verdict.AboutThisTree @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: a diagnostic against a file that is GONE is not about this tree`` () =
+    // Case 4's shape, generalised past the one map `pruneDeletedUnanalyzable` fixed. A
+    // diagnostic pinned to an absolute path that is not on disk describes a tree that no
+    // longer exists — it cannot be a claim about this one, whatever it says.
+    let kind =
+        Verdict.RedCause.classifyWith
+            (existsOnly [ "/repo/src/StillHere.fs" ])
+            "test-prune"
+            "/repo/src/Deleted.fs"
+            "symbol analysis failed — Parse errors: Files in libraries must begin with a namespace or module declaration"
+
+    test <@ kind = Verdict.VanishedFile @>
+
+    // THE POSITIVE CONTROL, from the same oracle in the same call: the file that IS
+    // there, carrying the identical message, is still reported.
+    let present =
+        Verdict.RedCause.classifyWith
+            (existsOnly [ "/repo/src/StillHere.fs" ])
+            "test-prune"
+            "/repo/src/StillHere.fs"
+            "symbol analysis failed — Parse errors: Files in libraries must begin with a namespace or module declaration"
+
+    test <@ present = Verdict.AboutThisTree @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: a synthetic or relative ledger key is never demoted`` () =
+    // The ledger's file key is whatever the reporting source passed. `BuildPlugin` passes
+    // the literal `<build>`, `CoveragePlugin` passes a Cobertura filename — neither is a
+    // path on disk, and neither proves anything about a tree. Treating "not found" as
+    // proof there would silently demote every build failure in the repo to NO VERDICT.
+    let synthetic =
+        Verdict.RedCause.classifyWith (existsOnly []) "build" "<build>" "Build FAILED. 3 Error(s)"
+
+    let relative =
+        Verdict.RedCause.classifyWith (existsOnly []) "coverage" "src/Lib/Thing.fs" "coverage: below threshold"
+
+    test <@ synthetic = Verdict.AboutThisTree @>
+    test <@ relative = Verdict.AboutThisTree @>
+
+    // THE CONTROL for those two absences: the same oracle, an absolute missing path, DOES
+    // classify — so the equalities above are about the KEY SHAPE and not about a
+    // classifier that never fires.
+    test <@ Verdict.RedCause.classifyWith (existsOnly []) "fcs" "/repo/Gone.fs" "boom" = Verdict.VanishedFile @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: an internal-error message from a PLUGIN is not a checker fault`` () =
+    // Scoped to the checker's own channel. A plugin that quotes the phrase — a test whose
+    // assertion message contains it, say — is not the compiler crashing, and a red that
+    // any source could disown by wording is not a red.
+    let kind =
+        Verdict.RedCause.classifyWith
+            (existsOnly [ "/repo/src/Thing.fs" ])
+            "test-prune"
+            "/repo/src/Thing.fs"
+            "internal error: Object reference not set to an instance of an object."
+
+    test <@ kind = Verdict.AboutThisTree @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: the verdict file records each cause's kind`` () =
+    // Per cause, not summarised: the interesting file is the MIXED one, and a single flag
+    // would put the reader back to guessing which line was which.
+    let spec =
+        { greenVerdict "deadbeef" 10 with
+            Outcome = Verdict.Red
+            ExitCode = 1
+            Suites = allSuitesGreen
+            RedCauses =
+                [ fcsCause "internal error: Object reference not set to an instance of an object."
+                  fcsCause "The value or constructor 'foo' is not defined." ] }
+
+    let json = serializeSpec spec
+    test <@ json.Contains "checker-fault" @>
+    test <@ json.Contains "about-this-tree" @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: the steering block names fshw stop for a cause that is not this tree`` () =
+    // THE DELIVERABLE. `fshw scan` was the documented remedy for this class and never
+    // cleared it once; `fshw stop` did. The sentence that saves the cycle is the one
+    // naming which remedy does NOT work, and it belongs where the reader is looking.
+    let joined =
+        String.Join(
+            "\n",
+            hintsFor
+                { greenVerdict "deadbeef" 10 with
+                    Outcome = Verdict.Red
+                    ExitCode = 1
+                    Suites = allSuitesGreen
+                    RedCauses = [ fcsCause "internal error: Object reference not set to an instance of an object." ] }
+        )
+
+    test <@ joined.Contains "NOT-THIS-TREE" @>
+    test <@ joined.Contains "fshw stop" @>
+    test <@ joined.Contains "`fshw scan` does NOT clear it" @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: an ordinary red says none of that`` () =
+    // THE POSITIVE CONTROL for the three assertions above. A red that IS about this tree
+    // must not be decorated with a stale-state remedy — an agent told to restart the
+    // daemon over a genuine compile error loses the same cycle in the other direction,
+    // which is the pair of mistakes the ticket was opened on.
+    let joined =
+        String.Join(
+            "\n",
+            hintsFor
+                { greenVerdict "deadbeef" 10 with
+                    Outcome = Verdict.Red
+                    ExitCode = 1
+                    Suites = allSuitesGreen
+                    RedCauses = [ fcsCause "The value or constructor 'foo' is not defined." ] }
+        )
+
+    // Still named — the landed fix's guarantee is untouched.
+    test <@ joined.Contains "REDDENED" @>
+    test <@ not (joined.Contains "NOT-THIS-TREE") @>
+    test <@ not (joined.Contains "fshw stop") @>
+
+[<Fact>]
+let ``AUTOMATION-303 AC5: the stale-state outcome is INCOMPLETE and names the remedy`` () =
+    // Never `red`: the structured outcome is what a deploy preflight reads, and "the
+    // daemon is stale" must route to retry-after-stop, not to "tests failed".
+    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.StaleDaemonState 51) with
+    | Verdict.Incomplete reason ->
+        test <@ reason.Contains "51" @>
+        test <@ reason.Contains "fshw stop" @>
+        test <@ reason.Contains "does NOT" @>
+    | other -> failwithf "stale daemon state must be INCOMPLETE, got %A" other
+
+    // THE CONTROL: the same function still calls a real failure a red.
+    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>

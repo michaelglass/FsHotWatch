@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **BREAKING (verdict schema): `reddenedBy[]` entries carry a `kind`, and a red the tool
+  cannot attribute to your tree is now exit 3, not exit 1** (AUTOMATION-303). A red is a
+  claim — "something in THIS tree is wrong" — and two kinds of failing diagnostic cannot
+  support one: an FCS `internal error:` (the checker crashed, so it found nothing) and a
+  diagnostic against an absolute path that is no longer on disk (the ledger is describing
+  a tree you have already changed). Each cause is now classified `about-this-tree`,
+  `checker-fault` or `vanished-file`, and when **every** failing diagnostic is one of the
+  latter two and no plugin failed, the outcome is `incomplete` with exit **3** — NO
+  VERDICT — instead of a red. The gate still refuses; it stops telling you your code is
+  broken when it has no evidence that it is. One cause that IS about the tree keeps the
+  whole run a red, so a real compile error arriving beside stale noise is never demoted.
+  **If you branch on `exitCode == 1` to mean "failures", that state stops matching** —
+  it was never a failure, it was the daemon describing a tree that no longer existed.
+- fix: **the gate names `fshw stop` when `fshw stop` is the answer** (AUTOMATION-303).
+  For the class above, `fshw scan` was the documented remedy and has never cleared it
+  once; only a daemon restart does. That was folklore, and unwritable folklore at that,
+  because the opposite incident (a cached build hiding a REAL compile error) produced
+  output no human could tell apart — one lesson ships a non-compiling tree, the other
+  chases phantoms for an hour. The `REDDENED` lines now mark each unattributable cause
+  `[NOT-THIS-TREE: …]` and print the remedy, naming the one that does NOT work.
+- fix: **a compile item added through `Directory.Build.props`/`.targets` or
+  `Directory.Packages.props` no longer replays a cached build or a cached test result**
+  (AUTOMATION-303 case 2). MSBuild's implicit imports can add a `<Compile Include=…>` to
+  every project in a repo, and they were in neither list the build merkle hashed — not
+  compile items, not projects — so the key stayed byte-identical while the tree gained a
+  file. The build replayed `built N projects (cached)`, nothing compiled it, and the FCS
+  error beside it was real. The build merkle now folds in each project's nearest-ancestor
+  implicit imports (MSBuild's own `GetPathOfFileAbove` rule), and test-prune's structure
+  hash reads the same shared list rather than a second copy that knew about one of the
+  three. Existing build and test-prune cache entries orphan on upgrade, which is correct:
+  they asserted a verdict over inputs they never hashed.
 - fix: **a `test-rerun` refusal now NAMES the filter and every project it searched**
   (AUTOMATION-227/272). It named a project count and pointed at `fshw status
   test-prune`. The three causes of a zero match — a typo, a renamed class, and a filter

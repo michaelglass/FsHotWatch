@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: **the project-structure hash sees every MSBuild implicit import, not just
+  `Directory.Build.props`** (AUTOMATION-303 case 1, follow-up). `Directory.Build.targets`
+  and `Directory.Packages.props` are imported on identical terms and can carry the same
+  repo-wide `<Compile Include=…>`, so two of the three doors were still open: a tree that
+  had just gained a compile item through either computed the key of the tree without it
+  and replayed a green that never ran the new tests. The list now comes from
+  `FsHotWatch.StructureFiles`, shared with the build plugin, rather than a private copy.
+
 - fix: **a project that matched ZERO tests no longer discharges a symbol's test debt**
   (AUTOMATION-278). The per-symbol green-commit folded `TestResult.isPassed` over the
   projects covering a changed symbol, and that predicate was TRUE for a zero-match

@@ -32,6 +32,7 @@ let private statusOf (status: StatusView) : Map<string, ParsedPluginStatus> =
 let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) : CheckInputs =
     { PluginStatuses = Map.empty
       FailingDiagnostics = (if hasFailures then 1 else 0)
+      UnattributableDiagnostics = 0
       WaitingOnBuild = false
       Coverage = coverage
       Scope = scope }
@@ -50,6 +51,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
     let crashed =
         { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
@@ -65,6 +67,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
     let unreadable =
         { PluginStatuses = statusOf (StatusView.Unreadable "a status tag this build does not recognize")
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
@@ -79,6 +82,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
     let healthy =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = Complete
           Scope = FullSuite 4 }
@@ -101,6 +105,7 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
     let waiting =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = true
           Coverage = Complete
           Scope = FullSuite 4 }
@@ -117,6 +122,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
     let failureAndWaiting =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 1
+          UnattributableDiagnostics = 0
           WaitingOnBuild = true
           Coverage = Complete
           Scope = FullSuite 4 }
@@ -539,3 +545,120 @@ let ``uncheckedMagnitude: Complete is zero, Incomplete carries its count, Unknow
     test <@ uncheckedMagnitude Complete = 0 @>
     test <@ uncheckedMagnitude (Incomplete 7) = 7 @>
     test <@ uncheckedMagnitude Unknown = System.Int32.MaxValue @>
+
+// ----------------------------------------------------------------------------
+// AUTOMATION-303 (QA rework) — a red must be EARNED, exactly as a green must.
+//
+// The ticket's premise applied to the other sign. A ledger whose every failing entry is
+// an FCS `internal error:` (the checker crashed) or a diagnostic against a file that is
+// no longer on disk supports no claim that THIS tree is broken — and reporting exit 1
+// sends the reader hunting a defect that is not there. It cost one agent ~40 minutes,
+// and the incident that taught the opposite lesson (a cached build hiding a REAL error)
+// was output-identical, so no guidance can separate them.
+//
+// So the tool stops picking a side: exit 3, NO VERDICT. The gate still refuses; nothing
+// is claimed broken and nothing is claimed sound.
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303: an all-unattributable ledger is NO VERDICT (exit 3), not a red`` () =
+    let stale =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 51
+          UnattributableDiagnostics = 51
+          WaitingOnBuild = false
+          Coverage = Complete
+          Scope = FullSuite 6 }
+
+    test <@ verdict InnerLoop stale = CheckOutcome.StaleDaemonState 51 @>
+    test <@ verdict Confirmation stale = CheckOutcome.StaleDaemonState 51 @>
+    test <@ exitCode (verdict InnerLoop stale) = 3 @>
+    test <@ exitCode (verdict Confirmation stale) = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303: ONE attributable diagnostic among them keeps the red`` () =
+    // THE POSITIVE CONTROL, and the one the whole change lives or dies on. Case 2 was a
+    // REAL compile error arriving beside stale noise; a rule that demoted the pair would
+    // ship a non-compiling tree. A single claim about this tree outranks any amount of
+    // state that is not.
+    let mixed =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 52
+          UnattributableDiagnostics = 51
+          WaitingOnBuild = false
+          Coverage = Complete
+          Scope = FullSuite 6 }
+
+    test <@ verdict InnerLoop mixed = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation mixed = CheckOutcome.FailuresFound @>
+    test <@ exitCode (verdict Confirmation mixed) = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303: a FAILING PLUGIN beside a stale ledger keeps the red`` () =
+    // The other half of the failure disjunction. A plugin reaches `Failed` without
+    // writing a diagnostic every time it throws, and that IS a claim about this run — so
+    // no amount of unattributable ledger noise beside it may launder it into "cannot
+    // tell".
+    let crashedBesideStale =
+        { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
+          FailingDiagnostics = 51
+          UnattributableDiagnostics = 51
+          WaitingOnBuild = false
+          Coverage = Complete
+          Scope = FullSuite 6 }
+
+    test <@ verdict InnerLoop crashedBesideStale = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation crashedBesideStale = CheckOutcome.FailuresFound @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303: a CLEAN ledger is still Clean, never stale-daemon-state`` () =
+    // The green direction. `UnattributableDiagnostics = 0` and `FailingDiagnostics = 0`
+    // satisfies "no attributable failures" vacuously, and a rule written as a bare
+    // comparison would route every passing run to exit 3. Nothing failed is not
+    // everything that failed was noise.
+    let clean =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = false
+          Coverage = Complete
+          Scope = FullSuite 6 }
+
+    test <@ verdict InnerLoop clean = CheckOutcome.Clean @>
+    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+    test <@ exitCode (verdict Confirmation clean) = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
+    // `fshw scan` is the DOCUMENTED remedy for this class and has never cleared it once.
+    // Convergence would spend three more full passes to arrive at the same answer, and
+    // (worse) each pass looks to the operator like the tool making progress.
+    let stale =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 7
+          UnattributableDiagnostics = 7
+          WaitingOnBuild = false
+          Coverage = Complete
+          Scope = FullSuite 6 }
+
+    let mutable scans = 0
+
+    let outcome =
+        converge Confirmation 3 (fun () -> scans <- scans + 1) (fun () -> stale) stale
+
+    test <@ outcome = CheckOutcome.StaleDaemonState 7 @>
+    test <@ scans = 0 @>
+
+    // THE POSITIVE CONTROL for `scans = 0`: the same loop, the same budget, an input that
+    // DOES drive convergence — so the zero above is a property of the outcome and not of
+    // a `triggerScan` that could never be called.
+    let incomplete =
+        { stale with
+            FailingDiagnostics = 0
+            UnattributableDiagnostics = 0
+            Coverage = Incomplete 5 }
+
+    converge Confirmation 3 (fun () -> scans <- scans + 1) (fun () -> incomplete) incomplete
+    |> ignore
+
+    test <@ scans > 0 @>
