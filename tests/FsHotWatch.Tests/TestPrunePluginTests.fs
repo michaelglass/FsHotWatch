@@ -2568,6 +2568,112 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
 
+// AUTOMATION-227/272 — the PRODUCER side of the two facts the CLI's refusal now prints.
+//
+// Deliberately end-to-end through `RunCommand "run-tests"`, not a unit test of the
+// formatter: a consumer test asserting fields the producer never writes vouches for a
+// payload that does not occur. (This suite had exactly that — a `verifiedNothing` boolean
+// asserted in four IpcOutput fixtures and emitted by nobody.)
+[<Fact(Timeout = 20000)>]
+let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wire`` () =
+    withTempDir "tp-run-wire" (fun tmpDir ->
+        // The runner is handed `--results-directory <runDir>` among its extra args; the
+        // plugin creates that directory before launching. Writing a real CTRF report into
+        // it is what a real xUnit.v3 runner does, and it is the only route by which counts
+        // reach the reply.
+        //
+        // A script FILE rather than `sh -c "…"`: the args string is tokenized on
+        // whitespace by the process layer, so an inline script is not one argument.
+        let reportPath = Path.Combine(tmpDir, "canned.ctrf.json")
+
+        File.WriteAllText(
+            reportPath,
+            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0}}}"""
+        )
+
+        let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")
+
+        File.WriteAllText(
+            scriptPath,
+            "for a in \"$@\"; do\n"
+            + "  if [ -d \"$a\" ]; then cp \""
+            + reportPath
+            + "\" \"$a/CtrfProj.ctrf.json\"; fi\n"
+            + "done\nexit 0\n"
+        )
+
+        let configs =
+            [ { Project = "CtrfProj"
+                Command = "sh"
+                Args = scriptPath
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                // `Ctrf`, not `AutoDetect`: AutoDetect declines to inject the report flags
+                // for a non-dotnet command, and without them there is no run directory on
+                // the command line to write into.
+                ReportVerificationFormat = Ctrf } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"filter": "--filter-class CtrfProjTests"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+
+        // The filter, quoted back exactly as given.
+        Assert.Equal("--filter-class CtrfProjTests", doc.RootElement.GetProperty("filter").GetString())
+
+        let project = doc.RootElement.GetProperty("projects").[0]
+        Assert.Equal("passed", project.GetProperty("status").GetString())
+
+        let counts = project.GetProperty("counts")
+        Assert.Equal(7, counts.GetProperty("total").GetInt32())
+        Assert.Equal(6, counts.GetProperty("succeeded").GetInt32())
+        Assert.Equal(0, counts.GetProperty("failed").GetInt32())
+        Assert.Equal(1, counts.GetProperty("skipped").GetInt32()))
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests emits a NULL counts field for a project that wrote no report`` () =
+    withTempDir "tp-run-nocounts" (fun tmpDir ->
+        // The control for the test above, and the honest half of the contract: no report
+        // means no counts, never zeros. `total: 0, failed: 0` reads as a suite that ran
+        // cleanly.
+        let configs =
+            [ { Project = "NoReportProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = Disabled } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+
+        // No filter was given, so the field is present and null — an absent field would be
+        // indistinguishable from an older daemon that cannot report one.
+        let filterKind = doc.RootElement.GetProperty("filter").ValueKind
+        Assert.Equal(JsonValueKind.Null, filterKind)
+
+        let project = doc.RootElement.GetProperty("projects").[0]
+        let countsKind = project.GetProperty("counts").ValueKind
+        Assert.Equal(JsonValueKind.Null, countsKind))
+
 [<Fact(Timeout = 15000)>]
 let ``run-tests with a filter that matches tests executes and reports a real pass (not no-tests-matched)`` () =
     withTempDir "tp-run-match" (fun tmpDir ->
@@ -6422,6 +6528,67 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed (queue drained, not wedged), got %A{other}"))
 
+// AUTOMATION-278 — the FIFTH aggregator, and the one that survived the first fix.
+//
+// The per-symbol green-commit folded `TestResult.isPassed` over the covering projects.
+// `isPassed` was TRUE for `TestsNoMatch`, so a symbol whose covering project ran under an
+// impact-derived class filter that matched ZERO tests had its test debt DISCHARGED and
+// left `pending-verification.json` — verified by a project that executed nothing. That is
+// the harm AUTOMATION-275 exists to prevent ("widen, never wipe"), one fold over, and the
+// repo-local FSHW-VERDICT-001 analyzer cannot see it: the predicate sits behind a
+// `match` in a lookup lambda.
+//
+// End to end rather than a unit fold, because the bug was in the WIRING: the fold looked
+// correct in isolation and was wrong about which results it was folding over.
+[<Fact(Timeout = 20000)>]
+let ``a covering project that matched ZERO tests does not discharge a pending symbol`` () =
+    withTempDir "tp-nomatch-commit" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+        // POSITIVE CONTROL for the fixture itself. Without it, a run that never invoked
+        // P1 at all would also leave `Lib.foo` queued and this test would pass having
+        // proved nothing.
+        let ranMarker = Path.Combine(tmpDir, "p1-ran")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                // Exit 8 is Microsoft.Testing.Platform's "Zero tests ran". A
+                // `FilterTemplate` is required for the run to count as FILTERED, which
+                // is what makes exit 8 a zero MATCH rather than a plain failure.
+                Args = $"-c \"touch {ranMarker}; exit 8\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = Some "--filter-class {classes}"
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // The runner really was invoked and really did report zero matches.
+        test <@ File.Exists ranMarker @>
+
+        // THE ASSERTION. The debt is still owed: nothing verified `Lib.foo`.
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ queue.Contains("Lib.foo") @>
+
+        // And the run-level verdict says so too, rather than reporting a green over a
+        // project that executed nothing.
+        match host.GetStatus("test-prune") with
+        | Some(Failed _) -> ()
+        | other -> Assert.Fail($"expected a non-green terminal for a run that matched zero tests, got %A{other}"))
+
 // --- classifyTestOutcome: the structured report, not the process exit code, decides
 // green/red; the exit code is a tie-break only when no report exists.
 
@@ -6451,7 +6618,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "host crashed during shutdown"))
 
-    test <@ TestResult.isPassed result @>
+    test <@ TestResult.verifiedGreen result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
@@ -6490,7 +6657,7 @@ let ``classify: non-zero exit with NO report from a capable runner is ERRORED, n
 
     test <@ TestResult.isErrored result @>
     test <@ not (isFailed result) @>
-    test <@ not (TestResult.isPassed result) @>
+    test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED (no regression)`` () =
@@ -6513,7 +6680,7 @@ let ``classify: clean exit with no report is PASSED`` () =
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
-    test <@ TestResult.isPassed result @>
+    test <@ TestResult.verifiedGreen result @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =

@@ -15,14 +15,26 @@
 ///   transition times), but that refactor is out of scope — so the class is banned
 ///   here instead.
 ///
-///   FSHW-VERDICT-001 — a RUN-level verdict may not be a fold of the PER-PROJECT
-///   `TestResult.isPassed`. This is the sharpest case of "unrepresentable would
-///   beat detecting it" and the one place it is genuinely unreachable: `isPassed`
-///   is TOTAL and deliberately TRUE for `TestsNoMatch`, so `Map.forall isPassed`
-///   over a run where every project executed nothing type-checks, is total, and
-///   folds to green (AUTOMATION-272). No signature can distinguish the two
-///   questions while one predicate is the honest answer to both — so the *fold*
-///   is what gets named here.
+///   FSHW-VERDICT-001 — a RUN-level verdict may not be a fold of a PER-PROJECT
+///   pass predicate.
+///
+///   REVISED (AUTOMATION-278). This rule used to open by claiming it was "the one
+///   place unrepresentable would beat detecting it is genuinely unreachable: no
+///   signature can distinguish the two questions while one predicate is the honest
+///   answer to both". That was FALSE, and the fix was to stop having one predicate
+///   answer both: `TestResult.isPassed` is gone, replaced by the total
+///   `TestResult.verdict : TestResult -> ProjectVerdict`, whose `NothingVerified`
+///   case a fold cannot sweep up without writing it down. The premise did real
+///   damage while it stood — believing detection was the ceiling, this rule shipped
+///   an allow-list that explicitly SANCTIONED `| Some r -> TestResult.isPassed r`,
+///   which was the live pending-verification false-green (a symbol's test debt
+///   discharged by a project that executed zero tests).
+///
+///   What survives, and why the rule survives with it: `Map.forall verifiedGreen`
+///   is still not a run-level verdict, because `forall` is vacuously TRUE for the
+///   empty map — a run that selected no project folds to green. That is a genuine
+///   hazard with something concrete to point at (`RunVerification.ofResults`, which
+///   answers emptiness FIRST), so the *fold* is still what gets named here.
 ///
 ///   FSHW-WAIT-001 — in TEST sources: no `Thread.Sleep` standing in for
 ///   synchronisation with an event the test then asserts on. The sleep is a bet
@@ -132,11 +144,16 @@ module Detect =
         | SynExpr.Ident id -> id.idText = "forall"
         | _ -> false
 
-    /// `TestResult.isPassed` in predicate position: passed by name, or as a lambda
-    /// whose body is *only* that call — `fun _ r -> TestResult.isPassed r`.
+    /// A per-project pass predicate in predicate position: passed by name, or as a
+    /// lambda whose body is *only* that call — `fun _ r -> TestResult.verifiedGreen r`.
     ///
-    /// Deliberately narrow. Anything wrapping the call (`not (isPassed r)`,
-    /// `isPassed r && executedTests r`) roots the application chain in some other
+    /// Two names, deliberately. `verifiedGreen` is the live one. `isPassed` is the
+    /// DELETED one (AUTOMATION-278) and is kept here so that re-introducing it — the
+    /// exact predicate whose TRUE-for-`TestsNoMatch` answer was the original defect —
+    /// is caught the moment someone folds it, rather than after the next survey.
+    ///
+    /// Deliberately narrow. Anything wrapping the call (`not (verifiedGreen r)`,
+    /// `verifiedGreen r && executedTests r`) roots the application chain in some other
     /// function and is NOT this rule's business: negating the predicate to select
     /// the non-green is the correct, common use.
     ///
@@ -145,9 +162,10 @@ module Detect =
     /// true for an empty map. Measured and declined, because the two folds are not
     /// the same bug:
     ///
-    ///   * `isPassed` is wrong on a NON-empty map — three zero-match projects fold
-    ///     to green — and no guard beside the fold can see that, because the
-    ///     predicate itself is the lie. Naming the fold is the only place left.
+    ///   * a pass fold is wrong on the EMPTY map (`forall`'s vacuity: no project
+    ///     selected folds to green), and it says nothing about the deferred /
+    ///     errored / zero-match distinction that `RunVerification.ofResults` states
+    ///     in one place. Naming the fold points at that function.
     ///   * a scope fold is RIGHT on every non-empty map: `wasFiltered` returns true
     ///     for NoMatch/Deferred/Errored precisely so that it is. It is wrong only on
     ///     the empty map — `forall`'s vacuity, shared by every fold in this tree.
@@ -176,20 +194,26 @@ module Detect =
     /// Revisit sooner if scope gains a `RunVerification`-shaped total answer that
     /// distinguishes "nothing ran" from "everything ran unfiltered". Then there is
     /// something to point at, and widening becomes worth its false-positive budget.
-    let rec private isPassedPredicate (e: SynExpr) : bool =
+    let private isPerProjectPassName (name: string) =
+        name = "verifiedGreen" || name = "isPassed"
+
+    let rec private passPredicate (e: SynExpr) : bool =
         match unwrapParen e with
-        | SynExpr.Lambda(body = body) -> isPassedPredicate body
-        | SynExpr.App(funcExpr = f) -> isPassedPredicate f
-        | SynExpr.Ident id -> id.idText = "isPassed"
-        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> lastIs "isPassed" ids
+        | SynExpr.Lambda(body = body) -> passPredicate body
+        | SynExpr.App(funcExpr = f) -> passPredicate f
+        | SynExpr.Ident id -> isPerProjectPassName id.idText
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            match List.tryLast ids with
+            | Some id -> isPerProjectPassName id.idText
+            | None -> false
         | _ -> false
 
     /// A fold of the per-project pass predicate over a whole run's results:
-    /// `results |> Map.forall (fun _ r -> TestResult.isPassed r)`,
-    /// `List.forall TestResult.isPassed results`, and the partial applications.
+    /// `results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)`,
+    /// `List.forall TestResult.verifiedGreen results`, and the partial applications.
     let private passFoldInExpr (e: SynExpr) : range option =
         match e with
-        | SynExpr.App(funcExpr = f; argExpr = pred) when isForallFunc f && isPassedPredicate pred -> Some e.Range
+        | SynExpr.App(funcExpr = f; argExpr = pred) when isForallFunc f && passPredicate pred -> Some e.Range
         | _ -> None
 
     /// Names that ask the RUN-level question — "did this run verify anything?" —
@@ -580,16 +604,16 @@ let localClockAnalyzer: Analyzer<CliContext> =
         }
 
 [<CliAnalyzer("RunVerdictFoldAnalyzer",
-              "Forbids folding TestResult.isPassed over a whole run's results as the run-level verdict — a zero-match project passes having verified nothing (AUTOMATION-272)")>]
+              "Forbids folding a per-project pass predicate over a whole run's results as the run-level verdict — forall is vacuously true for a run that selected no project (AUTOMATION-272/278)")>]
 let runVerdictFoldAnalyzer: Analyzer<CliContext> =
     fun (context: CliContext) ->
         async {
             return
                 Detect.runLevelPassFolds context.ParseFileResults.ParseTree
                 |> List.map (fun range ->
-                    { Type = "Run verdict folded from isPassed"
+                    { Type = "Run verdict folded from a per-project pass predicate"
                       Message =
-                        "forall over TestResult.isPassed is not a run-level verdict. isPassed is deliberately TRUE for TestsNoMatch, so a run in which every project matched zero tests folds to green having executed no test (AUTOMATION-272). Ask verificationOf (→ RunVerification) instead — or state the run-level guard beside this fold, which is what silences this rule."
+                        "forall over a per-project pass predicate is not a run-level verdict: forall is vacuously TRUE for the empty map, so a run that selected no project folds to green having executed no test, and the fold cannot tell a deferred project from a zero match. Ask verificationOf (→ RunVerification.ofResults, which answers emptiness first) instead — or state the run-level guard beside this fold, which is what silences this rule. TestResult.isPassed itself was DELETED in AUTOMATION-278 because it answered TRUE for TestsNoMatch; if that is the name here, use TestResult.verdict."
                       Code = "FSHW-VERDICT-001"
                       Severity = Severity.Error
                       Range = range

@@ -226,12 +226,99 @@ let renderIpcResult
 
                     match root.TryGetProperty("projects") with
                     | true, projects when projects.ValueKind = JsonValueKind.Array ->
-                        let hasFailed =
+                        // Name and status of every project the run consulted. Kept as a
+                        // list (not just a count) because a refusal has to say WHAT it
+                        // searched: "no tests matched the filter" over an unnamed set of
+                        // projects is indistinguishable from a typo, and reading the
+                        // names off `fshw status test-prune` afterwards is a step people
+                        // skip (AUTOMATION-227/272).
+                        let projectStatuses =
                             projects.EnumerateArray()
-                            |> Seq.exists (fun p ->
-                                match p.TryGetProperty("status") with
-                                | true, s -> s.GetString() = "failed"
-                                | false, _ -> false)
+                            |> Seq.map (fun p ->
+                                let name =
+                                    match p.TryGetProperty("project") with
+                                    | true, n when n.ValueKind = JsonValueKind.String -> n.GetString()
+                                    | _ -> "(unnamed)"
+
+                                let status =
+                                    match p.TryGetProperty("status") with
+                                    | true, s when s.ValueKind = JsonValueKind.String -> s.GetString()
+                                    | _ -> "unknown"
+
+                                name, status)
+                            |> List.ofSeq
+
+                        // AUTOMATION-272, criterion 3. The per-project TEST counts, from
+                        // the CTRF report each project wrote. Rendered for every project on
+                        // every outcome, green included: "a missing summary line is the tell
+                        // that separates a real pass from a vacuous one", and until now the
+                        // counts existed only in `daemon.log`, so noticing required going to
+                        // look. Now the ✓ has to carry them.
+                        //
+                        // ABSENT counts print as an explicit "no test report", never as
+                        // zeros: `total: 0, failed: 0` reads as a suite that ran cleanly,
+                        // which is the same vacuous green one level down.
+                        let countsLine (p: JsonElement) : string =
+                            let field (name: string) =
+                                match p.TryGetProperty("counts") with
+                                | true, c when c.ValueKind = JsonValueKind.Object ->
+                                    match c.TryGetProperty(name) with
+                                    | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
+                                    | _ -> None
+                                | _ -> None
+
+                            match field "total", field "succeeded", field "failed" with
+                            | Some total, Some succeeded, Some failed ->
+                                let skipped =
+                                    match field "skipped" with
+                                    | Some n when n > 0 -> $", %d{n} skipped"
+                                    | _ -> ""
+
+                                $"total %d{total}, %d{succeeded} succeeded, %d{failed} failed%s{skipped}"
+                            | _ -> "no test report — counts unknown (not zero)"
+
+                        let perProjectLines =
+                            projects.EnumerateArray()
+                            |> Seq.mapi (fun i p ->
+                                let (name, status) = projectStatuses.[i]
+                                $"  · %s{name} [%s{status}] — %s{countsLine p}")
+                            |> List.ofSeq
+
+                        // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
+                        // `allZeroMatch` is deliberately false for an empty result set
+                        // (no project is not the same claim as every project matched
+                        // nothing), so without this branch an empty `projects` array
+                        // reads as "Tests passed" — a green for a run that executed
+                        // nothing.
+                        let projectCount = projectStatuses.Length
+
+                        let statusCounts = projectStatuses |> List.countBy snd |> Map.ofList
+
+                        let countOf key =
+                            statusCounts |> Map.tryFind key |> Option.defaultValue 0
+
+                        let passedCount = countOf "passed"
+                        let failedCount = countOf "failed"
+                        let timedOutCount = countOf "timed-out"
+                        let noMatchCount = countOf "no-tests-matched"
+
+                        let otherCount =
+                            projectCount - passedCount - failedCount - timedOutCount - noMatchCount
+
+                        // A project killed at its timeout is a FAILURE, and was not being
+                        // counted as one: `hasFailed` matched only `"failed"`, so a run
+                        // whose sole project was killed at its timeout printed
+                        // "✓ Tests passed" and exited 0 while the daemon's own terminal
+                        // status for the same run was `failedNow` + `CompleteWithTimeout`.
+                        // The CLI and the daemon may not disagree about a red.
+                        let hasFailed = failedCount > 0 || timedOutCount > 0
+
+                        // Which wire statuses mean "a test actually executed". Listed
+                        // POSITIVELY and closed: an unrecognised status (a daemon newer
+                        // than this CLI) is NOT counted as having executed, so the
+                        // fallback below fails closed rather than greening on a word it
+                        // does not know.
+                        let executedCount = passedCount + failedCount + timedOutCount
 
                         // Run-level "matched nothing": every project was a
                         // zero-match-under-filter pass. Reported DISTINCTLY so a
@@ -241,14 +328,6 @@ let renderIpcResult
                             match root.TryGetProperty("noTestsMatched") with
                             | true, n -> n.ValueKind = JsonValueKind.True
                             | false, _ -> false
-
-                        // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
-                        // `allZeroMatch` is deliberately false for an empty result set
-                        // (no project is not the same claim as every project matched
-                        // nothing), so without this branch an empty `projects` array
-                        // reads as "Tests passed" — a green for a run that executed
-                        // nothing.
-                        let projectCount = projects.EnumerateArray() |> Seq.length
 
                         // The producer STATES what the run verified instead of leaving
                         // the consumer to infer it from array lengths.
@@ -276,6 +355,15 @@ let renderIpcResult
                                     Understood NoProjectsSelected
                                 elif noTestsMatched then
                                     Understood(AllZeroMatch projectCount)
+                                elif executedCount = 0 then
+                                    // AUTOMATION-227. The MIXED case, and the one this
+                                    // fallback used to hand to `RanPerCounts` → exit 0:
+                                    // `{"projects":[{"status":"no-tests-matched"},
+                                    // {"status":"deferred"}]}` is not all-zero-match, so
+                                    // `noTestsMatched` is false, yet NOT ONE project
+                                    // executed a test. The per-project statuses that
+                                    // establish it were already in hand and went unused.
+                                    Understood NothingExecuted
                                 else
                                     RanPerCounts
 
@@ -284,33 +372,21 @@ let renderIpcResult
                         // passed" are the same `✓` without this line, and the counts are
                         // otherwise only in `daemon.log`. Printed before the verdict so
                         // it is present whichever branch below fires.
-                        let statusCounts =
-                            projects.EnumerateArray()
-                            |> Seq.map (fun p ->
-                                match p.TryGetProperty("status") with
-                                | true, s -> s.GetString()
-                                | false, _ -> "unknown")
-                            |> Seq.countBy id
-                            |> Map.ofSeq
-
-                        let countOf key =
-                            statusCounts |> Map.tryFind key |> Option.defaultValue 0
-
-                        let passedCount = countOf "passed"
-                        let failedCount = countOf "failed"
-                        let noMatchCount = countOf "no-tests-matched"
-                        let otherCount = projectCount - passedCount - failedCount - noMatchCount
-
                         let summaryParts =
                             [ if passedCount > 0 then
                                   $"%d{passedCount} passed"
                               if failedCount > 0 then
                                   $"%d{failedCount} failed"
+                              // Named separately from "failed" and from "did not run":
+                              // a killed run is a red, but a red whose cause is the clock
+                              // rather than an assertion.
+                              if timedOutCount > 0 then
+                                  $"%d{timedOutCount} timed out"
                               if noMatchCount > 0 then
                                   $"%d{noMatchCount} matched nothing"
-                              // Deferred / timed-out / errored projects. Named as a
-                              // group rather than silently omitted, so the parts always
-                              // add up to the project count.
+                              // Deferred / errored projects. Named as a group rather than
+                              // silently omitted, so the parts always add up to the
+                              // project count.
                               if otherCount > 0 then
                                   $"%d{otherCount} did not run" ]
 
@@ -318,15 +394,63 @@ let renderIpcResult
                             let detail = summaryParts |> String.concat ", "
                             UI.info $"  %d{projectCount} project(s): %s{detail}"
 
+                            for line in perProjectLines do
+                                UI.info line
+
+                        // The filter the run was launched with, as the daemon reported
+                        // it. `None` is NOT rendered as "(none)": an absent field means
+                        // this daemon predates the field, which is a different fact from
+                        // "the run was unfiltered", and a refusal that guesses between
+                        // them is how a wrong conclusion gets drawn.
+                        let activeFilter =
+                            match root.TryGetProperty("filter") with
+                            | true, f when f.ValueKind = JsonValueKind.String && f.GetString() <> "" ->
+                                Some(f.GetString())
+                            | _ -> None
+
+                        /// The refusal's two evidence lines: WHAT was searched for and
+                        /// WHERE. Printed by every "nothing was verified" branch, so no
+                        /// refusal can be the count-only message that sent one
+                        /// investigation after a class that was never misspelled.
+                        let reportSearch () =
+                            match activeFilter with
+                            | Some f -> UI.info $"  Filter:   %s{f}"
+                            | None ->
+                                UI.info
+                                    "  Filter:   not reported (this daemon predates the field) — restart it with `fshw stop` to see it here"
+
+                            // Capped, with the remainder COUNTED rather than dropped: a
+                            // truncated list that does not say it was truncated reads as
+                            // the whole selection.
+                            let shown = projectStatuses |> List.truncate 10
+
+                            let rendered =
+                                shown |> List.map (fun (n, s) -> $"%s{n} (%s{s})") |> String.concat ", "
+
+                            let more = projectCount - shown.Length
+
+                            let suffix = if more > 0 then $", +%d{more} more" else ""
+
+                            if projectCount > 0 then
+                                UI.info $"  Searched: %s{rendered}%s{suffix}"
+
                         // Both no-op outcomes exit 3, matching `confirm`'s established
                         // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
                         // report a pass nothing earned. Exit 0 here would sail through
                         // any `&&` chain and any CI gate.
                         if hasFailed then
-                            UI.fail "Tests failed"
+                            if failedCount > 0 then
+                                UI.fail "Tests failed"
+                            else
+                                // Reached only via `timedOutCount`. Worded so the cause is
+                                // not mistaken for an assertion failure — a killed run
+                                // usually means a wedged host or a too-tight budget.
+                                UI.fail $"%d{timedOutCount} test project(s) were KILLED at their timeout — not a pass"
+
                             1
                         elif parsedCoverage = Understood NoProjectsSelected then
                             UI.fail "No test project ran — nothing was verified (not a pass)"
+                            reportSearch ()
                             UI.info "  Why: no project was selected, so no test binary was invoked."
 
                             UI.info "  Nothing was discovered, so there are no test names to suggest here."
@@ -340,6 +464,7 @@ let renderIpcResult
                              | _ -> false)
                         then
                             UI.fail "No tests matched the filter — nothing was verified (not a pass)"
+                            reportSearch ()
 
                             UI.info
                                 $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
@@ -393,7 +518,10 @@ let renderIpcResult
                                 // above only catches results that MATCHED nothing, not
                                 // ones that deferred or errored.
                                 UI.fail "Nothing was verified — every project failed to execute a test (not a pass)"
-                                UI.info "  Run `fshw status test-prune` for what each project reported."
+                                // The per-project statuses ARE the diagnosis here, so
+                                // they are printed rather than pointed at.
+                                reportSearch ()
+                                UI.info "  Run `fshw status test-prune` for the full output of each."
                                 3
                             | Understood NoProjectsSelected
                             | Understood(AllZeroMatch _) ->

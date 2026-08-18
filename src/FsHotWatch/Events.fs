@@ -227,9 +227,9 @@ type TestResult =
     | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool * elapsed: System.TimeSpan
     /// The project's tests NEVER RAN because its apphost wasn't produced yet (a
     /// build-ordering race: `dotnet run --no-build` fired before the build
-    /// settled). `isPassed` is FALSE — a project that didn't run cannot count
-    /// toward a green verdict — but it is not a real test failure either, so the
-    /// verdict surfaces it as "waiting on build — tests did not run". `reason`
+    /// settled). `verdict` is `NothingVerified` — a project that didn't run cannot
+    /// count toward a green verdict — but it is not a real test failure either, so
+    /// the verdict surfaces it as "waiting on build — tests did not run". `reason`
     /// documents why (e.g. "apphost not produced"). Carries no
     /// elapsed/wasFiltered — nothing executed — so it never lowers a coverage
     /// baseline.
@@ -237,13 +237,14 @@ type TestResult =
     /// The runner STARTED but aborted before producing a usable result: a
     /// non-zero exit with NO parseable report (the test host crashed or was
     /// killed during shutdown — e.g. the Microsoft.Testing.Platform exit-7
-    /// shutdown flake — before flushing its CTRF report). `isPassed` is FALSE
-    /// (nothing was verified) but no test was shown to fail either, so it
-    /// surfaces as "errored — re-run". Carries no elapsed/wasFiltered so it never
-    /// lowers a coverage baseline, and it is UNCACHEABLE by construction
-    /// (`isPassed`=false → the cacheKey gate skips the write), so a transient
-    /// abort is never replayed as a stale verdict. `reason` documents what
-    /// aborted (exit code + "no report written").
+    /// shutdown flake — before flushing its CTRF report). `verdict` is
+    /// `NothingVerified` (nothing was verified) but no test was shown to fail
+    /// either, so it surfaces as "errored — re-run". Carries no
+    /// elapsed/wasFiltered so it never lowers a coverage baseline, and it is
+    /// UNCACHEABLE by construction (the cacheKey gate admits only `Verified`
+    /// and zero-match results), so a transient abort is never replayed as a
+    /// stale verdict. `reason` documents what aborted (exit code + "no report
+    /// written").
     | TestsErrored of reason: string
     /// The runner RAN, discovered the project's tests, and the active filter matched
     /// NONE of them — Microsoft.Testing.Platform's exit 8 / "Zero tests ran". Nothing
@@ -252,11 +253,46 @@ type TestResult =
     /// A case rather than a magic output-string prefix, so folds tell it apart
     /// structurally rather than by string comparison (AUTOMATION-272).
     ///
-    /// `isPassed` is TRUE for it, deliberately: per PROJECT, a filter matching nothing
-    /// is not that project's failure — an impact selection naming no class in the
-    /// Integration project must leave it passing, or every filtered run goes red. The
-    /// RUN-level question ("did anything get verified?") belongs to `RunVerification`.
+    /// Its `verdict` is `NothingVerified`, alongside Deferred and Errored: this project
+    /// proved nothing. That is NOT the same as saying it failed — per PROJECT, a filter
+    /// matching nothing is not that project's fault, and an impact selection naming no
+    /// class in the Integration project must not turn that project red. The two
+    /// statements are different questions with different answers, which is exactly why
+    /// there is no single boolean here that answers both (AUTOMATION-278).
     | TestsNoMatch of output: string * elapsed: System.TimeSpan
+
+/// What a single project's result ESTABLISHES — the closed set of three answers a
+/// fold over `TestResult` can need.
+///
+/// Exists because one boolean could not honestly answer both questions folds ask:
+/// "did this project verify its tests green?" and "is this project a failure to
+/// report?". A zero match answers NO to both, and the predicate that used to serve
+/// both (`TestResult.isPassed`) had to pick one — it said TRUE, so
+/// `Map.forall isPassed` over a run where every project executed nothing
+/// type-checked, was total, and folded to a green. Four aggregators had to remember
+/// to re-derive the missing fact; two forgot, and a fifth was found later
+/// (AUTOMATION-278).
+///
+/// A DU rather than a bool, so the compiler ENUMERATES the decision at every fold
+/// instead of leaving `NothingVerified` to be silently swept into whichever side the
+/// author had in mind. Adding a `TestResult` case breaks `TestResult.verdict`, and
+/// adding a `ProjectVerdict` case breaks every fold — which is the list this ticket
+/// was buying.
+type ProjectVerdict =
+    /// The runner executed AT LEAST ONE test and every one passed. The ONLY case
+    /// that discharges anything: a cacheable green, a symbol's test debt, a green run
+    /// verdict. If you are writing a fold that lets something through, this is the
+    /// case you want and the other two are not it.
+    | Verified
+    /// The runner executed tests and at least one failed, or was killed at its
+    /// timeout. The only case that is this project's OWN fault, and the only one a
+    /// "which projects failed?" report should list.
+    | Refuted
+    /// NOTHING was verified: the filter matched no test (`TestsNoMatch`), the apphost
+    /// was never built (`TestsDeferred`), or the host aborted before writing a report
+    /// (`TestsErrored`). Neither a pass nor a failure — the case whose absence from
+    /// the boolean was the defect.
+    | NothingVerified
 
 module TestResult =
     /// The magic output prefix a zero-match result used to be encoded with, before
@@ -306,30 +342,48 @@ module TestResult =
         | TestsDeferred _
         | TestsErrored _ -> System.TimeSpan.Zero
 
-    let isPassed =
+    /// THE per-project derivation. Every fold over a `TestResult` routes here, so
+    /// there is exactly one place in the tree where these six cases are told apart.
+    ///
+    /// Deliberately exhaustive, with NO wildcard: a wildcard would silently assign the
+    /// next `TestResult` case to whichever arm it fell into, where writing every case
+    /// out makes it a compile error here instead.
+    ///
+    /// There is deliberately no `isPassed` any more. It returned TRUE for
+    /// `TestsNoMatch`, which made "we ran nothing" a sub-case of "we passed" at every
+    /// fold that reached for it (AUTOMATION-278). If you want a bool, `verifiedGreen`
+    /// below is the only one offered, and its name says which of the two questions it
+    /// answers.
+    let verdict =
         function
-        | TestsPassed _ -> true
-        // TRUE, deliberately. `isPassed` answers a PER-PROJECT question, and per
-        // project a filter that matched nothing is not that project's failure: an
-        // impact selection naming no class in the Integration project must leave it
-        // passing, or every filtered run goes red.
-        //
-        // A RUN must not sum these into a green — that question is `RunVerification`,
-        // and it is the aggregators' job to ask it. If you are writing a new fold over
-        // results, `isPassed` is not the predicate you want for a run-level verdict.
-        | TestsNoMatch _ -> true
+        | TestsPassed _ -> Verified
         | TestsFailed _
-        | TestsTimedOut _
-        // A project that never ran (Deferred) or aborted before producing
-        // evidence (Errored) must NEVER count as passed — otherwise a
-        // build-ordering race or a host crash produces a silent false-green
-        // CI verdict.
+        | TestsTimedOut _ -> Refuted
+        // A project that matched nothing (NoMatch), never ran (Deferred), or aborted
+        // before producing evidence (Errored) verified NOTHING. None of the three may
+        // count toward a green — otherwise a mis-aimed filter, a build-ordering race
+        // or a host crash produces a silent false-green CI verdict — and none of the
+        // three is a test failure to report either.
+        | TestsNoMatch _
         | TestsDeferred _
-        | TestsErrored _ -> false
+        | TestsErrored _ -> NothingVerified
+
+    /// Did this project EXECUTE tests and find them all green? The one bool offered
+    /// over `verdict`, and the safe direction by construction: it is TRUE only for
+    /// `Verified`, so a fold that reaches for it can never let a project that ran
+    /// nothing through.
+    ///
+    /// It is NOT the negation of "failed". `not (verifiedGreen r)` is true for a
+    /// zero-match project as well as a red one — which is correct for a gate
+    /// (nothing was proved) and wrong for a failure REPORT (nothing failed). A report
+    /// must match on `Refuted` rather than negate this.
+    let verifiedGreen (r: TestResult) : bool = verdict r = Verified
 
     /// True for the `TestsNoMatch` case: the project's runner ran and its filter
-    /// matched no test, so this project verified nothing. The predicate a RUN-level
-    /// fold wants, and the one `isPassed` deliberately cannot be.
+    /// matched no test. Distinct from the other two `NothingVerified` cases, which
+    /// is why it survives `verdict` as its own question: a zero match is a mis-aimed
+    /// FILTER (diagnosable, and not this project's fault), where Deferred/Errored are
+    /// this project failing to produce a result it owed.
     let isNoMatch =
         function
         | TestsNoMatch _ -> true
@@ -341,23 +395,19 @@ module TestResult =
 
     /// Did this project actually EXECUTE at least one test?
     ///
-    /// The per-project half of "was anything verified". Distinct from `isPassed` in
-    /// both directions: a zero-match project PASSES but executed nothing, and a
-    /// failing project executed plenty.
+    /// The per-project half of "was anything verified". Broader than `verifiedGreen`
+    /// in exactly one direction: a project whose tests ran and FAILED executed
+    /// plenty, and a run that produced a red has still proved something.
     ///
-    /// Deliberately exhaustive, with NO wildcard: a wildcard would silently count the
-    /// next `TestResult` case as having run, where writing every case out makes it a
-    /// compile error here instead.
-    let executedTests =
-        function
-        | TestsPassed _
-        | TestsFailed _
-        | TestsTimedOut _ -> true
+    /// Derived from `verdict` rather than re-matching the cases, so the two can never
+    /// disagree about which results count as having run.
+    let executedTests (r: TestResult) : bool =
+        match verdict r with
+        | Verified
+        | Refuted -> true
         // Nothing ran: no match under the filter, apphost never built, host aborted
         // before producing a verdict.
-        | TestsNoMatch _
-        | TestsDeferred _
-        | TestsErrored _ -> false
+        | NothingVerified -> false
 
     let isTimedOut =
         function
@@ -365,8 +415,9 @@ module TestResult =
         | _ -> false
 
     /// True for the `TestsDeferred` case: the project's tests didn't run
-    /// (apphost not produced). Distinct from `isPassed`/a real failure so the
-    /// verdict can surface an honest "waiting on build" diagnostic.
+    /// (apphost not produced). Distinct from a real failure so the verdict can
+    /// surface an honest "waiting on build" diagnostic rather than claiming a test
+    /// broke.
     let isDeferred =
         function
         | TestsDeferred _ -> true

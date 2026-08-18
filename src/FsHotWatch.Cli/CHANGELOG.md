@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- fix: **a `test-rerun` refusal now NAMES the filter and every project it searched**
+  (AUTOMATION-227/272). It named a project count and pointed at `fshw status
+  test-prune`. The three causes of a zero match — a typo, a renamed class, and a filter
+  fanned out across projects that do not contain it — are indistinguishable without
+  those two facts, and the ambiguity has already sent one investigation after a class
+  that was never misspelled. The daemon now puts the active filter on the wire
+  (`filter`, `null` when there was none); a daemon too old to send it makes the CLI say
+  so rather than print "(none)", which would be a claim about the run rather than about
+  the daemon. The project list is capped at ten and states how many it left out.
+- feat: **`test-rerun` now prints total / succeeded / failed for EVERY project it ran**,
+  on every outcome including the green (AUTOMATION-272). Those counts existed only in
+  `daemon.log`, so the one line that separates a real pass from a vacuous one required
+  going to look. A project that produced no readable report prints "no test report —
+  counts unknown (not zero)" rather than zeros: `total: 0, failed: 0` reads as a suite
+  that ran cleanly, which is the same vacuous green one level down.
+- fix: **a test project KILLED at its timeout is no longer a pass.** The failure check
+  matched only the `failed` per-project status, so a `timed-out` project printed
+  `✓ Tests passed` and exited `0` — while the daemon's own terminal status for the same
+  run was a failure plus a timeout. Now exit `1`, worded so the cause is not mistaken
+  for an assertion failure.
+- fix: **the older-daemon fallback no longer greens a MIXED no-op run.** With no
+  `coverage` field it recognised "no project selected" and "every project matched
+  nothing", and sent everything else to a pass — so a run where one project matched
+  nothing and another deferred printed its own "1 matched nothing, 1 did not run"
+  summary directly above `✓ Tests passed`. It now derives `nothing-executed` from the
+  per-project statuses it already had in hand, and an UNRECOGNISED status is not counted
+  as having executed (fail closed on a daemon newer than the CLI).
+
 ## 0.14.0-alpha.17 - 2026-08-17
 
 - fix: **a run that tested nothing no longer renders as a `✓`** (AUTOMATION-198).

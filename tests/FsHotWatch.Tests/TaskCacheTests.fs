@@ -879,7 +879,7 @@ let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () 
         test <@ evt.Value.Verification = Ran RunScope.Partial @>
         let p1 = evt.Value.Results.["p1"]
         test <@ TestResult.wasFiltered p1 @>
-        test <@ TestResult.isPassed p1 @>)
+        test <@ TestResult.verifiedGreen p1 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
@@ -1006,7 +1006,7 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
         test <@ evt.IsSome @>
         let p1 = evt.Value.Results.["p1"]
         test <@ TestResult.isDeferred p1 @>
-        test <@ not (TestResult.isPassed p1) @>
+        test <@ not (TestResult.verifiedGreen p1) @>
         test <@ (TestResult.output p1).Contains("apphost not produced") @>)
 
 [<Fact(Timeout = 15000)>]
@@ -1045,7 +1045,7 @@ let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
         test <@ evt.IsSome @>
         let p1 = evt.Value.Results.["p1"]
         test <@ TestResult.isErrored p1 @>
-        test <@ not (TestResult.isPassed p1) @>
+        test <@ not (TestResult.verifiedGreen p1) @>
         test <@ (TestResult.output p1).Contains("no parseable report") @>)
 
 [<Fact(Timeout = 15000)>]

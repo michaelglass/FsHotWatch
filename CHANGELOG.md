@@ -18,7 +18,7 @@ All notable changes to FsHotWatch packages are documented here.
 > work. If a stale *build output* is the cause, `dotnet build` is the fix, and a
 > timestamp-inverted copy needs `dotnet build --no-incremental`.
 >
-> **Exit codes: four runs that used to be green can now be red.**
+> **Exit codes: six runs that used to be green can now be red.**
 >
 > 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
 >    (`gate` was introduced unreleased and never appeared in a published package, so
@@ -36,6 +36,15 @@ All notable changes to FsHotWatch packages are documented here.
 >    could not READ what the tests covered (the `test-scope` command threw, the IPC call
 >    faulted, the reply was unparseable). A repo with no test projects configured is
 >    unaffected and still exits `0`. See below.
+> 5. **`fshw test-rerun` can now exit `1` where it previously exited `0`** for a test
+>    project KILLED at its timeout. The CLI's failure check matched only the `failed`
+>    per-project status, so a `timed-out` project printed `✓ Tests passed` and exited
+>    `0` — while the daemon's own terminal status for the very same run was a failure
+>    plus a timeout. Only the CLI was wrong.
+> 6. **`fshw test-rerun` can now exit `3` where it previously exited `0`** when talking
+>    to an OLDER daemon that sends no `coverage` field and the run was a MIXED no-op —
+>    e.g. one project matched nothing and another deferred. Not all-zero-match, so the
+>    existing guard missed it, and nothing executed.
 >
 > **One machine-readable surface changed shape without changing an exit code:** a run
 > that selected zero test projects now records `warn` rather than `ok` in
@@ -53,6 +62,55 @@ All notable changes to FsHotWatch packages are documented here.
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+### core/test-prune: "ran zero tests" stops being a string on a passing result
+
+Zero-test-ness was not a state in the type system. A filtered run whose filter matched
+nothing was stored as a PASS carrying a magic output prefix, and the fact was recoverable
+only by re-deriving it with a string comparison. `TestResult.isPassed` answered TRUE for
+it — deliberately, because per PROJECT a filter that names no class in the Integration
+project is not that project's failure. But that made "we verified nothing" a sub-case of
+"we passed" at every fold that reached for the predicate, and each aggregator had to
+remember, on its own, to ask a second question. Three did. Two did not, and one of those
+could mint a **cacheable** green that replayed on a later build.
+
+Naming the two remaining holes fixed those two. It did not fix the shape, and the shape
+produced another: the per-symbol green-commit discharged a changed symbol's test debt
+whenever every project covering it "passed" — including a project whose impact-derived
+class filter had matched zero tests. The symbol left the pending-verification queue
+having been verified by a run that executed nothing. The repo's own analyzer rule could
+not see it: the predicate sits behind a `match` inside a lookup lambda, and the rule's
+allow-list had that exact shape written down as sanctioned.
+
+`TestResult.isPassed` is now **deleted** (see [`src/FsHotWatch/CHANGELOG.md`](src/FsHotWatch/CHANGELOG.md),
+**BREAKING**). In its place `TestResult.verdict` returns a three-case `ProjectVerdict` —
+`Verified`, `Refuted`, `NothingVerified` — so a fold cannot sweep "nothing ran" into
+either side without writing it down, and the one bool that ships (`verifiedGreen`) is
+TRUE for `Verified` alone. Every fold in the tree became a compile error and was decided
+in place, with the reason at the call site.
+
+The analyzer rule survives, retargeted and with its own premise struck: it used to open
+by asserting that no signature could distinguish the two questions while one predicate
+answered both. That was false, and believing it is why the fix was a detector for three
+releases.
+
+Also in this area, both found by attacking the fix rather than reading it:
+
+- A test project **killed at its timeout** exited `0` from `fshw test-rerun` (see the
+  exit-code callout above).
+- The older-daemon fallback greened a **mixed no-op** run — one project matched nothing,
+  another never ran — because it only recognised the all-zero-match shape.
+
+`test-rerun` also now prints **total / succeeded / failed for every project it ran**, on
+every outcome including the green. Those counts existed only in `daemon.log`, so the one
+line that separates a real pass from a vacuous one required going to look for it. A
+project that produced no readable report says so rather than printing zeros.
+
+And a `test-rerun` refusal now **names the filter it used and every project it searched**,
+rather than a project count and a pointer at `fshw status test-prune`. The three causes of
+a zero match — a typo, a renamed class, and a filter aimed at projects that do not contain
+it — are indistinguishable without those two facts, and telling them apart from the
+message is the whole point of the message.
 
 ### build: a cache hit may not assert freshness it has never confirmed
 
