@@ -650,21 +650,30 @@ module AgentHints =
     let forVerdict (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
         // NEVER print a path for a file that was not written: a hint that sends you to an
         // empty directory teaches distrust of the tool.
-        let suiteLines =
+        //
+        // Two DIFFERENT kinds of line have always hidden behind one name here, and they
+        // belong in different halves of the block: reports that exist are PATHS (machine
+        // fodder, filed under the verdict pointer), while "no tests ran" is a FACT about
+        // what this run verified — the single most actionable line the output has when it
+        // is true, and therefore something a human must meet before any pointer.
+        let suitePathLines, noSuiteFactLines =
             match v.Suites, v.RunId with
             | [], None ->
+                [],
                 "    suites   NO TEST RUN — nothing was verified by tests in this check (there is no run directory)"
                 :: priorEvidenceLines prior v
             | [], Some id ->
                 let dir = id.ToString("N")
 
+                [],
                 $"    suites   NONE — the run executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)"
                 :: priorEvidenceLines prior v
             | suites, _ ->
                 suites
                 |> List.mapi (fun i s ->
                     let label = if i = 0 then "suites  " else "        "
-                    $"    %s{label} %s{s.Ctrf}")
+                    $"    %s{label} %s{s.Ctrf}"),
+                []
 
         // A run can be RED with every test project at `failed: 0` — the failure living in
         // `analyzers`, `format` or `build` instead. Printing only suites then shows a wall
@@ -678,7 +687,20 @@ module AgentHints =
                 failing
                 |> List.mapi (fun i p ->
                     let label = if i = 0 then "FAILING " else "        "
-                    let summary = p.Summary |> Option.defaultValue "(no summary)"
+
+                    // NEVER shortened. The 80-column cap on the `✗` status line is a real
+                    // constraint (that surface is erased and redrawn by line count, so a
+                    // wrapping line smears the block) — but it cost a reader the cause
+                    // twice: the line ended `… (+20 more)` and the omitted part was the
+                    // whole answer. This surface has no width budget, so a capped
+                    // one-liner is only ever allowed to coexist with an uncapped copy,
+                    // and this is that copy. Newlines collapse; nothing else is dropped.
+                    let summary =
+                        p.Summary
+                        |> Option.map (fun s -> s.Replace('\r', ' ').Replace('\n', ' ').Trim())
+                        |> Option.filter (fun s -> s <> "")
+                        |> Option.defaultValue "(the plugin reported no reason — see the daemon log)"
+
                     $"    %s{label} %s{p.Name} — %s{Verdict.PluginOutcome.token p.Outcome}: %s{summary}")
 
         // A red verdict that names nothing is worse than a red verdict: it looks like
@@ -761,13 +783,36 @@ module AgentHints =
             | Verdict.Check, FullSuite _
             | Verdict.Confirm, _ -> []
 
-        [ "  AGENTS: don't parse this output. Machine-readable results:"
-          $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against the \
-             tree on disk; exit 4 = stale, do not reuse)" ]
-        @ failingPluginLines
-        @ ledgerCauseLines
-        @ unexplainedRed
-        @ suiteLines
+        // ORDER IS THE FIX (AUTOMATION-198 follow-up). Every one of these lines already
+        // existed; they were printed UNDER a header reading "AGENTS: don't parse this
+        // output", which was meant as "don't screen-scrape, read the JSON" and landed as
+        // "this section is not for you". A reader who obeyed it skipped the only place
+        // the failures are enumerated and misdiagnosed the same failing run twice —
+        // first as "check is flaky", then as "the selector is blind" — while the exact
+        // file, the exact numbers and the next command sat on screen.
+        //
+        // So the causes come FIRST, under a header that says to read them, and the
+        // machine-readable pointer follows. The pointer is not weakened: `verdict.json`
+        // is still the authority and still named, with the same words about staleness.
+        let causeLines = failingPluginLines @ ledgerCauseLines @ unexplainedRed
+
+        let causeHeader =
+            match causeLines with
+            | [] -> []
+            | _ ->
+                // Deliberately NOT "why this run is RED": `failingPluginLines` is driven by
+                // `PluginOutcome.isFailing`, which is a fact about a plugin, not about the
+                // exit code. A header that claimed red on a run that exited 0 would be the
+                // same class of lie this block exists to stop.
+                [ "  WHAT FAILED — the causes in full; nothing below this is needed to act on them:" ]
+
+        causeHeader
+        @ causeLines
+        @ noSuiteFactLines
+        @ [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
+            $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against \
+               the tree on disk; exit 4 = stale, do not reuse)" ]
+        @ suitePathLines
         @ scopeAdvice
 
     /// The steering block for `fshw status`, which triggers no run and therefore
@@ -786,7 +831,7 @@ module AgentHints =
                     let label = if i = 0 then "suites  " else "        "
                     $"    %s{label} %s{p}")
 
-        [ "  AGENTS: don't parse this output. Machine-readable state:"
+        [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
           $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` says whether it still \
              applies; exit 4 = stale)" ]
         @ suiteLines

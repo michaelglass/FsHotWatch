@@ -735,7 +735,8 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
     let lines = hintsFor v
     let text = String.concat "\n" lines
 
-    test <@ text.Contains "AGENTS: don't parse this output" @>
+    test <@ text.Contains "AGENTS: READ the above" @>
+    test <@ text.Contains "SCREEN-SCRAPE" @>
     test <@ text.Contains ".fshw/verdict.json" @>
     test <@ text.Contains "treeHash" @>
     // The ACTUAL paths for THIS run, not a generic pointer — a hint that makes you go and
@@ -2955,3 +2956,137 @@ let ``AUTOMATION-201: the verdict file's reason carries the stale-output remedy`
         test <@ reason.Contains deferral @>
         test <@ reason.Contains "dotnet build" @>
     | other -> failwith $"a stale-output defer must stay incomplete, never red/green, got %A{other}"
+
+// ---------------------------------------------------------------------------
+// The failure summary must not sit under a header that reads as "skip me".
+//
+// Every line these tests are about was ALREADY being printed. The block was headed
+// `AGENTS: don't parse this output.` — meant as "don't screen-scrape, read the JSON",
+// read as "this section is not for you". A reader obeyed it, skipped the only place
+// the failures are enumerated, and misdiagnosed one failing run twice (first "check is
+// flaky", then "the selector is blind") while the exact file, the exact numbers and
+// the next command were on screen. Ordering and wording are the whole fix; the
+// machine-readable pointer is untouched and still authoritative.
+// ---------------------------------------------------------------------------
+
+/// A red `check` in the shape that caused the misdiagnosis: two failing plugins, a
+/// ledger cause naming the real file and numbers, and no test run at all.
+let private redCheckWithCauses (pluginSummary: string) =
+    { greenVerdict "deadbeef" 10 with
+        Command = Verdict.Check
+        Scope = NoTestsRun
+        Outcome = Verdict.Red
+        ExitCode = 1
+        Suites = []
+        Plugins =
+            [ { Name = "coverage-count-gate"
+                Outcome = Verdict.PluginOutcome.Fail
+                ElapsedMs = Some 12L
+                Summary = Some pluginSummary } ]
+        RedCauses = [ fcsCause "coverage count gate: FAILED — 1 file(s) below floor" ] }
+
+[<Fact>]
+let ``the causes come BEFORE the AGENTS pointer, never underneath it`` () =
+    let joined =
+        String.Join("\n", hintsFor (redCheckWithCauses "coverage-count-gate: failed (cached)"))
+
+    let causes = joined.IndexOf("FAILING", StringComparison.Ordinal)
+    let reddened = joined.IndexOf("REDDENED", StringComparison.Ordinal)
+    let noTests = joined.IndexOf("NO TEST RUN", StringComparison.Ordinal)
+    let agents = joined.IndexOf("AGENTS:", StringComparison.Ordinal)
+
+    test <@ causes >= 0 && reddened >= 0 && noTests >= 0 && agents >= 0 @>
+    test <@ causes < agents @>
+    test <@ reddened < agents @>
+    // "no tests ran" is a FACT about what was verified, not a path — so it belongs
+    // above the pointer too. The CTRF paths, which are machine fodder, do not.
+    test <@ noTests < agents @>
+
+[<Fact>]
+let ``the causes are introduced by a header that tells the reader to READ them`` () =
+    let joined =
+        String.Join("\n", hintsFor (redCheckWithCauses "coverage-count-gate: failed (cached)"))
+
+    test <@ joined.Contains "WHAT FAILED" @>
+    // The wording that caused the skip must be gone from every surface, not softened.
+    test <@ not (joined.Contains "don't parse this output") @>
+    test <@ joined.Contains "READ the above" @>
+    test <@ joined.Contains "SCREEN-SCRAPE" @>
+    // The machine-readable pointer is LOAD-BEARING and stays, with its staleness rule.
+    test <@ joined.Contains ".fshw/verdict.json" @>
+    test <@ joined.Contains "exit 4 = stale" @>
+
+/// POSITIVE CONTROL for the header. A run with nothing failing must not be told what
+/// failed — a header printed unconditionally would satisfy the test above and lie to
+/// every green reader.
+[<Fact>]
+let ``a run with no causes prints no WHAT FAILED header`` () =
+    let joined =
+        String.Join(
+            "\n",
+            hintsFor
+                { greenVerdict "deadbeef" 10 with
+                    Suites = allSuitesGreen }
+        )
+
+    test <@ not (joined.Contains "WHAT FAILED") @>
+    test <@ joined.Contains "AGENTS: READ the above" @>
+
+[<Fact>]
+let ``a failing plugin's cause is printed IN FULL — the 80-column cap belongs to the status line, not here`` () =
+    // The line that cost the diagnosis ended `… (+20 more)` with the answer inside the
+    // omitted part. `truncateTo80` is right for the redrawn fixed-width surface; it may
+    // never be the ONLY copy.
+    let long =
+        "0 passed, 0 failed in 0 projects (selected: no) — "
+        + String.Join(", ", [ for i in 1..20 -> $"Intelligence.Tests.Project%d{i}" ])
+
+    test <@ long.Length > 200 @>
+
+    let joined = String.Join("\n", hintsFor (redCheckWithCauses long))
+
+    test <@ joined.Contains long @>
+    test <@ joined.Contains "Intelligence.Tests.Project20" @>
+    // The marker `truncateTo80` would have left behind.
+    test <@ not (joined.Contains " more)") @>
+
+[<Fact>]
+let ``a failing plugin whose run set no summary still names its reason — never "(no summary)"`` () =
+    // The upstream half of the same defect. `pluginVerdicts` took ONLY `LastRun.Summary`,
+    // so a plugin that failed with an error and no summary reached the verdict as
+    // `Summary = None` and printed `(no summary)` — while the error text existed and was
+    // visible only on the 80-column `✗` line, truncated.
+    let reason =
+        "the test host exited with code 134 before writing a report; last output line: "
+        + String.Join(" | ", [ for i in 1..15 -> $"frame%d{i}" ])
+
+    let failed =
+        status (StatusView.Failed(reason, DateTime.UtcNow)) (TimeSpan.FromSeconds 3.0) (Events.FailedRun reason) None
+
+    match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", failed ]) with
+    | [ p ] ->
+        test <@ p.Outcome = Verdict.PluginOutcome.Fail @>
+        test <@ p.Summary = Some reason @>
+    | other -> failwith $"expected one plugin verdict, got %A{other}"
+
+/// POSITIVE CONTROL for the fallback: a run that COMPLETED with no summary has no
+/// reason to invent one, and must still report `None`.
+[<Fact>]
+let ``a completed run with no summary is still summary-less — the fallback is for FAILURES`` () =
+    let completed =
+        status (StatusView.Completed DateTime.UtcNow) (TimeSpan.FromSeconds 3.0) Events.CompletedRun None
+
+    match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "lint", completed ]) with
+    | [ p ] -> test <@ p.Summary = None @>
+    | other -> failwith $"expected one plugin verdict, got %A{other}"
+
+[<Fact>]
+let ``a timed-out plugin's reason reaches the verdict too`` () =
+    let reason = "no output for 900s while running Intelligence.Tests.Integration"
+
+    let timedOut =
+        status (StatusView.Failed(reason, DateTime.UtcNow)) (TimeSpan.FromSeconds 900.0) (Events.TimedOut reason) None
+
+    match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", timedOut ]) with
+    | [ p ] -> test <@ p.Summary = Some reason @>
+    | other -> failwith $"expected one plugin verdict, got %A{other}"
