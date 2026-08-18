@@ -92,18 +92,23 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             linkMapCache <- Some m
             m
 
+    /// One `{param}` placeholder in a route pattern. Bound once because both readers of a
+    /// route pattern strip placeholders — `carriesOnlySeparators` to see what literal text
+    /// is left, `urlPatternToRegex` to swap in a match-any segment.
+    let routeParamPattern = Regex(@"\{[^}]+\}")
+
     /// True when a route pattern carries no literal path text of its own: everything left
     /// after removing `{param}` placeholders is separators. The root route `/` and a
     /// param-only route like `/{lang}` qualify; `/users` does not.
-    let carriesOnlySeparators (urlPattern: string) =
-        Regex.Replace(urlPattern, @"\{[^}]+\}", "") |> Seq.forall (fun c -> c = '/')
+    let carriesOnlySeparators (urlPattern: string) : bool =
+        routeParamPattern.Replace(urlPattern, "") |> String.forall (fun c -> c = '/')
 
     let urlPatternToRegex (urlPattern: string) : Regex =
         // Replace {param} placeholders with a sentinel before escaping,
         // so we don't depend on Regex.Escape's treatment of braces
         // (which changed in .NET 9+).
         let placeholder = "__PARAM__"
-        let withPlaceholders = Regex.Replace(urlPattern, @"\{[^}]+\}", placeholder)
+        let withPlaceholders = routeParamPattern.Replace(urlPattern, placeholder)
         let escaped = Regex.Escape(withPlaceholders)
         let pattern = escaped.Replace(placeholder, "[^/]+")
 

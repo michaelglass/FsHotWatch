@@ -233,15 +233,13 @@ let private qualifyThroughDeclaringEntity (mfv: FSharpMemberOrFunctionOrValue) (
     if reported.Contains '.' then
         reported
     else
-        match tryName (fun () -> mfv.LogicalName) with
-        | None -> reported
-        | Some logical ->
-            match mfv.DeclaringEntity with
-            | Some entity ->
-                match tryName (fun () -> entity.FullName) with
-                | Some owner -> owner + "." + logical
-                | None -> reported
-            | None -> reported
+        let declaringName =
+            mfv.DeclaringEntity
+            |> Option.bind (fun entity -> tryName (fun () -> entity.FullName))
+
+        match declaringName, tryName (fun () -> mfv.LogicalName) with
+        | Some owner, Some logical -> owner + "." + logical
+        | _ -> reported
 
 let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
     try
@@ -1004,8 +1002,6 @@ let private extractResults
             let classifiedTargetKinds =
                 System.Collections.Generic.Dictionary<string, SymbolKind>()
 
-            let recordTargetKind (kind: SymbolKind) (name: string) = classifiedTargetKinds[name] <- kind
-
             let dependencies =
                 allUses
                 |> List.collect (fun u ->
@@ -1032,7 +1028,7 @@ let private extractResults
                         match classifySymbol u.Symbol with
                         | None -> fieldRecordEdge
                         | Some(usedKind, usedFullName) ->
-                            recordTargetKind usedKind usedFullName
+                            classifiedTargetKinds[usedFullName] <- usedKind
 
                             match findEnclosing u.Range with
                             | None ->
