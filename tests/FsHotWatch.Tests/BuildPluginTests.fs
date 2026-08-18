@@ -1551,3 +1551,217 @@ let ``a warm cache does not replay a pass over stale outputs — the build recov
         // …and the verdict is a fresh one, not a replayed pass.
         let recovered = terminalSummary host
         test <@ not (recovered.Contains "(cached)") @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-245 (QA rework) — the gate has to cover every event that READS the
+// cache, and it has to say so when it examined nothing.
+//
+// Two holes the landed work left, both of the same shape: a guard that is present,
+// correct, and simply not consulted.
+//
+//   * It matched `FileChanged` alone. A plugin configured with `dependsOn` BUFFERS
+//     file changes until its dependencies report, and the build is started by the
+//     `CommandCompleted` that satisfies the last one — an event that fell through to
+//     an ungated key. For exactly those repos, both `force-rebuild` (AUTOMATION-224)
+//     and the artifact re-verification were bypassed on the only lookup that mattered.
+//
+//   * `verifyArtifactsFresh` returns the projects it found stale, and "nothing is
+//     stale" is the same value as "nothing could be examined". The path is derived
+//     from each project's OWN `<TargetFramework>`, so a repo that centralises that in
+//     a `Directory.Build.props` verifies not one artifact — silently, on both the
+//     post-build path and at replay.
+// ---------------------------------------------------------------------------
+
+/// The event a `dependsOn` plugin actually starts its build from.
+let private depSatisfied (name: string) =
+    CommandCompleted
+        { Name = name
+          Outcome = CommandSucceeded "ok" }
+
+[<Fact(Timeout = 15000)>]
+let ``a dependency-gated lookup re-verifies the artifacts too, not just a FileChanged`` () =
+    withOneProjectGraph "replay-dep-stale" (fun (graph, srcPath, dllPath) ->
+        // `dependsOn` is what moves the build-starting event from `FileChanged` to
+        // `CommandCompleted` — the configuration under which the gate was blind.
+        let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
+        let cacheKeyFn = handler.CacheKey.Value
+        let depEvt = depSatisfied "fmt"
+
+        // POSITIVE CONTROL: with the outputs fresh this very event IS served from the
+        // cache, so the absence assertion below cannot be satisfied by a gate that had
+        // simply gone blind and suppressed every key.
+        let served = cacheKeyFn depEvt
+        test <@ served.IsSome @>
+
+        // The wedge, at the event that starts the build: source touched to a newer
+        // mtime with its bytes unchanged, so the merkle is unmoved.
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
+
+        let wedged = cacheKeyFn depEvt
+        test <@ wedged.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild reaches a dependency-gated lookup`` () =
+    // AUTOMATION-224's escape hatch had the same hole: `confirm` sets the flag, and in a
+    // `dependsOn` repo the lookup that decides whether a build runs never read it.
+    withOneProjectGraph "replay-dep-force" (fun (graph, _, _) ->
+        let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
+        let cacheKeyFn = handler.CacheKey.Value
+        let depEvt = depSatisfied "fmt"
+
+        let before = cacheKeyFn depEvt
+        test <@ before.IsSome @>
+
+        handler.Commands
+        |> List.find (fun (name, _) -> name = "force-rebuild")
+        |> snd
+        |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
+        |> ignore
+
+        let after = cacheKeyFn depEvt
+        test <@ after.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a dependency-gated build still stores its result`` () =
+    // The asymmetry has to survive the wider gate: only READS are suppressed. If the
+    // `Custom BuildDone` store were caught by it, a `dependsOn` repo would rebuild from
+    // scratch forever — a correctness fix paying for itself every single run.
+    withOneProjectGraph "replay-dep-store" (fun (graph, srcPath, dllPath) ->
+        let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
+        let cacheKeyFn = handler.CacheKey.Value
+
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
+
+        let lookupKey = cacheKeyFn (depSatisfied "fmt")
+        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+        test <@ lookupKey.IsNone @>
+        test <@ storeKey.IsSome @>)
+
+// --- THE FLOOR: what the freshness pass could not examine ---
+
+/// A project file with NO `<TargetFramework>` — the shape every project in a repo that
+/// centralises the property in a `Directory.Build.props` has on disk.
+let private writeTfmlessFsproj (projPath: string) (compiles: string list) =
+    let items =
+        compiles
+        |> List.map (fun c -> $"    <Compile Include=\"%s{c}\" />")
+        |> String.concat "\n"
+
+    System.IO.File.WriteAllText(projPath, "<Project>\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>")
+
+[<Fact(Timeout = 15000)>]
+let ``a fully examined graph has no coverage gap to report`` () =
+    // POSITIVE CONTROL for every assertion below: this is the tree the gate is supposed
+    // to be silent about, and a floor that reported on it would be noise, not a floor.
+    withOneProjectGraph "coverage-clean" (fun (graph, _, _) -> test <@ (artifactCoverageGap graph).IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a missing DLL is a finding, not a coverage gap`` () =
+    // The distinction the floor turns on: a derivable path whose DLL is absent WAS
+    // examined — `DllMissing` is the finding. Reporting it as unexamined would drown the
+    // one case that means the guard is off.
+    withOneProjectGraph "coverage-missing-dll" (fun (graph, _, dllPath) ->
+        System.IO.File.Delete dllPath
+        test <@ (artifactCoverageGap graph).IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a project with no TargetFramework of its own is named as unverified`` () =
+    // Nothing about this project is checked, on either path, and the stale list it
+    // contributes to is empty — which is indistinguishable from a clean tree.
+    withTempDir "coverage-no-tfm" (fun tmpDir ->
+        let projDir = System.IO.Path.Combine(tmpDir, "Central")
+        System.IO.Directory.CreateDirectory(projDir) |> ignore
+        let projPath = System.IO.Path.Combine(projDir, "Central.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+        writeTfmlessFsproj projPath [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(projPath) |> ignore
+
+        let gap = artifactCoverageGap graph
+        test <@ gap.IsSome @>
+        let text = gap.Value
+        test <@ text.Contains "Central" @>
+        test <@ text.Contains "examined 0 of 1" @>
+        test <@ text.Contains "TargetFramework" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an output with no source to compare against is named as half-checked`` () =
+    // Its existence was verified; its currency never was. Silently counting it as fresh
+    // is how a mtime guard becomes a file-exists guard without anyone deciding to.
+    withOneProjectGraph "coverage-no-source" (fun (graph, srcPath, _) ->
+        // POSITIVE CONTROL first: with the source present this graph is clean.
+        test <@ (artifactCoverageGap graph).IsNone @>
+
+        System.IO.File.Delete srcPath
+
+        let gap = artifactCoverageGap graph
+        test <@ gap.IsSome @>
+        let text = gap.Value
+        test <@ text.Contains "MyLib" @>
+        test <@ text.Contains "only its existence was checked" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a tree the gate cannot examine is reported, not refused`` () =
+    // The floor REPORTS. Bypassing the cache on every lookup whose artifacts could not be
+    // examined would wedge every repo that centralises its TargetFramework into a
+    // rebuild-every-time loop — trading one wedge class for the regression this ticket's
+    // own acceptance forbids. Pinned as a decision so a later "make it stricter" pass has
+    // to argue with a test rather than discover the cost in production.
+    withTempDir "coverage-serves" (fun tmpDir ->
+        let projDir = System.IO.Path.Combine(tmpDir, "Central")
+        System.IO.Directory.CreateDirectory(projDir) |> ignore
+        let projPath = System.IO.Path.Combine(projDir, "Central.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+        writeTfmlessFsproj projPath [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(projPath) |> ignore
+
+        // This tree really is unexaminable — otherwise the assertion below would be
+        // agreeing with an ordinary healthy graph and proving nothing.
+        test <@ (artifactCoverageGap graph).IsSome @>
+
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        let served = handler.CacheKey.Value(FileChanged(SourceChanged [ srcPath ]))
+        test <@ served.IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a graph the daemon's own registration path produced is reported as unexamined`` () =
+    // The registrar, not the repo. `GetCanonicalDllPath` needs a TargetFramework, and the
+    // ONLY thing that puts one in the graph is `RegisterFromFsproj`'s XML parse — which no
+    // production code calls. The daemon registers every project through `RegisterProject`
+    // (Daemon.fs, from Ionide's MSBuild evaluation), which records source files and
+    // references and no framework, so a live daemon's graph answers `None` for every
+    // project and this whole freshness apparatus examines nothing at all.
+    //
+    // The floor cannot fix that — locating a real build output is a change to what the
+    // graph is TOLD, not to what it is asked — but it is the difference between a guard
+    // that is off and a guard that is off SILENTLY.
+    withTempDir "coverage-registerproject" (fun tmpDir ->
+        let projPath = System.IO.Path.Combine(tmpDir, "Daemonish.fsproj")
+        let srcPath = System.IO.Path.Combine(tmpDir, "Lib.fs")
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+
+        let graph = ProjectGraph()
+
+        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
+
+        let gap = artifactCoverageGap graph
+        test <@ gap.IsSome @>
+        test <@ gap.Value.Contains "examined 0 of 1" @>
+        test <@ gap.Value.Contains "Daemonish" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an empty project graph is reported, not read as a clean tree`` () =
+    // The quietest degradation of the lot: with no projects the stale list is empty AND
+    // the merkle hashes an empty input, so every such repo shares one constant cache key
+    // while looking perfectly healthy. Found by making exactly this mistake in the path
+    // filter of this ticket's own measurement — the count was the only thing that showed.
+    let gap = artifactCoverageGap (ProjectGraph())
+    test <@ gap.IsSome @>
+    test <@ gap.Value.Contains "no projects at all" @>
