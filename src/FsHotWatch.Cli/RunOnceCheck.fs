@@ -337,16 +337,21 @@ let runOnceAndVerdict
         // it, from the same `CheckOutcome` the exit code below comes from, so
         // `fshw verdict` after a CI run has a machine-readable answer that matches the
         // exit code.
-        IpcOutput.publishVerdict
-            repoRoot
-            config.Exclude
-            checkMode
-            noWarnFail
-            finalRun.Value
-            impactScoped
-            finalStatuses.Value
-            (redCauses daemon noWarnFail pluginName)
-            outcome
+        // AUTOMATION-167. Take the code `publishVerdict` WROTE. The comment above
+        // claimed this path's exit code came "from the same CheckOutcome" as the file,
+        // and it did not: `publishVerdict` downgrades to `incomplete` when the tree
+        // moves during the check, and the caller recomputed 0 from the original.
+        let publishedExitCode =
+            IpcOutput.publishVerdict
+                repoRoot
+                config.Exclude
+                checkMode
+                noWarnFail
+                finalRun.Value
+                impactScoped
+                finalStatuses.Value
+                (redCauses daemon noWarnFail pluginName)
+                outcome
 
         // `Verdict.CheckProse.explainOutcome`, the very call the daemon path makes:
         // `--run-once` differs in HOW the check ran, never in what it means. `None` for
@@ -356,4 +361,4 @@ let runOnceAndVerdict
         | Some explanation -> UI.fail explanation
         | None -> ()
 
-        CheckVerdict.exitCode outcome
+        publishedExitCode

@@ -1294,6 +1294,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
     withTempDir "verdict-confirm-escalation" (fun root ->
         let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
             IpcOutput.publishVerdict root [] mode false (TestRunReport.ofScopeOnly scope) None Map.empty [] outcome
+            |> ignore
 
             match Verdict.read root with
             | Verdict.Reading.Found v -> v
@@ -1389,10 +1390,43 @@ let private publishConfirm
         Map.empty
         []
         outcome
+    |> ignore
 
     match Verdict.read root with
     | Verdict.Reading.Found v -> v
     | other -> failwithf "publishVerdict must leave a READABLE verdict, got %A" other
+
+// =============================================================================
+// AUTOMATION-167 — the file and the exit code are ONE decision
+// =============================================================================
+
+[<Fact>]
+let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute a second one`` () =
+    // The defect: `publishVerdict` downgrades to `incomplete`/2 when the tree moves
+    // during a check, and the caller then re-derived the code from the ORIGINAL
+    // outcome and returned 0. The file said "no verdict"; the shell said "pass"; CI
+    // reads the shell. Returning the code removes the second computation entirely.
+    withTempDir "verdict-167-returns-code" (fun root ->
+        let publishedFor (outcome: CheckVerdict.CheckOutcome) =
+            IpcOutput.publishVerdict
+                root
+                []
+                CheckVerdict.InnerLoop
+                false
+                (TestRunReport.ofScopeOnly (FullSuite 6))
+                None
+                Map.empty
+                []
+                outcome
+
+        // Asserted against the FILE rather than a duplicate of the production
+        // expression, so changing one without the other fails here.
+        for outcome in [ CheckVerdict.CheckOutcome.Clean; CheckVerdict.CheckOutcome.Incomplete -1 ] do
+            let returned = publishedFor outcome
+
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> test <@ returned = v.ExitCode @>
+            | other -> failwithf "publishVerdict must leave a READABLE verdict, got %A" other)
 
 [<Fact>]
 let ``an escalated confirm records what the impact-scoped run concluded, and that they AGREED`` () =
