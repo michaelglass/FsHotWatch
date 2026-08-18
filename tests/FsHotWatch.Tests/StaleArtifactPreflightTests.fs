@@ -421,3 +421,113 @@ let ``AUTOMATION-201: unreadable ledger entries are skipped, readable neighbours
         // The one readable record survives; the three unreadable ones are dropped.
         let loaded = StaleArtifactPreflight.loadLedger tmpDir
         test <@ loaded |> List.map (fun r -> r.File) = [ "/good.dll" ] @>)
+
+// -----------------------------------------------------------------------------
+// The marker: how a downstream surface tells this module's refusal apart from the
+// OTHER "waiting on build" (the build-ordering race). They need opposite remedies.
+// -----------------------------------------------------------------------------
+
+/// Every shape `Reason` can build must be recognisable, or a surface keyed off the
+/// marker silently falls back to the build-ordering words — which for this cause are
+/// not merely vague, they are false.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: every refusal shape this module builds is recognised as a stale-output deferral`` () =
+    let messages = StaleArtifactPreflight.refusalMessages "/repo"
+    // The count is asserted so that adding a `Reason` constructor without adding it to
+    // `refusalMessages` cannot leave this test passing over a shrunken list.
+    test <@ List.length messages = 4 @>
+
+    for m in messages do
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral m @>
+        // And each still says what to do — the marker replaced prose, it did not
+        // displace the remedy.
+        test <@ m.Contains "dotnet build" || m.Contains "root-cause" @>
+
+/// NEGATIVE CONTROL. Without this, `isStaleOutputDeferral` could answer `true` to
+/// everything and every assertion above would still pass — while the build-ordering
+/// defer, which DOES settle on a re-run, got told it never would.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: a build-ordering defer is NOT a stale-output deferral`` () =
+    test
+        <@
+            not (
+                StaleArtifactPreflight.isStaleOutputDeferral
+                    "P2: waiting on build — apphost not produced; tests did not run"
+            )
+        @>
+
+    test <@ not (StaleArtifactPreflight.isStaleOutputDeferral "Tests failed in P2") @>
+    test <@ not (StaleArtifactPreflight.isStaleOutputDeferral "") @>
+    test <@ not (StaleArtifactPreflight.isStaleOutputDeferral null) @>
+
+/// `refusalMessages` is a hand-written list, so on its own it proves only that the list
+/// agrees with itself. This drives the REAL preflight into three of its refusal arms and
+/// asserts the marker on what it actually emitted.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: the refusals a real preflight emits carry the marker`` () =
+    withTempDir "a201-marker-real" (fun tmpDir ->
+        // (1) unrepairable — a stale compile.
+        let compileStale =
+            let s = synth (Path.Combine(tmpDir, "compile"))
+            File.SetLastWriteTimeUtc(s.TestsSrc, s.BuiltAt.AddMinutes 30.0)
+            runPreflight s
+
+        // (2) budget exhausted.
+        let budgetGone =
+            let s = synth (Path.Combine(tmpDir, "budget"))
+            invertCopy s
+            StaleArtifactPreflight.runWithBudget 0 (Path.Combine(tmpDir, "budget")) DateTime.UtcNow (targets s)
+
+        // (3) breaker tripped — `Threshold` prior repairs of this exact copy.
+        let breakerTripped =
+            let root = Path.Combine(tmpDir, "breaker")
+            let s = synth root
+            invertCopy s
+            let now = DateTime.UtcNow
+
+            StaleArtifactPreflight.saveLedger
+                root
+                now
+                [ for i in 1 .. StaleArtifactPreflight.Threshold ->
+                      { StaleArtifactPreflight.At = now.AddMinutes(float -i)
+                        StaleArtifactPreflight.File = s.CommonCopy } ]
+
+            StaleArtifactPreflight.run root now (targets s)
+
+        for outcome in [ compileStale; budgetGone; breakerTripped ] do
+            test <@ outcome.Refusals.Length = 1 @>
+            test <@ StaleArtifactPreflight.isStaleOutputDeferral outcome.Refusals.Head.Reason @>)
+
+// -----------------------------------------------------------------------------
+// THE FLOOR: a preflight that examined nothing is not a certified-fresh tree.
+// -----------------------------------------------------------------------------
+
+/// POSITIVE CONTROL, first: full coverage has nothing to report. A `coverageReport` that
+/// always warned would satisfy both tests below and teach the reader to ignore it.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201 FLOOR: a preflight that examined every runnable project says nothing`` () =
+    test <@ StaleArtifactPreflight.coverageReport [ "P1"; "P2" ] [ "P1"; "P2" ] = None @>
+    test <@ StaleArtifactPreflight.coverageReport [] [] = None @>
+
+/// The regression this floor exists for: the call site resolves each config to a
+/// build-output target and DROPS the ones it cannot resolve, so a derivation that broke
+/// would reduce the whole gate to checking nothing while every run stayed green.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201 FLOOR: a preflight that examined NOTHING reports it, naming the projects`` () =
+    match StaleArtifactPreflight.coverageReport [ "P1"; "P2" ] [] with
+    | None -> failwith "a preflight that examined 0 of 2 projects must not read as a clean tree"
+    | Some report ->
+        test <@ report.Contains "0 of 2" @>
+        test <@ report.Contains "P1" && report.Contains "P2" @>
+        test <@ report.Contains "NOT protected" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201 FLOOR: partial coverage names exactly the projects it could not examine`` () =
+    match StaleArtifactPreflight.coverageReport [ "P1"; "P2"; "P3" ] [ "P1"; "P3" ] with
+    | None -> failwith "an unexamined project must be named"
+    | Some report ->
+        test <@ report.Contains "2 of 3" @>
+        test <@ report.Contains "P2" @>
+        // Only the gap is named — a report that listed the covered ones too would be
+        // read as the failure list.
+        test <@ not (report.Contains "P1") && not (report.Contains "P3") @>

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: **a stale-build-output refusal is now telling the CLI which of the two "waiting
+  on build" causes it is** (AUTOMATION-201, QA rework). Every refusal the stale-artifact
+  preflight raises begins with `stale build output — `, built in one place
+  (`StaleArtifactPreflight.Reason`) and recognised by that module's own
+  `isStaleOutputDeferral`. It matters because the two causes need opposite remedies: a
+  build-ordering defer settles on the next build, and a stale output does not — so the
+  advice that fits one wastes a full gate cycle on the other. The per-project DETAIL
+  stops asserting "this is a build-ordering issue, not a test failure" over a tree where
+  that is false.
+- fix: **the preflight reports what it COVERED, so it cannot silently degrade to
+  checking nothing**. Each runnable config is resolved to a build-output target and the
+  ones that cannot be resolved were dropped in silence — an unexamined project raises no
+  refusal, and an outcome with no refusals is the same value as a certified-fresh tree.
+  A derivation that regressed would therefore switch the whole gate off while every run
+  stayed green. `coverageReport` names the gap ("examined 0 of 6 …"). It reports rather
+  than refuses on purpose: a runner command with no `--project` is a legitimate
+  configuration, and refusing it would trade one wedge class for another.
+
 - fix: **the project-structure hash sees every MSBuild implicit import, not just
   `Directory.Build.props`** (AUTOMATION-303 case 1, follow-up). `Directory.Build.targets`
   and `Directory.Packages.props` are imported on identical terms and can carry the same

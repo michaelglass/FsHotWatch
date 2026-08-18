@@ -161,13 +161,40 @@ let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
     | ArtifactFreshness.InputsUndeterminable _ ->
         "run `dotnet build` and read its error — it fails loudly on the same project file this gate could not read"
 
+/// The words EVERY refusal this module produces begins with, and the only thing any
+/// downstream surface uses to recognise one.
+///
+/// It exists because "waiting on build" is TWO causes wearing one label, and they need
+/// opposite remedies. The build-ordering race — a project's artifact was not produced
+/// yet — settles by itself, so "re-run once the build settles" is right for it. THIS
+/// one does not settle: the artifact exists and holds the wrong bytes, so re-running
+/// returns the identical refusal, which is the exact defect AUTOMATION-201 exists to
+/// delete. A reader given the wrong half of that pair loses a gate cycle to it.
+///
+/// Prose, not a bracketed tag, so the marker is also the sentence the operator reads;
+/// and one `[<Literal>]` shared by the producers below and `isStaleOutputDeferral`,
+/// so the recogniser cannot drift from what is actually emitted. `refusalMessages`
+/// exists to keep that honest under test: it enumerates every refusal shape this
+/// module can build, and each must be recognised.
+[<Literal>]
+let StaleOutputMarker = "stale build output — "
+
+/// Does this deferral message describe one of THIS module's refusals?
+///
+/// `Contains`, not `StartsWith`: by the time the CLI reads it the plugin has prefixed
+/// the project name (`"P: waiting on build — …"`). Ordinal, because this is a marker,
+/// not prose to be compared culturally.
+let isStaleOutputDeferral (message: string) : bool =
+    not (isNull message)
+    && message.Contains(StaleOutputMarker, StringComparison.Ordinal)
+
 /// A project the run must not launch, and everything a reader needs in order to act.
 type Refusal =
     {
         /// The test project, named in full — never abbreviated into a truncated list.
         Project: string
         /// Cause AND remedy, in one string, so the actionable half cannot be lost by
-        /// a surface that only shows one line.
+        /// a surface that only shows one line. Always begins with `StaleOutputMarker`.
         Reason: string
     }
 
@@ -182,6 +209,42 @@ type Outcome =
         Refusals: Refusal list
     }
 
+/// THE FLOOR: a preflight that examined nothing is not a certified-fresh tree.
+///
+/// The caller resolves every runnable config to a build-output target and DROPS the
+/// ones it cannot resolve — `deriveProjectBin` answers `None` for a runner command with
+/// no `--project`, which is a legitimate configuration. The drop is silent by
+/// construction: an unexamined project raises no refusal, and an `Outcome` with no
+/// refusals is byte-for-byte the same value as one over a tree that was actually
+/// checked. So a derivation that regressed — a renamed flag, an args-shape change —
+/// would switch this entire gate off while every run stayed green. That is the shape of
+/// bug this repo spent AUTOMATION-198 and AUTOMATION-303 removing, and the preflight
+/// added by AUTOMATION-201 reintroduced a door to it.
+///
+/// It REPORTS rather than refuses, deliberately. Refusing would wedge every repo whose
+/// runners legitimately take no `--project`, and this ticket's approval comment forbids
+/// trading one wedge class for another. Naming the gap costs nothing and makes a total
+/// regression loud.
+///
+/// `None` means every runnable project was examined — there is nothing to say.
+let coverageReport (runnable: string list) (examined: string list) : string option =
+    let missed = runnable |> List.filter (fun p -> not (List.contains p examined))
+    let missedNames = String.Join(", ", missed)
+
+    if List.isEmpty missed then
+        None
+    elif List.isEmpty examined then
+        Some
+            $"stale-artifact preflight examined 0 of %d{List.length runnable} project(s) that are about to run — no \
+              build-output target could be derived for ANY of them (%s{missedNames}), so this run is NOT protected \
+              against stale build output. If those runners take a `--project` argument this is a defect in the \
+              gate, not in your tree."
+    else
+        Some
+            $"stale-artifact preflight examined %d{List.length examined} of %d{List.length runnable} project(s) — no \
+              build-output target could be derived for %s{missedNames} (a runner command with no `--project` \
+              argument), so those are unprotected against stale build output."
+
 /// Overwrite `copy` with `origin`'s bytes — the copy the build meant to make.
 let private applyRepair (origin: string) (copy: string) : Result<unit, string> =
     try
@@ -190,16 +253,56 @@ let private applyRepair (origin: string) (copy: string) : Result<unit, string> =
     with ex ->
         Error $"%s{ex.GetType().Name}: %s{ex.Message}"
 
-/// The breaker's refusal: what tripped, how often, and — required, not optional —
-/// how to get moving again. A hard fail with no stated way out would re-create the
-/// "re-run the identical command, get the identical failure" defect this ticket is
-/// about.
-let private breakerRefusal (repoRoot: string) (file: string) (count: int) : string =
-    $"stale-artifact auto-repair has already fired %d{count} times for %s{file} within the last \
-      %.0f{Window.TotalDays} days, so this run REFUSES to repair it again. Something upstream keeps producing \
-      same-timestamp/different-bytes copies, and repairing it silently forever would hide that — root-cause the \
-      inversion instead. To resume auto-repair: delete %s{ledgerPath repoRoot} (the count also ages out on its own \
-      %.0f{Window.TotalDays} days after the last repair)."
+/// EVERY refusal reason this module can produce, built in ONE place.
+///
+/// Four shapes used to be four inline interpolations scattered through `runWithBudget`,
+/// which is how three of them ended up phrased differently enough that no single
+/// predicate could recognise them. They are here so `StaleOutputMarker` is applied
+/// exactly once per shape and `refusalMessages` can enumerate them for a test that
+/// proves the recogniser sees all four.
+module Reason =
+
+    /// Stale, and this module will not guess at the repair.
+    let stale (s: ArtifactFreshness.StaleInput) : string =
+        $"%s{StaleOutputMarker}%s{ArtifactFreshness.describe s}; would run --no-build on stale code. \
+          Remedy: %s{remedyFor s}"
+
+    /// Repaired as far as the budget allowed and still not certifiable.
+    let stillStaleAfterRepairs (rounds: int) (s: ArtifactFreshness.StaleInput) : string =
+        $"%s{StaleOutputMarker}STILL stale after %d{rounds} automatic repair round(s) — \
+          %s{ArtifactFreshness.describe s}; refusing to run --no-build on bytes this gate could not certify. \
+          Remedy: %s{remedyFor s}"
+
+    /// The repair was attempted and the write itself failed.
+    let repairFailed (error: string) (s: ArtifactFreshness.StaleInput) : string =
+        $"%s{StaleOutputMarker}the automatic repair FAILED (%s{error}) — %s{ArtifactFreshness.describe s}. \
+          Remedy: %s{remedyFor s}"
+
+    /// The breaker's refusal: what tripped, how often, and — required, not optional —
+    /// how to get moving again. A hard fail with no stated way out would re-create the
+    /// "re-run the identical command, get the identical failure" defect this ticket is
+    /// about.
+    let breakerTripped (repoRoot: string) (file: string) (count: int) : string =
+        $"%s{StaleOutputMarker}auto-repair has already fired %d{count} times for %s{file} within the last \
+          %.0f{Window.TotalDays} days, so this run REFUSES to repair it again. Something upstream keeps producing \
+          same-timestamp/different-bytes copies, and repairing it silently forever would hide that — root-cause the \
+          inversion instead. To resume auto-repair: delete %s{ledgerPath repoRoot} (the count also ages out on its \
+          own %.0f{Window.TotalDays} days after the last repair)."
+
+/// One sample of every refusal shape `Reason` can build, for a test that asserts each
+/// is recognised by `isStaleOutputDeferral`.
+///
+/// A recogniser is only as good as its coverage of what is actually emitted, and a
+/// fifth shape added without a marker would be invisible to every surface that keys
+/// off one. Adding a constructor to `Reason` without adding it here leaves that test
+/// passing on stale evidence, so this list is named in `Reason`'s own doc.
+let refusalMessages (repoRoot: string) : string list =
+    let sample = ArtifactFreshness.CopyDiffersFromOrigin("/o.dll", "/c.dll")
+
+    [ Reason.stale sample
+      Reason.stillStaleAfterRepairs 8 sample
+      Reason.repairFailed "IOException: locked" sample
+      Reason.breakerTripped repoRoot "/c.dll" 10 ]
 
 /// How many detect→repair rounds a run may spend before it gives up and refuses.
 ///
@@ -230,9 +333,7 @@ let runWithBudget
     : Outcome =
     let refusalOf (project: string) (stale: ArtifactFreshness.StaleInput) =
         { Project = project
-          Reason =
-            $"build output is stale — %s{ArtifactFreshness.describe stale}; would run --no-build on stale code. \
-              Remedy: %s{remedyFor stale}" }
+          Reason = Reason.stale stale }
 
     /// One detect→repair round. A FRESH `ArtifactFreshness.Cache` every time is
     /// mandatory, never an optimisation to reclaim: the cache memoises content hashes
@@ -261,10 +362,7 @@ let runWithBudget
                 detected
                 |> List.map (fun (project, s) ->
                     { Project = project
-                      Reason =
-                        $"build output is STILL stale after %d{budget} automatic repair round(s) — \
-                          %s{ArtifactFreshness.describe s}; refusing to run --no-build on bytes this gate could not \
-                          certify. Remedy: %s{remedyFor s}" }) }
+                      Reason = Reason.stillStaleAfterRepairs budget s }) }
         | detected ->
             // Split by what this module is WILLING to do, not by what went wrong — and
             // carry the repair pair through with the entry that has one. Re-asking
@@ -294,7 +392,7 @@ let runWithBudget
                     @ (tripped
                        |> List.map (fun (project, _, (_, copy)) ->
                            { Project = project
-                             Reason = breakerRefusal repoRoot copy (healsInWindow now ledger copy) }))
+                             Reason = Reason.breakerTripped repoRoot copy (healsInWindow now ledger copy) }))
                     @ (toRepair |> List.map (fun (project, s, _) -> refusalOf project s)) }
             else
                 // Repair. Every outcome is logged BY NAME whether it worked or not — a
@@ -316,9 +414,7 @@ let runWithBudget
                         | Error e ->
                             Error
                                 { Project = project
-                                  Reason =
-                                    $"build output is stale and the automatic repair FAILED (%s{e}) — \
-                                      %s{ArtifactFreshness.describe s}. Remedy: %s{remedyFor s}" })
+                                  Reason = Reason.repairFailed e s })
 
                 let repaired =
                     outcomes

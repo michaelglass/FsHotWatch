@@ -339,6 +339,33 @@ module CheckProse =
          cached result its outputs no longer support: run `fshw confirm`, which forces \
          a real build. Restarting the daemon does NOT — the task cache is on disk."
 
+    /// AUTOMATION-201. The OTHER cause of "waiting on build", and the reason the pair
+    /// above could not stay the only answer: for a stale-artifact refusal every clause
+    /// of it is wrong. The artifact WAS produced. The build already ran — the ticket
+    /// records `✓ build` in the same run as the refusal — so "the build is serving a
+    /// cached result" misnames the mechanism, which is MSBuild's incremental `Copy`
+    /// skipping a file whose timestamps compared equal. And both remedies it names cost
+    /// a full gate cycle to arrive back at the identical refusal, which is precisely the
+    /// "re-run the identical command, get the identical failure" defect this ticket
+    /// exists to delete.
+    ///
+    /// So this one states the cause it actually has, names every affected project by
+    /// carrying the per-project deferrals VERBATIM (each already names its project, the
+    /// stale file and the command that repairs it — there is no second list to truncate
+    /// or to keep in step), and rules out the three remedies that do not work. Same
+    /// shape as `staleDaemonState`, for the same reason: the sentence that saves the
+    /// cycle is the one naming the remedy that does NOT help.
+    let staleBuildOutput (deferrals: string list) =
+        let listed = deferrals |> List.map (fun d -> $"\n  · %s{d}") |> String.concat ""
+
+        $"waiting on build — %d{List.length deferrals} test project(s) did NOT run because their build OUTPUT is \
+           stale: the artifact exists, but its bytes do not match the sources it was built from, so running the \
+           suite would have tested code you did not write. Nothing was verified (not a pass) and nothing failed \
+           (not a red).%s{listed}\nRemedy: run `dotnet build`. If it reports success while this persists, the copy \
+           is timestamp-inverted and only `dotnet build --no-incremental` re-emits it. Re-running the gate does \
+           NOT clear this, and neither does `fshw confirm` nor restarting the daemon — this is bytes on disk, not \
+           the task cache."
+
     /// AUTOMATION-303 AC5. The gate's own answer to "is `fshw stop` still needed?" —
     /// stated by the tool, at the moment it is needed, instead of left in a ticket.
     ///
@@ -380,12 +407,19 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
             Incomplete $"%d{n} file(s) could not be checked"
         else
             Incomplete "coverage could not be confirmed"
-    | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+    | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
         // A DISTINCT `incomplete` reason in `.fshw/verdict.json` — the deploy
         // preflight reads the structured outcome (`incomplete`, exit 2), never the
         // prose, so "waiting on build" is a retry signal, not "tests failed".
         // One string here: this payload is a JSON field, not a terminal.
         Incomplete $"%s{CheckProse.waitingOnBuildCause} %s{CheckProse.waitingOnBuildRemedy}"
+    | CheckVerdict.CheckOutcome.WaitingOnBuild stale ->
+        // The stale-output cause gets its own reason IN THE FILE, not only at the
+        // terminal. A consumer that reads `verdict.json` — the deploy preflight, an
+        // autonomous loop — is exactly the reader who would otherwise retry forever:
+        // this defer does not settle on its own, and the reason has to say so where the
+        // retry decision is actually made.
+        Incomplete(CheckProse.staleBuildOutput stale)
     | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.

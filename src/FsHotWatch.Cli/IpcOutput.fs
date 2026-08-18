@@ -116,17 +116,24 @@ let internal unattributableCountOf (noWarnFail: bool) (resp: DiagnosticsResponse
     |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
     |> List.length
 
-/// Any "waiting on build" deferral in the ledger? A `Deferred`-severity entry
-/// means a test project's build artifact wasn't ready, so its tests DID NOT run:
-/// non-green (nothing verified) but not a failure. The verdict routes this to
-/// `Incomplete`/exit 2. Reading it off the parsed ledger keeps it fail-closed —
-/// a severity that doesn't round-trip defaults to `Error` (counted as failing),
-/// so the worst case of a wire bug is the OLD exit 1, never a false green.
-let private waitingOnBuild (resp: DiagnosticsResponse) : bool =
+/// Any "waiting on build" deferral in the ledger — and WHY? A `Deferred`-severity entry
+/// means a test project's tests DID NOT run: non-green (nothing verified) but not a
+/// failure. The verdict routes this to `Incomplete`/exit 2. Reading it off the parsed
+/// ledger keeps it fail-closed — a severity that doesn't round-trip defaults to `Error`
+/// (counted as failing), so the worst case of a wire bug is the OLD exit 1, never a
+/// false green.
+///
+/// The messages are handed to `BuildWait.classify` rather than reduced to a bool here:
+/// the two causes need opposite remedies, and this transport is not the place that
+/// decides which — `RunOnceCheck` asks the same question of the same classifier.
+let private waitingOnBuild (resp: DiagnosticsResponse) : CheckVerdict.BuildWait =
     resp.Files
     |> Map.toSeq
     |> Seq.collect snd
-    |> Seq.exists (fun (e: DiagnosticEntry) -> e.Severity = Deferred)
+    |> Seq.filter (fun (e: DiagnosticEntry) -> e.Severity = Deferred)
+    |> Seq.map (fun e -> e.Message)
+    |> List.ofSeq
+    |> CheckVerdict.BuildWait.classify
 
 /// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
 ///
@@ -952,12 +959,17 @@ let pollAndRender
         // daemon-less path (`RunOnceCheck`) prints and, for `waiting on build`, the same
         // words the verdict file carries. Whether a daemon served the check is not
         // something the explanation may vary on.
-        | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+        | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
             // Non-green, but "could not complete", never a red. Distinct exit 2 so
             // an autonomous loop / deploy preflight retries rather than treating it
             // as a test failure.
             UI.fail
                 $"Check incomplete: %s{Verdict.CheckProse.waitingOnBuildCause}\n%s{Verdict.CheckProse.waitingOnBuildRemedy}"
+        | CheckVerdict.CheckOutcome.WaitingOnBuild stale ->
+            // AUTOMATION-201. The stale-output cause, in its own words: retrying is the
+            // one thing that cannot help, so the generic "re-run once the build settles"
+            // above would cost a gate cycle to arrive back here.
+            UI.fail $"Check incomplete: %s{Verdict.CheckProse.staleBuildOutput stale}"
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
             // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
             // "the run was too narrow", it is "we could not see what the run was".

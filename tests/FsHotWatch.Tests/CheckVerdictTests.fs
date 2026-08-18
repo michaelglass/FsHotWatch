@@ -33,7 +33,7 @@ let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) :
     { PluginStatuses = Map.empty
       FailingDiagnostics = (if hasFailures then 1 else 0)
       UnattributableDiagnostics = 0
-      WaitingOnBuild = false
+      WaitingOnBuild = BuildWait.NotWaiting
       Coverage = coverage
       Scope = scope }
 
@@ -52,7 +52,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
         { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -68,7 +68,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
         { PluginStatuses = statusOf (StatusView.Unreadable "a status tag this build does not recognize")
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -83,7 +83,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -106,12 +106,12 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = true
+          WaitingOnBuild = BuildWait.ArtifactNotProduced
           Coverage = Complete
           Scope = FullSuite 4 }
 
-    test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild @>
-    test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild @>
+    test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild [] @>
+    test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild [] @>
     test <@ exitCode (verdict InnerLoop waiting) = 2 @>
     test <@ exitCode (verdict Confirmation waiting) = 2 @>
 
@@ -123,7 +123,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
         { PluginStatuses = Map.empty
           FailingDiagnostics = 1
           UnattributableDiagnostics = 0
-          WaitingOnBuild = true
+          WaitingOnBuild = BuildWait.ArtifactNotProduced
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -566,7 +566,7 @@ let ``AUTOMATION-303: an all-unattributable ledger is NO VERDICT (exit 3), not a
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 51
           UnattributableDiagnostics = 51
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -585,7 +585,7 @@ let ``AUTOMATION-303: ONE attributable diagnostic among them keeps the red`` () 
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 52
           UnattributableDiagnostics = 51
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -603,7 +603,7 @@ let ``AUTOMATION-303: a FAILING PLUGIN beside a stale ledger keeps the red`` () 
         { PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow))
           FailingDiagnostics = 51
           UnattributableDiagnostics = 51
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -620,7 +620,7 @@ let ``AUTOMATION-303: a CLEAN ledger is still Clean, never stale-daemon-state`` 
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -637,7 +637,7 @@ let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
         { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
           FailingDiagnostics = 7
           UnattributableDiagnostics = 7
-          WaitingOnBuild = false
+          WaitingOnBuild = BuildWait.NotWaiting
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -662,3 +662,72 @@ let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
     |> ignore
 
     test <@ scans > 0 @>
+
+// ----------------------------------------------------------------------------
+// AUTOMATION-201 — "waiting on build" is TWO causes, and they need opposite remedies.
+// ----------------------------------------------------------------------------
+
+/// The classification, over messages the stale-artifact preflight really produces.
+/// Hard-coded prose here would prove only that the test agrees with itself, so the
+/// stale side is fed from `StaleArtifactPreflight.refusalMessages` — the same list the
+/// producer's own round-trip test pins.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: a stale-output deferral classifies apart from a build-ordering one`` () =
+    let apphost = "P2: waiting on build — apphost not produced; tests did not run"
+
+    // Nothing deferred at all.
+    test <@ BuildWait.classify [] = BuildWait.NotWaiting @>
+
+    // Only the build-ordering race — the cause whose existing "re-run once the build
+    // settles" advice is CORRECT and must not be replaced.
+    test <@ BuildWait.classify [ apphost ] = BuildWait.ArtifactNotProduced @>
+
+    for stale in FsHotWatch.TestPrune.StaleArtifactPreflight.refusalMessages "/repo" do
+        test <@ BuildWait.classify [ stale ] = BuildWait.StaleOutput [ stale ] @>
+
+        // MIXED: a run can hold both. The stale cause dominates, because it is the one
+        // whose wrong remedy costs a full gate cycle to arrive back at the same refusal.
+        test <@ BuildWait.classify [ apphost; stale ] = BuildWait.StaleOutput [ stale ] @>
+
+/// The verdict CARRIES the deferrals rather than reducing them to a flag, so every
+/// surface that explains this outcome can name the projects and the remedy. Exit code
+/// and non-redness are unchanged — this is about what the run SAYS, not what it decides.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: the verdict carries the stale deferrals, still exit 2, still not a red`` () =
+    let stale =
+        FsHotWatch.TestPrune.StaleArtifactPreflight.refusalMessages "/repo"
+        |> List.take 2
+
+    let waiting =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.StaleOutput stale
+          Coverage = Complete
+          Scope = anyScope }
+
+    test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild stale @>
+    test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild stale @>
+    test <@ exitCode (CheckOutcome.WaitingOnBuild stale) = 2 @>
+
+    // POSITIVE CONTROL for "carries": the build-ordering cause carries an EMPTY list, so
+    // a `WaitingOnBuild` that always carried everything could not pass both.
+    let ordering =
+        { waiting with
+            WaitingOnBuild = BuildWait.ArtifactNotProduced }
+
+    test <@ verdict InnerLoop ordering = CheckOutcome.WaitingOnBuild [] @>
+
+/// A REAL failure alongside a stale-output defer is still a red. The defer must not
+/// launder one — that precedence existed before and this change may not move it.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: a real failure beside a stale-output defer is still FailuresFound`` () =
+    let both =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 1
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.StaleOutput [ "stale build output — x" ]
+          Coverage = Complete
+          Scope = anyScope }
+
+    test <@ verdict InnerLoop both = CheckOutcome.FailuresFound @>

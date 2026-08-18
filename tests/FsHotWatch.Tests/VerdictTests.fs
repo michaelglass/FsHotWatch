@@ -400,9 +400,20 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
     test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete -1) @>
     // "Waiting on build" is INCOMPLETE (exit 2), never Red or Green: a deferred project is
     // a retry signal, not a test failure.
-    test <@ incomplete CheckVerdict.CheckOutcome.WaitingOnBuild @>
-    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild <> Verdict.Red @>
-    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild <> Verdict.Green @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.WaitingOnBuild []) @>
+
+    test
+        <@
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
+            <> Verdict.Red
+        @>
+
+    test
+        <@
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
+            <> Verdict.Green
+        @>
+
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
@@ -412,13 +423,13 @@ let ``waiting on build persists as a DISTINCT incomplete verdict (exit 2), never
     // The deploy preflight reads the STRUCTURED outcome, never the prose. A build-ordering
     // deferral must serialize as `outcome.kind = "incomplete"` with a "waiting on build"
     // reason — distinct from the `red` a real test failure earns — and carry exit 2.
-    let outcome = Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.WaitingOnBuild
+    let outcome = Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
 
     match outcome with
     | Verdict.Incomplete reason -> test <@ reason.ToLowerInvariant().Contains "waiting on build" @>
     | other -> failwith $"waiting on build must be incomplete, never red/green, got %A{other}"
 
-    test <@ CheckVerdict.exitCode CheckVerdict.CheckOutcome.WaitingOnBuild = 2 @>
+    test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.WaitingOnBuild []) = 2 @>
 
     let json =
         serializeSpec
@@ -1355,7 +1366,7 @@ let private impactScopedReading (root: string) (scope: TestScope) (failingDiagno
         { PluginStatuses = Map.empty
           FailingDiagnostics = failingDiagnostics
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
           Coverage = coverage
           Scope = scope }
 
@@ -2868,3 +2879,79 @@ let ``AUTOMATION-303 AC5: the stale-state outcome is INCOMPLETE and names the re
 
     // THE CONTROL: the same function still calls a real failure a red.
     test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-201 — the message an operator reads LAST, and acts on.
+// ---------------------------------------------------------------------------
+
+/// AC2: "fails with a message that names every affected project (no truncation) AND
+/// states the concrete remedy." This is the top-level message — the one the terminal
+/// prints as the verdict and the one `.fshw/verdict.json` carries. Every project has to
+/// survive it whole, however many there are: the reported symptom was a headline cut
+/// mid-name (`… Intelligence.Build.Dev.Tests, Intelli...`).
+[<Fact>]
+let ``AUTOMATION-201: the stale-output message names EVERY affected project, untruncated`` () =
+    // Long, realistic project names, and more of them than the old 80-character budget
+    // could have held even one of.
+    let deferrals =
+        [ for i in 1..6 ->
+              $"Intelligence.Build.Dev.Tests.Number%d{i}: waiting on build — stale build output — \
+                /repo/src/Intelligence.Build.Ops/bin/Debug/net10.0/Intelligence.Build.Ops.dll has not been copied \
+                into the test output since it changed. Remedy: run `dotnet build`" ]
+
+    let message = Verdict.CheckProse.staleBuildOutput deferrals
+
+    for d in deferrals do
+        test <@ message.Contains d @>
+
+    // Not merely "contains" — nothing was dropped or abbreviated on the way in.
+    test <@ message.Contains "6 test project(s)" @>
+    test <@ not (message.Contains "...") @>
+    test <@ not (message.Contains "more)") @>
+
+/// The other half of AC2, and the ticket's third defect: the message must PRESCRIBE.
+/// It must also rule out the remedies that cannot work — the pattern AUTOMATION-303 set
+/// when its stale-state outcome had to say that `fshw scan` does not clear it.
+[<Fact>]
+let ``AUTOMATION-201: the stale-output message states the remedy and rules out the ones that cannot work`` () =
+    let message =
+        Verdict.CheckProse.staleBuildOutput [ "P: waiting on build — stale build output — /a.dll" ]
+
+    // What to run.
+    test <@ message.Contains "dotnet build" @>
+    test <@ message.Contains "--no-incremental" @>
+
+    // What NOT to bother with. Re-running is the natural wrong move and it is the one
+    // this ticket exists to stop; `fshw confirm` and a daemon restart are the two the
+    // generic "waiting on build" prose used to recommend for this cause.
+    test <@ message.Contains "Re-running the gate does NOT clear this" @>
+    test <@ message.Contains "fshw confirm" @>
+    test <@ message.ToLowerInvariant().Contains "restarting the daemon" @>
+
+    // And it must not repeat the claim that was FALSE here: the artifact WAS produced.
+    test <@ not (message.Contains "was not produced") @>
+
+/// POSITIVE CONTROL. The build-ordering defer keeps its own words — "re-run once the
+/// build settles" is right for it, and a change that gave every defer the stale-output
+/// message would be a regression wearing a fix's clothes.
+[<Fact>]
+let ``AUTOMATION-201: a build-ordering defer keeps the words that are true for IT`` () =
+    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild []) with
+    | Verdict.Incomplete reason ->
+        test <@ reason.Contains "was not produced" @>
+        test <@ reason.Contains "re-run once the build settles" @>
+        test <@ not (reason.Contains "--no-incremental") @>
+    | other -> failwith $"a build-ordering defer must stay incomplete, got %A{other}"
+
+/// The verdict FILE carries the stale-output reason, not only the terminal. The reader
+/// that would otherwise retry forever — a deploy preflight, an autonomous loop — makes
+/// its decision from this field and never sees the terminal at all.
+[<Fact>]
+let ``AUTOMATION-201: the verdict file's reason carries the stale-output remedy`` () =
+    let deferral = "P: waiting on build — stale build output — /a.dll differs"
+
+    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [ deferral ]) with
+    | Verdict.Incomplete reason ->
+        test <@ reason.Contains deferral @>
+        test <@ reason.Contains "dotnet build" @>
+    | other -> failwith $"a stale-output defer must stay incomplete, never red/green, got %A{other}"

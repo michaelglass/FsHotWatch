@@ -57,6 +57,17 @@ All notable changes to FsHotWatch packages are documented here.
 > project comes back deferred — where previously the fresh projects ran first and the
 > refusal surfaced minutes in, as a partial red. The remedy is named in the message.
 >
+> That refusal now gets its **own** words, and this is the sentence to read: **`waiting
+> on build` was two causes wearing one label.** A build artifact that has not been
+> produced yet settles on the next build, so "re-run once the build settles" is right for
+> it. A build output that is STALE — the artifact exists and its bytes do not match its
+> sources — does not settle, and re-running, `fshw confirm` and restarting the daemon all
+> spend a full cycle to arrive back at the identical refusal. The stale case now names
+> every affected project, quotes the file, and says `dotnet build` (or `dotnet build
+> --no-incremental` for a timestamp-inverted copy). **If you match on the `reason` string
+> in `.fshw/verdict.json`, that string changes shape for this cause** — the exit code is
+> unchanged at 2.
+>
 > The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
 > `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a

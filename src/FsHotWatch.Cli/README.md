@@ -111,12 +111,26 @@ turn an honest exit 3 (no verdict) into an exit 1 (failures found).
 
 ### `waiting on build` — and why `fshw stop` is not the answer
 
-`check` can report **`waiting on build`** and exit **2**: a test project's build
-artifact was not produced, so its tests did not run. Nothing was verified (not a pass)
-and nothing failed (not a red), which is why it gets its own exit code — an autonomous
-loop or deploy preflight should **retry**, not treat it as a test failure.
+`check` can report **`waiting on build`** and exit **2**: a test project's tests did not
+run. Nothing was verified (not a pass) and nothing failed (not a red), which is why it
+gets its own exit code.
 
-If an otherwise-unchanged re-run says it again, the build is serving a **cached result
+**Read the message: it is one of two causes, and only one of them is worth retrying.**
+
+* *the build artifact was not produced* — a build-ordering race. It settles on the next
+  build, so an autonomous loop or deploy preflight should **retry**. The rest of this
+  section is about that case.
+* *`stale build output`* — the artifact exists and its bytes do not match the sources it
+  was built from. This one does **not** settle: retrying, `fshw confirm` and restarting
+  the daemon each spend a full cycle to arrive back at the identical refusal, because
+  the problem is bytes on disk rather than anything cached. The message names every
+  affected project and the file that is stale; run `dotnet build`, and if it reports
+  success while the refusal persists, the copy is timestamp-inverted and only
+  `dotnet build --no-incremental` re-emits it. `fshw` repairs this itself where the
+  repair is provable (a build-output copy whose origin is on disk) and says so by name;
+  a refusal means it was not.
+
+If an otherwise-unchanged re-run says the FIRST one again, the build is serving a **cached result
 its outputs no longer support**. The escape is:
 
 ```bash
