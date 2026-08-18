@@ -62,6 +62,24 @@ type CheckOutcome =
     /// broken) and from `Clean` (nothing is known to be sound, either): the run is
     /// owed work it did not discharge. Unreachable in `InnerLoop`, by construction.
     | UnearnedScope of TestScope
+    /// EVERY failing diagnostic was one the daemon cannot attribute to the tree on
+    /// disk, and no plugin failed. AUTOMATION-303, second direction.
+    ///
+    /// A red is a claim: "something in THIS tree is wrong." A ledger full of FCS
+    /// internal errors (the checker crashed) or of diagnostics against files that are
+    /// no longer on disk supports no such claim — and reporting it as exit 1 sends the
+    /// reader to look for a defect that is not there. It cost one agent ~40 minutes,
+    /// and the incident that taught the opposite lesson (a cached build hiding a REAL
+    /// error) looked identical from the outside, so no guidance can separate them.
+    ///
+    /// So the tool stops picking a side: NO VERDICT (exit 3), same as an unearned
+    /// scope. Nothing is claimed broken and nothing is claimed sound, the gate still
+    /// refuses, and — the part that closes the loop — the output names `fshw stop`,
+    /// which is the only thing that clears this state.
+    ///
+    /// Never reached while any plugin failed or any diagnostic IS attributable: a
+    /// single real red outranks any amount of stale noise beside it.
+    | StaleDaemonState of unattributable: int
 
 /// Total exit-code mapping. Exhaustive over every CheckOutcome case — adding a
 /// new case is a compile error here, so a new state can never silently fall
@@ -75,6 +93,9 @@ let exitCode (outcome: CheckOutcome) : int =
     // could not be completed, not that it failed. Same exit 2.
     | CheckOutcome.WaitingOnBuild -> 2
     | CheckOutcome.UnearnedScope _ -> 3
+    // Same exit code as an unearned scope, and for the same reason: the run produced
+    // no verdict. "I cannot tell" is not a pass and it is not a failure.
+    | CheckOutcome.StaleDaemonState _ -> 3
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
 ///
@@ -91,6 +112,17 @@ type CheckInputs =
         /// Failing entries in the diagnostic ledger. Whether warnings count is
         /// resolved by the transport (`--no-warn-fail`), because only it knows.
         FailingDiagnostics: int
+        /// How many of `FailingDiagnostics` are NOT claims about the tree on disk —
+        /// `Verdict.RedCauseKind` says which two cases qualify and why each is decidable.
+        /// A SUBSET, always: `UnattributableDiagnostics <= FailingDiagnostics`.
+        ///
+        /// A separate term rather than a filtered count, because the two questions are
+        /// different: `FailingDiagnostics > 0` still means "the ledger is not clean"
+        /// (which denies a green), while this one decides whether the run may claim the
+        /// tree is BROKEN. Both transports compute it from the same traversal that
+        /// produces `redCauses`, so the number that decides the exit code and the reasons
+        /// the verdict file records cannot disagree.
+        UnattributableDiagnostics: int
         /// Is a test project WAITING ON BUILD — deferred because its build artifact
         /// wasn't produced, so its tests did not run? Non-green (nothing verified)
         /// but NOT a failure. A distinct term, not folded into `FailingDiagnostics`,
@@ -132,6 +164,17 @@ module CheckInputs =
     let hasFailures (inputs: CheckInputs) : bool =
         foundProblems inputs.PluginStatuses inputs.FailingDiagnostics
 
+    /// Are the run's failures ENTIRELY things it cannot attribute to this tree?
+    ///
+    /// Deliberately conjunctive and deliberately strict. A failing plugin is always a
+    /// claim about this tree, so one of those defeats it outright; so does a single
+    /// attributable diagnostic. It answers `false` on a clean ledger — "nothing failed"
+    /// is not "everything that failed was noise", and a green must never route here.
+    let onlyUnattributableFailures (inputs: CheckInputs) : bool =
+        not (anyPluginFailed inputs.PluginStatuses)
+        && inputs.FailingDiagnostics > 0
+        && inputs.UnattributableDiagnostics >= inputs.FailingDiagnostics
+
 /// Pure verdict from (mode, inputs). Every input is REQUIRED, which is what makes "a
 /// merge verdict produced from a filtered run" (or from a crashed plugin)
 /// unrepresentable rather than merely discouraged.
@@ -150,7 +193,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
     let coverage = inputs.Coverage
     let testScope = inputs.Scope
 
-    if CheckInputs.hasFailures inputs then
+    // AUTOMATION-303. Checked BEFORE `FailuresFound` and nowhere else, because it is a
+    // REFINEMENT of it: this branch is only reachable when the run does have failures,
+    // and it asks the narrower question the red never asked — are any of them about this
+    // tree? A `false` here falls straight through to the red, so the ONLY way to leave
+    // `FailuresFound` is to prove every failure unattributable.
+    if CheckInputs.onlyUnattributableFailures inputs then
+        CheckOutcome.StaleDaemonState inputs.UnattributableDiagnostics
+    elif CheckInputs.hasFailures inputs then
         CheckOutcome.FailuresFound
     elif inputs.WaitingOnBuild then
         // No real failure, but a project's tests DID NOT RUN because its build
@@ -266,7 +316,12 @@ let converge
     // re-scanning does not retroactively run a test the settled run already
     // deferred. exit 2 says "could not complete — retry", which is the answer.
     | CheckOutcome.WaitingOnBuild
-    | CheckOutcome.UnearnedScope _ -> initOutcome
+    | CheckOutcome.UnearnedScope _
+    // Terminal for the same reason: a re-scan does not clear stale daemon state. That
+    // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault
+    // class and never cleared it once; only `fshw stop` did. Re-scanning here would
+    // spend three more full passes to arrive at the same answer.
+    | CheckOutcome.StaleDaemonState _ -> initOutcome
     | CheckOutcome.Incomplete _ ->
         // Enter convergence. `prevMagnitude` is the unchecked magnitude we're
         // trying to improve on; it starts at the initial read.

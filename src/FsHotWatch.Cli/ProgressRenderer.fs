@@ -685,15 +685,42 @@ module AgentHints =
                     |> List.mapi (fun i (c: Verdict.RedCause) ->
                         let label = if i = 0 then "REDDENED" else "        "
                         let msg = c.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
-                        $"    %s{label} %s{c.Source}:%s{c.File}: %s{c.Severity} %s{msg}")
+
+                        // AUTOMATION-303. The kind is printed only when it is NOT
+                        // `AboutThisTree`, so the ordinary red keeps its ordinary line and
+                        // the exceptional one is visibly exceptional. Naming the kind on
+                        // every line would make the distinction furniture.
+                        let mark =
+                            match c.Kind with
+                            | Verdict.AboutThisTree -> ""
+                            | Verdict.VanishedFile -> "  [NOT-THIS-TREE: file is not on disk]"
+                            | Verdict.CheckerFault -> "  [NOT-THIS-TREE: the checker crashed; it found nothing]"
+
+                        $"    %s{label} %s{c.Source}:%s{c.File}: %s{c.Severity} %s{msg}%s{mark}")
 
                 let more = v.RedCauseCount - List.length causes
 
-                if more > 0 then
-                    shown
-                    @ [ $"             … and %d{more} more (see `reddenedBy` in %s{Verdict.RelativePath})" ]
-                else
-                    shown
+                let truncation =
+                    if more > 0 then
+                        [ $"             … and %d{more} more (see `reddenedBy` in %s{Verdict.RelativePath})" ]
+                    else
+                        []
+
+                // AUTOMATION-303 AC5. The mixed case: SOME causes are stale and some are
+                // real, so the exit code stays a red (a real defect outranks the noise)
+                // and nothing above would tell the reader that a chunk of the wall in
+                // front of them is not theirs. This is the line that saves the cycle —
+                // the 2026-08-12 incident was ~51 checker faults beside 3 diagnostics
+                // that looked real, and separating them by hand took the rest of the
+                // evening.
+                let staleAdvice =
+                    match causes |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind)) with
+                    | [] -> []
+                    | stale ->
+                        [ $"             %d{List.length stale} of the cause(s) above are NOT about this tree — stale \
+                             daemon state. Run `fshw stop`, then re-run; `fshw scan` does NOT clear it." ]
+
+                shown @ truncation @ staleAdvice
 
         let unexplainedRed =
             let isRed = v.ExitCode <> 0

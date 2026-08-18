@@ -703,12 +703,16 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
-/// The files that DECLARE what gets compiled. An F# source file only enters a build
-/// because one of these names it — F# has no globbed compile items, since compilation
-/// order is part of the language — and `Directory.Build.props` can add items to every
-/// project at once.
-let private structureFilePatterns =
-    [ "*.fsproj"; "*.csproj"; "Directory.Build.props" ]
+/// The files that DECLARE what gets compiled — `FsHotWatch.StructureFiles.allPatterns`,
+/// not a second copy of it.
+///
+/// It WAS a second copy, and it was already wrong: `Directory.Build.targets` and
+/// `Directory.Packages.props` are implicit MSBuild imports exactly as
+/// `Directory.Build.props` is, and a `<Compile Include=…>` in either adds a file to
+/// every project in the repo without moving one project file. Sharing the list with the
+/// BUILD plugin's inputs merkle is the point: two caches that disagree about what
+/// "structural" means is how one misses while the other replays.
+let private structureFilePatterns = FsHotWatch.StructureFiles.allPatterns
 
 /// Content merkle of the files that decide WHAT IS COMPILED.
 ///
@@ -792,7 +796,27 @@ let internal allZeroMatchOf (results: Map<string, TestResult>) : bool =
 /// `verificationOf`: this cannot distinguish an empty run from a real one.
 let internal allZeroMatch (results: TestResults) : bool = allZeroMatchOf results.Results
 
-let private formatTestResultsJson (results: TestResults) =
+/// `activeFilter` is the raw `--filter-*` passthrough the run was launched with, when
+/// there was one. It rides on the wire so a refusal can ECHO IT: "no tests matched the
+/// filter" without saying WHICH filter leaves the reader to guess between a typo, a
+/// renamed class, and a filter aimed at a project that does not contain it — the exact
+/// three-way ambiguity that cost one investigation a wrong conclusion
+/// (AUTOMATION-227/272). `None` for an unfiltered run, and for the `test-results`
+/// command, which reads a stored result set that does not remember what launched it.
+///
+/// `runReports` is the per-project CTRF SUMMARY this run produced, keyed by project.
+/// Its whole job is criterion 3 of AUTOMATION-272: the CLI must state total /
+/// succeeded / failed for each project it ran, because a missing summary line is the
+/// tell that separates a real pass from a vacuous one, and it used to live only in
+/// `daemon.log`. A project ABSENT from this map produced no readable report — an
+/// unknown runner we never asked one from, or a host that aborted before flushing —
+/// and the consumer says so rather than printing zeros, which would read as a suite
+/// that ran cleanly.
+let private formatTestResultsJson
+    (activeFilter: string option)
+    (runReports: Map<string, FsHotWatch.Ctrf.Summary>)
+    (results: TestResults)
+    =
     let projects =
         results.Results
         |> Map.toList
@@ -810,15 +834,35 @@ let private formatTestResultsJson (results: TestResults) =
                 | TestsDeferred reason -> ("deferred", reason)
                 | TestsErrored reason -> ("errored", reason)
 
+            // `null`, not zeros. `total: 0, failed: 0` reads as "this suite ran
+            // cleanly", so manufacturing counts from an absent report is the very
+            // vacuous green this ticket is about (the same rule `Verdict.parseSuites`
+            // holds for the verdict file).
+            let counts: obj =
+                match Map.tryFind name runReports with
+                | Some(summary: FsHotWatch.Ctrf.Summary) ->
+                    box
+                        {| total = summary.Total
+                           succeeded = summary.Passed
+                           failed = summary.Failed
+                           skipped = summary.Skipped
+                           other = summary.Other |}
+                | None -> null
+
             {| project = name
                status = status
                output = truncateOutput 200 output
-               elapsedMs = (TestResult.elapsed result).TotalMilliseconds |})
+               elapsedMs = (TestResult.elapsed result).TotalMilliseconds
+               counts = counts |})
 
     let verification = verificationOf results.Results
 
     JsonSerializer.Serialize(
         {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
+           // The filter this run was launched with, or `null` when there was none.
+           // Written so a "matched nothing" refusal can quote it back; a consumer that
+           // does not know the field simply says less.
+           filter = Option.toObj activeFilter
            // `noTestsMatched` is true iff EVERY project matched zero tests under
            // the active filter. RETAINED for CLIs older than `coverage`; it
            // cannot express "no project was selected", which is why the field
@@ -2144,18 +2188,19 @@ let private executeTests
                                 if apphostMissing then
                                     // Tests NEVER RAN — the apphost wasn't produced.
                                     // A dedicated `TestsDeferred`, NOT a pass
-                                    // (`isPassed`=false → never a silent false-green)
-                                    // and NOT a real failure: surfaced as an honest
+                                    // (`verdict` = `NothingVerified` → never a silent
+                                    // false-green) and NOT a real failure: surfaced as an honest
                                     // "waiting on build" diagnostic. Carries no
                                     // elapsed/wasFiltered, so it never lowers a
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
                                 elif zeroTestsUnderFilter then
                                     // Not a failure — per project, a filter selecting
-                                    // nothing is not that project's fault, and
-                                    // `TestResult.isPassed` stays true. Its own case so
-                                    // the RUN-level fold can still tell the difference;
-                                    // see `verificationOf`.
+                                    // nothing is not that project's fault, so it is never
+                                    // reported as one. Its own case (rather than a passing
+                                    // result wearing a marker prefix) so that every fold
+                                    // must decide it; see `TestResult.verdict` and
+                                    // `verificationOf`.
                                     TestsNoMatch(output, projectElapsed)
                                 else
                                     classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
@@ -2607,7 +2652,24 @@ let internal cacheKeyFor
         // still queued is not a "safe to skip" verdict. And the outcome must be
         // non-Aborted: an aborted run has empty Results, which the all-passed fold treats
         // as trivially passing.
-        let allPassed = completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r)
+        // AUTOMATION-278. Written out PER CASE, at the site, because the honest answer
+        // differs per case and there is deliberately no `TestResult` boolean that spans
+        // them:
+        //   * `Verified`        — ran and green. The only positive evidence there is.
+        //   * `Refuted`         — a real red. Never cacheable, for the reason above.
+        //   * `NothingVerified` — a zero MATCH is admitted here ONLY because the
+        //     `allZeroMatchRun` conjunct below refuses the run where EVERY project
+        //     matched nothing, so what survives is a mixed run in which some project
+        //     did verify something. A Deferred/Errored project is refused outright:
+        //     a build-ordering race or a host crash must never be replayable as a
+        //     green.
+        let noProjectRefutedOrUnrun =
+            completed.Results
+            |> Map.forall (fun _ r ->
+                match TestResult.verdict r with
+                | Verified -> true
+                | Refuted -> false
+                | NothingVerified -> TestResult.isNoMatch r)
 
         let notAborted =
             match completed.Outcome with
@@ -2615,10 +2677,9 @@ let internal cacheKeyFor
             | Normal -> true
 
         // AUTOMATION-272 — a run that matched NO tests must not mint a cacheable green.
-        // A zero-match project is `TestsNoMatch`, for which `isPassed` is deliberately
-        // TRUE, so the all-passed fold cannot see it and the entry it writes is
-        // replayable: a later BuildCompleted on the same tree hits a green produced by
-        // executing zero tests.
+        // The fold above admits a zero-match project (see its comment), so on its own it
+        // would write a replayable entry: a later BuildCompleted on the same tree would
+        // hit a green produced by executing zero tests.
         //
         // Deliberately NOT extended to an empty result set — that is the "nothing to
         // verify" skip, decided separately. This covers only a run where projects ran and
@@ -2635,7 +2696,7 @@ let internal cacheKeyFor
         // the framework does not replay over a `Custom` message at all, since a Custom's
         // payload is not in its key.
         if
-            allPassed
+            noProjectRefutedOrUnrun
             && notAborted
             && not allZeroMatchRun
             && (pendingQueueHash ()).IsNone
@@ -3596,7 +3657,17 @@ let create
                     let! results, started, completed =
                         executeTests db None repoRoot beforeRun coveragePaths afterRun configs Map.empty filter
 
-                    reply.TrySetResult(formatTestResultsJson results) |> ignore
+                    // The counts come from the CTRF reports THIS RUN wrote, located by
+                    // the run id the daemon just handed back — declared membership, never
+                    // an mtime scan of a shared pile. An empty list from an existing
+                    // run-dir means the run executed no tests, and that is exactly the
+                    // fact the CLI has to be able to state.
+                    let runReports =
+                        FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
+                        |> List.map (fun r -> r.Project, r.Summary)
+                        |> Map.ofList
+
+                    reply.TrySetResult(formatTestResultsJson filter runReports results) |> ignore
 
                     // Returned (not Posted) so the framework's completion path
                     // delivers it: the synchronous TestsFinished handler does
@@ -3659,7 +3730,10 @@ let create
                       return JsonSerializer.Serialize({| status = "running" |})
                   else
                       match state.LastResults with
-                      | Some results -> return formatTestResultsJson results
+                      // No filter: `test-results` reports the LAST stored result set,
+                      // which does not remember what launched it. Saying nothing is
+                      // correct here; inventing "(none)" would claim it was unfiltered.
+                      | Some results -> return formatTestResultsJson None Map.empty results
                       | None -> return JsonSerializer.Serialize({| status = "not run" |})
               }
 
@@ -4562,12 +4636,19 @@ let create
                     //     Outcome = Aborted, Results = Map.empty → commit nothing), AND
                     //   - EVERY project covering the symbol produced a PASSED result.
                     // A project counts as passed only if it appears in completed.Results
-                    // with TestResult.isPassed — a covering project ABSENT from the
+                    // with `TestResult.verifiedGreen` — a covering project ABSENT from the
                     // results (didn't run this cycle) blocks the commit (we can't claim
                     // it green). A symbol with NO covering project was already dropped at
                     // flush time, but if one slipped through it commits here (nothing to
                     // wait on). Mid-run arrivals are NOT in launch.Symbols, so they stay
                     // queued and the PendingRerun flow re-runs them.
+                    //
+                    // AUTOMATION-278. This fold read `TestResult.isPassed`, which was TRUE
+                    // for `TestsNoMatch` — so a symbol whose covering project ran under an
+                    // impact-derived class filter that matched ZERO tests had its test debt
+                    // DISCHARGED by a project that executed nothing, and left
+                    // pending-verification.json unverified. `verifiedGreen` is `Verified`
+                    // only, so a project that ran nothing can no longer retire anything.
                     let aborted =
                         match completed.Outcome with
                         | Aborted _ -> true
@@ -4575,7 +4656,7 @@ let create
 
                     let projectPassed (proj: string) =
                         match Map.tryFind proj completed.Results with
-                        | Some r -> TestResult.isPassed r
+                        | Some r -> TestResult.verifiedGreen r
                         | None -> false
 
                     let committedSymbols =
@@ -4692,10 +4773,10 @@ let create
                             )
                         // AUTOMATION-272. Projects RAN and every one matched zero tests, so
                         // nothing executed and nothing was verified — not a green. The
-                        // ladder below counts `TestResult.isPassed`, which is deliberately
-                        // TRUE for `TestsNoMatch`, so without this check the green branch
-                        // fires and reports "N passed, 0 failed in N projects" about N
-                        // projects that ran no test at all.
+                        // ladder below counts zero matches OUT of both `passed` and
+                        // `failed`, so without this check `failed = 0 && deferred = 0`
+                        // holds, the green branch fires, and it reports "0 passed, 0
+                        // failed in N projects" about N projects that ran no test at all.
                         //
                         // Scoped to ALL projects deliberately: a zero match in ONE project
                         // is a correct pass for it (an impact selection naming no class in
@@ -4713,14 +4794,25 @@ let create
                             )
                         | None ->
 
-                            // Non-green = anything not passed. Split into genuine
-                            // failures vs deferred (never-ran) so the verdict can be
-                            // honest: deferred is non-green but is "could not run /
+                            // Non-green = anything this run did not verify green, MINUS
+                            // the zero matches (counted separately below). Split further
+                            // into genuine failures vs deferred (never-ran) so the verdict
+                            // can be honest: deferred is non-green but is "could not run /
                             // waiting on build", NOT "failed".
+                            //
+                            // AUTOMATION-278: per case, at the site. `not verifiedGreen`
+                            // would sweep the zero matches in here and report them as
+                            // failures; matching only `Refuted` would drop the
+                            // Deferred/Errored projects, which ARE non-green — they owed
+                            // a result and produced none.
                             let nonGreen =
                                 results.Results
                                 |> Map.toList
-                                |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
+                                |> List.filter (fun (_, r) ->
+                                    match TestResult.verdict r with
+                                    | Verified -> false
+                                    | Refuted -> true
+                                    | NothingVerified -> not (TestResult.isNoMatch r))
 
                             let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
 
@@ -4731,9 +4823,10 @@ let create
                             let deferred = deferredList.Length
 
                             // Zero-match projects are counted OUT of `passed`. `passed` is
-                            // derived by exclusion and `isPassed` is deliberately true for
-                            // `TestsNoMatch`, so without this a project that executed no
-                            // test is reported as one that passed — and the status line
+                            // derived by exclusion, and the `nonGreen` fold above
+                            // deliberately excludes them (a zero match is not a failure to
+                            // report), so without this subtraction a project that executed
+                            // no test is reported as one that passed — and the status line
                             // then disagrees with the CLI, which counts them separately.
                             let noMatch =
                                 results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
@@ -4863,9 +4956,9 @@ let create
                                         // `Deferred`-severity ledger entry and routes it to
                                         // `Incomplete`/exit 2, not the exit 1 a red earns —
                                         // a build-ordering race left one project unrun.
-                                        // `isPassed` is false for a defer, so its symbols
-                                        // never commit (the next build re-runs them) and
-                                        // the result is uncacheable.
+                                        // A defer's `verdict` is `NothingVerified`, so its
+                                        // symbols never commit (the next build re-runs them)
+                                        // and the result is uncacheable.
                                         ctx.ReportStatus(
                                             PluginStatus.completedNow
                                                 $"%s{runSummary} — %d{deferred} waiting on build (tests did not run): %s{names}"

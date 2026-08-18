@@ -124,7 +124,26 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
 
         let projectFiles = graph.GetAllProjects() |> List.map AbsProjectPath.value
 
-        let allInputs = (sourceFiles @ projectFiles) |> List.sort
+        // AUTOMATION-303 case 2. MSBuild's IMPLICIT IMPORTS — `Directory.Build.props`,
+        // `Directory.Build.targets`, `Directory.Packages.props` — are inputs to the
+        // build that no project NAMES, so they appear in neither list above: they are
+        // not compile items (so not in `GetAllFiles`) and not projects (so not in
+        // `GetAllProjects`). A `<Compile Include=…>` in one of them adds a file to every
+        // project beneath it while leaving every project file and every already-known
+        // source file byte-identical — the merkle does not move, the task cache replays
+        // "built N projects (cached)", and the new file is never compiled. That is case
+        // 2's exact shape (a cached build hiding a real compile error), reached through
+        // the one door the project-file merkle left open.
+        //
+        // Found per project by MSBuild's own nearest-ancestor rule
+        // (`StructureFiles.implicitImportsFor`), so a file MSBuild would not import
+        // cannot invalidate a build it could not have affected.
+        let implicitImports =
+            projectFiles
+            |> List.collect FsHotWatch.StructureFiles.implicitImportsFor
+            |> List.distinct
+
+        let allInputs = (sourceFiles @ projectFiles @ implicitImports) |> List.distinct |> List.sort
         let sb = System.Text.StringBuilder()
 
         for path in allInputs do

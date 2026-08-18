@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **BREAKING** — `TestResult.isPassed` is **deleted**. Replaced by
+  `TestResult.verdict : TestResult -> ProjectVerdict` (`Verified` | `Refuted` |
+  `NothingVerified`) plus the single derived bool `TestResult.verifiedGreen`
+  (AUTOMATION-278).
+  - Why: `isPassed` answered TRUE for `TestsNoMatch`, so "we ran nothing" was a
+    sub-case of "we passed". Every aggregator folding on it was blind to a
+    zero-test run by construction and had to remember to re-derive the fact
+    separately; of the five that fold over results, three did and two did not — and
+    a fifth (the per-symbol pending-verification commit) was found only after the
+    first fix, still discharging a symbol's test debt from a project that executed
+    zero tests.
+  - The migration is the compiler telling you where you were guessing. A fold that
+    meant "did this project prove its tests green?" becomes `verifiedGreen`
+    (`Verified` only). A fold that meant "is this project a failure to report?"
+    must `match` and name `Refuted` — `not verifiedGreen` is deliberately NOT that
+    predicate, and the asymmetry is the point.
+  - `TestResult.executedTests` now derives from `verdict` rather than re-matching
+    the cases; behaviour is unchanged.
+  - `TestResult.isNoMatch`, `isDeferred`, `isErrored`, `isTimedOut`,
+    `executedAnything`, `noneFiltered` and `RunVerification` are untouched.
+
 ## 0.10.0-alpha.11 - 2026-08-17
 
 - feat: **`RunSummary.nothingVerified` — the marker a run uses to say it verified
