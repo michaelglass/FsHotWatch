@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.12 - 2026-08-18
+
 - feat: `FsHotWatch.StructureFiles` — THE list of files that decide what is compiled
   (`*.fsproj`, `*.csproj`, and MSBuild's implicit imports `Directory.Build.props`,
   `Directory.Build.targets`, `Directory.Packages.props`), plus `implicitImportsFor`,
