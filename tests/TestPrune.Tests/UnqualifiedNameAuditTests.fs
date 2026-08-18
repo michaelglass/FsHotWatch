@@ -109,16 +109,13 @@ let ``a custom operation is indexed under its builder member, not its keyword`` 
 let ``a custom operation use mints no unqualified symbol of any kind`` () =
     let r = analyze customOperationSource
 
-    let offenders =
-        r.Symbols
-        |> List.filter (fun s -> rejectedByTheConstraint s || unqualifiedUnderTheExemption s)
-        |> List.map (fun s -> $"%s{s.FullName} (%A{s.Kind}, extern=%b{s.IsExtern})")
-
     // `module M` itself is single-segment and legitimately unqualified, so the audit is
     // scoped to the extern placeholders and members — the rows the keyword produced.
     let offenders =
-        offenders
-        |> List.filter (fun o -> not (o.StartsWith("M (", StringComparison.Ordinal)))
+        r.Symbols
+        |> List.filter (fun s -> s.FullName <> "M")
+        |> List.filter (fun s -> rejectedByTheConstraint s || unqualifiedUnderTheExemption s)
+        |> List.map (fun s -> $"%s{s.FullName} (%A{s.Kind}, extern=%b{s.IsExtern})")
 
     test <@ offenders |> List.isEmpty @>
 

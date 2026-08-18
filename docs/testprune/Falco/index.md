@@ -89,7 +89,12 @@ let edges =
 1. Checks if any changed file is a known handler (from the route table)
 2. Looks up which URL patterns that handler serves
 3. Scans your integration test `.fs` files for those URLs
-   (`/api/users/{id}` matches `/api/users/123` in your test code)
+   (`/api/users/{id}` matches `/api/users/123` in your test code).
+   A route with no literal path text of its own — the root route `/`, or a
+   param-only route like `/{lang}` — is matched only where a **quote opens
+   it** (`"/"`, `"/?lang=en"`, `'/'`). Anywhere else `/` on its own is
+   ordinary punctuation: matching it loosely made the root route match `//`,
+   the F# comment token, and so select every file with a comment in it
 4. Returns the test classes from files that reference affected routes
    (`FindAffectedTestClasses`), or those couplings as graph edges
    (`AnalyzeEdges`). A class or module counts as a test declaration only when its

@@ -7,6 +7,7 @@
     <ItemGroup>
         <Compile Include="Math.fs" />
         <Compile Include="StringUtils.fs" />
+        <Compile Include="Query.fs" />
     </ItemGroup>
 
 </Project>
