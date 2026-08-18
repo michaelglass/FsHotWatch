@@ -228,7 +228,8 @@ let ``parseConfig keeps the run-level beforeRun separate from tests.beforeRun`` 
             defaults
 
     test <@ config.BeforeRun = Some "run-level" @>
-    test <@ config.Tests |> Option.map (fun t -> t.BeforeRun) = Some(Some "test-level") @>
+    // AUTOMATION-320: a string in the config is now a ONE-STEP chain.
+    test <@ config.Tests |> Option.map (fun t -> t.BeforeRun) = Some(Some [ "test-level" ]) @>
 
 // --- parseConfig: includeOutsideRepo ---
 
@@ -607,7 +608,7 @@ let ``parseConfig tests with all fields`` () =
 
     test <@ config.Tests.IsSome @>
     let tests = config.Tests.Value
-    test <@ tests.BeforeRun = Some "dotnet build" @>
+    test <@ tests.BeforeRun = Some [ "dotnet build" ] @>
     test <@ tests.Projects.Length = 1 @>
     let p = tests.Projects.[0]
     test <@ p.Project = "MyTests.fsproj" @>

@@ -2101,3 +2101,97 @@ let ``a zero-match project reports its real total of zero, beside the refusal`` 
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("P [no-tests-matched] — total 0, 0 succeeded, 0 failed") @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-320 — a failing beforeRun step must SAY WHAT FAILED
+// ---------------------------------------------------------------------------
+//
+// The defect: `beforeRun failed:` — colon, then nothing. No step, no exit code,
+// no output. It happened on a healthy box, four `confirm` runs in a row, and it
+// aborts the merge verb, so the work simply could not be landed. Finding the
+// culprit meant running all nine chained commands by hand, and the message very
+// nearly misattributed the blame to the change under test.
+
+module ``beforeRun failure reporting`` =
+
+    let private tmpRepo () =
+        let suffix = Guid.NewGuid().ToString("N")
+        let dir = Path.Combine(Path.GetTempPath(), $"fshw-hook-%s{suffix}")
+        Directory.CreateDirectory dir |> ignore
+        dir
+
+    let private cleanup dir =
+        try
+            Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+    [<Fact>]
+    let ``a failing step is named, with its exit code and its output`` () =
+        let repo = tmpRepo ()
+
+        try
+            let steps =
+                [ "echo first-ok"; "echo the-failing-output && exit 3"; "echo never-reached" ]
+
+            match runShellSteps "beforeRun" (Some 60) repo steps with
+            | HookOk -> failwith "expected the chain to fail"
+            | HookFailed failure ->
+                let message = HookFailure.describe failure
+
+                // WHICH step — the whole point. Position and the command itself.
+                test <@ failure.StepIndex = 2 @>
+                test <@ failure.StepCount = 3 @>
+                test <@ message.Contains "step 2/3" @>
+                test <@ message.Contains "exit 3" @>
+
+                // ITS output, not the chain's.
+                test <@ message.Contains "the-failing-output" @>
+
+                // And it STOPPED: running on would waste time and could bury the
+                // first failure behind a later one.
+                test <@ not (message.Contains "never-reached") @>
+        finally
+            cleanup repo
+
+    [<Fact>]
+    let ``a step that fails SILENTLY still produces a non-empty reason`` () =
+        // THE REGRESSION. This is the exact shape that produced `beforeRun failed:`
+        // and nothing else: a process that writes to neither stream. The old code
+        // interpolated an empty string after the colon; the reason is a record now,
+        // so a message that says nothing cannot be rendered.
+        let repo = tmpRepo ()
+
+        try
+            match runShellSteps "beforeRun" (Some 60) repo [ "exit 7" ] with
+            | HookOk -> failwith "expected the chain to fail"
+            | HookFailed failure ->
+                let message = HookFailure.describe failure
+
+                test <@ message.Contains "exit 7" @>
+                test <@ message.Contains "(no output" @>
+                // Never again: a message that trails off after the colon.
+                test <@ not (message.TrimEnd().EndsWith("failed:", StringComparison.Ordinal)) @>
+        finally
+            cleanup repo
+
+    [<Fact>]
+    let ``a green chain reports success and runs every step`` () =
+        // The control. Without it, a runner that always returned HookFailed would
+        // satisfy both tests above.
+        let repo = tmpRepo ()
+
+        try
+            let marker = Path.Combine(repo, "ran.txt")
+
+            let steps = [ "echo one > ran.txt"; "echo two >> ran.txt"; "echo three >> ran.txt" ]
+
+            match runShellSteps "beforeRun" (Some 60) repo steps with
+            | HookFailed f -> failwith $"expected success, got: %s{HookFailure.describe f}"
+            | HookOk ->
+                let contents = File.ReadAllText marker
+                test <@ contents.Contains "one" @>
+                test <@ contents.Contains "two" @>
+                test <@ contents.Contains "three" @>
+        finally
+            cleanup repo
