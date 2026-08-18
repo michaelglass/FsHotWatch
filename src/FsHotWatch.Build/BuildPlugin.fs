@@ -176,6 +176,139 @@ type UnexaminedProject =
     /// it against, so only its EXISTENCE was checked, never whether it is CURRENT.
     | NoSourceToCompare of project: string
 
+/// What ONE project contributed to an artifact-freshness pass. THE three-way answer,
+/// taken once, because two consumers need different halves of it and they may not
+/// disagree about where the lines fall.
+///
+/// `verifyArtifactsFresh` wants the STALE arm — it drives the post-build demotion and the
+/// cache-REPLAY gate. `artifactCoverageGap` wants the NOT-EXAMINED arm. Those used to be
+/// two hand-written walks over the same graph, each carrying its own copy of the
+/// non-obvious rule: a DERIVABLE path whose DLL is missing WAS examined, because that IS
+/// the finding (`DllMissing`), so it is not a gap. Two copies of a rule that has to agree
+/// is exactly how this gate degrades silently — the stale list goes empty because nothing
+/// could be looked at, while the floor that exists to say so has drifted about what
+/// "looked at" means.
+type internal ArtifactExamination =
+    /// The output was located and no source on disk is newer than it. Nothing to report.
+    | ExaminedFresh
+    /// The output was located and found stale — the finding `verifyArtifactsFresh`
+    /// returns, and the reason a cache replay is refused.
+    | ExaminedStale of StaleArtifact
+    /// Nothing, or only half, could be checked — see `UnexaminedProject`.
+    | NotExamined of UnexaminedProject
+
+/// Classify ONE project's build output against its sources.
+///
+/// mtime IS the right signal HERE, unlike the content-hashed build-input merkle,
+/// because the question is strictly temporal: "was the DLL regenerated *after* the
+/// newest source?" — i.e. did MSBuild's incremental cache skip relinking an artifact a
+/// real edit should have rebuilt. In that failure mode the edit bumped the source mtime,
+/// so a DLL older than its source is the tell. There is no "expected DLL content" to hash
+/// against, so a content check is not even expressible here; the merkle is the content
+/// guard and this is its temporal complement.
+/// See docs/adr-008-mtime-is-not-a-content-oracle.md.
+let internal examineArtifact
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
+    (proj: AbsProjectPath)
+    : ArtifactExamination =
+    let stem = Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)
+
+    match graph.GetCanonicalDllPath(proj) with
+    | None -> NotExamined(NoOutputDerivable stem)
+    | Some dllPath when not (File.Exists dllPath) ->
+        ExaminedStale
+            { Project = stem
+              Reason = DllMissing dllPath }
+    | Some dllPath ->
+        let dllTime = File.GetLastWriteTimeUtc dllPath
+
+        match graph.GetMaxSourceMtime(proj) with
+        | Some srcTime when dllTime < srcTime ->
+            ExaminedStale
+                { Project = stem
+                  Reason = DllOlderThanSources(dllTime, srcTime) }
+        | Some _ -> ExaminedFresh
+        | None -> NotExamined(NoSourceToCompare stem)
+
+/// Every project in the graph, classified once. THE walk — a caller must never look at
+/// the stale projects and the unexamined ones through two separate traversals of a graph
+/// (and a filesystem) that can move in between.
+let internal examineArtifacts (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : ArtifactExamination list =
+    graph.GetAllProjects() |> List.map (examineArtifact graph)
+
+/// The stale findings out of a classified walk.
+let internal staleArtifactsOf (examinations: ArtifactExamination list) : StaleArtifact list =
+    examinations
+    |> List.choose (function
+        | ExaminedStale stale -> Some stale
+        | ExaminedFresh
+        | NotExamined _ -> None)
+
+/// The gaps out of a classified walk.
+let internal unexaminedOf (examinations: ArtifactExamination list) : UnexaminedProject list =
+    examinations
+    |> List.choose (function
+        | NotExamined unexamined -> Some unexamined
+        | ExaminedFresh
+        | ExaminedStale _ -> None)
+
+/// `artifactCoverageGap`'s sentence, over an ALREADY-classified walk — so the plugin can
+/// report the gap from the very list it took its stale projects from. See
+/// `artifactCoverageGap` below for what the gap MEANS and why it reports rather than
+/// refuses.
+let internal describeCoverageGap (examinations: ArtifactExamination list) : string option =
+    let unexamined = unexaminedOf examinations
+
+    let noOutput =
+        unexamined
+        |> List.choose (function
+            | NoOutputDerivable p -> Some p
+            | NoSourceToCompare _ -> None)
+
+    let noSource =
+        unexamined
+        |> List.choose (function
+            | NoSourceToCompare p -> Some p
+            | NoOutputDerivable _ -> None)
+
+    if List.isEmpty examinations then
+        // The most complete degradation there is, and the quietest: with no projects the
+        // stale list is empty (so the gate vouches for everything) AND the merkle hashes
+        // an empty input (so every such repo shares one constant cache key). Nothing
+        // downstream can tell that apart from a small, clean tree. Written while
+        // measuring this very change with a path filter that excluded every project by
+        // accident — the count is the only thing that showed it.
+        Some
+            "artifact freshness examined NOTHING: the project graph holds no projects at all, so every stale-artifact \
+             check passes vacuously and the build merkle hashes an empty input. If this repo has .fsproj files, \
+             project discovery is broken."
+    elif List.isEmpty unexamined then
+        None
+    else
+        let noOutputNames = String.concat ", " noOutput
+        let noSourceNames = String.concat ", " noSource
+
+        let clauses =
+            [ if not (List.isEmpty noOutput) then
+                  $"the graph names no build output for %s{noOutputNames} (no TargetFramework is registered for \
+                    them), so NOTHING about those projects is verified"
+              if not (List.isEmpty noSource) then
+                  $"%s{noSourceNames} has an output but no source file on disk to compare it against, so only its \
+                    existence was checked, never whether it is current" ]
+
+        let examined = List.length examinations - List.length unexamined
+
+        let lead =
+            if examined = 0 then
+                $"artifact freshness examined 0 of %d{List.length examinations} project(s) — NOT ONE build output \
+                  could be located, so every stale-artifact check passes vacuously and a cache replay is gated on \
+                  nothing: "
+            else
+                $"artifact freshness fully examined %d{examined} of %d{List.length examinations} project(s) — this \
+                  tree is NOT fully protected against stale build output, on the post-build path or at cache replay: "
+
+        Some(lead + String.concat "; " clauses + ".")
+
 /// THE FLOOR: a freshness pass that examined nothing is not a fresh tree.
 ///
 /// `verifyArtifactsFresh` reports the projects it found STALE, and drives both the
@@ -201,72 +334,7 @@ type UnexaminedProject =
 ///
 /// `None` means every project in the graph was fully examined — there is nothing to say.
 let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
-    let projects = graph.GetAllProjects()
-
-    // Mirrors `verifyArtifactsFresh`'s own walk exactly, including which arm counts as a
-    // finding: a DERIVABLE path whose DLL is missing was examined — that IS the finding
-    // (`DllMissing`) — so it is not a gap.
-    let unexamined =
-        projects
-        |> List.choose (fun proj ->
-            let stem = Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)
-
-            match graph.GetCanonicalDllPath(proj) with
-            | None -> Some(NoOutputDerivable stem)
-            | Some dllPath when not (File.Exists dllPath) -> None
-            | Some _ ->
-                match graph.GetMaxSourceMtime(proj) with
-                | Some _ -> None
-                | None -> Some(NoSourceToCompare stem))
-
-    let noOutput =
-        unexamined
-        |> List.choose (function
-            | NoOutputDerivable p -> Some p
-            | NoSourceToCompare _ -> None)
-
-    let noSource =
-        unexamined
-        |> List.choose (function
-            | NoSourceToCompare p -> Some p
-            | NoOutputDerivable _ -> None)
-
-    if List.isEmpty projects then
-        // The most complete degradation there is, and the quietest: with no projects the
-        // stale list is empty (so the gate vouches for everything) AND the merkle hashes
-        // an empty input (so every such repo shares one constant cache key). Nothing
-        // downstream can tell that apart from a small, clean tree. Written while
-        // measuring this very change with a path filter that excluded every project by
-        // accident — the count is the only thing that showed it.
-        Some
-            "artifact freshness examined NOTHING: the project graph holds no projects at all, so every stale-artifact \
-             check passes vacuously and the build merkle hashes an empty input. If this repo has .fsproj files, \
-             project discovery is broken."
-    elif List.isEmpty unexamined then
-        None
-    else
-        let noOutputNames = String.concat ", " noOutput
-        let noSourceNames = String.concat ", " noSource
-
-        let clauses =
-            [ if not (List.isEmpty noOutput) then
-                  $"the graph names no build output for %s{noOutputNames} (no TargetFramework is registered for \
-                    them), so NOTHING about those projects is verified"
-              if not (List.isEmpty noSource) then
-                  $"%s{noSourceNames} has an output but no source file on disk to compare it against, so only its \
-                    existence was checked, never whether it is current" ]
-
-        let examined = List.length projects - List.length unexamined
-
-        let lead =
-            if examined = 0 then
-                $"artifact freshness examined 0 of %d{List.length projects} project(s) — NOT ONE build output could \
-                  be located, so every stale-artifact check passes vacuously and a cache replay is gated on nothing: "
-            else
-                $"artifact freshness fully examined %d{examined} of %d{List.length projects} project(s) — this tree \
-                  is NOT fully protected against stale build output, on the post-build path or at cache replay: "
-
-        Some(lead + String.concat "; " clauses + ".")
+    describeCoverageGap (examineArtifacts graph)
 
 let create
     (command: string)
@@ -320,10 +388,7 @@ let create
     let isTestProject (proj: AbsProjectPath) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
 
-    let projectStem (p: AbsProjectPath) =
-        Path.GetFileNameWithoutExtension(AbsProjectPath.value p)
-
-    /// `artifactCoverageGap`, at most ONCE per plugin instance.
+    /// The coverage gap, at most ONCE per plugin instance.
     ///
     /// What it reports is a property of the project GRAPH — which projects declare a
     /// TargetFramework, which have sources on disk — not of a run, so it is the same
@@ -332,11 +397,11 @@ let create
     /// caller onwards pays nothing at all.
     let coverageGapReported = ref false
 
-    let reportCoverageGapOnce () =
+    let reportCoverageGapOnce (examinations: ArtifactExamination list) =
         if not coverageGapReported.Value then
             coverageGapReported.Value <- true
 
-            match artifactCoverageGap graph with
+            match describeCoverageGap examinations with
             | Some gap -> warn "build" gap
             | None -> ()
 
@@ -347,37 +412,14 @@ let create
     /// BuildFailed signal instead of running against artifacts MSBuild's
     /// incremental cache silently failed to update.
     ///
-    /// mtime IS the right signal HERE, unlike the content-hashed build-input
-    /// merkle, because the question is strictly temporal: "was the DLL regenerated
-    /// *after* the newest source?" — i.e. did MSBuild's incremental cache skip
-    /// relinking an artifact a real edit should have rebuilt. In that failure mode
-    /// the edit bumped the source mtime, so a DLL older than its source is the tell.
-    /// There is no "expected DLL content" to hash against, so a content check is
-    /// not even expressible here; the merkle is the content guard and this is its
-    /// temporal complement.
-    /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
+    /// ONE walk, whose result answers both questions: the stale projects it returns and
+    /// the coverage gap it reports are `List.choose`d out of the same classification, so
+    /// the gate and the floor under it cannot disagree about which projects were
+    /// examined at all. See `examineArtifact` for why mtime is the right signal here.
     let verifyArtifactsFresh () : StaleArtifact list =
-        reportCoverageGapOnce ()
-
-        [ for proj in graph.GetAllProjects() do
-              match graph.GetCanonicalDllPath(proj) with
-              | None -> () // no TFM — nothing to verify
-              | Some dllPath ->
-                  let stem = projectStem proj
-
-                  if not (File.Exists dllPath) then
-                      yield
-                          { Project = stem
-                            Reason = DllMissing dllPath }
-                  else
-                      let dllTime = File.GetLastWriteTimeUtc dllPath
-
-                      match graph.GetMaxSourceMtime(proj) with
-                      | Some srcTime when dllTime < srcTime ->
-                          yield
-                              { Project = stem
-                                Reason = DllOlderThanSources(dllTime, srcTime) }
-                      | _ -> () ]
+        let examinations = examineArtifacts graph
+        reportCoverageGapOnce examinations
+        staleArtifactsOf examinations
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps

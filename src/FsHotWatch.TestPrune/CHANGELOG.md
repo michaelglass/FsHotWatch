@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: `StaleArtifactPreflight.coverageReport` builds its project list with
+  `String.concat`, matching the idiom used everywhere else in the tree (and by its twin in
+  the build plugin). Rendered output is unchanged.
+
 ## 0.13.0-alpha.14 - 2026-08-18
 
 - fix: **a stale-build-output refusal is now telling the CLI which of the two "waiting

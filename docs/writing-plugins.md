@@ -114,6 +114,121 @@ Subscribe to these via `Subscriptions` (each tag below maps to the matching
 Whatever you subscribe to is delivered; `Custom msg` (your own `'Msg`, posted
 via `ctx.Post`) is always delivered regardless of subscriptions.
 
+## Reading a test run's results
+
+`TestRunCompleted` carries `Results: Map<string, TestResult>` — one entry per test
+project — plus `Verification`, the run-level answer. **They answer different
+questions, and the API is shaped so you cannot use one for the other.**
+
+Per project, ask [`TestResult.verdict`][verdict]. It returns a `ProjectVerdict` with
+exactly three cases:
+
+| `ProjectVerdict` | What it means |
+|------------------|---------------|
+| `Verified` | The runner executed at least one test and every one passed. The only case that discharges anything. |
+| `Refuted` | Tests executed and at least one failed (or was killed at its timeout). The only case that is this project's own fault, and the only one a "which projects failed?" report should list. |
+| `NothingVerified` | The filter matched no test, the build artifact was not ready, or the host aborted before writing a report. **Neither a pass nor a failure.** |
+
+`NothingVerified` is the whole point of the type. There used to be a
+`TestResult.isPassed` bool, and it answered **`true`** for a project that ran zero
+tests — so `Map.forall isPassed` over a run where every project executed nothing
+type-checked, was total, and folded to a green. It is **deleted**. What replaces it is
+`verdict` plus exactly one bool, `TestResult.verifiedGreen`, which is true for
+`Verified` alone.
+
+There is deliberately **no** "did not fail" bool. `not (TestResult.verifiedGreen r)`
+is true for a zero-match project as well as a red one — which is what you want for a
+*gate* (nothing was proved) and wrong for a failure *report* (nothing failed). A
+report must match on `Refuted`. Adding a bool that spans all three cases would
+rebuild the original defect under a new name.
+
+For the **run-level** question, read `Verification` rather than folding the
+per-project bool: `Map.forall` is vacuously `true` for an empty map, so a run that
+selected no project at all would fold to a green having executed nothing.
+
+<!-- This block is sourced from a real, compiled example — see
+     examples/PluginExample/PluginExample.fs. Do not edit it here; edit the
+     source file and run `mise run sync-docs`. It reuses the `open`s from the
+     block above. -->
+<!-- sync:test-verdict-example:start src=examples/PluginExample/PluginExample.fs -->
+```fsharp
+/// A plugin that reports what a finished test run actually ESTABLISHED.
+///
+/// It exists to demonstrate the two questions a test run answers and why they need
+/// different tools: `TestResult.verdict` answers the PER-PROJECT one, and
+/// `TestRunCompleted.Verification` answers the RUN-level one. Reaching for the first
+/// to answer the second is the mistake this API shape exists to prevent.
+let testVerdictPlugin: PluginHandler<unit, unit> =
+    { Name = PluginName.create "test-verdict"
+      Init = ()
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | TestRunCompleted completed ->
+                    // PER PROJECT. `TestResult.verdict` is the ONE place the six
+                    // `TestResult` cases are told apart, and `ProjectVerdict` has exactly
+                    // three answers. Match it exhaustively — there is deliberately no
+                    // bool spanning all three, because `NothingVerified` is neither a
+                    // pass nor a failure and any single bool has to lie about one of them.
+                    let describe (project: string) (result: TestResult) =
+                        match TestResult.verdict result with
+                        | Verified -> $"%s{project}: verified green"
+                        | Refuted -> $"%s{project}: FAILED — this project's own fault"
+                        // The filter matched no test, the build was not ready, or the
+                        // host aborted before writing a report. Nothing was proved — and
+                        // nothing failed either, so this project is not a red.
+                        | NothingVerified -> $"%s{project}: nothing verified"
+
+                    for KeyValue(project, result) in completed.Results do
+                        printfn "%s" (describe project result)
+
+                    // The projects safe to treat as green. `verifiedGreen` is the only
+                    // bool offered over `verdict`, and it is TRUE for `Verified` alone —
+                    // so selecting with it can never let a project that ran nothing pass.
+                    let green =
+                        completed.Results
+                        |> Map.toList
+                        |> List.filter (fun (_, r) -> TestResult.verifiedGreen r)
+
+                    // A failure REPORT matches `Refuted` instead of negating that bool.
+                    // `not (TestResult.verifiedGreen r)` is also true for a project that
+                    // verified nothing — correct for a gate, wrong for a report, which is
+                    // why no "not a failure" bool is offered to blur the two.
+                    let failed =
+                        completed.Results
+                        |> Map.toList
+                        |> List.filter (fun (_, r) -> TestResult.verdict r = Refuted)
+
+                    // PER RUN. Do NOT fold the per-project bool to get here: `Map.forall`
+                    // is vacuously TRUE for an empty map, so a run that selected no
+                    // project at all would report green having executed nothing.
+                    // `Verification` is the total run-level answer and it settles
+                    // emptiness first.
+                    let summary =
+                        match completed.Verification with
+                        | Ran FullSuite -> $"full suite: %d{List.length green} green, %d{List.length failed} failed"
+                        | Ran Partial -> $"impact-filtered: %d{List.length green} green, %d{List.length failed} failed"
+                        | NoProjectsSelected -> RunSummary.nothingVerified "no project was selected"
+                        | AllZeroMatch n -> RunSummary.nothingVerified $"%d{n} project(s) ran, all matched zero tests"
+                        | NothingExecuted -> RunSummary.nothingVerified "no project executed a test"
+
+                    // `nothingVerified` marks the three cases above so every surface
+                    // refuses them a ✓. The status stays `Completed` — nothing FAILED.
+                    ctx.ReportStatus(Completed(DateTime.UtcNow, RunVerdict.create summary completed.TotalElapsed))
+
+                    return state
+                | _ -> return state
+            }
+      Commands = []
+      Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
+      CacheKey = None
+      Teardown = None }
+```
+<!-- sync:test-verdict-example:end -->
+
+[verdict]: ../src/FsHotWatch/Events.fs
+
 ## The context (`ctx`)
 
 `ctx` carries everything a handler can do as a side effect:

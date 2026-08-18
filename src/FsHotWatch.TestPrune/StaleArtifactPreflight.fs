@@ -229,7 +229,7 @@ type Outcome =
 /// `None` means every runnable project was examined — there is nothing to say.
 let coverageReport (runnable: string list) (examined: string list) : string option =
     let missed = runnable |> List.filter (fun p -> not (List.contains p examined))
-    let missedNames = String.Join(", ", missed)
+    let missedNames = String.concat ", " missed
 
     if List.isEmpty missed then
         None

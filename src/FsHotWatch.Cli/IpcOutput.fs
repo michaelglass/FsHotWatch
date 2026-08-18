@@ -112,9 +112,7 @@ let internal redCausesOf (noWarnFail: bool) (resp: DiagnosticsResponse) : Verdic
 /// number that can turn a red into NO VERDICT and the reasons printed beside it are the
 /// same entries by construction, BEFORE `MaxRedCauses` truncation.
 let internal unattributableCountOf (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
-    redCausesOf noWarnFail resp
-    |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
-    |> List.length
+    redCausesOf noWarnFail resp |> Verdict.RedCause.unattributable |> List.length
 
 /// Any "waiting on build" deferral in the ledger — and WHY? A `Deferred`-severity entry
 /// means a test project's tests DID NOT run: non-green (nothing verified) but not a
@@ -296,10 +294,8 @@ let renderIpcResult
                             | _ -> "no test report — counts unknown (not zero)"
 
                         let perProjectLines =
-                            projects.EnumerateArray()
-                            |> Seq.mapi (fun i p ->
-                                let (name, status) = projectStatuses.[i]
-                                $"  · %s{name} [%s{status}] — %s{countsLine p}")
+                            Seq.zip projectStatuses (projects.EnumerateArray())
+                            |> Seq.map (fun ((name, status), p) -> $"  · %s{name} [%s{status}] — %s{countsLine p}")
                             |> List.ofSeq
 
                         // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
@@ -946,46 +942,16 @@ let pollAndRender
             finalCauses.Value
             outcome
 
-        match outcome with
-        | CheckVerdict.CheckOutcome.Incomplete n ->
-            let detail =
-                if n > 0 then
-                    $"%d{n} file(s) could not be checked"
-                else
-                    "coverage could not be confirmed"
-
-            UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
-        // The three arms below print `Verdict.CheckProse` verbatim — the same words the
-        // daemon-less path (`RunOnceCheck`) prints and, for `waiting on build`, the same
-        // words the verdict file carries. Whether a daemon served the check is not
-        // something the explanation may vary on.
-        | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
-            // Non-green, but "could not complete", never a red. Distinct exit 2 so
-            // an autonomous loop / deploy preflight retries rather than treating it
-            // as a test failure.
-            UI.fail
-                $"Check incomplete: %s{Verdict.CheckProse.waitingOnBuildCause}\n%s{Verdict.CheckProse.waitingOnBuildRemedy}"
-        | CheckVerdict.CheckOutcome.WaitingOnBuild stale ->
-            // AUTOMATION-201. The stale-output cause, in its own words: retrying is the
-            // one thing that cannot help, so the generic "re-run once the build settles"
-            // above would cost a gate cycle to arrive back here.
-            UI.fail $"Check incomplete: %s{Verdict.CheckProse.staleBuildOutput stale}"
-        | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
-            // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
-            // "the run was too narrow", it is "we could not see what the run was".
-            UI.fail (Verdict.CheckProse.scopeUnreadable reason)
-        | CheckVerdict.CheckOutcome.UnearnedScope scope ->
-            // Nothing failed — and that is precisely the point. `confirm` was asked for
-            // a claim about the whole suite and the tests that ran do not support one,
-            // so it has no verdict to give. Say so; never launder it into a green.
-            UI.fail (Verdict.CheckProse.scopeTooNarrow scope)
-        | CheckVerdict.CheckOutcome.StaleDaemonState n ->
-            // AUTOMATION-303 AC5. Every failing diagnostic was unattributable to this
-            // tree, so the run has no verdict — and the remedy is named HERE, where the
-            // person who needs it is looking, rather than in a ticket they have not read.
-            UI.fail (Verdict.CheckProse.staleDaemonState n)
-        | CheckVerdict.CheckOutcome.Clean
-        | CheckVerdict.CheckOutcome.FailuresFound -> ()
+        // `Verdict.CheckProse.explainOutcome`, not a local match: the daemon-less path
+        // (`RunOnceCheck`) prints the very same call, so whether a daemon served the check
+        // is not something the explanation can vary on. `Some` only where there is
+        // something to say — `Clean` and `FailuresFound` are already explained by the
+        // plugin lines and the red causes above. `MaxConvergeAttempts` is what this path
+        // has and `--run-once` does not: it converges, so its "incomplete" can say how
+        // many re-scans it spent.
+        match Verdict.CheckProse.explainOutcome (Some MaxConvergeAttempts) outcome with
+        | Some explanation -> UI.fail explanation
+        | None -> ()
 
         CheckVerdict.exitCode outcome
     with

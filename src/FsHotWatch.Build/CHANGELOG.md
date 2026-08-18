@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- refactor: **artifact freshness is decided by ONE walk over the project graph**, not
+  two. `verifyArtifactsFresh` (which drives the post-build demotion and the cache-replay
+  gate) and `artifactCoverageGap` (the floor that says how much of the tree the gate could
+  actually examine) each carried their own copy of the same three-way rule — including the
+  non-obvious part, that a derivable path whose DLL is *missing* was examined, because
+  that IS the finding. The code said so out loud ("Mirrors `verifyArtifactsFresh`'s own
+  walk exactly"). Two copies of a rule that must agree is exactly how this gate degrades
+  quietly: the stale list goes empty because nothing could be looked at, while the floor
+  meant to catch that has drifted about what "looked at" means. Both are now
+  `List.choose`d out of a single classification. `artifactCoverageGap` keeps its
+  signature and its behaviour; no message text changed.
+
 ## 0.7.0-alpha.23 - 2026-08-18
 
 - fix: **the cache-replay gate covers every event that reads the cache** (AUTOMATION-245
