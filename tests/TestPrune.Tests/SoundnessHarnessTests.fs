@@ -25,12 +25,28 @@ module TestPrune.Tests.SoundnessHarnessTests
 // narrowing a conservative fallback, which would be a soundness REGRESSION
 // dressed up as an improvement.
 //
-// Scope: the symbol-graph layer — seeds, the transitive walk, and the plumbing
-// in `selectTests`. See "Not covered yet" at the bottom of this file.
+// Scope, in two layers, because they grade DIFFERENT things:
+//
+//   • The GRAPH-LAYER property below builds its `AnalysisResult` directly and
+//     grades the store's transitive closure and `selectTests`' plumbing. It does
+//     NOT grade extraction: `analyzeSource` is never called, so a binding form
+//     the analyzer fails to see is absent from both the store AND the oracle,
+//     and is structurally invisible here. Saying it grades
+//     "impact selection" would overclaim.
+//
+//   • The EXTRACTION-INCLUSIVE property (further down) closes exactly that gap:
+//     it emits real F# SOURCE, runs it through `analyzeSource`, and takes its
+//     oracle from the GENERATION PLAN rather than from anything the analyzer
+//     produced. A symbol or edge the analyzer drops therefore shows up as
+//     under-selection — the bug class, which the graph layer
+//     cannot reach.
+//
+// See "Not covered yet" at the bottom of this file.
 
 open System
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
 open TestPrune.AstAnalyzer
 open TestPrune.Domain
 open TestPrune.ImpactAnalysis
@@ -495,6 +511,292 @@ let ``soundness: the barrier property detects a marker that blocks a seed change
         test <@ Set.isEmpty (Set.difference viaSeed selected) @>
 
 // ---------------------------------------------------------------------------
+// Extraction-inclusive soundness (rework)
+// ---------------------------------------------------------------------------
+//
+// The property above compares a store built from a hand-constructed
+// `AnalysisResult` against an oracle read off the SAME generated edge map. That
+// makes it blind in one specific, important direction: if `analyzeSource` fails
+// to extract a symbol or an edge for some binding form, the edge is missing from
+// the store and equally missing from the oracle, so the two agree and the case
+// passes. Every binding form the tracked issue found broken would sail through it.
+//
+// This section removes that blindness the only way it can be removed: the corpus
+// becomes REAL F# SOURCE, it is analysed by the REAL analyzer, and the oracle is
+// derived from the PLAN THE GENERATOR WROTE — never from the analyzer's output.
+// The plan is ground truth by construction: the generator emitted `symA` calling
+// `symB`, so an edge A→B exists in the program whatever the analyzer thinks.
+//
+// A missed extraction is now a DISAGREEMENT rather than a shared blind spot.
+//
+// It runs far fewer cases than the graph-layer property (each one invokes FCS,
+// which costs ~a second, against microseconds for a synthetic graph). That is the
+// honest trade: this property is narrower in breadth and strictly deeper in what
+// it can catch, so both are kept rather than one replacing the other.
+
+/// A generated corpus that is real, compilable F# source.
+type private SourceCorpus =
+    {
+        /// The source text handed to `analyzeSource`.
+        Source: string
+        /// THE PLAN: `symbol -> symbols whose functions its body calls`, exactly as
+        /// written into `Source`. Ground truth, independent of extraction.
+        PlannedEdges: Map<string, string list>
+        TestSymbols: Set<string>
+        AllSymbols: string list
+    }
+
+/// `module rec`, so a generated body may call a symbol declared later and the
+/// corpus can contain cycles — the same shapes the graph-layer generator
+/// explores. A non-recursive module would silently restrict every corpus to a
+/// DAG and stop exercising the closure's cycle handling.
+///
+/// `FactAttribute` is declared in the generated source rather than referenced
+/// from xunit: the script options do not carry a reference to xunit, and the
+/// analyzer matches the attribute by NAME, which is what the real extraction
+/// does too.
+let private generateSourceCorpus (rng: Random) (n: int) : SourceCorpus =
+    let names = [ 0 .. n - 1 ] |> List.map symbolName
+
+    let planned =
+        [ for i in 0 .. n - 1 do
+              let outDegree = rng.Next(0, 3)
+
+              let targets =
+                  [ for _ in 1..outDegree do
+                        let t = rng.Next(0, n)
+
+                        if t <> i then
+                            yield t ]
+                  |> List.distinct
+
+              yield symbolName i, (targets |> List.map symbolName) ]
+        |> Map.ofList
+
+    // A quarter of the symbols are tests, same proportion as the graph layer.
+    let testSymbols = names |> List.filter (fun _ -> rng.Next(0, 4) = 0) |> Set.ofList
+
+    let body (i: int) =
+        match planned |> Map.tryFind (symbolName i) with
+        | Some [] | None -> "1"
+        | Some targets ->
+            targets
+            |> List.map (fun t -> $"""%s{t.Substring("Gen.".Length)} ()""")
+            |> String.concat " + "
+            |> fun calls -> calls + " + 1"
+
+    let declarations =
+        [ for i in 0 .. n - 1 do
+              let name = $"sym%d{i}"
+              let attr = if testSymbols.Contains(symbolName i) then "[<Fact>]\n" else ""
+              yield $"%s{attr}let %s{name} () = %s{body i}" ]
+        |> String.concat "\n\n"
+
+    let source =
+        $"module rec Gen\n\n\
+          type FactAttribute() =\n\
+          \u0020\u0020\u0020\u0020inherit System.Attribute()\n\n\
+          %s{declarations}\n"
+
+    { Source = source
+      PlannedEdges = planned
+      TestSymbols = testSymbols
+      AllSymbols = names }
+
+/// The oracle for the source corpus. Same reverse-BFS shape as `trulyAffectedTests`,
+/// but walking the PLAN — so it knows nothing about what the analyzer extracted.
+let private trulyAffectedFromPlan (corpus: SourceCorpus) (changed: Set<string>) : Set<string> =
+    let reverse =
+        [ for KeyValue(from, tos) in corpus.PlannedEdges do
+              for t in tos do
+                  yield t, from ]
+        |> List.groupBy fst
+        |> List.map (fun (k, pairs) -> k, pairs |> List.map snd)
+        |> Map.ofList
+
+    let rec walk (frontier: Set<string>) (seen: Set<string>) =
+        if Set.isEmpty frontier then
+            seen
+        else
+            let next =
+                frontier
+                |> Set.toList
+                |> List.collect (fun s -> reverse |> Map.tryFind s |> Option.defaultValue [])
+                |> Set.ofList
+
+            let fresh = Set.difference next seen
+            walk fresh (Set.union seen fresh)
+
+    Set.intersect (walk changed changed) corpus.TestSymbols
+
+/// Serialized with the other FCS-driving tests: `FSharpChecker` is shared
+/// process-wide and these modules would otherwise contend with
+/// `AstAnalyzerTests` for it.
+[<Collection("FCS-AstAnalyzer")>]
+module ``Extraction-inclusive soundness`` =
+
+    let private checker = FSharpChecker.Create()
+
+    /// Run the generated source through the REAL analyzer.
+    let private analyzeCorpus (corpus: SourceCorpus) : AnalysisResult =
+        let fileName = "/tmp/TestPruneSoundnessCorpus.fsx"
+
+        let options =
+            getScriptOptions checker fileName corpus.Source |> Async.RunSynchronously
+
+        match
+            analyzeSource checker fileName corpus.Source options "TestProject"
+            |> Async.RunSynchronously
+        with
+        | Ok r -> r
+        | Error msg -> failwith $"the generated corpus did not analyse: %s{msg}\n\nSOURCE:\n%s{corpus.Source}"
+
+    /// One case. `blindToChanged` exists for the positive control: it drops every
+    /// extracted edge POINTING AT a changed symbol, which is exactly the shape of
+    /// the defect this property exists to catch — a call site the analyzer failed
+    /// to turn into an edge, so nothing downstream knows it depends on the code
+    /// that moved. Removing an arbitrary edge instead would usually disconnect
+    /// nothing and the control would pass vacuously (it did, first attempt).
+    let private checkOneSource (rng: Random) (n: int) (blindToChanged: bool) : CaseOutcome =
+        let corpus = generateSourceCorpus rng n
+        let analysed = analyzeCorpus corpus
+
+        // Only symbols the analyzer actually produced can be "changed" — a change
+        // to a symbol it never saw has no file to attribute, which is a DIFFERENT
+        // (and much louder) failure than under-selection.
+        let extractedNames = analysed.Symbols |> List.map _.FullName |> Set.ofList
+
+        let changed =
+            corpus.AllSymbols
+            |> List.filter (fun sym -> extractedNames.Contains sym && rng.Next(0, 4) = 0)
+            |> function
+                | [] -> corpus.AllSymbols |> List.filter extractedNames.Contains |> List.truncate 1
+                | xs -> xs
+            |> Set.ofList
+
+        if Set.isEmpty changed then
+            CheckedEmpty
+        else
+
+        let dependencies =
+            if blindToChanged then
+                analysed.Dependencies |> List.filter (fun d -> not (changed.Contains d.ToSymbol))
+            else
+                analysed.Dependencies
+
+        let effective =
+            AnalysisResult.Create(analysed.Symbols, dependencies, analysed.TestMethods)
+
+        let store = fromAnalysisResults [ effective ]
+
+        let currentSymbols =
+            effective.Symbols
+            |> List.map (fun sym ->
+                if changed.Contains sym.FullName then
+                    { sym with ContentHash = sym.ContentHash + "-mutated" }
+                else
+                    sym)
+            |> List.groupBy _.SourceFile
+            |> Map.ofList
+
+        let changedFiles =
+            effective.Symbols
+            |> List.filter (fun sym -> changed.Contains sym.FullName)
+            |> List.map _.SourceFile
+            |> List.distinct
+
+        let selection, _events = selectTests store changedFiles currentSymbols
+
+        // THE ORACLE COMES FROM THE PLAN, not from `analysed`. That is the whole
+        // point: an edge the analyzer dropped is still in the plan, so its absence
+        // downstream surfaces as under-selection instead of silent agreement.
+        let expected =
+            trulyAffectedFromPlan corpus changed
+            |> Set.filter (fun t ->
+                // Restrict to tests the analyzer recognised AS tests. A test method
+                // it failed to recognise is a real defect, but a DIFFERENT one, and
+                // it is asserted separately below rather than folded in here.
+                analysed.TestMethods |> List.exists (fun tm -> tm.SymbolFullName = t))
+
+        match selectedTestNames selection with
+        | None -> SkippedRunAll
+        | Some selected ->
+            let missing = Set.difference expected selected
+
+            if not (Set.isEmpty missing) then
+                UnderSelected
+                    $"UNDER-SELECTION against the generation plan: %d{Set.count missing} test(s).\n\
+                       missing:  %A{Set.toList missing}\n\
+                       changed:  %A{Set.toList changed}\n\
+                       selected: %A{Set.toList selected}\n\n\
+                       SOURCE:\n%s{corpus.Source}"
+            elif Set.isEmpty expected then
+                CheckedEmpty
+            else
+                CheckedSubset
+
+    [<Fact>]
+    [<Trait("Guard", "testprune-extraction-soundness")>]
+    let ``soundness: selection never drops a test the SOURCE says is affected`` () =
+        let seed = 20260818
+        let rng = Random(seed)
+
+        // Far fewer cases than the graph-layer property: every one of these runs
+        // FCS over generated source. Depth over breadth, deliberately.
+        let outcomes =
+            [ for case in 1..12 do
+                  let n = 4 + (case % 7)
+                  yield case, n, checkOneSource rng n false ]
+
+        let failures =
+            outcomes
+            |> List.choose (fun (case, n, outcome) ->
+                match outcome with
+                | UnderSelected report -> Some $"[seed=%d{seed} case=%d{case} n=%d{n}]\n%s{report}"
+                | _ -> None)
+
+        test <@ List.isEmpty failures @>
+
+        // Non-vacuity, same discipline as the graph-layer property.
+        let realChecks =
+            outcomes
+            |> List.filter (fun (_, _, o) ->
+                match o with
+                | CheckedSubset -> true
+                | _ -> false)
+            |> List.length
+
+        test <@ realChecks >= 3 @>
+
+    [<Fact>]
+    [<Trait("PositiveControl", "testprune-extraction-soundness")>]
+    let ``the extraction harness detects a dropped dependency edge`` () =
+        // Proof the property above can FAIL. Without this, a green run is equally
+        // consistent with "extraction is sound" and "the comparison never ran" —
+        // which is precisely the criticism that put in QA Failed.
+        //
+        // Dropping an edge the analyzer DID extract simulates one it failed to
+        // extract: the plan still contains it, so the oracle still expects the
+        // test, and the store can no longer reach it.
+        let seed = 20260818
+        let rng = Random(seed)
+
+        let outcomes =
+            [ for case in 1..12 do
+                  let n = 4 + (case % 7)
+                  yield checkOneSource rng n true ]
+
+        let underSelected =
+            outcomes
+            |> List.filter (fun o ->
+                match o with
+                | UnderSelected _ -> true
+                | _ -> false)
+            |> List.length
+
+        test <@ underSelected >= 1 @>
+
+// ---------------------------------------------------------------------------
 // Not covered yet — deliberately recorded rather than implied
 // ---------------------------------------------------------------------------
 //
@@ -505,3 +807,13 @@ let ``soundness: the barrier property detects a marker that blocks a seed change
 //   incidentally by `selectTests`, but not generated adversarially here.
 // - The real-suite sweep (mutate real code, run the full suite, diff against
 //   selection) — a separate, much slower job.
+// - BINDING-FORM BREADTH. The extraction-inclusive property runs real source
+//   through the real analyzer, so it CAN see an extraction miss — but it can only
+//   see one in a form it actually emits, and the generator emits plain
+//   `let f () = g () + 1` module bindings. Operators, active patterns, interface
+//   members, computation expressions and the rest of the shapes the tracked issue
+//   enumerated are not generated, so a defect confined to one of those is still
+//   invisible. Widening the generator's repertoire is the direct next step, and
+//   it is the step that would have caught outright; it is
+//   listed here rather than claimed, because a harness that overstates its reach
+//   is the exact failure this file exists to avoid.
