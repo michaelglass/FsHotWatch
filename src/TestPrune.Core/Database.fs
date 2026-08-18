@@ -203,8 +203,25 @@ let private openConnection (dbPath: string) =
 ///          top-level single-segment module (`module Alpha`) has NO qualifier to have —
 ///          FCS reports its `FullName` as `Alpha` — so an unconditional constraint would
 ///          hard-fail indexing on any project containing one. That is the ONLY
-///          unqualified category, which is why the extern placeholder pass labels an
-///          unqualified target `Module` too (see `AstAnalyzer.extractResults`).
+///          unqualified category.
+/// v10    — no schema text change; a REBUILD, because v9 shipped the constraint inert and
+///          the rows it should have rejected are still in every v9 database.
+///
+///          v9's extern placeholder pass chose a kind from the shape of the string — no
+///          dot, therefore a module — so every unqualified name was relabelled into the
+///          one kind the CHECK exempts and no input could fail it. Measured on a v9 index
+///          of a ~9,300-test repo: 32 such rows, all `Module`, all computation-expression
+///          query keywords (`where` with 451 direct dependents reaching 1,828 test
+///          methods, `select` 337/1,826, `entity`, `set`, `take`, `orderBy`, …).
+///
+///          Two changes retire them. `AstAnalyzer.qualifyThroughDeclaringEntity` names a
+///          custom operation after the member it resolves to (`SqlHydra.Query...Where`,
+///          the name the definition side already records) instead of after the keyword,
+///          and the placeholder pass now takes `Module` only on evidence that FCS
+///          classified that name as a module. Neither reaches an existing row: an extern
+///          row's `source_file` is never in a re-indexed set, so orphan cleanup cannot
+///          collect it and the junk would outlive the fix in place. The recreate is what
+///          removes it.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -219,7 +236,7 @@ let private openConnection (dbPath: string) =
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
 /// the newer open path.
 [<Literal>]
-let SchemaVersion = 9
+let SchemaVersion = 10
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale

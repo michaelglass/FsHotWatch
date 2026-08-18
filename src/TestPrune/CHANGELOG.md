@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat!: **Your `.test-prune.db` is rebuilt on first run again (SchemaVersion 9→10).** Nothing to do — the first `test-prune index` after upgrading is a
+  full re-index rather than an incremental one. The bump is what removes rows the 8→9
+  constraint was supposed to have kept out: they are attached to no source file, so
+  nothing short of a rebuild collects them.
+- fix: **Query-builder keywords are no longer indexed as if they were symbols.**
+  In `select { for u in users do where (...) }`, F# reports `where` to
+  the compiler service as a bare name, so TestPrune indexed one node called `where` and
+  hung every query in the repo off it — including queries built with entirely different
+  libraries. On a real repo, one node named `select` stood for four unrelated functions
+  from three libraries. Each keyword is now recorded under the builder member it actually
+  calls, so `test-prune dead-code` and the graph read the way the code does. Test
+  selection is unchanged; this is accuracy of attribution, not a change in what runs.
+
 ## 7.0.0 - 2026-08-17
 
 - feat: **`run` and `status` honour `[<TestPrune.CompositionRoot>]`.** Mark the symbol
