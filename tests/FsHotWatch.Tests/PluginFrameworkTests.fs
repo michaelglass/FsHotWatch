@@ -1927,3 +1927,103 @@ let ``ledgerSummary counts a populated ledger and stays non-empty`` () =
     // Three findings total across the two files (two errors, one warning).
     test <@ summary.Contains "3 findings" @>
     test <@ (RunVerdict.create summary System.TimeSpan.Zero).Summary = summary @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — a cache HIT must leave the ledger where a cache MISS leaves it
+// ---------------------------------------------------------------------------
+//
+// The replay used to call `ClearPlugin` — the plugin's ENTIRE ledger — for every
+// non-`FileChecked` event, then replay only the errors captured in that one
+// batch. Findings for files OUTSIDE the batch were silently destroyed.
+//
+// A real run never does that: `reportOrClearFile` touches one file at a time, so
+// an earlier batch's findings stand. So a cache hit erased findings a cache miss
+// keeps — and the verdict gates on the ledger, making it a FALSE GREEN, strictly
+// worse than a stale summary.
+//
+// The assertion is EQUALITY between the two ledgers, deliberately. "Both
+// non-empty" would have passed throughout the bug: the batch's own findings were
+// always replayed; it was the other files' that vanished.
+
+/// A ledger that records what the framework actually did to it, so a cold run
+/// and a cached run can be compared rather than eyeballed.
+type private RecordingLedger() =
+    let entries = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
+
+    member _.Report (file: string) (es: ErrorEntry list) = entries[file] <- es
+    member _.ClearFile(file: string) = entries.Remove file |> ignore
+    member _.ClearAll() = entries.Clear()
+
+    /// Sorted so equality is about content, not insertion order.
+    member _.Snapshot() =
+        entries |> Seq.map (fun kv -> kv.Key, kv.Value) |> Seq.sortBy fst |> Seq.toList
+
+[<Fact(Timeout = 20000)>]
+let ``a cached whole-run replay leaves findings for files outside the batch`` () =
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "batch-1"
+        let pluginNameStr = "whole-run"
+
+        let entry message =
+            { Message = message
+              Severity = DiagnosticSeverity.Error
+              Line = 1
+              Column = 0
+              Detail = None }
+
+        // The handler reports ONLY about the file in its batch — the shape a
+        // per-file plugin (format-check) has, under a whole-run cache key.
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            ctx.ReportErrors "/tmp/repo/B.fs" [ entry "B is bad" ]
+                            ctx.ReportStatus(completedAt System.DateTime.UtcNow)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = Some(fun _ -> Some cacheKey)
+              Teardown = None }
+
+        let run (useCache: TaskCache.ITaskCache) =
+            async {
+                let ledger = RecordingLedger()
+
+                let services =
+                    { defaultServices with
+                        TaskCache = Some useCache
+                        ReportErrors = fun _ file es -> ledger.Report file es
+                        ClearErrors = fun _ file -> ledger.ClearFile file
+                        ClearPlugin = fun _ -> ledger.ClearAll() }
+
+                // A finding from an EARLIER batch, about a file this batch never
+                // mentions. This is the one the blanket clear destroyed.
+                ledger.Report "/tmp/repo/A.fs" [ entry "A is bad" ]
+
+                let reg = registerHandler services handler
+                reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/B.fs" ]))
+                do! Async.Sleep 150
+                return ledger.Snapshot()
+            }
+
+        // Cold: populates the cache.
+        let! cold = run cache
+        // Warm: same batch, served from the cache.
+        let! cached = run cache
+
+        // Both must know about A (the earlier batch) and B (this one).
+        test <@ cold |> List.map fst = [ "/tmp/repo/A.fs"; "/tmp/repo/B.fs" ] @>
+
+        // THE ASSERTION. Equality, not "both non-empty" — the batch's own finding
+        // was replayed even while the bug was live; A.fs was what disappeared.
+        test <@ cached = cold @>
+    }
+    |> Async.RunSynchronously

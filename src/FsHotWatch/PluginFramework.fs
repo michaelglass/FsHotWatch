@@ -618,10 +618,33 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                             match lookupResult with
                             | Some result ->
-                                // Clear stale errors before replay
+                                // AUTOMATION-343 — clear ONLY what the cached run itself
+                                // cleared. A replay must be observationally
+                                // indistinguishable from running the handler (the
+                                // invariant AUTOMATION-245 stated for the build cache),
+                                // and it was not:
+                                //
+                                // this used to call `ClearPlugin` for every non-FileChecked
+                                // event — the plugin's ENTIRE ledger — and then replay only
+                                // the errors captured in that one batch. Any finding for a
+                                // file OUTSIDE the batch was silently destroyed. A real run
+                                // never does that: `reportOrClearFile` touches one file at a
+                                // time, so earlier batches' findings stand. A cache HIT
+                                // therefore erased findings a cache MISS keeps, and the
+                                // verdict gates on the ledger — a false green.
+                                //
+                                // The blanket is also redundant: a run that genuinely
+                                // cleared everything captures a `("*", [])` marker, replayed
+                                // by the loop below. Replaying exactly what the run did, and
+                                // nothing more, is what makes hit ≡ run true by construction
+                                // rather than by coincidence.
+                                //
+                                // The per-file clear on `FileChecked` stays: it is scoped to
+                                // the one file the event is about, which is precisely what
+                                // the real handler does for that file.
                                 match event with
                                 | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
-                                | _ -> services.ClearPlugin handler.Name
+                                | _ -> ()
 
                                 // Replay errors
                                 for (file, entries) in result.Errors do
