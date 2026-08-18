@@ -15,7 +15,7 @@
         <PackageVersion Include="FSharp.Compiler.Service" Version="43.*" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
-        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
         <!-- Transitive pin: the SQLitePCLRaw bundle pulls native lib.e_sqlite3 2.1.11,
              flagged High by GHSA-2m69-gcr7-jv3q. The native binary re-versions onto SQLite's
              own line (3.53.3) independently of the 2.1.x managed core/provider/bundle, and
@@ -24,8 +24,8 @@
              of the published TestPrune.Core, so consumers inherit the floor and do not need a
              pin of their own — FsHotWatch carried duplicates of this one until 2026-08-11. -->
         <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
-        <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
-        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.9.0" />
+        <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
+        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.10.0" />
         <!-- RefStamp: inert build-time guard that stamps a ref onto local packs so
              fsprojlint's "local packs are ref-stamped" check is satisfied. PrivateAssets=all
              keeps it out of published package dependencies. -->
