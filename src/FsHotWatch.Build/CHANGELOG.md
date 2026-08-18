@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-08-18
+
 - refactor: **artifact freshness is decided by ONE walk over the project graph**, not
   two. `verifyArtifactsFresh` (which drives the post-build demotion and the cache-replay
   gate) and `artifactCoverageGap` (the floor that says how much of the tree the gate could
