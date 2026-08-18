@@ -698,7 +698,12 @@ let internal publishVerdict
     // wrote named nothing at all.
     (redCauses: Verdict.RedCause list)
     (outcome: CheckVerdict.CheckOutcome)
-    : unit =
+    // AUTOMATION-167. RETURNS the exit code it wrote, so the caller cannot compute a
+    // second one. The tree-moved downgrade below is decided HERE — it needs the two
+    // hashes taken around the write — so a caller re-deriving the code from `outcome`
+    // misses exactly the case the double-hash exists to catch: the file said
+    // `incomplete`/2 and the process returned 0, which is what CI reads.
+    : int =
     try
         let settled = FsHotWatch.TreeHash.compute repoRoot excludePatterns
         let suites = Verdict.suiteVerdicts repoRoot runReport.RunId
@@ -770,11 +775,18 @@ let internal publishVerdict
 
             for line in ProgressRenderer.AgentHints.forVerdict priorVerdict v do
                 eprintfn "%s" line
+
+        exitCode
     with
+    // Nothing was written, so there is no code "it wrote" to hand back. Fall back to
+    // the caller's own outcome — today's behaviour exactly — rather than inventing a
+    // red: a verdict file we could not save is a reporting failure, not a verdict.
     | :? System.IO.IOException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
+        CheckVerdict.exitCode outcome
     | :? System.UnauthorizedAccessException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
+        CheckVerdict.exitCode outcome
 
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
@@ -931,16 +943,21 @@ let pollAndRender
         let outcome =
             CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
 
-        publishVerdict
-            repoRoot
-            excludePatterns
-            checkMode
-            noWarnFail
-            finalRun.Value
-            impactScoped.Value
-            finalStatuses.Value
-            finalCauses.Value
-            outcome
+        // AUTOMATION-167. The exit code is the one `publishVerdict` WROTE, not a second
+        // computation from `outcome`. They differ exactly when the tree moved during
+        // the check: the file recorded `incomplete`/2 while this returned 0, so CI —
+        // the only consumer that gates on the exit code — read that as a pass.
+        let publishedExitCode =
+            publishVerdict
+                repoRoot
+                excludePatterns
+                checkMode
+                noWarnFail
+                finalRun.Value
+                impactScoped.Value
+                finalStatuses.Value
+                finalCauses.Value
+                outcome
 
         // `Verdict.CheckProse.explainOutcome`, not a local match: the daemon-less path
         // (`RunOnceCheck`) prints the very same call, so whether a daemon served the check
@@ -953,41 +970,45 @@ let pollAndRender
         | Some explanation -> UI.fail explanation
         | None -> ()
 
-        CheckVerdict.exitCode outcome
+        publishedExitCode
     with
     | ex when isVerdictWaitTimeout ex ->
         // The daemon's hard verdict deadline fired: a plugin overran the bound and is
         // most likely wedged. The remote message names the plugin and its elapsed time
         // (e.g. "still running: test-prune (1h 0m)"), so it is surfaced verbatim plus
         // the recovery path.
-        publishVerdict
-            repoRoot
-            excludePatterns
-            checkMode
-            noWarnFail
-            finalRun.Value
-            impactScoped.Value
-            finalStatuses.Value
-            finalCauses.Value
-            (CheckVerdict.CheckOutcome.Incomplete -1)
+        // AUTOMATION-167: return the code the verdict FILE records, not a literal.
+        let abortExitCode =
+            publishVerdict
+                repoRoot
+                excludePatterns
+                checkMode
+                noWarnFail
+                finalRun.Value
+                impactScoped.Value
+                finalStatuses.Value
+                finalCauses.Value
+                (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
             $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect logs/daemon.log, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
 
-        2
+        abortExitCode
     | ex when isDaemonShutdownDuringWait ex ->
-        publishVerdict
-            repoRoot
-            excludePatterns
-            checkMode
-            noWarnFail
-            finalRun.Value
-            impactScoped.Value
-            finalStatuses.Value
-            finalCauses.Value
-            (CheckVerdict.CheckOutcome.Incomplete -1)
+        // AUTOMATION-167: return the code the verdict FILE records, not a literal.
+        let abortExitCode =
+            publishVerdict
+                repoRoot
+                excludePatterns
+                checkMode
+                noWarnFail
+                finalRun.Value
+                impactScoped.Value
+                finalStatuses.Value
+                finalCauses.Value
+                (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
 
-        2
+        abortExitCode
