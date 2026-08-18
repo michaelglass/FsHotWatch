@@ -1673,7 +1673,26 @@ let pluginVerdicts
               // No `LastRun` (a plugin still Running, or a synthetic terminal from a
               // cache replay) means NO MEASUREMENT — not a zero-length run.
               ElapsedMs = parsed.LastRun |> Option.map (fun r -> int64 r.Elapsed.TotalMilliseconds)
-              Summary = parsed.LastRun |> Option.bind (fun r -> r.Summary) }))
+              // A failing plugin that set no `summary` still has its REASON on the run
+              // record — the error text, or the timeout's. Leaving `Summary = None` for
+              // those left the ONLY copy of the cause on the fixed-width `✗` status
+              // line, which caps at 80 characters: the reader got `… (+20 more)` with
+              // the real cause inside the omitted part, while the place that enumerates
+              // failures said `(no summary)`. A cause may never exist only in a
+              // truncated place, so it falls back here — UNTRUNCATED, with newlines
+              // collapsed so the line-oriented surfaces stay line-oriented.
+              Summary =
+                parsed.LastRun
+                |> Option.bind (fun r ->
+                    let nonEmpty (s: string) =
+                        let collapsed = s.Replace('\r', ' ').Replace('\n', ' ').Trim()
+                        if collapsed = "" then None else Some collapsed
+
+                    match r.Summary, r.Outcome with
+                    | Some s, _ -> nonEmpty s
+                    | None, FailedRun err -> nonEmpty err
+                    | None, TimedOut reason -> nonEmpty reason
+                    | None, CompletedRun -> None) }))
 
 /// The CTRF reports THIS RUN produced — the files in the run's own directory.
 ///
