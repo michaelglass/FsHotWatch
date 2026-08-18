@@ -3299,6 +3299,13 @@ let create
     // the Update handler and the cache intercept read/write it from different threads.
     let mutable freshnessRef: FileFreshness.Store = FileFreshness.load repoRoot
 
+    /// AUTOMATION-228. The clock `storedRowsExist: bool` did not have. Rows written
+    /// seconds ago by this session's own scan are not a baseline; diffing the current
+    /// extraction against them compares the file to itself, always reports "nothing
+    /// changed", and selects zero test projects — on a diff that ADDS tests. See
+    /// `FileFreshness.PriorRowLedger`, which owns the rule.
+    let priorRows = FileFreshness.PriorRowLedger()
+
     let updateFreshness (newStore: FileFreshness.Store) =
         Volatile.Write(&freshnessRef, newStore)
 
@@ -4174,6 +4181,14 @@ let create
                                 | Some symbols -> symbols
                                 | None -> db.GetSymbolsInFile(relPath)
 
+                            // AUTOMATION-228. WHOSE rows are these? `storedSymbols` is
+                            // non-empty both when a prior run indexed this file and when
+                            // THIS run did, seconds ago — and those mean opposite things.
+                            // The ledger remembers the first look, which is necessarily
+                            // taken before this session wrote anything for the file, so
+                            // it survives the snapshot short-circuit above.
+                            let storedRows = priorRows.Classify(relPath, not storedSymbols.IsEmpty)
+
                             // Accumulate per-project; flush on BuildCompleted.
                             // Replace any prior analysis for this file to avoid double-counting
                             // when a file is checked more than once before the flush (e.g. initial
@@ -4194,13 +4209,14 @@ let create
                             // extraction must be FCS-clean (a dirty current result means
                             // the just-extracted symbols are themselves suspect); given
                             // that, `FileFreshness.trustStoredRows` decides, from the
-                            // sidecar's verdict plus whether the index still HOLDS rows
-                            // for this file. Both arms of that pair are load-bearing and
-                            // both are documented there — in particular AUTOMATION-277's
+                            // sidecar's verdict plus what the index HOLDS for this file
+                            // and SINCE WHEN. Every arm of that pair is load-bearing and
+                            // all are documented there — AUTOMATION-277's
                             // `EverySymbolIsNew`, which is what a `Clean` stamp means once
-                            // a schema recreate has emptied the index underneath it.
-                            let storedTrust =
-                                FileFreshness.trustStoredRows storedFreshness (not storedSymbols.IsEmpty)
+                            // a schema recreate has emptied the index underneath it, and
+                            // AUTOMATION-228's `RowsFromThisRun`, which is what rows mean
+                            // when this run is the one that wrote them.
+                            let storedTrust = FileFreshness.trustStoredRows storedFreshness storedRows
 
                             let (changedNames, suppressedDiff) =
                                 // `EverySymbolIsNew` diffs against the empty stored set on
@@ -4211,15 +4227,25 @@ let create
                                 | true, (FileFreshness.DiffAgainstStored | FileFreshness.EverySymbolIsNew) ->
                                     let (changes, _events) = detectChanges normalizedSymbols storedSymbols
 
+                                    // AUTOMATION-228. A trustworthy extraction has now
+                                    // been taken AND consumed, so the rows it leaves
+                                    // behind are a real "before" for the next look —
+                                    // which is what keeps a missing baseline costing ONE
+                                    // widening per file rather than one on every save.
+                                    // Marked only here: the bypass arm below discards its
+                                    // extraction, and a baseline it never established
+                                    // must not be claimed.
+                                    priorRows.MarkBaselineEstablished relPath
+
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, trust=%A{storedTrust}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
 
                                     changedSymbolNames changes, false
                                 | _ ->
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, trust=%A{storedTrust}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
+                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, storedRowCount=%d{storedSymbols.Length}); falling back to no-diff for this file"
 
                                     [], true
 

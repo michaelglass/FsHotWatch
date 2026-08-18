@@ -231,9 +231,38 @@ type StoredRowTrust =
     /// either: contribute no changed symbols for this file.
     | NoDiff
 
+/// What the index holds for one file, and WHEN it came to hold it.
+///
+/// AUTOMATION-228. This replaced a `storedRowsExist: bool`, which was true both for
+/// "a genuine prior extraction" and for "rows this run wrote seconds ago" — two facts
+/// that mean OPPOSITE things. A fresh or recreated index's first scan indexes the
+/// CURRENT, already-edited tree and writes it as the baseline; `detectChanges` then
+/// diffs current-against-stored, finds them identical, and selects zero projects.
+/// Neither the selector nor freshness was broken. There was never a "before", and the
+/// predicate could not say so.
+///
+/// AUTOMATION-277's rule — "ask the index what it HOLDS, never how it came to be that
+/// way" — is kept, and this is the missing half of it: HOLDS needs a clock. Note what
+/// is still NOT an input: `Database.WasRecreated`, a fact about this session's open,
+/// answers neither "does the index hold rows for THIS file" nor "were they there
+/// before this session started". The distinction below is per file, which is the
+/// granularity the question actually has.
+///
+///   - `NoRows`           — the index holds nothing for this file.
+///   - `RowsFromPriorRun` — rows that were already in the index when this session
+///                          first looked. A real baseline: the tree may have moved
+///                          since, so a diff against them is meaningful.
+///   - `RowsFromThisRun`  — rows this session wrote itself, from the tree as it is
+///                          NOW. Diffing against them compares the file to itself and
+///                          can only ever report "nothing changed".
+type StoredRows =
+    | NoRows
+    | RowsFromPriorRun
+    | RowsFromThisRun
+
 /// Decide what the stored rows are good for, from the sidecar's verdict plus the one
-/// structural fact the sidecar cannot know — whether the index actually holds rows
-/// for this file right now.
+/// structural fact the sidecar cannot know — what the index holds for this file, and
+/// since when.
 ///
 /// AUTOMATION-277. `file-freshness.json` carries no schema version and lives beside a
 /// `test-impact.db` that DELETES AND RECREATES itself on a `SchemaVersion` bump. The
@@ -262,18 +291,67 @@ type StoredRowTrust =
 /// correctness, not an optimisation; `trustStoredRows: a Clean stamp can never buy the
 /// NARROW answer` is the test that says so.
 ///
-/// `Unknown` keeps AUTOMATION-67's asymmetry on purpose: with rows it is a seeded
+/// `Unknown` keeps AUTOMATION-67's asymmetry on purpose: with PRIOR rows it is a seeded
 /// `test-impact.db` (ADR-010) whose sidecar did not travel into a fresh workspace, and
 /// those rows are a real prior extraction worth diffing; with none it is an ordinary
 /// cold scan whose full-suite baseline runs anyway, so widening would buy nothing and
 /// cost a whole-suite selection on every cold start.
-let trustStoredRows (freshness: Freshness) (storedRowsExist: bool) : StoredRowTrust =
-    match freshness, storedRowsExist with
-    | Clean, true -> DiffAgainstStored
-    | Clean, false -> EverySymbolIsNew
-    | Unknown, true -> DiffAgainstStored
-    | Unknown, false -> NoDiff
+/// `RowsFromThisRun` is the AUTOMATION-228 arm. It resolves exactly as `NoRows` does,
+/// and for the same reason: in both cases the index knew NOTHING about this file
+/// before this run, so every symbol currently in it is new to the index. Routing it to
+/// `DiffAgainstStored` — which is what a bare `storedRowsExist = true` bought — is a
+/// self-comparison, and a self-comparison always reports zero changes. That is how a
+/// diff adding brand-new `[<Fact>]` tests selected zero test projects while the daemon
+/// log named every one of those tests: they were in the baseline the diff ran against.
+let trustStoredRows (freshness: Freshness) (rows: StoredRows) : StoredRowTrust =
+    match freshness, rows with
+    | Clean, RowsFromPriorRun -> DiffAgainstStored
+    | Clean, (NoRows | RowsFromThisRun) -> EverySymbolIsNew
+    | Unknown, RowsFromPriorRun -> DiffAgainstStored
+    // No sidecar record AND no baseline. `NoRows` stays `NoDiff` — an ordinary cold
+    // scan, whose full-suite baseline runs anyway, so widening buys nothing and costs a
+    // whole-suite selection on every cold start. `RowsFromThisRun` is NOT that case: the
+    // rows are this run's own, so the alternative is not "a cheap cold scan" but "a diff
+    // against itself", and `PendingVerification.fs`'s rule applies — widen, never wipe.
+    | Unknown, RowsFromThisRun -> EverySymbolIsNew
+    | Unknown, NoRows -> NoDiff
     | Dirty, _ -> NoDiff
+
+/// The clock `StoredRows` needs, kept per file for the life of one plugin session.
+///
+/// AUTOMATION-228. The index alone cannot answer "was there a before?": after a scan
+/// has indexed the already-edited tree, "this file has not changed" and "this index
+/// has never had a version of this file to compare against" produce byte-identical
+/// rows. Only WHEN the rows arrived separates them, and nothing was recording that.
+///
+/// Two operations, deliberately split:
+///   * `Classify` is a pure read. It answers from the FIRST look at each file, which
+///     is necessarily taken before this session has written anything for it.
+///   * `MarkBaselineEstablished` is the write, and the caller performs it only where a
+///     diff (or a widening) was actually CONSUMED. That is what keeps the widening to
+///     one per file per session instead of forever: once a trustworthy extraction has
+///     been taken and consumed, the rows the next look sees genuinely predate whatever
+///     edit provokes it, and the cheap narrow diff is correct again. A discarded
+///     extraction — an FCS-dirty one, or a `NoDiff` arm — marks nothing, so the next
+///     look still widens.
+///
+/// Thread-safe by construction: the mailbox and the cache intercept run on different
+/// threads, the same reason the refs beside it in `TestPrunePlugin` are `Volatile`.
+type PriorRowLedger() =
+    let baselineFor = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
+    /// What the index holds for `relPath`, and whether it is a baseline.
+    /// `currentRowsExist` is "does the index hold rows for this file right now".
+    member _.Classify(relPath: string, currentRowsExist: bool) : StoredRows =
+        let hasBaseline = baselineFor.GetOrAdd(relPath, (fun _ -> currentRowsExist))
+
+        if not currentRowsExist then NoRows
+        elif hasBaseline then RowsFromPriorRun
+        else RowsFromThisRun
+
+    /// Record that a trustworthy extraction of `relPath` has been taken AND consumed,
+    /// so the rows it leaves behind are a real "before" for the next look.
+    member _.MarkBaselineEstablished(relPath: string) : unit = baselineFor.[relPath] <- true
 
 /// True iff the sidecar has an explicit "ended clean" record for `relPath`.
 /// Absent entries return false — the conservative default for the `markClean` gate.
