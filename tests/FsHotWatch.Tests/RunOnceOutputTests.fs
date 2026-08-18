@@ -675,6 +675,7 @@ let private innerLoopExitFor (scope: FsHotWatch.Cli.IpcParsing.TestScope) : int 
     let inputs: FsHotWatch.Cli.CheckVerdict.CheckInputs =
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
           WaitingOnBuild = false
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = scope }
@@ -749,6 +750,7 @@ let ``confirm refuses every scope it did not positively establish — fault or n
         let inputs: FsHotWatch.Cli.CheckVerdict.CheckInputs =
             { PluginStatuses = Map.empty
               FailingDiagnostics = 0
+              UnattributableDiagnostics = 0
               WaitingOnBuild = false
               Coverage = FsHotWatch.Cli.IpcParsing.Complete
               Scope = scope }
