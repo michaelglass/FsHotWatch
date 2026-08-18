@@ -152,6 +152,34 @@ Also: `waiting on build` no longer says only "re-run once the build settles" —
 instruction that could not work. It now names `fshw confirm` as the escape and says
 that restarting the daemon is not one (the task cache is on disk and survives `stop`).
 
+**Two follow-ups, and one of them is a warning rather than a fix.**
+
+The gate matched `FileChanged` alone, and so did `force-rebuild` before it. A build
+plugin configured with `dependsOn` buffers file changes until its dependencies report
+and starts its build from the `CommandCompleted` that satisfies the last one — so for
+exactly those repos the lookup that decides whether a build runs was ungated, and
+neither `confirm`'s forced rebuild nor the artifact re-verification reached it. Every
+event that READS the cache is now gated; only the store arm is exempt.
+
+And the freshness check now says when it examined nothing. `verifyArtifactsFresh`
+returns the projects it found stale, so "nothing is stale" and "nothing could be
+looked at" are the same value; a graph that stops yielding build outputs switches the
+guard off while every run stays green. It now names each project it could not examine
+and why, once per plugin instance, on the `build` log channel. **Read that line if it
+appears: today a live daemon prints it about every project it has.** A TargetFramework
+reaches the graph only via `ProjectGraph.RegisterFromFsproj`, which nothing outside the
+test suite calls — the daemon registers projects through `RegisterProject`, which
+records no framework — so `GetCanonicalDllPath` answers `None` in production and this
+plugin's artifact freshness, replay gate and post-build demotion alike, has never
+examined a real artifact. Teaching the graph MSBuild's actual target path is the fix,
+and it deserves its own change: it switches on a build-reddening path that has never
+run outside tests.
+
+Measured, because the acceptance asked: the gate costs 0.40 ms on this repo's own
+graph (12 projects / 135 files, minimum of 50 interleaved lookups) against a merkle
+that hashes the same tree in 9.7–11.4 ms — about 4% on a warm lookup, and smaller than
+the merkle's own run-to-run spread. A warm no-op check still serves its cache.
+
 ### test-prune: stale build output is caught before the suite runs, and repaired
 
 A stale test-output dependency used to surface roughly three minutes into a run.
