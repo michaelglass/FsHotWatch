@@ -1015,6 +1015,219 @@ module ``URL pattern with path parameters matches correctly`` =
                                      TestClass = "UserPostsTests" } ]
                     @>)
 
+/// The ticket's own quantified reproduction: a route with no literal path text of its
+/// own — the root route `/` — used to match the F# COMMENT token `//`, so every commented
+/// line in the repo read as a reference to it. On the intelligence consumer that was 4,886
+/// comment openers against 43 real URL literals, and 65 of 65 integration test files
+/// selected for a one-line landing-page edit.
+///
+/// Both directions are pinned here. The narrowing tests fail against the pre-fix regex;
+/// the recall tests fail against the obvious wrong fix — dropping the degenerate route
+/// from matching altogether — which would silently stop selecting the landing page's own
+/// tests. Selecting FEWER tests than are affected is the worse defect of the two.
+module ``degenerate short route does not match comment syntax`` =
+
+    let private rootRoute =
+        [ { UrlPattern = "/"
+            HttpMethod = "GET"
+            HandlerSourceFile = "src/Handlers/Landing.fs"
+            HandlerFunction = Some "Landing.index" } ]
+
+    let private selectingRoot testFiles f =
+        withTestSetup rootRoute testFiles "IntTests" "tests/IntTests" [ "src/Handlers/Landing.fs" ] f
+
+    // -- narrowing: a comment is not a route reference ------------------------------
+
+    [<Fact>]
+    let ``a line comment does not select the file's tests`` () =
+        let testContent =
+            """type UnrelatedTests() =
+    [<Fact>]
+    member _.DoesSomethingElse() =
+        // this comment mentions nothing, but its own `//` used to match route `/`
+        ()
+"""
+
+        selectingRoot [ ("UnrelatedTests.fs", testContent) ] (fun result -> test <@ result |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``a doc comment does not select the file's tests`` () =
+        let testContent =
+            """type UnrelatedTests() =
+    /// Doc comments open with `///`, which also used to match route `/`.
+    [<Fact>]
+    member _.DoesSomethingElse() = ()
+"""
+
+        selectingRoot [ ("UnrelatedTests.fs", testContent) ] (fun result -> test <@ result |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``a file-opening license header does not select the file's tests`` () =
+        // The header sits at position 0, so a `^` alternative in the opening boundary would
+        // let it match even after the `/` alternative is dropped. Requiring a quote closes it.
+        let testContent =
+            """// Copyright 2026. Licensed under the MIT licence.
+type UnrelatedTests() =
+    [<Fact>]
+    member _.DoesSomethingElse() = ()
+"""
+
+        selectingRoot [ ("UnrelatedTests.fs", testContent) ] (fun result -> test <@ result |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``a path separator inside a longer url does not select the file's tests`` () =
+        let testContent =
+            """type UnrelatedTests() =
+    [<Fact>]
+    member _.PostsToSomethingElse() =
+        let url = "/admin/journal/translate"
+        ()
+"""
+
+        selectingRoot [ ("UnrelatedTests.fs", testContent) ] (fun result -> test <@ result |> List.isEmpty @>)
+
+    // -- recall: the degenerate route is still matched where it is really used ------
+
+    [<Fact>]
+    let ``a quoted root url still selects the test that navigates to it`` () =
+        let testContent =
+            """type LandingTests() =
+    [<Fact>]
+    member _.LoadsTheLandingPage() =
+        // a comment here too, so the file cannot pass by having no `//` at all
+        let url = "/"
+        ()
+"""
+
+        selectingRoot [ ("LandingTests.fs", testContent) ] (fun result ->
+            test
+                <@
+                    result = [ { TestProject = "IntTests"
+                                 TestClass = "LandingTests" } ]
+                @>)
+
+    [<Fact>]
+    let ``a root url carrying a query string still selects its test`` () =
+        let testContent =
+            """type LandingTests() =
+    [<Fact>]
+    member _.LoadsLocalisedLandingPage() =
+        let url = "/?lang=en"
+        ()
+"""
+
+        selectingRoot [ ("LandingTests.fs", testContent) ] (fun result ->
+            test
+                <@
+                    result = [ { TestProject = "IntTests"
+                                 TestClass = "LandingTests" } ]
+                @>)
+
+    [<Fact>]
+    let ``a single-quoted root url still selects its test`` () =
+        let testContent =
+            """type LandingTests() =
+    [<Fact>]
+    member _.RunsScriptAgainstRoot() =
+        let script = "window.location.pathname === '/'"
+        ()
+"""
+
+        selectingRoot [ ("LandingTests.fs", testContent) ] (fun result ->
+            test
+                <@
+                    result = [ { TestProject = "IntTests"
+                                 TestClass = "LandingTests" } ]
+                @>)
+
+    [<Fact>]
+    let ``only the class naming the root url is selected, not its commented sibling`` () =
+        // Narrowing and recall in one file: the guard has to keep one class and drop the
+        // other, so neither "select everything" nor "select nothing" can pass.
+        let testContent =
+            """type LandingTests() =
+    [<Fact>]
+    member _.LoadsTheLandingPage() =
+        let url = "/"
+        ()
+
+type BillingTests() =
+    [<Fact>]
+    member _.ChargesACard() =
+        // navigates nowhere near the landing page
+        ()
+"""
+
+        selectingRoot [ ("LandingTests.fs", testContent) ] (fun result ->
+            test
+                <@
+                    result = [ { TestProject = "IntTests"
+                                 TestClass = "LandingTests" } ]
+                @>)
+
+    // -- the rule generalises past the root route, and stops there -------------------
+
+    [<Fact>]
+    let ``a param-only route does not match a comment but still matches a concrete url`` () =
+        let testContent =
+            """type LocaleTests() =
+    [<Fact>]
+    member _.LoadsGerman() =
+        // a comment, which `/{lang}` also used to match
+        let url = "/de"
+        ()
+
+type BillingTests() =
+    [<Fact>]
+    member _.ChargesACard() =
+        // only a comment here
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/{lang}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Locale.fs"
+                HandlerFunction = None } ]
+            [ ("LocaleTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Locale.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "LocaleTests" } ]
+                    @>)
+
+    [<Fact>]
+    let ``a route with literal text keeps matching after a doubled separator`` () =
+        // The guard is scoped to text-free patterns. A normal route keeps the broader
+        // opening boundary, so a doubled separator still reads as a path start.
+        let testContent =
+            """type UsersTests() =
+    [<Fact>]
+    member _.GetsUsers() =
+        let url = "https://example.test//users"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/users"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
+
 module ``symbolic route navigation`` =
 
     // A minimal Falco.UnionRoutes route DU with the `Admin → Settings` nesting the repro

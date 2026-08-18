@@ -92,6 +92,12 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             linkMapCache <- Some m
             m
 
+    /// True when a route pattern carries no literal path text of its own: everything left
+    /// after removing `{param}` placeholders is separators. The root route `/` and a
+    /// param-only route like `/{lang}` qualify; `/users` does not.
+    let carriesOnlySeparators (urlPattern: string) =
+        Regex.Replace(urlPattern, @"\{[^}]+\}", "") |> Seq.forall (fun c -> c = '/')
+
     let urlPatternToRegex (urlPattern: string) : Regex =
         // Replace {param} placeholders with a sentinel before escaping,
         // so we don't depend on Regex.Escape's treatment of braces
@@ -100,11 +106,34 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         let withPlaceholders = Regex.Replace(urlPattern, @"\{[^}]+\}", placeholder)
         let escaped = Regex.Escape(withPlaceholders)
         let pattern = escaped.Replace(placeholder, "[^/]+")
+
+        // The opening boundary normally admits a `/` so a doubled separator still reads as a
+        // path start. For a pattern with no literal text of its own that `/` pairs with the
+        // pattern's OWN leading `/` to match `//` — the F# COMMENT token — and `^` lets a
+        // file-opening `// license header` do the same. Such a route then matches every
+        // commented line in the repo and selects the entire suite.
+        //
+        // Measured on the intelligence consumer, route `/` matched 4,886 comment openers
+        // (`// `, `/// `, and their bare-line forms) against 43 real URL literals, and so
+        // matched 65 of its 65 integration test files. Requiring a QUOTE for these patterns
+        // drops only the comment matches: every quoted literal (`"/"`, `"/?lang=en"`, `'/'`)
+        // still matches, because a quote opens it.
+        //
+        // Scoped to text-free patterns rather than applied to every route: across that
+        // consumer's other 175 route patterns the `/` alternative changed no file's outcome,
+        // but losing a match is the dangerous direction, so a route with text of its own
+        // keeps the broader boundary.
+        let openingBoundary =
+            if carriesOnlySeparators urlPattern then
+                "[\"']"
+            else
+                "^|[\"'/]"
+
         // `/?` before the closing boundary tolerates a trailing slash — `/users/` matches route
         // `/users` — WITHOUT enabling parent-prefix matching: `/users/123` still does not match
         // `/users`, because after the optional slash the boundary must be end/quote/?/#/space, and
         // `1` is none of those.
-        Regex($"(?:^|[\"'/])%s{pattern}/?(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
+        Regex($"(?:%s{openingBoundary})%s{pattern}/?(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
 
     let classPattern = Regex(@"^type\s+(\w+)\s*\(", RegexOptions.Multiline)
 

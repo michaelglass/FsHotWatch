@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **a route with no path text of its own no longer matches the F#
+  comment token.** `urlPatternToRegex` admitted a leading `/` so a doubled separator
+  still read as a path start. For the root route `/` — whose whole pattern is that one
+  separator — the two combined to match `//`, which is how F# opens a comment, and `^`
+  let a file-opening `// license header` do the same. The route therefore matched every
+  commented line in the repo.
+
+  Measured on the consumer this was built for: route `/` matched 4,886 comment openers
+  (`// `, `/// `, and their bare-line forms) against 43 real URL literals, so a
+  one-line landing-page edit selected **60 of 61** integration test classes — every
+  other handler file selected between 0 and 20. It is now 13, and the exhaustive
+  per-file diff over all 32 handler files adds nothing anywhere and changes no other
+  file's selection at all.
+
+  Nothing that evidences the route is lost: every quoted literal (`"/"`, `"/?lang=en"`,
+  `'/'`) still matches, because a quote opens it. The guard is scoped to patterns with
+  no literal text of their own (`/`, and param-only routes like `/{lang}`) rather than
+  applied to every route — across the consumer's other 175 route patterns the `/`
+  alternative changed no file's outcome, but losing a match is the dangerous direction,
+  so a route with text of its own keeps the broader boundary.
+
 ## 3.1.1 - 2026-08-17
 
 - docs: **route→test attribution is what makes `[<TestPrune.CompositionRoot>]` safe,
