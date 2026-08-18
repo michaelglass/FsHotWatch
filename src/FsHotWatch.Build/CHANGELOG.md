@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- fix: **the cache-replay gate covers every event that reads the cache** (AUTOMATION-245
+  QA rework). The gate added in `0.7.0-alpha.22` — and `force-rebuild` before it
+  (AUTOMATION-224) — matched `FileChanged` alone. A build plugin configured with
+  `dependsOn` BUFFERS file changes until its dependencies report and starts its build from
+  the `CommandCompleted` that satisfies the last one, so in exactly those repos the only
+  lookup that decides whether a build runs fell through to an ungated key: neither
+  `confirm`'s forced rebuild nor the artifact re-verification applied. Only the `Custom`
+  store arm is now exempt, so a recovered build is still cached immediately.
+
+- add: **`BuildPlugin.artifactCoverageGap`, a floor under the freshness check.**
+  `verifyArtifactsFresh` returns the projects it found stale, and "nothing is stale" is the
+  same value as "nothing could be examined" — so a graph that stops yielding build outputs
+  turns the whole guard off while every run stays green. The gap is now reported (once per
+  plugin instance, on the `build` log channel at warn level) naming each project and why:
+  no build output could be located, or no source was on disk to compare one against. It
+  REPORTS rather than refuses — bypassing the cache for a tree it cannot examine would
+  wedge that repo into rebuilding every time.
+
+  **This is not hypothetical, and reading it matters more than the two fixes above.** A
+  TargetFramework reaches the project graph only through `ProjectGraph.RegisterFromFsproj`,
+  which has zero callers outside tests; the daemon registers every project through
+  `RegisterProject` (from Ionide's MSBuild evaluation), which records sources and
+  references and no framework. So `GetCanonicalDllPath` answers `None` for every project in
+  a live daemon, and this plugin's artifact freshness — the replay gate AND the post-build
+  `BuildPassed` → `BuildArtifactsStale` demotion — has never examined a single artifact
+  outside the test suite. Making the graph carry MSBuild's real target path is the fix;
+  it turns on a demotion path that has never run against a real repo, so it wants its own
+  change and its own canary rather than a quiet ride here.
+
 - fix: **the build inputs merkle hashes MSBuild's implicit imports** (AUTOMATION-303
   case 2). `Directory.Build.props`, `Directory.Build.targets` and
   `Directory.Packages.props` are inputs to every project beneath them and appeared in

@@ -163,6 +163,111 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
+/// Why a project contributed nothing — or only half — to an artifact-freshness pass.
+type UnexaminedProject =
+    /// The graph could name no build output for this project, so NOTHING about it is
+    /// verified. `GetCanonicalDllPath` needs a TargetFramework, and one reaches the graph
+    /// only from `RegisterFromFsproj`'s XML parse — so a project file that declares none
+    /// of its own (inheriting it from a `Directory.Build.props`) lands here, and so does
+    /// EVERY project registered through `RegisterProject`, which records no framework at
+    /// all.
+    | NoOutputDerivable of project: string
+    /// The output was found, but no source file of this project is on disk to compare
+    /// it against, so only its EXISTENCE was checked, never whether it is CURRENT.
+    | NoSourceToCompare of project: string
+
+/// THE FLOOR: a freshness pass that examined nothing is not a fresh tree.
+///
+/// `verifyArtifactsFresh` reports the projects it found STALE, and drives both the
+/// post-build demotion and — since AUTOMATION-245 — the cache-REPLAY gate. An empty
+/// result is "every artifact is current". It is also, value for value, "no artifact
+/// could be examined". The two are indistinguishable to every caller, so a graph that
+/// stopped yielding build outputs would switch the whole guard off while every run
+/// stayed green: the silent-degradation shape AUTOMATION-198 and AUTOMATION-303 removed
+/// elsewhere, and that AUTOMATION-201's preflight names for its own gate.
+///
+/// The door is not hypothetical, and it is not narrow. `GetCanonicalDllPath` answers
+/// `None` without a registered TargetFramework, and a framework only ever reaches the
+/// graph through `RegisterFromFsproj`. So the gap opens for a repo that centralises
+/// `<TargetFramework>` in a `Directory.Build.props` — the exact file class
+/// AUTOMATION-303 established is an invisible build input — and it opens for any host
+/// that populates the graph some OTHER way, `RegisterProject` included.
+///
+/// It REPORTS rather than refuses, for the reason AUTOMATION-201's floor gives: a graph
+/// with no derivable outputs is a legitimate configuration, and bypassing the cache on
+/// every lookup there would trade one wedge class for the rebuild-every-time regression
+/// this ticket's own acceptance forbids. Naming the gap costs nothing and makes a total
+/// regression loud.
+///
+/// `None` means every project in the graph was fully examined — there is nothing to say.
+let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
+    let projects = graph.GetAllProjects()
+
+    // Mirrors `verifyArtifactsFresh`'s own walk exactly, including which arm counts as a
+    // finding: a DERIVABLE path whose DLL is missing was examined — that IS the finding
+    // (`DllMissing`) — so it is not a gap.
+    let unexamined =
+        projects
+        |> List.choose (fun proj ->
+            let stem = Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)
+
+            match graph.GetCanonicalDllPath(proj) with
+            | None -> Some(NoOutputDerivable stem)
+            | Some dllPath when not (File.Exists dllPath) -> None
+            | Some _ ->
+                match graph.GetMaxSourceMtime(proj) with
+                | Some _ -> None
+                | None -> Some(NoSourceToCompare stem))
+
+    let noOutput =
+        unexamined
+        |> List.choose (function
+            | NoOutputDerivable p -> Some p
+            | NoSourceToCompare _ -> None)
+
+    let noSource =
+        unexamined
+        |> List.choose (function
+            | NoSourceToCompare p -> Some p
+            | NoOutputDerivable _ -> None)
+
+    if List.isEmpty projects then
+        // The most complete degradation there is, and the quietest: with no projects the
+        // stale list is empty (so the gate vouches for everything) AND the merkle hashes
+        // an empty input (so every such repo shares one constant cache key). Nothing
+        // downstream can tell that apart from a small, clean tree. Written while
+        // measuring this very change with a path filter that excluded every project by
+        // accident — the count is the only thing that showed it.
+        Some
+            "artifact freshness examined NOTHING: the project graph holds no projects at all, so every stale-artifact \
+             check passes vacuously and the build merkle hashes an empty input. If this repo has .fsproj files, \
+             project discovery is broken."
+    elif List.isEmpty unexamined then
+        None
+    else
+        let noOutputNames = String.concat ", " noOutput
+        let noSourceNames = String.concat ", " noSource
+
+        let clauses =
+            [ if not (List.isEmpty noOutput) then
+                  $"the graph names no build output for %s{noOutputNames} (no TargetFramework is registered for \
+                    them), so NOTHING about those projects is verified"
+              if not (List.isEmpty noSource) then
+                  $"%s{noSourceNames} has an output but no source file on disk to compare it against, so only its \
+                    existence was checked, never whether it is current" ]
+
+        let examined = List.length projects - List.length unexamined
+
+        let lead =
+            if examined = 0 then
+                $"artifact freshness examined 0 of %d{List.length projects} project(s) — NOT ONE build output could \
+                  be located, so every stale-artifact check passes vacuously and a cache replay is gated on nothing: "
+            else
+                $"artifact freshness fully examined %d{examined} of %d{List.length projects} project(s) — this tree \
+                  is NOT fully protected against stale build output, on the post-build path or at cache replay: "
+
+        Some(lead + String.concat "; " clauses + ".")
+
 let create
     (command: string)
     (args: string)
@@ -218,6 +323,23 @@ let create
     let projectStem (p: AbsProjectPath) =
         Path.GetFileNameWithoutExtension(AbsProjectPath.value p)
 
+    /// `artifactCoverageGap`, at most ONCE per plugin instance.
+    ///
+    /// What it reports is a property of the project GRAPH — which projects declare a
+    /// TargetFramework, which have sources on disk — not of a run, so it is the same
+    /// sentence on every lookup. Repeating it per dispatched event would bury the one
+    /// thing it exists to make loud, and the latch is set BEFORE the walk so the second
+    /// caller onwards pays nothing at all.
+    let coverageGapReported = ref false
+
+    let reportCoverageGapOnce () =
+        if not coverageGapReported.Value then
+            coverageGapReported.Value <- true
+
+            match artifactCoverageGap graph with
+            | Some gap -> warn "build" gap
+            | None -> ()
+
     /// Post-build contract enforcement. For every project the graph knows
     /// about, compare the canonical DLL's mtime against the max source mtime.
     /// Returns the stale projects so the worker can demote BuildPassed to
@@ -235,6 +357,8 @@ let create
     /// temporal complement.
     /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
     let verifyArtifactsFresh () : StaleArtifact list =
+        reportCoverageGapOnce ()
+
         [ for proj in graph.GetAllProjects() do
               match graph.GetCanonicalDllPath(proj) with
               | None -> () // no TFM — nothing to verify
@@ -768,16 +892,31 @@ let create
             Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
-            // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
-            // `None` is the framework's documented "outputs missing" bypass — skip
-            // the cache, run Update.
-            //
-            // Deliberately asymmetric. Only the lookup (a `FileChanged`) is
-            // suppressed; `Custom BuildDone` still computes a real key, so the fresh
-            // build's result IS stored and the very next run is cacheable again.
-            // Suppressing both would make every forced build permanently uncached.
             match event with
-            | FileChanged _ when forceRebuild.Value -> None
+            // THE STORE, and the only event that is one. A `Custom BuildDone` is this
+            // plugin's own post — the delivery of a build that HAS run — and the
+            // framework never READS the cache on a `Custom` (its dispatch loop nulls the
+            // replay key for them), so this arm exists solely to mint the entry the next
+            // lookup hits. Both gates below therefore skip it: suppressing the write
+            // would leave every recovered build permanently uncacheable, turning two
+            // correctness fixes into a standing inner-loop regression.
+            | Custom _ -> merkleKey ()
+
+            // EVERY OTHER SUBSCRIBED EVENT IS A READ, and both gates belong to reads.
+            //
+            // These arms used to match `FileChanged` alone, which is only the whole story
+            // for a plugin with no `dependsOn`. With one, a `FileChanged` arriving before
+            // the dependencies are satisfied is BUFFERED into `PendingFiles` and the
+            // build is launched by the `CommandCompleted` that satisfies the last one —
+            // so for exactly the repos that use `dependsOn`, the event that starts the
+            // build fell through to an ungated `merkleKey()`. `confirm`'s force-rebuild
+            // (AUTOMATION-224) and the artifact re-verification below were both bypassed
+            // on the only lookup that could have applied them.
+            //
+            // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
+            // `None` is the framework's documented "outputs missing" bypass — skip the
+            // cache, run Update.
+            | _ when forceRebuild.Value -> None
 
             // Re-verify the ARTIFACTS at cache-replay time, not only after a real
             // build (AUTOMATION-245).
@@ -804,20 +943,25 @@ let create
             //
             // Cheap on the hot path, and it reads no file CONTENTS: two stats per
             // project (canonical DLL) and per graph source (`GetMaxSourceMtime` walks
-            // every source of every project), so ~2 × (projects + sources) — measured
-            // at 0.46 ms for this repo's 14 projects / 135 sources against a merkle
-            // that SHA-256s 3.5 MB in 30-40 ms.
+            // every source of every project), so ~2 × (projects + sources).
+            //
+            // MEASURED on this repo's own graph (12 projects / 135 files, min of 50
+            // interleaved lookups, apple silicon): the gate alone is 0.40 ms
+            // (0.404/0.395/0.411 across three runs) against a merkle that SHA-256s the
+            // same tree in 9.7-11.4 ms. So a warm lookup grows by ~4% — and end to end
+            // the difference is not even recoverable by subtraction, because the
+            // merkle's own run-to-run spread (±1.5 ms) is wider than the whole gate.
+            // An earlier note here put the merkle at 30-40 ms; that was overstated by
+            // 3-4x, and the gate's 0.46 ms held up.
             //
             // Ordered BEFORE the merkle so a bypass skips that hash entirely: the
-            // WEDGE path is now cheaper than the warm path, not dearer. The warm path
-            // pays both and is ~1% slower — the trade this change buys.
-            | FileChanged _ ->
+            // WEDGE path is now cheaper than the warm path, not dearer.
+            | _ ->
                 match verifyArtifactsFresh () with
                 | [] -> merkleKey ()
                 | stale ->
                     info "build" (replayBypassDiagnostic stale)
                     None
-            | _ -> merkleKey ()
 
         Some cacheKey
       // There is NO cold-start gate in the framework — a comment here used to claim
