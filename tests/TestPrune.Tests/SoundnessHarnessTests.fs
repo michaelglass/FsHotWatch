@@ -578,7 +578,8 @@ let private generateSourceCorpus (rng: Random) (n: int) : SourceCorpus =
 
     let body (i: int) =
         match planned |> Map.tryFind (symbolName i) with
-        | Some [] | None -> "1"
+        | Some []
+        | None -> "1"
         | Some targets ->
             targets
             |> List.map (fun t -> $"""%s{t.Substring("Gen.".Length)} ()""")
@@ -588,7 +589,13 @@ let private generateSourceCorpus (rng: Random) (n: int) : SourceCorpus =
     let declarations =
         [ for i in 0 .. n - 1 do
               let name = $"sym%d{i}"
-              let attr = if testSymbols.Contains(symbolName i) then "[<Fact>]\n" else ""
+
+              let attr =
+                  if testSymbols.Contains(symbolName i) then
+                      "[<Fact>]\n"
+                  else
+                      ""
+
               yield $"%s{attr}let %s{name} () = %s{body i}" ]
         |> String.concat "\n\n"
 
@@ -678,62 +685,64 @@ module ``Extraction-inclusive soundness`` =
             CheckedEmpty
         else
 
-        let dependencies =
-            if blindToChanged then
-                analysed.Dependencies |> List.filter (fun d -> not (changed.Contains d.ToSymbol))
-            else
-                analysed.Dependencies
-
-        let effective =
-            AnalysisResult.Create(analysed.Symbols, dependencies, analysed.TestMethods)
-
-        let store = fromAnalysisResults [ effective ]
-
-        let currentSymbols =
-            effective.Symbols
-            |> List.map (fun sym ->
-                if changed.Contains sym.FullName then
-                    { sym with ContentHash = sym.ContentHash + "-mutated" }
+            let dependencies =
+                if blindToChanged then
+                    analysed.Dependencies
+                    |> List.filter (fun d -> not (changed.Contains d.ToSymbol))
                 else
-                    sym)
-            |> List.groupBy _.SourceFile
-            |> Map.ofList
+                    analysed.Dependencies
 
-        let changedFiles =
-            effective.Symbols
-            |> List.filter (fun sym -> changed.Contains sym.FullName)
-            |> List.map _.SourceFile
-            |> List.distinct
+            let effective =
+                AnalysisResult.Create(analysed.Symbols, dependencies, analysed.TestMethods)
 
-        let selection, _events = selectTests store changedFiles currentSymbols
+            let store = fromAnalysisResults [ effective ]
 
-        // THE ORACLE COMES FROM THE PLAN, not from `analysed`. That is the whole
-        // point: an edge the analyzer dropped is still in the plan, so its absence
-        // downstream surfaces as under-selection instead of silent agreement.
-        let expected =
-            trulyAffectedFromPlan corpus changed
-            |> Set.filter (fun t ->
-                // Restrict to tests the analyzer recognised AS tests. A test method
-                // it failed to recognise is a real defect, but a DIFFERENT one, and
-                // it is asserted separately below rather than folded in here.
-                analysed.TestMethods |> List.exists (fun tm -> tm.SymbolFullName = t))
+            let currentSymbols =
+                effective.Symbols
+                |> List.map (fun sym ->
+                    if changed.Contains sym.FullName then
+                        { sym with
+                            ContentHash = sym.ContentHash + "-mutated" }
+                    else
+                        sym)
+                |> List.groupBy _.SourceFile
+                |> Map.ofList
 
-        match selectedTestNames selection with
-        | None -> SkippedRunAll
-        | Some selected ->
-            let missing = Set.difference expected selected
+            let changedFiles =
+                effective.Symbols
+                |> List.filter (fun sym -> changed.Contains sym.FullName)
+                |> List.map _.SourceFile
+                |> List.distinct
 
-            if not (Set.isEmpty missing) then
-                UnderSelected
-                    $"UNDER-SELECTION against the generation plan: %d{Set.count missing} test(s).\n\
+            let selection, _events = selectTests store changedFiles currentSymbols
+
+            // THE ORACLE COMES FROM THE PLAN, not from `analysed`. That is the whole
+            // point: an edge the analyzer dropped is still in the plan, so its absence
+            // downstream surfaces as under-selection instead of silent agreement.
+            let expected =
+                trulyAffectedFromPlan corpus changed
+                |> Set.filter (fun t ->
+                    // Restrict to tests the analyzer recognised AS tests. A test method
+                    // it failed to recognise is a real defect, but a DIFFERENT one, and
+                    // it is asserted separately below rather than folded in here.
+                    analysed.TestMethods |> List.exists (fun tm -> tm.SymbolFullName = t))
+
+            match selectedTestNames selection with
+            | None -> SkippedRunAll
+            | Some selected ->
+                let missing = Set.difference expected selected
+
+                if not (Set.isEmpty missing) then
+                    UnderSelected
+                        $"UNDER-SELECTION against the generation plan: %d{Set.count missing} test(s).\n\
                        missing:  %A{Set.toList missing}\n\
                        changed:  %A{Set.toList changed}\n\
                        selected: %A{Set.toList selected}\n\n\
                        SOURCE:\n%s{corpus.Source}"
-            elif Set.isEmpty expected then
-                CheckedEmpty
-            else
-                CheckedSubset
+                elif Set.isEmpty expected then
+                    CheckedEmpty
+                else
+                    CheckedSubset
 
     [<Fact>]
     [<Trait("Guard", "testprune-extraction-soundness")>]

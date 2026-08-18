@@ -127,8 +127,18 @@ description = "Run all CI checks (no auto-fix)"
 # `format-check` is dropped from the deps: `.fshw.json` sets `"format": true`, so the gate
 # already checks formatting — running Fantomas twice would be duplicate authority.
 # `lint` (FSharpLint) stays: `.fshw.json` sets `"lint": false`, so the gate does NOT lint.
-run = "mise run gate"
-depends = ["lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
+#
+# `confirm`, NOT the impact-filtered `check` that `gate` runs. Impact filtering is a
+# latency optimization for the inner loop, not the basis for a merge decision: when a
+# commit changes no F# source (a dep bump, a doc edit) the filter selects nothing, and
+# fshw >= 0.14 correctly refuses to call a run that verified NOTHING a pass (exit 3).
+# `confirm` runs the full suite unfiltered and will not replay a cached verdict.
+# This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml — a local `ci` that
+# runs a different command from real CI can go green on work CI will reject.
+# `build` is load-bearing in the deps for the same reason it is on `gate`: fshw loads
+# TestPrune.Analyzers from its BUILD OUTPUT (.fshw.json analyzers.paths).
+run = "dotnet fshw confirm --run-once"
+depends = ["build", "tool-restore", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
 
 [tasks.pack]
 description = "Create NuGet packages"

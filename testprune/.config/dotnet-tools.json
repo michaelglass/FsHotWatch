@@ -38,21 +38,21 @@
       "rollForward": false
     },
     "fssemantictagger": {
-      "version": "0.14.0-alpha.2",
+      "version": "0.14.0-alpha.4",
       "commands": [
         "fssemantictagger"
       ],
       "rollForward": false
     },
     "fsprojlint": {
-      "version": "0.10.0-alpha.14",
+      "version": "0.10.0-alpha.15",
       "commands": [
         "fsprojlint"
       ],
       "rollForward": false
     },
     "fshotwatch.cli": {
-      "version": "0.14.0-alpha.3",
+      "version": "0.14.0-alpha.19",
       "commands": [
         "fshw"
       ],
