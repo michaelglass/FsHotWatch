@@ -167,7 +167,10 @@ type DaemonConfiguration =
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity |} option
         Tests:
-            {| BeforeRun: string option
+            {| /// AUTOMATION-320: an ORDERED LIST of steps, even when the config
+               /// wrote one string. Per-step attribution is impossible if the
+               /// chain is a single opaque process, so the list is the type.
+               BeforeRun: string list option
                Extensions: TestExtensionConfig list
                Projects: TestProjectConfig list
                CoverageDir: string
@@ -403,9 +406,21 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     let tests =
         match root.TryGetProperty("tests") with
         | true, v ->
+            // AUTOMATION-320: a STRING (one step, back-compatible) or an ARRAY
+            // of steps. The array form is what makes per-step attribution
+            // possible at all — a single `a && b && c` string is one opaque
+            // process to the runner, so when it dies there is nothing to name.
             let beforeRun =
                 match v.TryGetProperty("beforeRun") with
-                | true, br -> Some(br.GetString())
+                | true, br when br.ValueKind = JsonValueKind.Array ->
+                    let steps =
+                        br.EnumerateArray()
+                        |> Seq.map (fun e -> e.GetString())
+                        |> Seq.filter (fun c -> not (String.IsNullOrWhiteSpace c))
+                        |> Seq.toList
+
+                    if steps.IsEmpty then None else Some steps
+                | true, br when br.ValueKind = JsonValueKind.String -> Some [ br.GetString() ]
                 | _ -> None
 
             let extensions =
@@ -993,6 +1008,104 @@ let shellInvocation (cmd: string) : string * string =
 /// quiet` prints nothing, so output cannot prove liveness) bounded by `timeoutSec`,
 /// which carries the same `DefaultGlobalTimeoutSec` default as every other spawn. A
 /// hung hook TIMES OUT into `Failed`/`Aborted` with a legible diagnostic.
+/// AUTOMATION-320 — why a hook step failed, in a form that CANNOT be empty.
+///
+/// The old path logged `$"%s{label} failed:\n%s{output}"`. When the failing
+/// process wrote nothing to either stream — which is exactly what happened on a
+/// healthy box, four `confirm` runs in a row — that rendered as the literal text
+/// `beforeRun failed:` and nothing else. No step, no exit code, no output. The
+/// only way to find the culprit was to run all nine commands by hand, and it
+/// very nearly misattributed the blame to the change under test.
+///
+/// So the reason is a RECORD, not a string. Every field a reader needs is
+/// required to build one, which is what makes the empty message unconstructible
+/// rather than merely discouraged.
+type internal HookFailure =
+    { Label: string
+      /// 1-based position in the chain, with the total, so "which link broke" is
+      /// answerable without counting.
+      StepIndex: int
+      StepCount: int
+      /// The exact command that failed — not the whole chain.
+      Command: string
+      Outcome: ProcessOutcome }
+
+module internal HookFailure =
+
+    /// The operator-facing message. Non-empty by construction: even a process
+    /// that wrote nothing and exited 0-with-a-fault still yields the step, its
+    /// position and its disposition, and says SO EXPLICITLY that there was no
+    /// output rather than trailing off after a colon.
+    let describe (f: HookFailure) : string =
+        let where =
+            if f.StepCount > 1 then
+                $"step %d{f.StepIndex}/%d{f.StepCount}"
+            else
+                "the command"
+
+        let disposition =
+            match f.Outcome with
+            | Succeeded _ -> "reported success but was treated as failed (this is a bug in the hook runner)"
+            | Failed(code, _) -> $"exited %d{code}"
+            | TimedOut(after, _, _) -> $"timed out after %d{int after.TotalSeconds}s"
+
+        let output =
+            match outputOf f.Outcome with
+            | o when String.IsNullOrWhiteSpace o -> "(no output on stdout or stderr)"
+            | o -> o.TrimEnd()
+
+        $"%s{f.Label} failed at %s{where}: %s{disposition}\n  command: %s{f.Command}\n  output:\n%s{output}"
+
+/// The result of running a hook chain. A DU rather than `Result<unit, _>`
+/// because `Error` is already a `DiagnosticSeverity` case in this file, and the
+/// collision made every neighbouring match ambiguous.
+type internal HookOutcome =
+    | HookOk
+    | HookFailed of HookFailure
+
+/// Run an ordered chain of shell steps, stopping at the first failure and
+/// reporting WHICH one broke. One step is the degenerate case of the same path,
+/// so the string and array config forms share every line of this.
+///
+/// Silent on success: a green preflight logs per-step starts at `info` only, and
+/// adds no process work beyond the steps themselves.
+let internal runShellSteps
+    (label: string)
+    (timeoutSec: int option)
+    (repoRoot: string)
+    (steps: string list)
+    : HookOutcome =
+    let bounds =
+        ProcessBounds.silent (
+            match timeoutSec with
+            | Some s -> TimeSpan.FromSeconds(float s)
+            | None -> Threading.Timeout.InfiniteTimeSpan
+        )
+
+    let count = List.length steps
+
+    steps
+    |> List.indexed
+    |> List.fold
+        (fun acc (i, cmd) ->
+            match acc with
+            | HookFailed _ -> acc // first failure wins; do not run the rest
+            | HookOk ->
+                Logging.info label $"Running %s{label} step %d{i + 1}/%d{count}: %s{cmd}"
+                let (command, args) = shellInvocation cmd
+                let outcome = runProcess command args repoRoot [] bounds
+
+                if isSucceeded outcome then
+                    HookOk
+                else
+                    HookFailed
+                        { Label = label
+                          StepIndex = i + 1
+                          StepCount = count
+                          Command = cmd
+                          Outcome = outcome })
+        HookOk
+
 let internal makeShellHookWithResult
     (label: string)
     (timeoutSec: int option)
@@ -1014,7 +1127,18 @@ let internal makeShellHookWithResult
         let output = outputOf result
 
         if not success then
-            Logging.error label $"%s{label} failed:\n%s{output}"
+            // AUTOMATION-320: the RUN-level hook had the same empty-reason bug as
+            // `tests.beforeRun` — it interpolated the output, so a step that wrote
+            // nothing logged `<label> failed:` and stopped. Same fix, same renderer:
+            // the exit code and an explicit "(no output)" always survive.
+            Logging.error
+                label
+                (HookFailure.describe
+                    { Label = label
+                      StepIndex = 1
+                      StepCount = 1
+                      Command = cmd
+                      Outcome = result })
 
         success, output
 
@@ -1184,9 +1308,19 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   TimeoutSec = p.TimeoutSec
                   ReportVerificationFormat = p.ReportVerificationFormat })
 
+        // AUTOMATION-320: fail LOUD and SPECIFIC. `runShellSteps` names the step,
+        // its exit code and its output; raising `describe` means the plugin's
+        // `runTests failed: …` wrapper now carries that instead of a bare colon.
         let beforeRun =
             t.BeforeRun
-            |> Option.map (makeShellHook "beforeRun" true config.TimeoutSec repoRoot)
+            |> Option.map (fun steps ->
+                fun () ->
+                    match runShellSteps "beforeRun" config.TimeoutSec repoRoot steps with
+                    | HookOk -> ()
+                    | HookFailed failure ->
+                        let message = HookFailure.describe failure
+                        Logging.error "beforeRun" message
+                        failwith message)
 
         // Coverage paths — resolve per-project artifact locations (respecting per-project opt-out).
         // TestPrune itself decides whether a given run writes baseline.json or partial.json

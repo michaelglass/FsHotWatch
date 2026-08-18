@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- fix: **`beforeRun failed:` now says which step failed, with its exit code and its output.**
+  It used to render as exactly that — colon, then nothing. The message interpolated the
+  process output, so a step that wrote to neither stream produced no reason at all: no step
+  name, no exit code, no output. Observed on a healthy box across four consecutive `confirm`
+  runs, each exiting 2 with no verdict; since `confirm` is the merge verb, the work could not
+  be landed and the only way to find the culprit was to run all nine chained commands by hand.
+  It also nearly misattributed the blame to the change under test, which happened to touch a
+  file the chain mentions (AUTOMATION-320).
+  - The reason is now a **record** (`HookFailure`), not an interpolated string: the label, the
+    step's 1-based position, the exact command and the `ProcessOutcome` are all required to
+    construct one. The empty message is therefore unconstructible rather than merely
+    discouraged, and an absent output prints `(no output on stdout or stderr)` instead of
+    trailing off.
+  - **`tests.beforeRun` accepts an ARRAY of steps** as well as a string. This is what makes
+    per-step attribution possible at all: a single `a && b && c` string is one opaque process
+    to the runner, so when it dies there is nothing to name. The chain stops at the first
+    failure rather than running on.
+  - **Not breaking.** A string still parses — as a one-step chain — so existing `.fshw.json`
+    files are unaffected. Adopting the array form is what buys the per-step message.
+  - A green preflight is unchanged: same steps, same work, no extra processes.
+
 ## 0.14.0-alpha.10 - 2026-08-05
 
 - fix!: **dead config now FAILS the load instead of warning.** `"cache": "file"` / `"jj"`
