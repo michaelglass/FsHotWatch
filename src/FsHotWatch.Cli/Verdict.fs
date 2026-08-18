@@ -285,6 +285,16 @@ module RedCause =
     let classify (source: string) (file: string) (message: string) : RedCauseKind =
         classifyWith System.IO.File.Exists source file message
 
+    /// The causes that are NOT claims about the tree on disk. ONE definition of the
+    /// selection, asked by every surface that needs it: both transports count these to
+    /// decide whether a red becomes `StaleDaemonState`/NO VERDICT, and the terminal
+    /// renderer lists them to say which part of the wall in front of the reader is not
+    /// theirs. Three hand-written `List.filter (not << isAboutThisTree)`s is three
+    /// chances for the number that decides the exit code to disagree with the lines
+    /// printed beside it.
+    let unattributable (causes: RedCause list) : RedCause list =
+        causes |> List.filter (fun c -> not (RedCauseKind.isAboutThisTree c.Kind))
+
 /// How many causes a verdict lists before it starts counting instead. A red from a
 /// cross-file FCS fault arrives in the dozens, and a verdict file that is mostly one
 /// repeated message is not more informative than a verdict file that says so.
@@ -395,6 +405,62 @@ module CheckProse =
            not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
            look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
            reported sound either."
+
+    /// THE explanation for a decided `CheckOutcome` — which words apply, not just what
+    /// the words are. The last hand-synced copy this module's charter had left open.
+    ///
+    /// The sentences above were already shared; the arm-by-arm dispatch that SELECTS
+    /// between them was not, and it stood duplicated in `IpcOutput` and `RunOnceCheck` —
+    /// each carrying a comment promising the other that they say the same thing.
+    /// AUTOMATION-201 and AUTOMATION-303 each had to add their arms twice. That is the
+    /// whole argument: whether a daemon served the check may not change what the answer
+    /// MEANS, so it must not be expressible for it to.
+    ///
+    /// `rescanAttempts` is the one difference that is real. The daemon path CONVERGES, so
+    /// its "incomplete" says how many re-scans it spent getting there; `--run-once` never
+    /// re-scans and would be inventing a number.
+    ///
+    /// `None` for `Clean` and `FailuresFound`: those are already explained by what the
+    /// reader is looking at — the plugin lines, the red causes — and a sentence here would
+    /// only repeat it. Exhaustive with NO wildcard, so a new `CheckOutcome` case has to be
+    /// given words rather than silently inheriting "say nothing".
+    let explainOutcome (rescanAttempts: int option) (outcome: CheckVerdict.CheckOutcome) : string option =
+        match outcome with
+        | CheckVerdict.CheckOutcome.Incomplete n ->
+            let detail =
+                if n > 0 then
+                    $"%d{n} file(s) could not be checked"
+                else
+                    "coverage could not be confirmed"
+
+            let attempts =
+                match rescanAttempts with
+                | Some attempts -> $" after %d{attempts} re-scan attempt(s)"
+                | None -> ""
+
+            Some $"Check incomplete: %s{detail}%s{attempts}"
+        // Non-green, but "could not complete", never a red — see `CheckOutcome`. A
+        // distinct exit 2 so an autonomous loop / deploy preflight retries rather than
+        // treating it as a test failure.
+        | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
+            Some $"Check incomplete: %s{waitingOnBuildCause}\n%s{waitingOnBuildRemedy}"
+        // AUTOMATION-201. The stale-output cause, in its own words: retrying is the one
+        // thing that cannot help here, so the generic "re-run once the build settles"
+        // above would cost a whole gate cycle to arrive back at this same refusal.
+        | CheckVerdict.CheckOutcome.WaitingOnBuild stale -> Some $"Check incomplete: %s{staleBuildOutput stale}"
+        // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
+        // "the run was too narrow", it is "we could not see what the run was".
+        | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) -> Some(scopeUnreadable reason)
+        // Nothing failed, and that is precisely the point: `confirm` was asked for a
+        // claim about the whole suite and the tests that ran do not support one, so it
+        // has no verdict to give. Say so; never launder it into a green.
+        | CheckVerdict.CheckOutcome.UnearnedScope scope -> Some(scopeTooNarrow scope)
+        // AUTOMATION-303 AC5. Every failing diagnostic was unattributable to this tree,
+        // so the run has no verdict — and the remedy is named HERE, where the person who
+        // needs it is looking, rather than left in a ticket they have not read.
+        | CheckVerdict.CheckOutcome.StaleDaemonState n -> Some(staleDaemonState n)
+        | CheckVerdict.CheckOutcome.Clean
+        | CheckVerdict.CheckOutcome.FailuresFound -> None
 
 /// Derive the file's outcome from the check's — the SAME value the exit code is
 /// derived from, so the two can never disagree.

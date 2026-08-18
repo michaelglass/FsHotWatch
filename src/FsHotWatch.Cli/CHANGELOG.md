@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- refactor: **the two transports now select the check's explanation with one function
+  instead of two copies of the same six-arm match.** `Verdict.CheckProse.explainOutcome`
+  is the dispatch; `IpcOutput` (daemon) and `RunOnceCheck` (`--run-once`) each call it.
+  The *words* were already shared — `CheckProse` exists for that — but the arm-by-arm
+  selection between them was not, so AUTOMATION-201 and AUTOMATION-303 each had to add
+  their arms twice, and each copy carried a comment promising the other that they said
+  the same thing. Whether a daemon served the check may not change what the answer
+  means, and now it cannot: the only difference the function admits is the re-scan count,
+  which the converging daemon path has and `--run-once` does not. No message text
+  changed.
+- refactor: `Verdict.RedCause.unattributable` — ONE definition of "the causes that are
+  not claims about the tree on disk", replacing three hand-written copies of the same
+  filter (`IpcOutput`, `RunOnceCheck`, `ProgressRenderer`). Three copies is three chances
+  for the count that decides between exit 1 and exit 3 to disagree with the lines printed
+  beside it.
+- refactor: the per-project test lines are built with `Seq.zip` rather than `Seq.mapi`
+  plus list indexing — same output, without the quadratic index walk.
+
 ## 0.14.0-alpha.18 - 2026-08-18
 
 - fix!: **a stale build output no longer borrows the build-ordering defer's words — or

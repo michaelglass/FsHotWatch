@@ -164,10 +164,11 @@ let private redCauses (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: st
 
 /// AUTOMATION-303. How many failing entries are NOT claims about the tree on disk — the
 /// in-process twin of `IpcOutput.unattributableCountOf`, off the same traversal as
-/// `redCauses` so the two transports classify identically.
+/// `redCauses` AND through the same `RedCause.unattributable` selection, so the two
+/// transports classify identically.
 let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (pluginName: string option) : int =
     redCauses daemon noWarnFail pluginName
-    |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
+    |> Verdict.RedCause.unattributable
     |> List.length
 
 /// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry (its tests
@@ -347,38 +348,12 @@ let runOnceAndVerdict
             (redCauses daemon noWarnFail pluginName)
             outcome
 
-        match outcome with
-        | CheckVerdict.CheckOutcome.Incomplete n ->
-            let detail =
-                if n > 0 then
-                    $"%d{n} file(s) could not be checked"
-                else
-                    "coverage could not be confirmed"
-
-            UI.fail $"Check incomplete: %s{detail}"
-        // `Verdict.CheckProse`, verbatim — the same words the daemon path (`IpcOutput`)
-        // prints. `--run-once` differs in HOW the check ran, never in what it means.
-        | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
-            // Non-green, but "could not complete", never a red — see `CheckOutcome`.
-            UI.fail
-                $"Check incomplete: %s{Verdict.CheckProse.waitingOnBuildCause}\n%s{Verdict.CheckProse.waitingOnBuildRemedy}"
-        | CheckVerdict.CheckOutcome.WaitingOnBuild stale ->
-            // AUTOMATION-201, verbatim the words the daemon path prints — `--run-once`
-            // differs in HOW the check ran, never in what it means.
-            UI.fail $"Check incomplete: %s{Verdict.CheckProse.staleBuildOutput stale}"
-        | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
-            // Its own words, not `confirm`'s: not "the run was too narrow" but "we could
-            // not see what the run was".
-            UI.fail (Verdict.CheckProse.scopeUnreadable reason)
-        | CheckVerdict.CheckOutcome.UnearnedScope scope ->
-            // Nothing failed, and that is the point: the tests that ran do not support a
-            // whole-suite claim, so there is no verdict to give. Never a green.
-            UI.fail (Verdict.CheckProse.scopeTooNarrow scope)
-        | CheckVerdict.CheckOutcome.StaleDaemonState n ->
-            // AUTOMATION-303 AC5. The one place the operator will actually read it: the
-            // gate says `fshw stop` itself instead of leaving it to be rediscovered.
-            UI.fail (Verdict.CheckProse.staleDaemonState n)
-        | CheckVerdict.CheckOutcome.Clean
-        | CheckVerdict.CheckOutcome.FailuresFound -> ()
+        // `Verdict.CheckProse.explainOutcome`, the very call the daemon path makes:
+        // `--run-once` differs in HOW the check ran, never in what it means. `None` for
+        // the re-scan count is not a missing number — this path does not converge, so it
+        // has no attempts to report.
+        match Verdict.CheckProse.explainOutcome None outcome with
+        | Some explanation -> UI.fail explanation
+        | None -> ()
 
         CheckVerdict.exitCode outcome
