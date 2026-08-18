@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.19 - 2026-08-18
+
 - refactor: **the two transports now select the check's explanation with one function
   instead of two copies of the same six-arm match.** `Verdict.CheckProse.explainOutcome`
   is the dispatch; `IpcOutput` (daemon) and `RunOnceCheck` (`--run-once`) each call it.
