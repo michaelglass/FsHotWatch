@@ -373,6 +373,29 @@ let runWithBudget
                 detected
                 |> List.choose (fun (project, s) -> repairFor s |> Option.map (fun pair -> project, s, pair))
 
+            // AUTOMATION-358 Case 3 — INSTRUMENT, do not build the capability.
+            //
+            // `CopyDiffersFromOrigin` is the one artifact-staleness wedge
+            // AUTOMATION-245 left open, and only TestPrune can see it. Whether the
+            // framework needs a capability for it was decided the honest way: ONE
+            // observed occurrence does not justify one, so count it and let the
+            // answer come from data. If this line never appears in a working week's
+            // logs, the capability question closes as a NO — a finding, not a guess.
+            //
+            // Logged over `repairable`, which `repairFor` has already narrowed to
+            // exactly the `CopyDiffersFromOrigin` cases. A fresh `match` here would
+            // add two arms nothing reaches — the coverage ratchet caught precisely
+            // that on the first attempt, and an unreachable branch written to
+            // satisfy a log is worse than the log is worth.
+            //
+            // Per occurrence, not an aggregate: the open question is WHICH project
+            // and WHICH file pair, since that distinguishes one build's timestamp
+            // inversion from something structural.
+            for (project, _, (origin, copy)) in repairable do
+                Logging.info
+                    "test-prune"
+                    $"artifact-copy-differs (AUTOMATION-358): %s{project} — origin %s{origin} differs from copy %s{copy}"
+
             let unrepairable =
                 detected |> List.filter (fun (_, s) -> Option.isNone (repairFor s))
 
