@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: **the build inputs merkle hashes MSBuild's implicit imports** (AUTOMATION-303
+  case 2). `Directory.Build.props`, `Directory.Build.targets` and
+  `Directory.Packages.props` are inputs to every project beneath them and appeared in
+  neither list the merkle hashed — they are not compile items and not projects. A
+  `<Compile Include=…>` added there gave the repo a new file while the key stayed
+  byte-identical, so the task cache replayed `built N projects (cached)`, nothing
+  compiled the file, and the `[fcs]` error beside it was real. Resolved per project by
+  MSBuild's own nearest-ancestor rule, so a file MSBuild would not import cannot
+  invalidate a build it could not have affected. **Existing build cache entries orphan on
+  upgrade** — they vouched for inputs they never hashed.
+
 ## 0.7.0-alpha.22 - 2026-08-17
 
 - fix: re-verify artifacts at cache-REPLAY time, so a cache hit can never assert

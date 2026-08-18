@@ -714,7 +714,10 @@ module AgentHints =
                 // that looked real, and separating them by hand took the rest of the
                 // evening.
                 let staleAdvice =
-                    match causes |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind)) with
+                    match
+                        causes
+                        |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
+                    with
                     | [] -> []
                     | stale ->
                         [ $"             %d{List.length stale} of the cause(s) above are NOT about this tree — stale \

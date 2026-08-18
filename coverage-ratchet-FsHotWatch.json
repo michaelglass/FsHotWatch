@@ -778,6 +778,13 @@
         "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
+    ],
+    "StructureFiles.fs": [
+      {
+        "line": 90,
+        "branch": 60,
+        "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in `implicitImportsFor`'s ancestor walk: `Path.GetDirectoryName` returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run's number went red on the next one."
+      }
     ]
   }
 }

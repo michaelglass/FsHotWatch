@@ -270,8 +270,13 @@ module RedCause =
             source = FsHotWatch.PluginActivity.FcsPluginName
             && (message: string).TrimStart().StartsWith(checkerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
 
-        if isCheckerFault then CheckerFault
-        elif not (System.String.IsNullOrWhiteSpace file) && System.IO.Path.IsPathRooted file && not (exists file) then
+        if isCheckerFault then
+            CheckerFault
+        elif
+            not (System.String.IsNullOrWhiteSpace file)
+            && System.IO.Path.IsPathRooted file
+            && not (exists file)
+        then
             VanishedFile
         else
             AboutThisTree

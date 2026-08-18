@@ -31,7 +31,9 @@ let projectPatterns = [ "*.fsproj"; "*.csproj" ]
 /// Include=…>` in `Directory.Build.targets` adds a file to EVERY project in the repo
 /// while moving neither the project files nor any source file that was already there.
 let implicitImportNames =
-    [ "Directory.Build.props"; "Directory.Build.targets"; "Directory.Packages.props" ]
+    [ "Directory.Build.props"
+      "Directory.Build.targets"
+      "Directory.Packages.props" ]
 
 /// Every name/pattern a whole-repo walk must match to see the structure. The union of
 /// the two lists above, so a name added to either is seen by every consumer.
