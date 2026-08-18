@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.1.2 - 2026-08-18
+
 - **a route with no path text of its own no longer matches the F#
   comment token.** `urlPatternToRegex` admitted a leading `/` so a doubled separator
   still read as a path start. For the root route `/` — whose whole pattern is that one

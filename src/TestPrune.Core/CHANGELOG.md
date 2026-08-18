@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 7.0.1 - 2026-08-18
+
 - fix!: **a computation-expression custom operation is indexed under the member it
   resolves to, not under its keyword — and `Module` can no longer be used to smuggle an
   unqualified name past the schema (rework).**

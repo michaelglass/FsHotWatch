@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 7.0.1 - 2026-08-18
+
 - feat!: **Your `.test-prune.db` is rebuilt on first run again (SchemaVersion 9→10).** Nothing to do — the first `test-prune index` after upgrading is a
   full re-index rather than an incremental one. The bump is what removes rows the 8→9
   constraint was supposed to have kept out: they are attached to no source file, so
