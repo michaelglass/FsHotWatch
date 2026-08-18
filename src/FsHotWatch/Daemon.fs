@@ -365,8 +365,12 @@ let private rediscoverAndClearRemoved
         let newFiles = graph.GetAllFiles() |> Set.ofList
         let removedFiles = Set.difference oldFiles newFiles
 
+        // AUTOMATION-300: EVERY plugin, not just `fcs`. The phantom finding that
+        // makes a renamed file a permanently red gate is TestPrune's
+        // "symbol analysis failed — Parse errors", and clearing only the FCS
+        // ledger left it standing.
         for file in removedFiles do
-            host.ClearErrors(PluginActivity.FcsPluginName, AbsFilePath.value file)
+            host.ClearFileEverywhere(AbsFilePath.value file)
 
         if not removedFiles.IsEmpty then
             Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
@@ -1830,7 +1834,34 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
         let registeredProjects = pipeline.GetRegisteredProjects()
 
-        let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+        // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
+        //
+        // A file that is no longer on disk cannot be analyzed, and analyzing it
+        // anyway produces a finding about nothing: "symbol analysis failed —
+        // Parse errors" for a path that cannot be opened. That finding is keyed
+        // to the dead path, so nothing later clears it and the gate stays red
+        // until the daemon is stopped — the one command the docs tell you not to
+        // run. Renames are routine here (the compiler is the migration
+        // checklist), so this taxed exactly the refactoring the codebase asks for.
+        //
+        // The removed-file clearing above does NOT cover this on its own: it is
+        // gated on the fsproj fingerprint changing, so a rename that leaves every
+        // `.fsproj` byte-identical — a glob-matched file — never reaches it.
+        // Checking existence here is the backstop that does not depend on how the
+        // rename happened to touch the project files.
+        let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
+        let files, vanished = registeredFiles |> List.partition System.IO.File.Exists
+
+        if not vanished.IsEmpty then
+            // Clear first, THEN scan: a finding left behind here outlives the
+            // scan that would have replaced it, because nothing will check that
+            // path again.
+            host.ClearFilesEverywhere vanished
+
+            Logging.info
+                "scan"
+                $"Dropped %d{vanished.Length} registered file(s) that no longer exist (renamed or deleted) and cleared their findings"
 
         let total = files.Length
         Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"

@@ -317,6 +317,34 @@ type PluginHost
     member _.ClearErrors(pluginName: string, filePath: string, ?version: int64) =
         ledger.Clear(pluginName, filePath, ?version = version)
 
+    /// AUTOMATION-300 — clear a file's findings from EVERY plugin, not one.
+    ///
+    /// For a file that no longer exists there is no such thing as a per-plugin
+    /// answer: the path is gone, so every finding keyed to it is about nothing.
+    /// Clearing only one plugin's view (which is what the removed-file path used
+    /// to do, for `fcs` alone) leaves the others reporting a parse failure in a
+    /// file that cannot be opened — a permanently red gate about code that does
+    /// not exist, recoverable only by stopping the daemon.
+    ///
+    /// Reads the plugin names OUT OF THE LEDGER rather than from the registered
+    /// plugin list. The ledger is keyed by whatever name reported, so asking the
+    /// registry instead would clear only what happens to be registered right now
+    /// — and would clear nothing at all in any context where findings outlive
+    /// their reporter. The findings themselves are the authority on who reported
+    /// them.
+    member _.ClearFilesEverywhere(filePaths: string list) =
+        if not filePaths.IsEmpty then
+            let wanted = Set.ofList filePaths
+            let all = ledger.GetAll()
+
+            for KeyValue(file, entries) in all do
+                if wanted.Contains file then
+                    for (pluginName, _) in entries do
+                        ledger.Clear(pluginName, file)
+
+    /// Single-file convenience over `ClearFilesEverywhere`.
+    member this.ClearFileEverywhere(filePath: string) = this.ClearFilesEverywhere [ filePath ]
+
     /// Emit a file checked event to all registered plugins.
     ///
     /// Side effect on the live coverage set: a FULL check result adds the file to

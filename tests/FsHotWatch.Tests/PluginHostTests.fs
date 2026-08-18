@@ -1585,3 +1585,61 @@ let ``RerunFileCommandPlugin fails with a named reason when the plugin has no pa
         test <@ msg.Contains "no registered file pattern" @>
 
     test <@ (host.GetFileCommandPattern "no-such-plugin").IsNone @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-300 — a vanished path's findings must clear from EVERY plugin
+// ---------------------------------------------------------------------------
+//
+// Renaming a file left the daemon analyzing the OLD path from memory. The
+// finding it produced — TestPrune's "symbol analysis failed — Parse errors" —
+// was keyed to a path that no longer exists, so nothing ever replaced it and the
+// gate stayed red until `fshw stop`, the one command the docs tell you not to
+// run. Renames are routine here (the compiler IS the migration checklist), so
+// this taxed exactly the refactoring the codebase asks for.
+//
+// The removed-file path used to clear `fcs` ONLY, which is why the TestPrune
+// finding survived it.
+
+let private ghostEntry message =
+    [ { Message = message
+        Severity = DiagnosticSeverity.Error
+        Line = 1
+        Column = 0
+        Detail = None } ]
+
+[<Fact(Timeout = 20000)>]
+let ``clearing a vanished file clears findings from every plugin, not just fcs`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let ghost = "/tmp/test/Renamed.fs"
+
+    // `fcs` is the one the old code cleared; the other two stand for TestPrune
+    // and the analyzers, whose findings are what actually kept the gate red.
+    for plugin in [ "fcs"; "test-prune"; "analyzers" ] do
+        host.ReportErrors(plugin, ghost, ghostEntry "symbol analysis failed — Parse errors")
+
+    // Precondition: without this the test could pass by never having reported.
+    test <@ host.GetErrors() |> Map.containsKey ghost @>
+    test <@ host.GetErrors() |> Map.find ghost |> List.length = 3 @>
+
+    host.ClearFileEverywhere ghost
+
+    test <@ host.GetErrors() |> Map.tryFind ghost = None @>
+
+[<Fact(Timeout = 20000)>]
+let ``clearing a vanished file leaves findings for files that still exist`` () =
+    // The control. A `ClearFileEverywhere` that cleared the whole ledger would
+    // satisfy the test above and silently discard every real finding in the
+    // repo — a worse failure than the one being fixed, and invisible, because an
+    // empty ledger reads as a green gate.
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let ghost = "/tmp/test/Renamed.fs"
+    let alive = "/tmp/test/StillHere.fs"
+
+    host.ReportErrors("test-prune", ghost, ghostEntry "about a file that is gone")
+    host.ReportErrors("test-prune", alive, ghostEntry "a real problem")
+
+    host.ClearFileEverywhere ghost
+
+    let remaining = host.GetErrors()
+    test <@ remaining |> Map.tryFind ghost = None @>
+    test <@ remaining |> Map.find alive |> List.length = 1 @>
