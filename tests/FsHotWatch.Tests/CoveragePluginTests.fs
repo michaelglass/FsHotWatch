@@ -93,6 +93,13 @@ let private mkFileResult (fileName: string) (linePct: float) (lineThreshold: flo
         { FileName = fileName
           LinePct = linePct
           BranchPct = 100.0
+          // CoverageRatchet.Core 0.1.0-alpha.6 carries the covered-line COUNT beside the
+          // percentage (it ratchets on counts, which stay stable when the JIT-dependent
+          // denominator drifts). A 100-line denominator keeps the two coherent: covered
+          // IS the percentage. These tests gate on percentages, so the counts only have
+          // to agree with LinePct, not be realistic.
+          LinesCovered = int linePct
+          LinesTotal = 100
           BranchesCovered = 0
           BranchesTotal = 0 }
       LineThreshold = lineThreshold
