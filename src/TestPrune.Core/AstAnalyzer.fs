@@ -209,9 +209,43 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
         // `entity.FullName` throws (not just IOE) on un-nameable symbols — see `tryName`.
         None
 
+/// Recover a qualified name for an `FSharpMemberOrFunctionOrValue` whose `FullName` FCS
+/// reports UNQUALIFIED.
+///
+/// The case that matters is a COMPUTATION-EXPRESSION CUSTOM OPERATION. At a USE site
+/// (`select { for u in users do where (u.id = x) }`) FCS reports the operation KEYWORD as
+/// the symbol's `FullName` — `where` — while `LogicalName`/`CompiledName` hold the member
+/// (`Where`) and `DeclaringEntity` holds the builder. Verified against FCS 43.12.204:
+///
+///     full=where logical=Where compiled=Where isMVM=true isMember=true
+///     declaring=M.QBuilder apparent=M.QBuilder
+///
+/// Taking `FullName` at face value is what built the hubs this module warns about below.
+/// Measured in a ~9,300-test consumer repo indexed under the v9 schema, every one of these
+/// was a query-DSL keyword: `where` had 451 direct dependents reaching 1,828 test methods,
+/// `select` 337/1,826, `entity` 1,735, `set` 1,474, `take` 943 — nine such nodes.
+///
+/// `DeclaringEntity.FullName + "." + LogicalName` is exactly the name the DEFINITION side
+/// records for that member (`M.QBuilder.Where`), so the edge lands on the real member and
+/// a change to the builder selects its consumers, instead of both vanishing into a node
+/// named after a keyword.
+let private qualifyThroughDeclaringEntity (mfv: FSharpMemberOrFunctionOrValue) (reported: string) : string =
+    if reported.Contains '.' then
+        reported
+    else
+        match tryName (fun () -> mfv.LogicalName) with
+        | None -> reported
+        | Some logical ->
+            match mfv.DeclaringEntity with
+            | Some entity ->
+                match tryName (fun () -> entity.FullName) with
+                | Some owner -> owner + "." + logical
+                | None -> reported
+            | None -> reported
+
 let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
     try
-        let fullName = mfv.FullName
+        let fullName = qualifyThroughDeclaringEntity mfv mfv.FullName
 
         // Locals and parameters must never become symbols. FCS reports `FullName` for a
         // parameter or a local `let` as the BARE identifier (`name`, `question`, `kind`),
@@ -228,6 +262,18 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
         // member; FALSE for every parameter and local `let`. `IsMember` is NOT usable
         // here: it is false for plain module-level functions.
         if not mfv.IsModuleValueOrMember then
+            None
+        elif not (fullName.Contains '.') then
+            // Nothing reaching here can legitimately be unqualified: a module value or a
+            // member always has a declaring module or type, so either FCS's `FullName`
+            // carries it or `qualifyThroughDeclaringEntity` just put it back. A name that
+            // survives both is one we cannot identify — indexing it would build exactly
+            // the repo-wide hub `symbols_full_name_is_qualified` exists to reject, so it
+            // is dropped here instead, at the point where the symbol is named.
+            //
+            // Dropping rather than raising matches `tryClassifyActivePatternCase`, which
+            // has held the same line since the active-pattern fix: an unidentifiable
+            // symbol contributes no edge, where a merged one contributes a wrong one.
             None
         elif mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
             Some(Property, fullName)
@@ -951,6 +997,15 @@ let private extractResults
 
             let mutable droppedEdgeCount = 0
 
+            // What FCS said each edge TARGET is, recorded where the target was classified.
+            // The extern placeholder pass below needs this: `Module` is the one kind the
+            // `symbols_full_name_is_qualified` CHECK lets through unqualified, so choosing
+            // it must be evidence, never a guess from the shape of the string.
+            let classifiedTargetKinds =
+                System.Collections.Generic.Dictionary<string, SymbolKind>()
+
+            let recordTargetKind (kind: SymbolKind) (name: string) = classifiedTargetKinds[name] <- kind
+
             let dependencies =
                 allUses
                 |> List.collect (fun u ->
@@ -976,7 +1031,9 @@ let private extractResults
 
                         match classifySymbol u.Symbol with
                         | None -> fieldRecordEdge
-                        | Some(_, usedFullName) ->
+                        | Some(usedKind, usedFullName) ->
+                            recordTargetKind usedKind usedFullName
+
                             match findEnclosing u.Range with
                             | None ->
                                 droppedEdgeCount <- droppedEdgeCount + 1
@@ -1346,19 +1403,30 @@ let private extractResults
                     let name = d.ToSymbol
 
                     if seen.Add(name) && not (Set.contains name localSymbolNames) then
-                        // An edge target with NO dot can only be a top-level single-segment
-                        // module (`module Alpha`, whose FCS `FullName` is just `Alpha`).
-                        // Every other classifier that feeds an edge either requires a
-                        // declaring entity — `tryClassifyMemberOrFunction`'s
-                        // `IsModuleValueOrMember` gate — or qualifies explicitly.
+                        // `symbols` carries `CHECK (kind = 'Module' OR full_name LIKE '%.%')`
+                        // to keep out unqualified rows, which under a UNIQUE `full_name`
+                        // become repo-wide hubs. `Module` is therefore the schema's one
+                        // escape from that CHECK, and a placeholder may only take it on
+                        // EVIDENCE — FCS classified this very name as a module while
+                        // analysing this file. A top-level single-segment module (`module
+                        // Alpha`, whose FCS `FullName` is just `Alpha`) referenced from a
+                        // file indexed ahead of its own is the case that needs it.
                         //
-                        // It must be labelled `Module`, not `ExternRef`: `symbols` carries
-                        // `CHECK (kind = 'Module' OR full_name LIKE '%.%')` to keep out
-                        // unqualified rows, which under a UNIQUE `full_name` become
-                        // repo-wide hubs (one row named `name` collected 413 dependents and
-                        // pulled in 2,837 tests). `ExternRef` here would trip that check on
-                        // the first consuming file indexed ahead of the module's own.
-                        let kind = if name.Contains '.' then ExternRef else Module
+                        // Deriving the label from the shape of the string instead — "no dot,
+                        // therefore a module" — is what let the CHECK ship inert: it relabels
+                        // every unqualified name a module, so no input can fail it, and the
+                        // hub reforms under a kind the constraint exempts. An unqualified
+                        // target with no module evidence stays `ExternRef` and is REJECTED
+                        // by the constraint, which names the symbol and its file. That is
+                        // the intended outcome: such a name is not identifiable, and a loud
+                        // failure naming it is what the silent merge cost hours of.
+                        let kind =
+                            if name.Contains '.' then
+                                ExternRef
+                            else
+                                match classifiedTargetKinds.TryGetValue name with
+                                | true, Module -> Module
+                                | _ -> ExternRef
 
                         Some
                             { FullName = name

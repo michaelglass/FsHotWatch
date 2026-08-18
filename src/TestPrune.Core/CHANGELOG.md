@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- fix!: **a computation-expression custom operation is indexed under the member it
+  resolves to, not under its keyword — and `Module` can no longer be used to smuggle an
+  unqualified name past the schema (rework).**
+
+  The `symbols_full_name_is_qualified` CHECK shipped in 7.0.0 could not fail. The extern
+  placeholder pass picked a kind from the shape of the string — no dot, therefore a module
+  — so every unqualified name was relabelled into the one kind the CHECK exempts. The rows
+  it was written to reject went on being written, wearing `Module`.
+
+  What was being relabelled turned out to be a naming bug, not a module. At a USE site FCS
+  reports a custom operation's `FullName` as the operation KEYWORD (`where`, `select`,
+  `entity`), while `LogicalName` holds the member (`Where`) and `DeclaringEntity` holds the
+  builder. Since `full_name` is UNIQUE, every keyword collapsed to one row, and every
+  builder using that keyword — in any library — merged onto it. Measured on a real index of
+  a ~9,300-test consumer repo: **one row named `select` was `SelectBuilder.Select`,
+  `SqlHydra.Query.SelectBuilders.select`, `Falco.Markup.Elem.select` and `Feliz.Html.select`
+  at once**, and one named `where` was three different builders' `Where` (451 direct
+  dependents, 1,828 test methods reachable). Nine such rows, 1,465 edges.
+
+  Two changes, at the two places the invariant can be held:
+
+  - `AstAnalyzer` qualifies through `DeclaringEntity`, so the edge lands on
+    `SqlHydra.Query.SelectBuilders.SelectBuilder\`2.Where` — the same name the definition
+    side already records. A member or module value whose name cannot be qualified even
+    that way is dropped rather than indexed under a name that is not its own.
+  - The extern placeholder pass takes `Module` only on EVIDENCE that FCS classified that
+    name as a module. Anything else unqualified stays `ExternRef` and is rejected by the
+    constraint, which names the symbol and its file.
+
+  Re-indexing that repo: 54 unqualified rows → 22, all of them real top-level
+  single-segment modules (namespace-less Fable modules, each named after its own file).
+  No in-repo symbol and no in-repo dependency edge changed, so test selection is
+  byte-identical — measured across eight files, 0 delta on every one. The keyword rows
+  were sinks; what they cost was correct attribution, not selection.
+
+- feat!: **`SchemaVersion` 9 → 10.** No schema text change — a forced rebuild. An extern
+  row's `source_file` is never in a re-indexed set, so orphan cleanup cannot collect one:
+  without the bump the junk rows above would outlive the fix in place.
+
 ## 7.0.0 - 2026-08-17
 
 - feat: **`[<TestPrune.CompositionRoot>]` — stop an application composition root
