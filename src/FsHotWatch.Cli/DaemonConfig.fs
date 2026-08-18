@@ -1346,7 +1346,13 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             let buildTimeout = b.TimeoutSec |> Option.orElse config.TimeoutSec
 
             daemon.RegisterHandler(
-                FsHotWatch.Build.BuildPlugin.create
+                // AUTOMATION-368: REPORT-ONLY in the daemon. Recording MSBuild's
+                // TargetPath made the artifact gate reachable for the first time;
+                // switching a build-reddening predicate on across every consuming
+                // repo in the same change that makes it possible is how you turn
+                // "no protection" into "every build red on a false reading".
+                FsHotWatch.Build.BuildPlugin.createWith
+                    false
                     b.Command
                     b.Args
                     []

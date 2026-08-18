@@ -253,6 +253,14 @@ let private discoverAndRegisterProjects
 
                     graph.RegisterProject(absProject, sourceFiles, references)
 
+                    // AUTOMATION-368: record MSBuild's OWN output path. Without it
+                    // `GetCanonicalDllPath` returns None for every project in a live
+                    // daemon — the TFM it needs arrives only via `RegisterFromFsproj`,
+                    // which nothing in `src/` calls — so artifact examination has never
+                    // run in production. `TargetPath` also survives a custom
+                    // `<AssemblyName>`, which the filename-based inference cannot.
+                    graph.RegisterProjectOutput(absProject, proj.TargetPath)
+
             let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
             sw.Stop()
 

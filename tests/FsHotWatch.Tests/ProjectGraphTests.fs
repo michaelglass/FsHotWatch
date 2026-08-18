@@ -395,3 +395,74 @@ let ``PrepareForRediscovery clears TargetFramework`` () =
         test <@ graph.GetTargetFramework(AbsProjectPath.create fsproj) = None @>
     finally
         Directory.Delete(tmpDir, true)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-368 — the canonical DLL path must come from MSBuild, not inference
+// ---------------------------------------------------------------------------
+//
+// `GetCanonicalDllPath` inferred `<projDir>/bin/Debug/<TFM>/<projectFileName>.dll`,
+// and BOTH halves of that inference fail in production:
+//
+//   * the TFM reaches this graph ONLY through `RegisterFromFsproj`, which has
+//     zero callers in `src/` — so the live daemon supplied none, the path was
+//     always `None`, and `verifyArtifactsFresh` returned `[]` unconditionally.
+//     Two shipped gates had therefore never examined an artifact, while their
+//     tests — which use the fsproj-parse registration path — stayed green.
+//
+//   * the project FILE NAME is not the assembly name. This repo has a
+//     counterexample: FsHotWatch.Rules builds FsHotWatch.ConventionAnalyzers.dll,
+//     which the inference reads as permanently missing.
+//
+// Discovery now records MSBuild's own `TargetPath`, which needs neither guess.
+
+[<Fact(Timeout = 15000)>]
+let ``a recorded MSBuild output path is preferred over the inferred one`` () =
+    let graph = ProjectGraph()
+    let proj = pp "/repo/src/Thing/Thing.fsproj"
+
+    graph.RegisterProject(proj, [ fp "/repo/src/Thing/A.fs" ], [])
+
+    // Without a recorded path AND without a TFM — the live daemon's state before
+    // this change — there is nothing to examine. This is the precondition that
+    // made both gates inert.
+    test <@ graph.GetCanonicalDllPath proj = None @>
+
+    graph.RegisterProjectOutput(proj, "/repo/src/Thing/bin/Debug/net10.0/Thing.dll")
+
+    test <@ graph.GetCanonicalDllPath proj = Some "/repo/src/Thing/bin/Debug/net10.0/Thing.dll" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a custom AssemblyName is honoured, not inferred from the file name`` () =
+    // The second mis-derivation, with the repo's own real counterexample.
+    // Inference would say ".../FsHotWatch.Rules.dll" and find nothing there.
+    let graph = ProjectGraph()
+    let proj = pp "/repo/analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj"
+
+    let realOutput =
+        "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net10.0/FsHotWatch.ConventionAnalyzers.dll"
+
+    graph.RegisterProject(proj, [ fp "/repo/analyzers/FsHotWatch.Rules/R.fs" ], [])
+    graph.RegisterProjectOutput(proj, realOutput)
+
+    test <@ graph.GetCanonicalDllPath proj = Some realOutput @>
+    // The name the inference would have produced must NOT be what we report.
+    test
+        <@
+            graph.GetCanonicalDllPath proj
+            <> Some "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net10.0/FsHotWatch.Rules.dll"
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``an empty or whitespace TargetPath is not recorded`` () =
+    // MSBuild can hand back an empty string for a project it could not evaluate.
+    // Recording that would make `GetCanonicalDllPath` answer `Some ""`, which
+    // reads downstream as "the output is missing" — a false staleness claim, and
+    // exactly the failure mode this gate must not introduce.
+    let graph = ProjectGraph()
+    let proj = pp "/repo/src/Thing/Thing.fsproj"
+
+    graph.RegisterProject(proj, [ fp "/repo/src/Thing/A.fs" ], [])
+    graph.RegisterProjectOutput(proj, "   ")
+
+    test <@ graph.GetRecordedOutputPath proj = None @>
+    test <@ graph.GetCanonicalDllPath proj = None @>

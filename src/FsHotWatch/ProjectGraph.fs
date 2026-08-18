@@ -49,6 +49,15 @@ type ProjectGraph() as this =
     let projectDependents = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
     let targetFrameworks = ConcurrentDictionary<AbsProjectPath, string>()
 
+    // AUTOMATION-368: MSBuild's own `TargetPath` — the real primary output. The
+    // canonical path below INFERS one from the project file name and TFM, and
+    // both halves of that inference are wrong in production: the TFM only ever
+    // reaches this graph through `RegisterFromFsproj`, which has zero callers in
+    // `src/`, and the file name is not the assembly name for any project with a
+    // custom `<AssemblyName>` (this repo has one: FsHotWatch.Rules builds
+    // FsHotWatch.ConventionAnalyzers.dll). A recorded path needs neither guess.
+    let outputPaths = ConcurrentDictionary<AbsProjectPath, string>()
+
     let appendIfAbsent (dict: ConcurrentDictionary<'K, 'V list>) (key: 'K) (value: 'V) =
         dict.AddOrUpdate(
             key,
@@ -70,6 +79,7 @@ type ProjectGraph() as this =
         projectReferences.Clear()
         projectDependents.Clear()
         targetFrameworks.Clear()
+        outputPaths.Clear()
 
     /// Register a project with its source files and references.
     member _.RegisterProject
@@ -120,6 +130,23 @@ type ProjectGraph() as this =
 
         this.RegisterProject(absPath, sourceFiles, references)
         (sourceFiles, references)
+
+    /// AUTOMATION-368 — record MSBuild's real `TargetPath` for a project.
+    ///
+    /// Called from the live discovery path, which is what makes artifact
+    /// examination reachable in a daemon at all: before this, `GetCanonicalDllPath`
+    /// returned `None` for every project in production, so `verifyArtifactsFresh`
+    /// returned `[]` unconditionally and two shipped gates had never looked at an
+    /// artifact.
+    member _.RegisterProjectOutput(projectPath: AbsProjectPath, targetPath: string) =
+        if not (System.String.IsNullOrWhiteSpace targetPath) then
+            outputPaths[projectPath] <- targetPath
+
+    /// The recorded MSBuild output path, if discovery supplied one.
+    member _.GetRecordedOutputPath(projectPath: AbsProjectPath) : string option =
+        match outputPaths.TryGetValue(projectPath) with
+        | true, path -> Some path
+        | false, _ -> None
 
     /// Get the parsed <TargetFramework> for a project, or None if not registered.
     member _.GetTargetFramework(projectPath: AbsProjectPath) : string option =
@@ -210,13 +237,22 @@ type ProjectGraph() as this =
     /// "Debug" — matches BuildPlugin, which doesn't thread Configuration through
     /// either. Returns None when the TFM couldn't be parsed at registration time.
     member this.GetCanonicalDllPath(projectPath: AbsProjectPath) : string option =
-        match this.GetTargetFramework(projectPath) with
-        | None -> None
-        | Some tfm ->
-            let projPath = AbsProjectPath.value projectPath
-            let projDir = Path.GetDirectoryName(projPath)
-            let projName = Path.GetFileNameWithoutExtension(projPath)
-            Some(Path.Combine(projDir, "bin", "Debug", tfm, projName + ".dll"))
+        // AUTOMATION-368: prefer what MSBuild SAID over what we can infer. The
+        // inference below is kept as the fallback for the fsproj-parse
+        // registration path (tests, and any consumer not going through
+        // discovery), but it cannot answer for a custom `<AssemblyName>` and it
+        // needs a TFM that the live path never supplies.
+        match this.GetRecordedOutputPath(projectPath) with
+        | Some recorded -> Some recorded
+        | None ->
+
+            match this.GetTargetFramework(projectPath) with
+            | None -> None
+            | Some tfm ->
+                let projPath = AbsProjectPath.value projectPath
+                let projDir = Path.GetDirectoryName(projPath)
+                let projName = Path.GetFileNameWithoutExtension(projPath)
+                Some(Path.Combine(projDir, "bin", "Debug", tfm, projName + ".dll"))
 
     /// Latest `LastWriteTimeUtc` across the project's on-disk source files.
     /// None when the project has no sources or every source path is missing.

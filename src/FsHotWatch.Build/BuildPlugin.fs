@@ -336,7 +336,25 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
     describeCoverageGap (examineArtifacts graph)
 
-let create
+/// AUTOMATION-368 — `artifactGateReddens` decides whether a stale-artifact
+/// finding ACTS or is merely reported.
+///
+/// It exists because recording MSBuild's real `TargetPath` made this gate
+/// reachable for the first time. Before that, `GetCanonicalDllPath` returned
+/// `None` for every project in a live daemon (the TFM it needs arrives only via
+/// `RegisterFromFsproj`, which nothing in `src/` calls), so `verifyArtifactsFresh`
+/// returned `[]` unconditionally and both consumers — the post-build demotion and
+/// the cache-replay bypass — had never examined an artifact.
+///
+/// Switching a build-reddening predicate on for the first time, across every
+/// consuming repo at once, is not a thing to do in the same change that makes it
+/// possible: the failure mode is not "no protection", it is every build going red
+/// on a false staleness reading. So the daemon passes `false` and the finding is
+/// logged only, while the LOGIC stays exercised by the tests that pass `true`.
+/// Promote once these logs and TestPrune's independent `ArtifactFreshness` agree
+/// on a real tree over a real working week.
+let createWith
+    (artifactGateReddens: bool)
     (command: string)
     (args: string)
     (environment: (string * string) list)
@@ -419,7 +437,45 @@ let create
     let verifyArtifactsFresh () : StaleArtifact list =
         let examinations = examineArtifacts graph
         reportCoverageGapOnce examinations
-        staleArtifactsOf examinations
+        let stale = staleArtifactsOf examinations
+
+        // AUTOMATION-368 — REPORT-ONLY, DELIBERATELY.
+        //
+        // Until now this returned `[]` in every live daemon and neither of its two
+        // consumers — the post-build `BuildPassed -> BuildArtifactsStale` demotion
+        // and the cache-replay bypass — had ever examined a real artifact. The
+        // cause was upstream: `GetCanonicalDllPath` needs a TargetFramework, and a
+        // TFM only reached the graph through `RegisterFromFsproj`, which has zero
+        // callers in `src/`.
+        //
+        // Recording MSBuild's real `TargetPath` fixes that — and by fixing it,
+        // switches on a predicate that REDDENS BUILDS and has never run against a
+        // real repository. The failure mode of getting that wrong is not "no
+        // protection": it is every build in every consuming repo going red at once
+        // on a false staleness reading.
+        //
+        // So the finding is LOGGED and discarded. Behaviour is byte-identical to
+        // before — `[]`, as it has always effectively been — while the claim
+        // becomes observable. Promote to reddening only after these logs and
+        // TestPrune's independent `ArtifactFreshness` agree on a real tree over a
+        // real working week, which is the comparison this mode exists to enable.
+        if artifactGateReddens || stale.IsEmpty then
+            stale
+        else
+            for s in stale do
+                // Phrased inline rather than via `formatStaleArtifact`, which is
+                // declared below this point.
+                let detail =
+                    match s.Reason with
+                    | DllMissing path -> $"DLL missing at %s{path}"
+                    | DllOlderThanSources(dllTime, srcTime) ->
+                        sprintf "DLL %O older than newest source %O" dllTime srcTime
+
+                info
+                    "build"
+                    $"artifact-gate (report-only, AUTOMATION-368): would have reported %s{s.Project}: %s{detail}"
+
+            []
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -1014,3 +1070,19 @@ let create
       // above is the only thing standing between a stored verdict and a `bin/` that
       // never earned it.
       Teardown = None }
+
+/// The reddening form. Kept as `create` so existing callers and every test that
+/// asserts the AUTOMATION-224/245 behaviour are unchanged — those tests are the
+/// only coverage the gate's logic has, and neutering them to ship report-only
+/// would leave a future promotion with nothing to stand on.
+let create
+    (command: string)
+    (args: string)
+    (environment: (string * string) list)
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
+    (testProjectNames: string list)
+    (buildTemplate: string option)
+    (dependsOn: string list)
+    (timeoutSec: int option)
+    =
+    createWith true command args environment graph testProjectNames buildTemplate dependsOn timeoutSec
