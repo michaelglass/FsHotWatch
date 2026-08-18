@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.14 - 2026-08-18
+
 - fix: **a stale-build-output refusal is now telling the CLI which of the two "waiting
   on build" causes it is** (AUTOMATION-201, QA rework). Every refusal the stale-artifact
   preflight raises begins with `stale build output — `, built in one place

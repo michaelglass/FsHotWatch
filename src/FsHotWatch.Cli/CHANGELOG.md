@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.18 - 2026-08-18
+
 - fix!: **a stale build output no longer borrows the build-ordering defer's words — or
   its remedy** (AUTOMATION-201, QA rework). Both landed on one `waiting on build`
   message, and for a stale output every clause of it was wrong: the artifact WAS

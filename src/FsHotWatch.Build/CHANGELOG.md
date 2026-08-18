@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.23 - 2026-08-18
+
 - fix: **the cache-replay gate covers every event that reads the cache** (AUTOMATION-245
   QA rework). The gate added in `0.7.0-alpha.22` — and `force-rebuild` before it
   (AUTOMATION-224) — matched `FileChanged` alone. A build plugin configured with
