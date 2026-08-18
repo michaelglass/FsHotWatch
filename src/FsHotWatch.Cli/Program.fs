@@ -1726,7 +1726,7 @@ let executeCommand
                 // which actually runs the suite, is wrapped.
                 UI.success $"confirm — %s{Verdict.describeStillApplies v}"
                 eprintfn ""
-                eprintfn "  AGENTS: don't parse this output. Machine-readable results:"
+                eprintfn "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
                 eprintfn $"    verdict  %s{Verdict.RelativePath}   (this verdict, re-checked against the tree on disk)"
                 0
             | Verdict.PriorConfirmation.MustEarn ->
