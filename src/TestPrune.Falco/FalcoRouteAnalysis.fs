@@ -145,13 +145,96 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     let modulePattern =
         Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
 
-    // An attribute block: `[<` up to the FIRST `>]`, possibly spanning lines.
-    // Purely textual, consistent with the rest of this file: a `>]` inside a
-    // string argument would close the block early (and a block whose `>]` only
-    // ever appears inside a string would never close) — both are rare enough
-    // to accept.
-    let attributeBlockPattern =
-        Regex(@"\[<(.*?)>\]", RegexOptions.Compiled ||| RegexOptions.Singleline)
+    // attribute blocks, scanned with STRING AWARENESS.
+    //
+    // This was `Regex(@"\[<(.*?)>\]")`, whose own comment conceded that a `>]`
+    // inside a string argument closes the block early and accepted it as rare.
+    // It is rare — but the direction is the dangerous one. Truncating
+    // `[<Trait("k","v>]"); Fact>]` at the `>]` INSIDE the string leaves
+    // `Trait("k","v`, so `Fact` never appears, `hasTestAttribute` returns false,
+    // and the test becomes invisible to impact selection. The gate then goes
+    // green having never run a test that was genuinely affected.
+    //
+    // Over-selection costs time; this costs a verdict. It is exactly the failure
+    // the soundness work exists to prevent, so "rare" is not a reason to accept
+    // it — a single instance buys a green that never ran.
+    //
+    // Blast radius measured before changing anything (as the ticket asked): ZERO
+    // live instances in any test corpus, and TWO in `intelligence/src`, e.g. a
+    // `Cmd` help string containing `--wait[=<minutes>]`. So this is a latent trap
+    // rather than an active loss — and the pattern is demonstrably one a person
+    // writes naturally, which is what makes leaving it unfixed a bet rather than
+    // a judgement.
+    //
+    // Handles all three F# string forms, whose escaping rules differ:
+    //   "…\"…"      regular, backslash escapes
+    //   @"…""…"      verbatim, doubled quote escapes, backslash is literal
+    //   """…"""      triple-quoted, no escapes at all
+    let attributeBlocks (text: string) : string list =
+        let blocks = ResizeArray<string>()
+        let mutable i = 0
+
+        while i < text.Length - 1 do
+            if text.[i] = '[' && text.[i + 1] = '<' then
+                let contentStart = i + 2
+                let mutable j = contentStart
+                let mutable closed = false
+
+                while not closed && j < text.Length do
+                    // Triple-quoted: no escapes, ends at the next """.
+                    if
+                        j + 2 < text.Length
+                        && text.[j] = '"'
+                        && text.[j + 1] = '"'
+                        && text.[j + 2] = '"'
+                    then
+                        let close = text.IndexOf("\"\"\"", j + 3)
+                        j <- if close < 0 then text.Length else close + 3
+                    // Verbatim: `""` is an escaped quote, backslash is literal.
+                    elif j + 1 < text.Length && text.[j] = '@' && text.[j + 1] = '"' then
+                        let mutable k = j + 2
+                        let mutable ended = false
+
+                        while not ended && k < text.Length do
+                            if text.[k] = '"' then
+                                if k + 1 < text.Length && text.[k + 1] = '"' then
+                                    k <- k + 2
+                                else
+                                    ended <- true
+                                    k <- k + 1
+                            else
+                                k <- k + 1
+
+                        j <- k
+                    // Regular: backslash escapes the next character.
+                    elif text.[j] = '"' then
+                        let mutable k = j + 1
+                        let mutable ended = false
+
+                        while not ended && k < text.Length do
+                            if text.[k] = '\\' && k + 1 < text.Length then
+                                k <- k + 2
+                            elif text.[k] = '"' then
+                                ended <- true
+                                k <- k + 1
+                            else
+                                k <- k + 1
+
+                        j <- k
+                    elif j + 1 < text.Length && text.[j] = '>' && text.[j + 1] = ']' then
+                        blocks.Add(text.Substring(contentStart, j - contentStart))
+                        closed <- true
+                        j <- j + 2
+                    else
+                        j <- j + 1
+
+                // An unterminated block consumes the rest of the text; resume
+                // after the opener so a stray `[<` cannot swallow the file.
+                i <- if closed then j else contentStart
+            else
+                i <- i + 1
+
+        List.ofSeq blocks
 
     // Textual spellings of the test attributes core's AST analysis recognises
     // (xUnit / NUnit / MSTest — see `knownTestAttributes` in AstAnalyzer),
@@ -178,8 +261,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // name in ordinary code (`let cases = [ users; TestCase(1) ]`) is not an
     // attribute and must not make a helper module count as test-bearing.
     let hasTestAttribute (text: string) : bool =
-        attributeBlockPattern.Matches(text)
-        |> Seq.exists (fun m -> testAttributeNamePattern.IsMatch(m.Groups.[1].Value))
+        attributeBlocks text |> List.exists testAttributeNamePattern.IsMatch
 
     // An `inherit BaseType(...)` clause opening a class body. Only the keyword
     // at the start of an indented line counts, so the word inside a comment or

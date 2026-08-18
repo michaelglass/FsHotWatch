@@ -1228,6 +1228,72 @@ type BillingTests() =
                                      TestClass = "UsersTests" } ]
                     @>)
 
+
+    // -- a `>]` inside an attribute string must not truncate ---------
+    //
+    // `[<Trait("k","v>]"); Fact>]` used to be read as `Trait("k","v` — the scan
+    // stopped at the FIRST `>]`, which here sits inside a string literal. `Fact`
+    // never appeared, `hasTestAttribute` returned false, and the test became
+    // invisible to impact selection.
+    //
+    // The direction is what makes it serious. Over-selection costs time;
+    // UNDER-selection costs a verdict — a genuinely affected test silently not
+    // run, and a gate green over it. Driven end-to-end through `selectingRoot`
+    // rather than against the scanner alone, so what is pinned is that the test
+    // is SELECTED, not merely that a helper parses.
+
+    [<Fact>]
+    let ``a >] inside an attribute string still leaves the test selectable`` () =
+        let testContent =
+            "type TruncatedTests() =\n"
+            + "    [<Trait(\"k\",\"v>]\"); Fact>]\n"
+            + "    member _.NavigatesToRoot() =\n"
+            + "        let url = \"/\"\n"
+            + "        ignore url\n"
+
+        selectingRoot [ ("TruncatedTests.fs", testContent) ] (fun result -> test <@ not (List.isEmpty result) @>)
+
+    [<Fact>]
+    let ``a verbatim string containing >] still leaves the test selectable`` () =
+        // Verbatim strings escape a quote by DOUBLING it, so a scanner written for
+        // backslash escapes walks off the end of this one.
+        let testContent =
+            "type VerbatimTests() =\n"
+            + "    [<Trait(\"path\", @\"c:\\x[=<n>]\"); Fact>]\n"
+            + "    member _.NavigatesToRoot() =\n"
+            + "        let url = \"/\"\n"
+            + "        ignore url\n"
+
+        selectingRoot [ ("VerbatimTests.fs", testContent) ] (fun result -> test <@ not (List.isEmpty result) @>)
+
+    [<Fact>]
+    let ``a triple-quoted string containing >] still leaves the test selectable`` () =
+        // Triple-quoted strings have no escapes at all — the only terminator is
+        // the closing triple quote.
+        let testContent =
+            "type TripleTests() =\n"
+            + "    [<Trait(\"doc\", \"\"\"use --wait[=<minutes>]\"\"\"); Fact>]\n"
+            + "    member _.NavigatesToRoot() =\n"
+            + "        let url = \"/\"\n"
+            + "        ignore url\n"
+
+        selectingRoot [ ("TripleTests.fs", testContent) ] (fun result -> test <@ not (List.isEmpty result) @>)
+
+    [<Fact>]
+    let ``a class with no test attribute is still NOT selected`` () =
+        // The control, and the one that matters most here. A scanner that became
+        // over-eager — treating any `[<…` as an attribute block, or failing to
+        // close one and swallowing the file — would make every helper look
+        // test-bearing. That is silent over-selection replacing silent
+        // under-selection, and the first three tests above would not notice.
+        let testContent =
+            "type PlainHelper() =\n"
+            + "    member _.Build() =\n"
+            + "        let url = \"/\"\n"
+            + "        ignore url\n"
+
+        selectingRoot [ ("PlainHelper.fs", testContent) ] (fun result -> test <@ List.isEmpty result @>)
+
 module ``symbolic route navigation`` =
 
     // A minimal Falco.UnionRoutes route DU with the `Admin → Settings` nesting the repro
