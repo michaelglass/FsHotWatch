@@ -143,7 +143,9 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
             |> List.collect FsHotWatch.StructureFiles.implicitImportsFor
             |> List.distinct
 
-        let allInputs = (sourceFiles @ projectFiles @ implicitImports) |> List.distinct |> List.sort
+        let allInputs =
+            (sourceFiles @ projectFiles @ implicitImports) |> List.distinct |> List.sort
+
         let sb = System.Text.StringBuilder()
 
         for path in allInputs do
