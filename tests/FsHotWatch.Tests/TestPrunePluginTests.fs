@@ -8470,7 +8470,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                 { PluginStatuses = Map.empty
                   FailingDiagnostics = 0
                   UnattributableDiagnostics = 0
-                  WaitingOnBuild = false
+                  WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
@@ -8505,7 +8505,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
 
@@ -8541,7 +8541,7 @@ let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, 
         { PluginStatuses = Map.empty
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
-          WaitingOnBuild = false
+          WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
 
@@ -9094,7 +9094,7 @@ let private markerRunner (project: string) (marker: string) (projFile: string) :
 /// Drive one real run of both projects and return the repo root's marker facts.
 /// Seeds a covering symbol per project and a pending queue naming both, so a
 /// `BuildCompleted` runs BOTH — the two-suite shape the ordering bug needs.
-let private drivePreflightRun (tmpDir: string) (s: PreflightSynth) =
+let private drivePreflightRunWithHost (tmpDir: string) (s: PreflightSynth) =
     let dbPath = Path.Combine(tmpDir, "tp.db")
     let db = Database.create dbPath
     // DISTINCT source files per symbol: two symbols sharing one file collapse into a
@@ -9116,6 +9116,11 @@ let private drivePreflightRun (tmpDir: string) (s: PreflightSynth) =
     host.EmitBuildCompleted(BuildSucceeded)
     await.Wait(TimeSpan.FromSeconds 25.0) |> ignore
     waitForQuiescent host 5000
+    host
+
+/// Drive one real run and discard the host — for the tests whose evidence is on disk.
+let private drivePreflightRun (tmpDir: string) (s: PreflightSynth) =
+    drivePreflightRunWithHost tmpDir s |> ignore
 
 /// POSITIVE CONTROL, and it comes first on purpose. Every assertion below about a
 /// suite NOT running is worthless without it: a preflight that refused everything —
@@ -9186,3 +9191,95 @@ let ``AUTOMATION-201: a stale build-output COPY is repaired and the run proceeds
         // is itself the finding, and nobody greps history for it.
         let ledger = FsHotWatch.TestPrune.StaleArtifactPreflight.loadLedger tmpDir
         test <@ ledger |> List.exists (fun r -> r.File = s.CommonCopyInP2) @>)
+
+/// END TO END, through the ledger the CLI actually reads. AC2's "states the concrete
+/// remedy" is about the message an operator ACTS on, and for a `check` that is the
+/// top-level verdict line — which, before this rework, said "a test project's build
+/// artifact was not produced … re-run once the build settles" and pointed at `fshw
+/// confirm`. Every clause of that is wrong here: the artifact WAS produced, re-running
+/// returns the identical refusal, and `fshw confirm` spends a full gate cycle to reach
+/// it. So this asserts the whole chain — real run → real ledger entry →
+/// `BuildWait.classify` — rather than any one link.
+[<Fact(Timeout = 40000)>]
+let ``AUTOMATION-201: an unrepairable stale tree reaches the CLI as StaleOutput, not as a build-ordering defer`` () =
+    withTempDir "tp-preflight-classify" (fun tmpDir ->
+        let s = preflightSynth tmpDir
+        // The unhealable case: P2's source was edited after its assembly was compiled.
+        File.SetLastWriteTimeUtc(s.P2Src, s.BuiltAt.AddMinutes 30.0)
+
+        let host = drivePreflightRunWithHost tmpDir s
+
+        test <@ not (File.Exists s.P1Marker) @>
+        test <@ not (File.Exists s.P2Marker) @>
+
+        let deferrals =
+            host.GetErrors()
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun (_, e) -> FsHotWatch.ErrorLedger.ErrorEntry.isWaitingOnBuild e)
+
+        test <@ not (List.isEmpty deferrals) @>
+
+        // The message the CLI classifies on — from the run, not hand-written.
+        let messages = deferrals |> List.map (fun (_, e) -> e.Message)
+
+        // THE OPERATOR-FACING MESSAGE, derived the way the CLI derives it: classify the
+        // ledger, take the verdict, read the reason. Asserting on the reason rather than
+        // on the classifier is deliberate — the defect was never "the enum is wrong", it
+        // was "the person reading this is sent to run the wrong command".
+        let outcome =
+            FsHotWatch.Cli.CheckVerdict.CheckOutcome.WaitingOnBuild(
+                FsHotWatch.Cli.CheckVerdict.BuildWait.staleDeferrals (
+                    FsHotWatch.Cli.CheckVerdict.BuildWait.classify messages
+                )
+            )
+
+        match FsHotWatch.Cli.Verdict.outcomeOfCheck outcome with
+        | FsHotWatch.Cli.Verdict.Incomplete reason ->
+            // Names the affected project, and the command that actually repairs it.
+            test <@ reason.Contains "P2" @>
+            test <@ reason.Contains "dotnet build" @>
+            test <@ reason.Contains "--no-incremental" @>
+
+            // And names the projects to ACT on, not every project the refusal deferred.
+            // P1 is fresh and was deferred only because the run was refused as a whole —
+            // listing it would be the over-listing that made the headline unreadable in
+            // the first place. Its own deferral still names P2 as the cause.
+            test <@ not (reason.Contains "P1") @>
+
+            // And no longer asserts the cause that is FALSE here — the artifact WAS
+            // produced — nor prescribes the two remedies that cannot clear it.
+            test <@ not (reason.Contains "was not produced") @>
+            test <@ not (reason.Contains "re-run once the build settles") @>
+        | other -> failwith $"a stale build-output refusal must stay incomplete, got %A{other}"
+
+        // The DETAIL stops asserting the wrong cause too. It used to read "This is a
+        // build-ordering issue, not a test failure" for every defer — advice that costs
+        // a gate cycle when the tree is stale rather than merely early.
+        let staleDetails =
+            deferrals
+            |> List.filter (fun (_, e) -> FsHotWatch.TestPrune.StaleArtifactPreflight.isStaleOutputDeferral e.Message)
+            |> List.choose (fun (_, e) -> e.Detail)
+
+        test <@ not (List.isEmpty staleDetails) @>
+        test <@ staleDetails |> List.forall (fun d -> not (d.Contains "build-ordering issue")) @>
+        test <@ staleDetails |> List.forall (fun d -> d.Contains "build OUTPUT is stale") @>)
+
+/// POSITIVE CONTROL for the classification: the OTHER defer — a build artifact that
+/// genuinely was not produced — must keep classifying as `ArtifactNotProduced`, because
+/// for it "re-run once the build settles" is correct advice and replacing it would be a
+/// regression wearing a fix's clothes. Without this, a classifier that answered
+/// `StaleOutput` to everything would pass the test above.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-201: an apphost-missing defer still classifies as a build-ordering wait`` () =
+    let deferred: TestResults =
+        { Results = Map.ofList [ "P2", TestsDeferred "apphost not produced; tests did not run" ]
+          Elapsed = TimeSpan.Zero }
+
+    let messages = failuresOf Map.empty deferred |> List.map (fun f -> f.Entry.Message)
+    test <@ not (List.isEmpty messages) @>
+
+    test
+        <@
+            FsHotWatch.Cli.CheckVerdict.BuildWait.classify messages = FsHotWatch.Cli.CheckVerdict.BuildWait.ArtifactNotProduced
+        @>

@@ -1657,10 +1657,27 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
             // failure list, so cache participation stays refused (a deferred run is
             // never replayed as a green) — the severity governs the VERDICT, the
             // outstanding LIST governs the CACHE, and the two are decoupled.
+            // The DETAIL used to assert one cause for every defer: "its build artifact
+            // (apphost) was not produced … a build-ordering issue". That is false for a
+            // stale-artifact refusal, where the artifact WAS produced and holds bytes
+            // that do not match its sources — and it is false in the expensive
+            // direction, because a build-ordering race settles on its own while stale
+            // output does not. A reader told to wait it out re-runs and gets the
+            // identical refusal, which is the defect AUTOMATION-201 exists to delete.
+            // So the detail is derived from the reason, not asserted over it.
+            let detail =
+                if StaleArtifactPreflight.isStaleOutputDeferral reason then
+                    $"The %s{project} test project did not run because its build OUTPUT is stale: the artifact \
+                      exists, but its bytes do not match the sources it was built from, so running the suite would \
+                      test code you did not write. This is NOT a build-ordering race and re-running will not settle \
+                      it — the reason above names the file and the command that repairs it."
+                else
+                    $"The %s{project} test project did not run because its build artifact (apphost) was not \
+                      produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a \
+                      build-ordering issue, not a test failure."
+
             [ projectLevel (
-                  ErrorLedger.ErrorEntry.deferredWithDetail
-                      $"%s{project}: waiting on build — %s{reason}"
-                      $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure."
+                  ErrorLedger.ErrorEntry.deferredWithDetail $"%s{project}: waiting on build — %s{reason}" detail
               ) ]
         | TestsErrored reason ->
             // NOT a test failure (no test was shown to fail) and NOT a pass
@@ -1864,11 +1881,29 @@ let private executeTests
         // whose origin exists on disk), re-verifies the bytes afterwards, and records
         // every repair to a durable ledger that trips a circuit breaker on repetition.
         // See `StaleArtifactPreflight` for why exactly one stale case is healed.
-        let preflight =
-            configs
-            |> List.filter (fun c -> not (skipProjectOf c))
+        let runnableConfigs = configs |> List.filter (fun c -> not (skipProjectOf c))
+
+        let preflightTargets =
+            runnableConfigs
             |> List.choose (fun c -> deriveProjectBin c.Args repoRoot |> Option.map (fun t -> c.Project, t))
-            |> StaleArtifactPreflight.run repoRoot DateTime.UtcNow
+
+        // THE FLOOR. `List.choose` above DROPS every config whose build-output target
+        // could not be derived, and a dropped project is indistinguishable downstream
+        // from a project that was checked and found fresh — so a derivation that
+        // regressed would silently reduce this gate to checking nothing while every run
+        // stayed green. Say what was covered; see `coverageReport` for why it reports
+        // instead of refusing.
+        match
+            StaleArtifactPreflight.coverageReport
+                (runnableConfigs |> List.map (fun c -> c.Project))
+                (preflightTargets |> List.map fst)
+        with
+        | Some gap ->
+            Logging.warn "test-prune" gap
+            logToCtx gap
+        | None -> ()
+
+        let preflight = StaleArtifactPreflight.run repoRoot DateTime.UtcNow preflightTargets
 
         for repaired in preflight.Healed do
             logToCtx $"repaired stale build output before running: {repaired}"

@@ -469,6 +469,11 @@ module private AgentFixtures =
     let agentAllLax (statuses: (string * ParsedPluginStatus) list) =
         renderAll Agent false now (Map.ofList statuses)
 
+    /// The COMPACT rendering of one plugin, joined — the fixed-width surface that keeps
+    /// its 80-character budget (see the agent/compact pair of tests below).
+    let compactLine name parsed =
+        renderPlugin Compact true now name parsed |> String.concat "\n"
+
 open AgentFixtures
 
 [<Fact(Timeout = 15000)>]
@@ -547,33 +552,50 @@ let ``agent fail summary uses first non-empty line`` () =
     // quoted summary. What matters is that the output stays a single line.
     test <@ not (lines.[0].Contains "\n") @>
 
-/// AUTOMATION-201. The budget is still 80 characters — this is a fixed-width status
-/// line — but the marker must NAME the omission. The reported symptom was
-/// `4 waiting on build (tests did not run): Intelligence.Build.Dev.Tests, Intelli...`,
-/// where a bare `"..."` is indistinguishable from prose and the reader concludes they
-/// have seen the whole list. A stated count cannot be misread that way.
+/// AUTOMATION-201, reworked. The agent line has NO width budget, so it must not have a
+/// truncator: it is line-oriented parseable output, and the redraw that the 80-character
+/// budget existed for is guarded by `UI.isInteractive` — which is false exactly when
+/// agent mode is what you get. The cap was a fixed-width constraint copied onto a
+/// surface with no width, and what it cut was the payload: the reported symptom is a
+/// list of affected projects severed mid-name.
+///
+/// AC2 wants "every affected project (no truncation)", and this is the surface an
+/// automated caller reads.
 [<Fact(Timeout = 15000)>]
-let ``agent fail summary truncates to 80 chars and NAMES what it dropped`` () =
-    let long = String.replicate 200 "x"
-    let lines = agentLine "lint" (failStatus long)
-    let line = lines.[0]
+let ``agent fail summary is NOT truncated — every affected project survives whole`` () =
+    let projects = [ for i in 1..6 -> $"Intelligence.Build.Dev.Tests.Number%d{i}" ]
+
+    let summary =
+        "6 waiting on build (tests did not run): " + String.concat ", " projects
+
+    test <@ summary.Length > 80 @> // the case the old cap destroyed
+
+    let line = (agentLine "test-prune" (failStatus summary)).[0]
+
     let m = System.Text.RegularExpressions.Regex.Match(line, "summary=\"([^\"]*)\"")
+
     test <@ m.Success @>
-    let summary = m.Groups.[1].Value
-    test <@ summary.Length <= 80 @>
+    let rendered = m.Groups.[1].Value
 
-    // Not a bare ellipsis: the omitted count is stated, so a shortened summary can
-    // never read as a complete one.
-    test <@ not (summary.EndsWith "...") @>
-    test <@ summary.EndsWith "more)" @>
+    for p in projects do
+        test <@ rendered.Contains p @>
 
-    // And the count is HONEST — kept + omitted is the whole original string.
-    let omitted =
-        System.Text.RegularExpressions.Regex.Match(summary, @"\(\+(\d+) more\)$").Groups.[1].Value
-        |> int
+    test <@ rendered = summary @>
+    // Still ONE line: newlines collapse, so an untruncated summary cannot break the
+    // one-line-per-plugin contract an agent parses.
+    test <@ not (line.Contains "\n") @>
 
-    let kept = summary.Substring(0, summary.IndexOf '…')
-    test <@ kept.Length + omitted = long.Length @>
+/// The COMPACT/VERBOSE budget is untouched, and must stay so. Those blocks are erased
+/// and rewritten by counting the lines printed, so a summary wide enough to WRAP makes
+/// the erase count wrong and smears the display. Without this, "remove the truncation"
+/// would read as licence to remove it everywhere.
+[<Fact(Timeout = 15000)>]
+let ``compact fail summary still respects the fixed-width budget and names what it dropped`` () =
+    let long = String.replicate 200 "x"
+    let line = compactLine "lint" (failStatus long)
+    test <@ line.Contains "… (+" @>
+    test <@ line.Contains "more)" @>
+    test <@ not (line.Contains(String.replicate 100 "x")) @>
 
 /// A summary already inside the budget is passed through untouched — no marker, no
 /// ellipsis. Without this, a truncator that mangled every string would pass the test

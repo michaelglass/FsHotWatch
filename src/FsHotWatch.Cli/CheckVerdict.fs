@@ -37,6 +37,69 @@ type CheckMode =
     /// produce a clean verdict.
     | Confirmation
 
+/// WHY a test project's tests did not run — the question "waiting on build" answered
+/// with one word for two causes that need OPPOSITE remedies.
+///
+///   * `ArtifactNotProduced` — the build-ordering race. The artifact is not there yet;
+///     the next build produces it. "Re-run once the build settles" is correct advice.
+///   * `StaleOutput` — the stale-artifact preflight refused. The artifact IS there and
+///     its bytes do not match its sources, so re-running returns the identical refusal
+///     and `fshw confirm` spends another full gate cycle to reach it. `dotnet build` is
+///     the remedy, and for a timestamp-inverted copy only `--no-incremental` re-emits it.
+///
+/// Giving both one value is how the gate came to print the wrong remedy for the second:
+/// the words "its build artifact was not produced" are not merely vague there, they are
+/// false. So the cause is carried, not re-guessed at the terminal (AUTOMATION-201).
+///
+/// `StaleOutput` carries the deferral MESSAGES verbatim — each already names its
+/// project, the file that is stale and the command that repairs it — so the top-level
+/// message names every affected project without a second list to keep in step.
+[<RequireQualifiedAccess>]
+type BuildWait =
+    /// No test project was deferred.
+    | NotWaiting
+    /// At least one project deferred, and none of them for stale output.
+    | ArtifactNotProduced
+    /// At least one deferral is the stale-artifact preflight's refusal. Dominates
+    /// `ArtifactNotProduced` when a run has both: it is the more specific cause, and it
+    /// is the one whose wrong remedy costs a gate cycle.
+    | StaleOutput of deferrals: string list
+
+module BuildWait =
+    /// Is anything waiting on a build at all? THE predicate the verdict branches on, so
+    /// a new case cannot be added without deciding this question for it.
+    let isWaiting (w: BuildWait) : bool =
+        match w with
+        | BuildWait.NotWaiting -> false
+        | BuildWait.ArtifactNotProduced
+        | BuildWait.StaleOutput _ -> true
+
+    /// The stale-output deferrals, empty when that is not the cause.
+    let staleDeferrals (w: BuildWait) : string list =
+        match w with
+        | BuildWait.StaleOutput ds -> ds
+        | BuildWait.NotWaiting
+        | BuildWait.ArtifactNotProduced -> []
+
+    /// Classify the deferral messages a run produced. ONE implementation, asked by both
+    /// transports, so a socket-served check and an in-process one cannot disagree about
+    /// what a defer means.
+    ///
+    /// Recognition is `StaleArtifactPreflight`'s own `isStaleOutputDeferral` — the
+    /// module that WRITES the message also decides what one looks like, so there is no
+    /// second copy of the marker to drift.
+    let classify (deferralMessages: string list) : BuildWait =
+        match
+            deferralMessages
+            |> List.filter FsHotWatch.TestPrune.StaleArtifactPreflight.isStaleOutputDeferral
+        with
+        | [] ->
+            if List.isEmpty deferralMessages then
+                BuildWait.NotWaiting
+            else
+                BuildWait.ArtifactNotProduced
+        | stale -> BuildWait.StaleOutput stale
+
 /// The decided outcome of a `check`, in one-to-one correspondence with an exit
 /// code. `Incomplete` carries the residual unchecked count for reporting
 /// (`-1` when coverage was `Unknown` — count not reported by the daemon).
@@ -48,14 +111,17 @@ type CheckOutcome =
     | FailuresFound
     /// No failures, but completeness could not be achieved.
     | Incomplete of unchecked: int
-    /// No failures — but a test project was WAITING ON BUILD (its build artifact
-    /// wasn't produced, so its tests did not run: the build-ordering "deferred"
-    /// case). Nothing was verified, so this is NON-green; nothing FAILED, so it is
+    /// No failures — but a test project was WAITING ON BUILD, so its tests did not
+    /// run. Nothing was verified, so this is NON-green; nothing FAILED, so it is
     /// not a red. A distinct exit-2 outcome (like `Incomplete`) with its own
     /// verdict-file reason, so a deploy preflight reads "could not complete —
     /// retry", never "tests failed". A real failure alongside a defer still
     /// short-circuits to `FailuresFound` (failures are checked first).
-    | WaitingOnBuild
+    ///
+    /// Carries the STALE-OUTPUT deferrals (empty for the build-ordering race), because
+    /// the two causes have opposite remedies and every surface that explains this
+    /// outcome — both terminals and the verdict file — must be able to tell them apart.
+    | WaitingOnBuild of staleOutput: string list
     /// A CONFIRMATION run whose tests did not cover the whole suite. Nothing failed —
     /// but the run did not produce the evidence a merge verdict is made of, so there
     /// is no verdict to give. Distinct from `FailuresFound` (nothing is known to be
@@ -91,7 +157,7 @@ let exitCode (outcome: CheckOutcome) : int =
     | CheckOutcome.Incomplete _ -> 2
     // "Waiting on build" is the same class of answer as `Incomplete`: the run
     // could not be completed, not that it failed. Same exit 2.
-    | CheckOutcome.WaitingOnBuild -> 2
+    | CheckOutcome.WaitingOnBuild _ -> 2
     | CheckOutcome.UnearnedScope _ -> 3
     // Same exit code as an unearned scope, and for the same reason: the run produced
     // no verdict. "I cannot tell" is not a pass and it is not a failure.
@@ -123,13 +189,17 @@ type CheckInputs =
         /// produces `redCauses`, so the number that decides the exit code and the reasons
         /// the verdict file records cannot disagree.
         UnattributableDiagnostics: int
-        /// Is a test project WAITING ON BUILD — deferred because its build artifact
-        /// wasn't produced, so its tests did not run? Non-green (nothing verified)
-        /// but NOT a failure. A distinct term, not folded into `FailingDiagnostics`,
-        /// so the verdict can route it to `WaitingOnBuild`/exit 2 instead of a red.
-        /// Both transports compute it the same way (any `Deferred`-severity ledger
-        /// entry); a transport that forgets it fails to compile.
-        WaitingOnBuild: bool
+        /// Is a test project WAITING ON BUILD — deferred so its tests did not run —
+        /// and if so, WHY? Non-green (nothing verified) but NOT a failure. A distinct
+        /// term, not folded into `FailingDiagnostics`, so the verdict can route it to
+        /// `WaitingOnBuild`/exit 2 instead of a red.
+        ///
+        /// A `BuildWait` rather than a bool: the two causes need opposite remedies and
+        /// a bool cannot carry which one this run has, so the terminal was left to
+        /// assert a cause it did not know. Both transports classify it the same way
+        /// (`BuildWait.classify` over the `Deferred`-severity ledger messages); a
+        /// transport that forgets it fails to compile.
+        WaitingOnBuild: BuildWait
         /// Did the run actually check every file it is responsible for? `Unknown` is
         /// never `Complete`.
         Coverage: Coverage
@@ -202,14 +272,14 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         CheckOutcome.StaleDaemonState inputs.UnattributableDiagnostics
     elif CheckInputs.hasFailures inputs then
         CheckOutcome.FailuresFound
-    elif inputs.WaitingOnBuild then
+    elif BuildWait.isWaiting inputs.WaitingOnBuild then
         // No real failure, but a project's tests DID NOT RUN because its build
         // artifact wasn't ready. Non-green, but "could not complete", never a red.
         // Checked AFTER failures (a genuine failure alongside a defer is still a
         // red) and BEFORE coverage/scope (this answer is more specific than "some
         // files unchecked" or "scope not full"): the run's incompleteness has a
         // known, nameable cause.
-        CheckOutcome.WaitingOnBuild
+        CheckOutcome.WaitingOnBuild(BuildWait.staleDeferrals inputs.WaitingOnBuild)
     else
         match coverage with
         | Complete ->
@@ -315,7 +385,7 @@ let converge
     // `WaitingOnBuild` is terminal here for the same reason as `UnearnedScope`:
     // re-scanning does not retroactively run a test the settled run already
     // deferred. exit 2 says "could not complete — retry", which is the answer.
-    | CheckOutcome.WaitingOnBuild
+    | CheckOutcome.WaitingOnBuild _
     | CheckOutcome.UnearnedScope _
     // Terminal for the same reason: a re-scan does not clear stale daemon state. That
     // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault

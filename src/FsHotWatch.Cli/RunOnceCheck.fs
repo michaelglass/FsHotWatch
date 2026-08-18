@@ -170,11 +170,12 @@ let private unattributableCount (daemon: Daemon.Daemon) (noWarnFail: bool) (plug
     |> List.filter (fun c -> not (Verdict.RedCauseKind.isAboutThisTree c.Kind))
     |> List.length
 
-/// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry
-/// (tests did not run because the build artifact wasn't ready)? The in-process
-/// twin of `IpcOutput.waitingOnBuild`: both read the SAME condition (a deferred
-/// diagnostic), so the two transports cannot disagree on what a defer means.
-let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) : bool =
+/// Is any test project WAITING ON BUILD — a `Deferred`-severity ledger entry (its tests
+/// did not run) — and WHY? The in-process twin of `IpcOutput.waitingOnBuild`: both read
+/// the SAME condition (a deferred diagnostic) and hand it to the SAME classifier, so the
+/// two transports cannot disagree either about what a defer means or about which of its
+/// two causes this run has.
+let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) : CheckVerdict.BuildWait =
     let allErrors =
         match pluginName with
         | Some name ->
@@ -185,7 +186,9 @@ let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) :
     allErrors
     |> Map.toList
     |> List.collect snd
-    |> List.exists (fun (_, e) -> ErrorEntry.isWaitingOnBuild e)
+    |> List.filter (fun (_, e) -> ErrorEntry.isWaitingOnBuild e)
+    |> List.map (fun (_, e) -> e.Message)
+    |> CheckVerdict.BuildWait.classify
 
 /// Did the in-process run actually check every file it is responsible for?
 ///
@@ -355,10 +358,14 @@ let runOnceAndVerdict
             UI.fail $"Check incomplete: %s{detail}"
         // `Verdict.CheckProse`, verbatim — the same words the daemon path (`IpcOutput`)
         // prints. `--run-once` differs in HOW the check ran, never in what it means.
-        | CheckVerdict.CheckOutcome.WaitingOnBuild ->
+        | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
             // Non-green, but "could not complete", never a red — see `CheckOutcome`.
             UI.fail
                 $"Check incomplete: %s{Verdict.CheckProse.waitingOnBuildCause}\n%s{Verdict.CheckProse.waitingOnBuildRemedy}"
+        | CheckVerdict.CheckOutcome.WaitingOnBuild stale ->
+            // AUTOMATION-201, verbatim the words the daemon path prints — `--run-once`
+            // differs in HOW the check ran, never in what it means.
+            UI.fail $"Check incomplete: %s{Verdict.CheckProse.staleBuildOutput stale}"
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
             // Its own words, not `confirm`'s: not "the run was too narrow" but "we could
             // not see what the run was".

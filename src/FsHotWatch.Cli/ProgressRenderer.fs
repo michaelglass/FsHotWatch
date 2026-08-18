@@ -410,14 +410,26 @@ module private Agent =
 
     let private tokenOf = Verdict.PluginOutcome.token
 
-    /// Escape a summary for `summary="..."`: collapse newlines to spaces,
-    /// escape embedded double quotes, truncate to 80 chars.
+    /// Escape a summary for `summary="..."`: collapse newlines to spaces and escape
+    /// embedded double quotes. NOT shortened.
+    ///
+    /// The 80-character budget belongs to the CALLER that redraws, not to the message.
+    /// Compact/Verbose are erased and rewritten in place — `IpcOutput` counts the lines
+    /// it printed and emits that many `\x1b[A`, so a summary wide enough to WRAP makes
+    /// the erase count wrong and smears the block. Agent mode is erased by nothing: the
+    /// redraw is guarded by `UI.isInteractive`, and agent mode is what a non-interactive
+    /// caller gets. It is line-oriented parseable output, one line per plugin, ANSI-free.
+    ///
+    /// So the cap here was a fixed-width constraint copied onto a surface that has no
+    /// width — and it cost the machine reader the thing it most needed: the reported
+    /// symptom was `4 waiting on build (tests did not run): Intelligence.Build.Dev.Tests,
+    /// Intelli…`, a list cut off mid-name (AUTOMATION-201, AC2 "names every affected
+    /// project (no truncation)"). Newlines still collapse, so this stays ONE line.
     let escapeSummary (s: string) : string =
         if String.IsNullOrEmpty s then
             ""
         else
             s.Replace('\r', ' ').Replace('\n', ' ').Replace("\"", "\\\"").Trim()
-            |> truncateTo80
 
     /// Determine the state for a plugin. Returns None when the plugin should be omitted
     /// (Idle with no lastRun). ONE implementation, shared with the verdict file — see

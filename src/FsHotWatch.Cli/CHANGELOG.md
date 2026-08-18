@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- fix!: **a stale build output no longer borrows the build-ordering defer's words — or
+  its remedy** (AUTOMATION-201, QA rework). Both landed on one `waiting on build`
+  message, and for a stale output every clause of it was wrong: the artifact WAS
+  produced, the build already ran (the field report has `✓ build` in the same run as the
+  refusal), and the two escapes it named — "re-run once the build settles" and `fshw
+  confirm` — each spend a full gate cycle to arrive back at the identical refusal.
+  `CheckOutcome.WaitingOnBuild` now carries the stale-output deferrals, so the terminal
+  AND `.fshw/verdict.json`'s `reason` name every affected project, quote the file that
+  is stale, and say `dotnet build` — plus `--no-incremental` for a timestamp-inverted
+  copy — while ruling out the three remedies that cannot clear it. Same shape as
+  AUTOMATION-303's `fshw stop` message, for the same reason. Exit code is unchanged
+  (still 2); **the `reason` string in the verdict file changes shape for this cause**,
+  so a consumer matching its exact prose stops matching.
+- fix: **agent mode no longer truncates a plugin summary at 80 characters**
+  (AUTOMATION-201, QA rework). The reported symptom was a status line reading `4 waiting
+  on build (tests did not run): Intelligence.Build.Dev.Tests, Intelli…` — a list of
+  affected projects severed mid-name. The budget belongs to the caller that REDRAWS:
+  compact/verbose are erased by counting the lines printed, so a wrapping line smears
+  the block, but that redraw is guarded by `UI.isInteractive` and agent mode is what a
+  non-interactive caller gets. Newlines still collapse, so the line-per-plugin contract
+  holds. Compact and verbose keep the 80-character budget, marker and all.
+
 - **BREAKING (verdict schema): `reddenedBy[]` entries carry a `kind`, and a red the tool
   cannot attribute to your tree is now exit 3, not exit 1** (AUTOMATION-303). A red is a
   claim — "something in THIS tree is wrong" — and two kinds of failing diagnostic cannot
