@@ -74,6 +74,37 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### docs: the replacement for `isPassed` is now something you can copy
+
+`TestResult.isPassed` was deleted this cycle and `TestResult.verdict` /
+`ProjectVerdict` put in its place. That distinction — `NothingVerified` is neither a
+pass nor a failure — was documented on the type and in the changelog, and nowhere a
+reader could run. `docs/writing-plugins.md` now has a **Reading a test run's results**
+section: the three cases in a table, why there is deliberately no "did not fail" bool
+(`not verifiedGreen` is true for a zero-match project too, which is right for a gate and
+wrong for a report), and why the run-level question is `Verification` rather than a
+`Map.forall` over the per-project bool — that fold is vacuously true for an empty map.
+
+The code in it is sourced from `examples/PluginExample/PluginExample.fs`, which is
+compiled by the solution with `TreatWarningsAsErrors`. So the example now exercises
+`TestResult.verdict`, all three `ProjectVerdict` cases and `TestResult.verifiedGreen`:
+re-shaping any of them breaks the example build before it can rot the docs.
+
+### refactor: three places where two tickets had solved the same problem twice
+
+No behaviour change, no message text change — these are the seams left by four tickets
+landing in the same files over one day:
+
+- **build** — `verifyArtifactsFresh` and `artifactCoverageGap` walked the project graph
+  separately, each with its own copy of the same three-way freshness rule; the code
+  admitted it in a comment. One walk now answers both.
+- **cli** — the daemon and `--run-once` paths each carried the same six-arm match over
+  `CheckOutcome`, so both AUTOMATION-201 and AUTOMATION-303 had to add their arms twice.
+  One `CheckProse.explainOutcome` now serves both.
+- **cli** — the "which causes are not about this tree?" filter existed three times, one
+  per surface, which is three chances for the count deciding exit 1 vs exit 3 to disagree
+  with the causes printed beside it.
+
 ### core/test-prune: "ran zero tests" stops being a string on a passing result
 
 Zero-test-ness was not a state in the type system. A filtered run whose filter matched
