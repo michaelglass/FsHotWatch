@@ -1950,13 +1950,31 @@ let ``ledgerSummary counts a populated ledger and stays non-empty`` () =
 type private RecordingLedger() =
     let entries = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
 
-    member _.Report (file: string) (es: ErrorEntry list) = entries[file] <- es
-    member _.ClearFile(file: string) = entries.Remove file |> ignore
-    member _.ClearAll() = entries.Clear()
+    // LOCKED, and not incidentally. The plugin writes from its own async handler
+    // while the test thread reads, so an unsynchronised `Dictionary` threw
+    // `Collection was modified; enumeration operation may not execute` from
+    // inside `Snapshot` at roughly 1 run in 6.
+    //
+    // I introduced that flake with this test (AUTOMATION-343), then made it MORE
+    // frequent by replacing a fixed sleep with a poll (AUTOMATION-111) — the poll
+    // calls `Snapshot` in a tight loop exactly while the handler is writing. The
+    // poll is still the right wait; a fixed sleep encodes an assumption about the
+    // machine. It just has to read a structure that tolerates being read.
+    let gate = obj ()
 
-    /// Sorted so equality is about content, not insertion order.
+    member _.Report (file: string) (es: ErrorEntry list) =
+        lock gate (fun () -> entries[file] <- es)
+
+    member _.ClearFile(file: string) =
+        lock gate (fun () -> entries.Remove file |> ignore)
+
+    member _.ClearAll() = lock gate (fun () -> entries.Clear())
+
+    /// Sorted so equality is about content, not insertion order. Materialised
+    /// INSIDE the lock — returning a lazy `Seq` would move the enumeration back
+    /// outside it and reinstate the race in a subtler form.
     member _.Snapshot() =
-        entries |> Seq.map (fun kv -> kv.Key, kv.Value) |> Seq.sortBy fst |> Seq.toList
+        lock gate (fun () -> entries |> Seq.map (fun kv -> kv.Key, kv.Value) |> Seq.sortBy fst |> Seq.toList)
 
 [<Fact(Timeout = 20000)>]
 let ``a cached whole-run replay leaves findings for files outside the batch`` () =
