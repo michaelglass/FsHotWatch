@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.16 - 2026-08-19
+
+- fix(AUTOMATION-228): rows this run wrote are not a baseline — give the index a clock
+- AUTOMATION-358 Case 3: instrument CopyDiffersFromOrigin, do not build the capability
+
+
 ## 0.13.0-alpha.15 - 2026-08-18
 
 - refactor: `StaleArtifactPreflight.coverageReport` builds its project list with

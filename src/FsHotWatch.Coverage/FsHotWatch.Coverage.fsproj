@@ -4,7 +4,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>FsHotWatch.Coverage</PackageId>
-    <Version>0.7.0-alpha.19</Version>
+    <Version>0.7.0-alpha.20</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that checks per-file coverage thresholds after test runs</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

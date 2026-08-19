@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.20 - 2026-08-19
+
+- chore(deps): bump our dev tools, and adopt CoverageRatchet.Core covered-line counts
+
+
 ## 0.7.0-alpha.19 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back

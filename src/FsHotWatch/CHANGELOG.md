@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.13 - 2026-08-19
+
+- AUTOMATION-368: give the artifact gate a real path, and keep it report-only
+- AUTOMATION-343: a cache HIT must leave the ledger where a cache MISS leaves it
+- AUTOMATION-300: a renamed file must not leave findings about a path that is gone
+
+
 ## 0.10.0-alpha.12 - 2026-08-18
 
 - feat: `FsHotWatch.StructureFiles` — THE list of files that decide what is compiled

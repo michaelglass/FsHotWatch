@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.25 - 2026-08-19
+
+- AUTOMATION-368: give the artifact gate a real path, and keep it report-only
+
+
 ## 0.7.0-alpha.24 - 2026-08-18
 
 - refactor: **artifact freshness is decided by ONE walk over the project graph**, not
