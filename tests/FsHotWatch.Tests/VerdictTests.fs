@@ -3124,3 +3124,82 @@ let ``a timed-out plugin's reason reaches the verdict too`` () =
     match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", timedOut ]) with
     | [ p ] -> test <@ p.Summary = Some reason @>
     | other -> failwith $"expected one plugin verdict, got %A{other}"
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-111 — a recall miss must SHOUT, in the output already being read
+// ---------------------------------------------------------------------------
+//
+// `Divergence.CheckMissedFailures` means the impact-scoped run was GREEN over a
+// tree the full suite finds RED: the selector did not choose a test that fails.
+// It has been computed and written to `verdict.json` since AUTOMATION-259 — and
+// rendered NOWHERE.
+//
+// That is the gap this ticket names. A fact filed in a document you must
+// remember to open is not a safeguard; the only moment the hint is worth
+// anything is the moment someone is looking at the output. Without it a recall
+// miss is indistinguishable from an ordinary test failure, so it gets FIXED as
+// one: the test is repaired, the selector's blind spot is never seen, and the
+// same green-that-lied ships again.
+
+let private comparisonWith (d: Verdict.Divergence) : Verdict.CheckComparison =
+    { Divergence = d
+      ImpactScoped =
+        Some
+            { Scope = ImpactFiltered(5, 6)
+              Outcome = Verdict.Green
+              FailingSuites = [] } }
+
+[<Fact>]
+let ``AUTOMATION-111: a recall miss is named as a SELECTION BUG in the verdict output`` () =
+    let hints =
+        hintsFor
+            { greenVerdict "t" 1 with
+                Outcome = Verdict.Red
+                Comparison = comparisonWith Verdict.Divergence.CheckMissedFailures }
+
+    let text = String.concat "\n" hints
+
+    // It must say what KIND of problem this is — a tool defect, not a test bug.
+    test <@ text.Contains "SELECTION BUG" @>
+    test <@ text.Contains "RECALL" @>
+    // …and it must say what to do about it, which is NOT "fix the test".
+    test <@ text.Contains "fix the selector" @>
+
+[<Fact>]
+let ``AUTOMATION-111: the recall alarm is the FIRST thing in the block`` () =
+    // Placement is load-bearing. A reader who meets this after a wall of test
+    // causes has already started debugging the wrong thing — the failing tests
+    // are real, they are just not the story.
+    let hints =
+        hintsFor
+            { greenVerdict "t" 1 with
+                Outcome = Verdict.Red
+                Comparison = comparisonWith Verdict.Divergence.CheckMissedFailures }
+
+    test <@ hints |> List.head |> (fun l -> l.Contains "RECALL") @>
+
+[<Fact>]
+let ``AUTOMATION-111: no recall alarm when the two readings agreed`` () =
+    // THE CONTROL. An alarm that fires on every red is not an alarm — it is
+    // noise, and the first person to see it on an ordinary failure learns to
+    // scroll past the one time it matters. Every non-miss classification must
+    // stay silent, including the ones that are also not agreement.
+    // The two classifications that ASSERT there was nothing to compare must carry
+    // no impact-scoped run — `Verdict.create` refuses the contradiction, which is
+    // how this test learned the invariant rather than encoding a guess.
+    let comparisons =
+        [ comparisonWith Verdict.Divergence.Agreed
+          comparisonWith Verdict.Divergence.CheckOnlyFailures
+          { Divergence = Verdict.Divergence.NoImpactScopedRun
+            ImpactScoped = None }
+          Verdict.CheckComparison.notRecorded ]
+
+    for c in comparisons do
+        let hints =
+            hintsFor
+                { greenVerdict "t" 1 with
+                    Outcome = Verdict.Red
+                    Comparison = c }
+
+        let text = String.concat "\n" hints
+        test <@ not (text.Contains "SELECTION BUG") @>

@@ -2010,7 +2010,21 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
 
                 let reg = registerHandler services handler
                 reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/B.fs" ]))
-                do! Async.Sleep 150
+
+                // Poll for the handler's own effect rather than sleeping a fixed
+                // 150ms. The sleep passed in isolation and FAILED under full-suite
+                // load — a flake I shipped in AUTOMATION-343 and hit the same day.
+                // A fixed wait encodes an assumption about the machine, which is
+                // exactly the assumption a loaded CI box breaks.
+                let deadline = System.DateTime.UtcNow.AddSeconds 10.0
+                let mutable seen = false
+
+                while not seen && System.DateTime.UtcNow < deadline do
+                    if ledger.Snapshot() |> List.exists (fun (f, _) -> f = "/tmp/repo/B.fs") then
+                        seen <- true
+                    else
+                        do! Async.Sleep 10
+
                 return ledger.Snapshot()
             }
 

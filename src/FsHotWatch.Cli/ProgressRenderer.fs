@@ -675,6 +675,33 @@ module AgentHints =
                     $"    %s{label} %s{s.Ctrf}"),
                 []
 
+        // AUTOMATION-111 — a RECALL MISS must SHOUT, in the output already being read.
+        //
+        // `Divergence.CheckMissedFailures` means the impact-scoped run was GREEN and the
+        // full suite was RED: the selector did not choose a test that fails. It has been
+        // computed and written to `verdict.json` since AUTOMATION-259 — and rendered
+        // NOWHERE. That is the exact failure this ticket names: a fact filed in a document
+        // you must remember to open is not a safeguard, and the moment it is worth
+        // anything is the moment the person is looking at the output.
+        //
+        // Without this line the miss is indistinguishable from an ordinary test failure,
+        // so it gets FIXED as one — the test is repaired, the selector's blind spot is
+        // never seen, and the same class of green-that-lied ships again. TestPrune's own
+        // source calls under-selection "the one failure mode a test-impact tool must not
+        // have"; this is the line that says it happened.
+        let recallMissLines =
+            match v.Divergence with
+            | Verdict.Divergence.CheckMissedFailures ->
+                [ "    RECALL   ⚠ SELECTION BUG — the impact-scoped run was GREEN over a tree the full suite finds RED."
+                  "             `check` told someone this change was fine and it was not. This is an fshw defect,"
+                  "             NOT a merge saved: fix the selector, not only the test. See checkComparison in"
+                  "             .fshw/verdict.json for the scoped run's own scope and failing suites." ]
+            | Verdict.Divergence.Agreed
+            | Verdict.Divergence.CheckOnlyFailures
+            | Verdict.Divergence.NoImpactScopedRun
+            | Verdict.Divergence.Incomparable _
+            | Verdict.Divergence.NotRecorded -> []
+
         // A run can be RED with every test project at `failed: 0` — the failure living in
         // `analyzers`, `format` or `build` instead. Printing only suites then shows a wall
         // of passing counts on a failing run, which reads as "the red is not mine".
@@ -806,7 +833,11 @@ module AgentHints =
                 // same class of lie this block exists to stop.
                 [ "  WHAT FAILED — the causes in full; nothing below this is needed to act on them:" ]
 
-        causeHeader
+        // AUTOMATION-111: FIRST, ahead of the cause header. A recall miss is a fact about
+        // the TOOL, not about this change, and a reader who meets it after a wall of test
+        // causes has already started debugging the wrong thing.
+        recallMissLines
+        @ causeHeader
         @ causeLines
         @ noSuiteFactLines
         @ [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
