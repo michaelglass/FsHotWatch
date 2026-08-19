@@ -38,7 +38,7 @@ let classifyProject (relativePath: string) : ProjectKind =
 let discoverProjects (repoRoot: string) (enumerateFiles: (string -> string -> seq<string>) option) : string list =
     let enumerate =
         defaultArg enumerateFiles (fun dir pattern ->
-            SafeWalk.enumerateFilePaths SafeWalk.SourceExcludedDirs pattern dir)
+            SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs pattern dir)
 
     try
         enumerate repoRoot "*.fsproj"

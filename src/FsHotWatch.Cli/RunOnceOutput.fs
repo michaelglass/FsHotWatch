@@ -213,7 +213,7 @@ let failIfNoProjects (repoRoot: string) (excludePatterns: string list) : int opt
         |> List.map (fun d -> System.IO.Path.Combine(repoRoot, d))
         |> List.filter System.IO.Directory.Exists
         |> List.exists (fun dir ->
-            FsHotWatch.SafeWalk.enumerateFilePaths FsHotWatch.SafeWalk.ToolingExcludedDirs "*.fsproj" dir
+            FsHotWatch.SafeWalk.bestEffortFilePaths FsHotWatch.SafeWalk.ToolingExcludedDirs "*.fsproj" dir
             |> Seq.exists (fun f -> not (isExcluded f)))
 
     if hasProject then

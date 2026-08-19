@@ -661,7 +661,7 @@ let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) :
                 // cycle, so SafeWalk owns the recursion (no symlinked-dir descent,
                 // depth-capped), and its per-subtree IO errors are already swallowed
                 // internally.
-                SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs "*" rootFull
+                SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*" rootFull
                 |> Seq.filter (fun abs ->
                     let rel = toRel abs
                     globPatterns |> List.exists (fun rx -> rx.IsMatch(rel)))
@@ -746,7 +746,7 @@ let internal projectStructureHash (repoRoot: string) : string =
     let files =
         structureFilePatterns
         |> List.collect (fun pattern ->
-            SafeWalk.enumerateFilePaths SafeWalk.SourceExcludedDirs pattern rootFull
+            SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs pattern rootFull
             |> List.ofSeq)
         |> List.distinct
         |> List.map (fun abs -> Path.GetRelativePath(rootFull, abs).Replace('\\', '/'), abs)

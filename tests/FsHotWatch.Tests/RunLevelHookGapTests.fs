@@ -435,7 +435,8 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                 FsHotWatch.Cli.Verdict.Confirm
                 (TestRunReport.ofScopeOnly (FullSuite 1))
                 ({ Hash = tree.Hash
-                   FileCount = tree.FileCount }
+                   FileCount = tree.FileCount
+                   SkippedCount = tree.SkippedCount }
                 : TreeHash.Tree)
                 FsHotWatch.Cli.Verdict.Green
                 0
