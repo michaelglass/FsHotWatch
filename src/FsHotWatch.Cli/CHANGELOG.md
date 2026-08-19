@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.20 - 2026-08-19
+
 - fix: **`beforeRun failed:` now says which step failed, with its exit code and its output.**
   It used to render as exactly that — colon, then nothing. The message interpolated the
   process output, so a step that wrote to neither stream produced no reason at all: no step
