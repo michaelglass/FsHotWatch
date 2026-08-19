@@ -26,5 +26,5 @@ let existingDiscoveryRoots (repoRoot: string) : string list =
 let findFsprojFiles (repoRoot: string) : string list =
     existingDiscoveryRoots repoRoot
     |> List.collect (fun dir ->
-        SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs "*.fsproj" dir
+        SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*.fsproj" dir
         |> List.ofSeq)

@@ -196,7 +196,7 @@ module FileWatcher =
                     try
                         if Directory.Exists(dirPath) then
                             for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
-                                for file in SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
+                                for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
                                     if isRelevantFile file then
                                         onChange (classifyChange file)
                     with

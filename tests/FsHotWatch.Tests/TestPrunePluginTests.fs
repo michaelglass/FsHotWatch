@@ -5511,6 +5511,65 @@ let ``an unparseable project file DEEP in the closure is REFUSED`` () =
         | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
         | other -> Assert.Fail($"an unreadable DEPENDENCY project file must fail CLOSED, got %A{other}"))
 
+// AUTOMATION-164. The closure-parse channel was fail-closed from the start; the WALK
+// channel was not. `SafeWalk` returned `[||]` for a directory it could not enumerate,
+// so an unreadable source dir produced no sources, nothing was newer than the assembly,
+// and the gate certified a `--no-build` run over bits it had never looked at. The walk
+// now reports its holes and the gate refuses on them.
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE SOURCE DIRECTORY in the closure is REFUSED, not called fresh`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-stale-unreadable-src" (fun tmpDir ->
+            let s = synth tmpDir
+
+            // POSITIVE CONTROL: this exact tree is FRESH while it is readable. Without
+            // it, a gate that answered InputsUndeterminable for everything would pass.
+            test <@ synthStale s = None @>
+
+            let sealed' = p [ tmpDir; "Common"; "Internal" ]
+            Directory.CreateDirectory sealed' |> ignore
+            File.WriteAllText(p [ sealed'; "Deep.fs" ], "module Deep")
+            File.SetUnixFileMode(sealed', UnixFileMode.None)
+
+            try
+                match synthStale s with
+                | Some(ArtifactFreshness.InputsUndeterminable(project, reason)) ->
+                    test <@ project = "Common" @>
+                    test <@ reason.Contains "Internal" @>
+                | other -> Assert.Fail($"an unreadable source directory must fail CLOSED, got %A{other}")
+            finally
+                File.SetUnixFileMode(
+                    sealed',
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
+// The same hole on the OTHER side of the gate. `outputs` is read as "did the build put
+// something here?", and a copy the walk never saw is a destination nobody checks — so a
+// stale copy under an unreadable output subdirectory used to sail through as fresh.
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE OUTPUT DIRECTORY is REFUSED, not called fresh`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-stale-unreadable-out" (fun tmpDir ->
+            let s = synth tmpDir
+            test <@ synthStale s = None @>
+
+            let sealed' = p [ s.TestsOutDir; "runtimes" ]
+            Directory.CreateDirectory sealed' |> ignore
+            File.WriteAllText(p [ sealed'; "native.dylib" ], "")
+            File.SetUnixFileMode(sealed', UnixFileMode.None)
+
+            try
+                match synthStale s with
+                | Some(ArtifactFreshness.InputsUndeterminable(project, reason)) ->
+                    test <@ project = "Tests" @>
+                    test <@ reason.Contains "runtimes" @>
+                | other -> Assert.Fail($"an unreadable output directory must fail CLOSED, got %A{other}")
+            finally
+                File.SetUnixFileMode(
+                    sealed',
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
 // A reference cycle is MSBuild's error to report; the closure walk must terminate rather
 // than hang on it.
 [<Fact(Timeout = 15000)>]

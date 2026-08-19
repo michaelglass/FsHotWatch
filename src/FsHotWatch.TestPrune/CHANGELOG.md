@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The `--no-build` freshness gate fails CLOSED on a directory it could not read
+  (AUTOMATION-164). `ArtifactFreshness.Cache.FilesUnder` returns
+  `Result<_, string>` and both walks — the project's sources and the test project's
+  output dir — map a non-empty `SafeWalk` skip list to `InputsUndeterminable`.
+  - Why: an unreadable source directory yielded no sources, so no source was newer than
+    the assembly, so the gate said **fresh** about bits it had never looked at. The
+    module's `InputsUndeterminable` apparatus covered the fsproj-parse channel and not
+    the walk channel.
+  - Ignorance also no longer gets the multi-TFM benefit of the doubt: "another TFM is
+    fresh, so there is a fresh way to run" is only sound when this one was judged.
+
 ## 0.13.0-alpha.16 - 2026-08-19
 
 - fix(AUTOMATION-228): rows this run wrote are not a baseline — give the index a clock

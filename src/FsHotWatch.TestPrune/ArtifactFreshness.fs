@@ -14,7 +14,10 @@
 /// multi-targeted dependency, a working-copy restamp and a coarse-timestamp
 /// rebuild-within-one-tick cannot fool it. Hashing goes through core's `ContentHash`
 /// and inherits its fail-closed sentinel: a file we cannot read is
-/// `InputsUndeterminable`, never "fresh".
+/// `InputsUndeterminable`, never "fresh". The WALK is fail-closed on the same terms
+/// (`SafeWalk.walk`, not the best-effort enumeration): a directory we could not look
+/// inside is `InputsUndeterminable` too, because a source that never arrives is a
+/// source nothing is newer than.
 ///
 /// Self-contained (on-disk `.fsproj` parse rather than `IProjectGraphReader`)
 /// because `executeTests` is graph-free — shared with the one-off `run-tests`
@@ -146,7 +149,7 @@ type internal OnceMemo<'K, 'V when 'K: equality>() =
 /// when several test projects depend on it. Thread-safe: test groups run in parallel.
 type Cache() =
     let closures = OnceMemo<string, Result<string list, string>>()
-    let files = OnceMemo<string, (string * DateTime) list>()
+    let files = OnceMemo<string, Result<(string * DateTime) list, string>>()
     let assemblies = OnceMemo<string, (string * DateTime) option>()
     let outputs = OnceMemo<string, string list>()
     let hashes = OnceMemo<string, string>()
@@ -277,14 +280,25 @@ type Cache() =
     /// `(path relative to dir, mtime)`. The relative path is the key the build
     /// copies content by — `<outDir>/<tfm>/<relative path>` — so it is what a
     /// copy is looked up under.
-    member _.FilesUnder(dir: string) : (string * DateTime) list =
+    ///
+    /// `Error` when the walk could not see all of `dir` — an unreadable
+    /// subdirectory, or one past `SafeWalk.MaxDepth`. NOT a shorter list: a list is
+    /// read here as "these are the inputs", and a short one says every input is
+    /// accounted for. Same fail-closed rule as `directReferences`: an input we could
+    /// not look at is unknown, and an unknown input is a REBUILD, never a pass.
+    member _.FilesUnder(dir: string) : Result<(string * DateTime) list, string> =
         files.GetOrAdd(
             dir,
             fun d ->
                 // No existence guard: SafeWalk yields nothing for a missing root.
-                SafeWalk.enumerateFiles excludedDirs d
-                |> Seq.map (fun f -> Path.GetRelativePath(d, f.FullName), f.LastWriteTimeUtc)
-                |> List.ofSeq
+                let walked = SafeWalk.walk excludedDirs "*" d
+
+                match walked.Skipped with
+                | [] ->
+                    walked.Files
+                    |> List.map (fun f -> Path.GetRelativePath(d, f.FullName), f.LastWriteTimeUtc)
+                    |> Ok
+                | skipped -> skipped |> List.map SafeWalk.describeSkip |> String.concat "; " |> Error
         )
 
     /// EVERY `<assemblyName>.dll` this project has built, one per per-TFM output
@@ -405,86 +419,110 @@ let private staleContribution
     (projectDir: string)
     (assemblyName: string)
     : StaleInput option =
-    let sources = cache.FilesUnder projectDir
     let project = projectLabel projectDir
 
-    /// Every file in the CLOSURE that the build could have copied to `rel` — this
-    /// project's first, so a stale message names the project being judged. Not
-    /// always this project's alone: two closure projects may hold a file at the SAME
-    /// relative path (`xunit.runner.json` sits in five of them here), MSBuild copies
-    /// both to one destination and the last writer wins. Checked against every
-    /// claimant, and current if it matches ANY — otherwise the shadowed project is
-    /// condemned for a build doing exactly what it means to do.
-    let claimantsOf (rel: string) =
-        let mine = Path.Combine(projectDir, rel)
+    // FAIL CLOSED on a walk that could not see the whole project. A directory
+    // SafeWalk could not enumerate used to contribute NOTHING here, and this check
+    // asks "is any source newer than the assembly?" — so an unreadable source dir
+    // produced no source, no source was newer, and the gate said FRESH about bits it
+    // had never looked at (AUTOMATION-164). "I could not look" is the same answer as
+    // an unreadable project file: refuse, and let the build report the real error.
+    match cache.FilesUnder projectDir with
+    | Error reason -> Some(InputsUndeterminable(project, reason))
+    | Ok sources ->
 
-        let others =
-            closure
-            |> List.map (fun (dir, _) -> Path.Combine(dir, rel))
-            |> List.filter (fun candidate -> candidate <> mine && File.Exists candidate)
+        /// Every file in the CLOSURE that the build could have copied to `rel` — this
+        /// project's first, so a stale message names the project being judged. Not
+        /// always this project's alone: two closure projects may hold a file at the SAME
+        /// relative path (`xunit.runner.json` sits in five of them here), MSBuild copies
+        /// both to one destination and the last writer wins. Checked against every
+        /// claimant, and current if it matches ANY — otherwise the shadowed project is
+        /// condemned for a build doing exactly what it means to do.
+        let claimantsOf (rel: string) =
+            let mine = Path.Combine(projectDir, rel)
 
-        mine :: others
+            let others =
+                closure
+                |> List.map (fun (dir, _) -> Path.Combine(dir, rel))
+                |> List.filter (fun candidate -> candidate <> mine && File.Exists candidate)
 
-    // (1) COMPILE. The project's own assembly must be newer than every compile
-    //     input it was built from. Judged against the project's OWN output, never
-    //     the consumer's: a private-only edit to a dependency need not relink its
-    //     consumers (that is what reference assemblies are for), so comparing a
-    //     dependency's source against the TEST project's DLL would be an
-    //     accusation no build can answer.
-    let staleCompile =
-        match cache.OwnAssembly(projectDir, assemblyName) with
-        | None -> None // not built yet — the presence probe's business, not ours
-        | Some(_, assemblyMtime) ->
+            mine :: others
+
+        // (1) COMPILE. The project's own assembly must be newer than every compile
+        //     input it was built from. Judged against the project's OWN output, never
+        //     the consumer's: a private-only edit to a dependency need not relink its
+        //     consumers (that is what reference assemblies are for), so comparing a
+        //     dependency's source against the TEST project's DLL would be an
+        //     accusation no build can answer.
+        let staleCompile =
+            match cache.OwnAssembly(projectDir, assemblyName) with
+            | None -> None // not built yet — the presence probe's business, not ours
+            | Some(_, assemblyMtime) ->
+                sources
+                |> List.filter (fun (rel, _) -> compileExtensions.Contains(Path.GetExtension(rel).ToLowerInvariant()))
+                |> List.tryFind (fun (_, mtime) -> mtime > assemblyMtime)
+                |> Option.map (fun (rel, mtime) ->
+                    AssemblyOlderThanSource(project, Path.Combine(projectDir, rel), mtime, assemblyMtime))
+
+        // (2) COPY. Every file of this project that the build has copied into the test
+        //     project's output dir must hold the bytes it was copied from — content and
+        //     fixture items included, its own and those carried in transitively …
+        let staleCopy () =
             sources
-            |> List.filter (fun (rel, _) -> compileExtensions.Contains(Path.GetExtension(rel).ToLowerInvariant()))
-            |> List.tryFind (fun (_, mtime) -> mtime > assemblyMtime)
-            |> Option.map (fun (rel, mtime) ->
-                AssemblyOlderThanSource(project, Path.Combine(projectDir, rel), mtime, assemblyMtime))
+            |> List.tryPick (fun (rel, _) ->
+                if outputs.Contains rel then
+                    copyVerdict cache project (Path.Combine(tfmDir, rel)) (claimantsOf rel)
+                else
+                    None)
 
-    // (2) COPY. Every file of this project that the build has copied into the test
-    //     project's output dir must hold the bytes it was copied from — content and
-    //     fixture items included, its own and those carried in transitively …
-    let staleCopy () =
-        sources
-        |> List.tryPick (fun (rel, _) ->
-            if outputs.Contains rel then
-                copyVerdict cache project (Path.Combine(tfmDir, rel)) (claimantsOf rel)
+        // … and (3) the dependency's ASSEMBLY, which the same copy carries into the
+        //     consumer's output dir. Catches "only the dependency was rebuilt": its own
+        //     DLL is fresh, but the copy the test run would actually load is not. (For
+        //     the test project itself the copy IS one of the candidates, so it no-ops.)
+        let staleAssemblyCopy () =
+            let copy = Path.Combine(tfmDir, assemblyName + ".dll")
+
+            if not (File.Exists copy) then
+                None // not copied yet — the presence probe's business, not ours
             else
-                None)
+                match cache.OwnAssemblyOutputs(projectDir, assemblyName) with
+                | [] -> None // not built yet — likewise
+                | candidates -> copyVerdict cache project copy (consumerTfmFirst tfmDir candidates)
 
-    // … and (3) the dependency's ASSEMBLY, which the same copy carries into the
-    //     consumer's output dir. Catches "only the dependency was rebuilt": its own
-    //     DLL is fresh, but the copy the test run would actually load is not. (For
-    //     the test project itself the copy IS one of the candidates, so it no-ops.)
-    let staleAssemblyCopy () =
-        let copy = Path.Combine(tfmDir, assemblyName + ".dll")
-
-        if not (File.Exists copy) then
-            None // not copied yet — the presence probe's business, not ours
-        else
-            match cache.OwnAssemblyOutputs(projectDir, assemblyName) with
-            | [] -> None // not built yet — likewise
-            | candidates -> copyVerdict cache project copy (consumerTfmFirst tfmDir candidates)
-
-    staleCompile
-    |> Option.orElseWith staleCopy
-    |> Option.orElseWith staleAssemblyCopy
+        staleCompile
+        |> Option.orElseWith staleCopy
+        |> Option.orElseWith staleAssemblyCopy
 
 /// Is the test project's output at `tfmDir` stale — i.e. is ANY project in its
 /// closure contributing something out of date to it? `ordered` is that closure,
 /// test project first.
-let private staleInTfmDir (cache: Cache) (ordered: (string * string) list) (tfmDir: string) : StaleInput option =
-    // A hash SET, not an F# `Map`: read exactly one way ("is there a copy at
-    // `rel`?") over a full walk of the output dir (hundreds of DLLs before content
-    // and fixtures), so paying O(n log n) for an ordering nothing asks for is waste.
-    let outputs =
-        SafeWalk.enumerateFiles Set.empty tfmDir
-        |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName))
-        |> HashSet
+let private staleInTfmDir
+    (cache: Cache)
+    (label: string)
+    (ordered: (string * string) list)
+    (tfmDir: string)
+    : StaleInput option =
+    let walked = SafeWalk.walk Set.empty "*" tfmDir
 
-    ordered
-    |> List.tryPick (fun (projectDir, assemblyName) ->
-        staleContribution cache tfmDir outputs ordered projectDir assemblyName)
+    match walked.Skipped with
+    // FAIL CLOSED. `outputs` is read as "did the build put something here?", and a
+    // file missing from it is never asserted about — so a directory the walk could
+    // not see turns every copy under it into a destination nobody checks. An absence
+    // we cannot distinguish from a hole is not evidence (AUTOMATION-164).
+    | _ :: _ ->
+        Some(InputsUndeterminable(label, walked.Skipped |> List.map SafeWalk.describeSkip |> String.concat "; "))
+    | [] ->
+        // A hash SET, not an F# `Map`: read exactly one way ("is there a copy at
+        // `rel`?") over a full walk of the output dir (hundreds of DLLs before content
+        // and fixtures), so paying O(n log n) for an ordering nothing asks for is waste.
+        let outputs =
+            walked.Files
+            |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName))
+            |> HashSet
+
+        ordered
+        |> List.tryPick (fun (projectDir, assemblyName) ->
+            staleContribution cache tfmDir outputs ordered projectDir assemblyName)
 
 /// Would a `--no-build` run of this test project execute bits that do not match
 /// the sources? `Some reason` blocks the run (and names the file pair proving
@@ -537,12 +575,23 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         | Ok _ when Array.isEmpty candidateTfmDirs -> None // nothing built to be stale — presence probe's business
         | Ok ordered ->
             // Stale iff NO output dir is fresh (see the multi-TFM note above).
-            let perTfm = candidateTfmDirs |> Array.map (staleInTfmDir cache ordered)
+            let perTfm =
+                candidateTfmDirs |> Array.map (staleInTfmDir cache target.AssemblyName ordered)
 
-            if Array.forall Option.isSome perTfm then
-                Array.head perTfm
-            else
-                None
+            // …except that IGNORANCE does not get the multi-TFM benefit of the doubt.
+            // "Some other TFM is fresh, so there is a fresh way to run" is only sound
+            // when this one was actually judged; if we could not see it, we do not know
+            // which of the two `dotnet run` would pick. Refuse rather than average.
+            let undeterminable =
+                perTfm
+                |> Array.tryPick (function
+                    | Some(InputsUndeterminable _ as u) -> Some u
+                    | _ -> None)
+
+            match undeterminable with
+            | Some u -> Some u
+            | None when Array.forall Option.isSome perTfm -> Array.head perTfm
+            | None -> None
 
     let outcome =
         match verdict with

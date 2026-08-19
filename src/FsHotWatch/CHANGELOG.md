@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **BREAKING** — `SafeWalk` now reports what it could not see (AUTOMATION-164).
+  `enumerateFilesMatching` / `enumerateFiles` / `enumerateFilePaths` are renamed
+  `bestEffortFilesMatching` / `bestEffortFiles` / `bestEffortFilePaths`, and two total
+  entry points are added: `enumerateEntries` (a lazy `seq<WalkEntry>` — `Found` a file,
+  or `Skipped` a directory) and `walk` (a `WalkResult` with `Files` and `Skipped`).
+  - Why: an unreadable directory, and a subtree past `MaxDepth`, contributed **zero
+    entries** and were invisible to the caller. `ContentHash` goes to real trouble to
+    make an unreadable FILE hash to a sentinel — and the walker one level up deleted
+    that file from the list before the sentinel could ever be reached, which is the
+    "skip the file" answer `ContentHash`'s own header names as failing OPEN.
+  - The rename is the point: best-effort is correct for enumeration that only adds work
+    (what to watch, what to register), and wrong for anything drawing a conclusion from
+    the *absence* of files. The name now says which one you picked.
+
+- **BREAKING** — `TreeHash.Algorithm` is `fshw-tree-sha256-v2`, `TreeHash.Tree` gains
+  `SkippedCount`, and `TreeHash.files` returns a `Walked` record rather than a list
+  (AUTOMATION-164). A directory the walk could not see is hashed as an entry of its own
+  (`relPath + "/"` → `ContentHash.UnhashableContent`), so a tree we only partly saw no
+  longer hashes like the tree we saw whole. `FileCount` made an *empty* walk visible;
+  nothing made a *truncated* one visible.
+
 ## 0.10.0-alpha.13 - 2026-08-19
 
 - AUTOMATION-368: give the artifact gate a real path, and keep it report-only

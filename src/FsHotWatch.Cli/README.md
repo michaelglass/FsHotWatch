@@ -234,7 +234,7 @@ sufficient.
   "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
   "runId": "24bf66063d004decb0447e3cc3ece719",
   "treeHash": "sha256:24bf6606…",
-  "treeHashAlgorithm": "fshw-tree-sha256-v1",
+  "treeHashAlgorithm": "fshw-tree-sha256-v2",
   "treeFileCount": 144,
   "scope":   { "kind": "full", "ranProjects": 6, "totalProjects": 6 },
   "outcome": { "kind": "green" },
@@ -330,19 +330,30 @@ can never be mistaken for a current one:
   "verdict": { "…the file, verbatim…" } }
 ```
 
-If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v1`) is:
+If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v2`) is:
 
 - take every file under `src/` and `tests/`, excluding `bin/`, `obj/`, tooling
   dirs, and your `.fshw.json` `exclude` patterns — **sources _and_ content/fixture
   files** — plus `.fshw.json` itself;
 - for each, in ordinal order of its repo-relative path, emit
   `relPath + NUL + sha256hex(bytes) + LF`;
+- **plus one entry per directory the walk could not see** — unreadable, or nested
+  past its depth cap — emitted as `relPath + "/" + NUL + "unhashable" + LF` and
+  sorted in with the rest. A trailing `/` is a relative path no file can have, so a
+  hole and a file never collide;
 - `treeHash = "sha256:" + sha256hex(utf8(that))`.
 
 Fixtures are in the hash on purpose. A changed JSON fixture that MSBuild declined
 to re-copy once let a suite run green against the *old* fixture and put a red
 commit on `main`. Content, never mtimes — see
 [ADR-008](../../docs/adr-008-mtime-is-not-a-content-oracle.md).
+
+Holes are in the hash for the same reason. A directory the walker could not read
+used to contribute nothing at all, so a tree with a permission hole in it hashed
+exactly like the same tree readable — and a green verdict earned over the part we
+could see applied to the part we could not. `v2` makes "I could not look" a
+different tree, which is what `treeFileCount` alone could not express: it made an
+*empty* walk visible, never a *truncated* one.
 
 ### `.fshw/test-runs/<runId>/` — per-suite detail. **The directory IS the run.**
 

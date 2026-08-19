@@ -125,7 +125,8 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       SeedTotal = 0
       Tree =
         { Hash = treeHash
-          FileCount = fileCount } }
+          FileCount = fileCount
+          SkippedCount = 0 } }
 
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
 let private serializeSpec (s: Spec) : string = Verdict.serialize (build s)
@@ -1911,6 +1912,51 @@ let ``an UNREADABLE file fails the hash CLOSED — it never silently drops out o
             test <@ unreadable.Hash <> withFile.Hash @>
         finally
             File.SetUnixFileMode(secret, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact>]
+let ``an UNREADABLE DIRECTORY fails the hash CLOSED — a hole is not an empty tree`` () =
+    // AUTOMATION-164. `ContentHash` already made an unreadable FILE hash to a sentinel,
+    // but the walker one level up deleted that file from the list before the sentinel
+    // could be reached — the "skip the file" answer ContentHash's own header names as
+    // failing OPEN. A directory we cannot enumerate is now an entry in its own right, so
+    // the tree we could only partly see cannot hash like the tree we saw whole.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tree-unreadable-dir" (fun root ->
+            makeRepo root
+
+            let vault = Path.Combine(root, "src", "Lib", "Vault")
+            Directory.CreateDirectory vault |> ignore
+            File.WriteAllText(Path.Combine(vault, "Hidden.fs"), "module Hidden")
+
+            let readable = TreeHash.compute root []
+            test <@ readable.SkippedCount = 0 @>
+
+            File.SetUnixFileMode(vault, UnixFileMode.None)
+
+            try
+                let blind = TreeHash.compute root []
+
+                // The file inside it is gone from the count — we genuinely never saw it —
+                // but the HOLE is counted and hashed, so the two trees are distinguishable
+                // and a verdict earned over the readable one reads STALE against this.
+                test <@ blind.FileCount = readable.FileCount - 1 @>
+                test <@ blind.SkippedCount = 1 @>
+                test <@ blind.Hash <> readable.Hash @>
+
+                // POSITIVE CONTROL: restoring the permission restores the exact hash, so
+                // the difference is the hole and not incidental churn (an mtime, a
+                // reordering, a nondeterministic walk).
+                File.SetUnixFileMode(
+                    vault,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                )
+
+                test <@ (TreeHash.compute root []).Hash = readable.Hash @>
+            finally
+                File.SetUnixFileMode(
+                    vault,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
 
 // ---------------------------------------------------------------------------
 // CTRF — malformed reports are never counted as evidence.

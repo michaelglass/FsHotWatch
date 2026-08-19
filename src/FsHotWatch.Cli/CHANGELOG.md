@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Verdicts now carry `treeHashAlgorithm: "fshw-tree-sha256-v2"` (AUTOMATION-164): the
+  tree hash includes one entry per directory the walk could not see, so a verdict earned
+  over a tree with a permission hole in it no longer applies to that tree readable — the
+  two used to hash identically. A tree with no holes hashes exactly as it did under v1;
+  the version bump is there because the INPUT SET changed, and a consumer reimplementing
+  the documented recipe must know which one it is reimplementing.
+
 ## 0.14.0-alpha.20 - 2026-08-19
 
 - fix: **`beforeRun failed:` now says which step failed, with its exit code and its output.**
