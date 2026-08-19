@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.14 - 2026-08-19
+
 - **BREAKING** — `SafeWalk` now reports what it could not see (AUTOMATION-164).
   `enumerateFilesMatching` / `enumerateFiles` / `enumerateFilePaths` are renamed
   `bestEffortFilesMatching` / `bestEffortFiles` / `bestEffortFilePaths`, and two total

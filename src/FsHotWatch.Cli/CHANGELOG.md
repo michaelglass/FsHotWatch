@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.21 - 2026-08-19
+
 - Verdicts now carry `treeHashAlgorithm: "fshw-tree-sha256-v2"` (AUTOMATION-164): the
   tree hash includes one entry per directory the walk could not see, so a verdict earned
   over a tree with a permission hole in it no longer applies to that tree readable — the

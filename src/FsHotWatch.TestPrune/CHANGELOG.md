@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.17 - 2026-08-19
+
 - The `--no-build` freshness gate fails CLOSED on a directory it could not read
   (AUTOMATION-164). `ArtifactFreshness.Cache.FilesUnder` returns
   `Result<_, string>` and both walks — the project's sources and the test project's
