@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.18 - 2026-08-21
+
 - A cold `confirm` full-suite run now discharges symbols discovered by its own BootScan
   cohort without scheduling the same suite a second time (AUTOMATION-163). The debt is
   attached only to that in-flight full run and commits only from genuinely green,

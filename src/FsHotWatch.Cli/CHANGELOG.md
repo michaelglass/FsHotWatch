@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.22 - 2026-08-21
+
+- fix(ci): format AUTOMATION-163 changes with pinned Fantomas
+- AUTOMATION-163: preserve BootScan debt across full-run completion
+
+
 ## 0.14.0-alpha.21 - 2026-08-19
 
 - Verdicts now carry `treeHashAlgorithm: "fshw-tree-sha256-v2"` (AUTOMATION-164): the
