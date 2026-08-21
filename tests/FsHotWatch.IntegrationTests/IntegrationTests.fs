@@ -1419,11 +1419,9 @@ let ``BuildPlugin fails with false command`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
-    let dbPath =
-        Path.Combine(Path.GetTempPath(), $"fshw-tp-inttest-{Guid.NewGuid():N}.db")
-
-    try
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    withTempDir "fshw-tp-inttest" (fun repoRoot ->
+        let dbPath = Path.Combine(repoRoot, "test-impact.db")
+        let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
 
         let testConfigs =
             [ { Project = "EchoTests"
@@ -1437,7 +1435,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 ReportVerificationFormat = AutoDetect } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None []
+            TestPrunePlugin.create dbPath repoRoot (Some testConfigs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1457,22 +1455,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 match status.Value with
                 | Completed _ -> true
                 | _ -> false
-            @>
-    finally
-        try
-            File.Delete(dbPath)
-        with _ ->
-            ()
-
-        try
-            File.Delete(dbPath + "-wal")
-        with _ ->
-            ()
-
-        try
-            File.Delete(dbPath + "-shm")
-        with _ ->
-            ()
+            @>)
 
 [<Fact(Timeout = 5000)>]
 let ``TestPrunePlugin with failing test reports failure`` () =
@@ -1703,7 +1686,7 @@ let ``Full pipeline: format → build → test`` () =
     let dbPath = Path.Combine(tmpDir, "test-prune.db")
 
     try
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let preprocessor = FormatPreprocessor()
         host.RegisterPreprocessor(preprocessor)
@@ -1725,7 +1708,7 @@ let ``Full pipeline: format → build → test`` () =
                 ReportVerificationFormat = AutoDetect } ]
 
         let testPruneHandler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None []
+            TestPrunePlugin.create dbPath tmpDir (Some testConfigs) None None None None []
 
         host.RegisterHandler(testPruneHandler)
 
@@ -1838,11 +1821,9 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``TestPrunePlugin does not run concurrent test suites`` () =
-    let dbPath =
-        Path.Combine(Path.GetTempPath(), $"fshw-tp-concurrent-{Guid.NewGuid():N}.db")
-
-    try
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    withTempDir "fshw-tp-concurrent" (fun repoRoot ->
+        let dbPath = Path.Combine(repoRoot, "test-impact.db")
+        let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
 
         let testConfigs =
             [ { Project = "SlowTests"
@@ -1856,7 +1837,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 ReportVerificationFormat = AutoDetect } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None []
+            TestPrunePlugin.create dbPath repoRoot (Some testConfigs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1896,22 +1877,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 match status.Value with
                 | Completed _ -> true
                 | _ -> false
-            @>
-    finally
-        try
-            File.Delete(dbPath)
-        with _ ->
-            ()
-
-        try
-            File.Delete(dbPath + "-wal")
-        with _ ->
-            ()
-
-        try
-            File.Delete(dbPath + "-shm")
-        with _ ->
-            ()
+            @>)
 
 // ===========================================================================
 // Real-world validation that the DI seams in the unit tests reflect production
