@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.23 - 2026-08-21
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.22 - 2026-08-21
 
 - fix(ci): format AUTOMATION-163 changes with pinned Fantomas
