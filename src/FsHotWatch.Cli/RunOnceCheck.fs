@@ -376,12 +376,4 @@ let runOnceAndVerdict
     (config: DaemonConfiguration)
     (pluginName: string option)
     : int =
-    runOnceAndVerdictWith
-        runOnceWithProgress
-        renderSummary
-        checkMode
-        noWarnFail
-        createDaemon
-        repoRoot
-        config
-        pluginName
+    runOnceAndVerdictWith runOnceWithProgress renderSummary checkMode noWarnFail createDaemon repoRoot config pluginName

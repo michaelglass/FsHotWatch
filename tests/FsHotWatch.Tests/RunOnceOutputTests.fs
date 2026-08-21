@@ -427,8 +427,7 @@ let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial sc
                   Init = ()
                   Update = fun _ctx state _event -> async { return state }
                   Commands =
-                    [ FsHotWatch.Cli.IpcParsing.SetScopeCommand,
-                      fun _ctx _state _args -> async { return "" }
+                    [ FsHotWatch.Cli.IpcParsing.SetScopeCommand, fun _ctx _state _args -> async { return "" }
                       FsHotWatch.Cli.IpcParsing.TestScopeCommand,
                       fun _ctx _state _args ->
                           async { return """{"scope":"full","ranProjects":1,"totalProjects":1}""" } ]

@@ -4460,9 +4460,7 @@ let create
                                     return
                                         { flushedState with
                                             BootScanDebtDuringFullRun =
-                                                Set.union
-                                                    flushedState.BootScanDebtDuringFullRun
-                                                    pendingQueueRef }
+                                                Set.union flushedState.BootScanDebtDuringFullRun pendingQueueRef }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.

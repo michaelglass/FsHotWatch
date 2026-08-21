@@ -6583,7 +6583,11 @@ let fooTest () = assert (foo 1 = 2)
         | Some result -> host.EmitFileChecked(result)
         | None -> failwith "cold-scan changed-file check failed"
 
-        host.EmitBatchChecked({ fakeBatchChecked [ libFile ] with Trigger = trigger })
+        host.EmitBatchChecked(
+            { fakeBatchChecked [ libFile ] with
+                Trigger = trigger }
+        )
+
         waitForQuiescent host 20000
 
         { RunCount = File.ReadAllLines(runMarker).Length
