@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.19 - 2026-08-21
+
 - fix: an impact retry that passes and clears all pending verification
   debt now remains the gate's final evidence. A redundant rerun queued while that test
   was still active no longer replaces its passing project result with
