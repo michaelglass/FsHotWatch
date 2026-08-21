@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A cold `confirm` full-suite run now discharges symbols discovered by its own BootScan
+  cohort without scheduling the same suite a second time (AUTOMATION-163). The debt is
+  attached only to that in-flight full run and commits only from genuinely green,
+  full-suite evidence; failed runs keep it durable, while real in-session edits still
+  queue one follow-up run.
+
 ## 0.13.0-alpha.17 - 2026-08-19
 
 - The `--no-build` freshness gate fails CLOSED on a directory it could not read

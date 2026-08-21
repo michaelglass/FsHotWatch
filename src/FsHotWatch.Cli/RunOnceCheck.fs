@@ -15,6 +15,7 @@ module FsHotWatch.Cli.RunOnceCheck
 open CommandTree
 open FsHotWatch
 open FsHotWatch.ErrorLedger
+open FsHotWatch.Events
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.RunOnceOutput
@@ -212,7 +213,10 @@ let private liveCoverage (daemon: Daemon.Daemon) : Coverage =
 ///     FORCED if the scan did not already produce it; and only a `FullSuite` scope can
 ///     reach a green. Anything less is exit 3, `UnearnedScope` — no verdict, never a
 ///     laundered pass.
-let runOnceAndVerdict
+/// Dependency-injected form used to pin command-level scan cardinality without spawning
+/// an external CLI process. Production passes `runOnceWithProgress` unchanged.
+let runOnceAndVerdictWith
+    (runScan: Daemon.Daemon -> Map<string, PluginStatus>)
     (renderSummary: Map<string, ParsedPluginStatus> -> string)
     (checkMode: CheckVerdict.CheckMode)
     (noWarnFail: bool)
@@ -232,7 +236,7 @@ let runOnceAndVerdict
         if checkMode = CheckVerdict.Confirmation then
             requestFullSuiteScope daemon.Host
 
-        let statuses = runOnceWithProgress daemon
+        let statuses = runScan daemon
 
         // What the run produced. Re-read after every step that can change it (a forced
         // run, a convergence re-scan) — never carried over from an earlier snapshot,
@@ -258,7 +262,7 @@ let runOnceAndVerdict
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
-        let rescan () : unit = runOnceWithProgress daemon |> ignore
+        let rescan () : unit = runScan daemon |> ignore
 
         // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune launch
         // chokepoint (build → BuildCompleted), where full-suite scope has already forced
@@ -362,3 +366,22 @@ let runOnceAndVerdict
         | None -> ()
 
         publishedExitCode
+
+let runOnceAndVerdict
+    (renderSummary: Map<string, ParsedPluginStatus> -> string)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (createDaemon: string -> Daemon.Daemon)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (pluginName: string option)
+    : int =
+    runOnceAndVerdictWith
+        runOnceWithProgress
+        renderSummary
+        checkMode
+        noWarnFail
+        createDaemon
+        repoRoot
+        config
+        pluginName

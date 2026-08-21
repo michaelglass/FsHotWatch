@@ -411,6 +411,53 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         None
 
 [<Fact(Timeout = 60000)>]
+let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial scan without a second scan`` () =
+    withProjectOnlyRepo "confirm-runonce-exactly-once" (fun repoRoot ->
+        let mutable scanCount = 0
+
+        let createDaemon (root: string) =
+            let daemon =
+                Daemon.createWith
+                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                    root
+                    Daemon.DaemonOptions.defaults
+
+            let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+                { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
+                  Init = ()
+                  Update = fun _ctx state _event -> async { return state }
+                  Commands =
+                    [ FsHotWatch.Cli.IpcParsing.SetScopeCommand,
+                      fun _ctx _state _args -> async { return "" }
+                      FsHotWatch.Cli.IpcParsing.TestScopeCommand,
+                      fun _ctx _state _args ->
+                          async { return """{"scope":"full","ranProjects":1,"totalProjects":1}""" } ]
+                  Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+                  CacheKey = None
+                  Teardown = None }
+
+            daemon.Host.RegisterHandler(handler)
+            daemon
+
+        let runScan daemon =
+            scanCount <- scanCount + 1
+            runOnceWithProgress daemon
+
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                runScan
+                (fun _ -> "")
+                FsHotWatch.Cli.CheckVerdict.Confirmation
+                false
+                createDaemon
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        test <@ exitCode = 0 @>
+        test <@ scanCount = 1 @>)
+
+[<Fact(Timeout = 60000)>]
 let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` () =
     // No test-prune plugin ⇒ no `test-scope` command ⇒ `ScopeUnknown`, which is not
     // full-suite and so cannot reach green. Exit 3 = UnearnedScope: nothing reported broken,

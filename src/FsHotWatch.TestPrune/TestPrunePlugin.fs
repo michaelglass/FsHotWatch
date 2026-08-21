@@ -379,6 +379,11 @@ type TestPruneState =
         /// arrived between the queueing BuildCompleted and TestsFinished.
         /// Cleared when the rerun is dispatched.
         PendingRerun: bool
+        /// Symbols established by a BootScan cohort while a requested full-suite run was
+        /// already in flight. The run covers the built tree being baselined, but these
+        /// symbols are absent from its immutable launch snapshot. They may be committed
+        /// only after that run produces genuinely green full-suite evidence.
+        BootScanDebtDuringFullRun: Set<string>
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -3333,6 +3338,7 @@ let create
           LastRunId = None
           LastSeeds = []
           PendingRerun = false
+          BootScanDebtDuringFullRun = Set.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
@@ -4356,7 +4362,7 @@ let create
                         // the same treatment.
                         return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
 
-                | PluginEvent.BatchChecked _ ->
+                | PluginEvent.BatchChecked batch ->
                     // Cohort-complete flush. The mailbox is FIFO and the daemon emits
                     // BatchChecked strictly after the last FileChecked, so every
                     // FileChecked from this cohort is already folded into
@@ -4440,6 +4446,23 @@ let create
                                     Logging.info "test-prune" $"BatchChecked: %s{owedDescription ()} — draining now"
 
                                     return drainedState
+                                | SlotBusy when batch.Trigger = BootScan && Volatile.Read(&fullSuiteScopeRef) ->
+                                    // The requested full-suite run already covers the built
+                                    // tree that this cold cohort is baselining. Remember the
+                                    // late-discovered symbols, but do not schedule a duplicate
+                                    // run. TestsFinished may discharge them only from actual
+                                    // green full-suite evidence; failure or partial scope keeps
+                                    // the durable queue outstanding.
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %s{owedDescription ()} discovered by BootScan during a full-suite run — attaching debt to that run"
+
+                                    return
+                                        { flushedState with
+                                            BootScanDebtDuringFullRun =
+                                                Set.union
+                                                    flushedState.BootScanDebtDuringFullRun
+                                                    pendingQueueRef }
                                 | SlotBusy ->
                                     // A run is in flight but was launched against an older
                                     // queue snapshot, so it cannot clear these symbols.
@@ -4645,6 +4668,7 @@ let create
                             completed.Results
                             (passedClassesOfRun repoRoot completed.RunId)
 
+
                     let foundFailures = failuresOf state.TestClassFiles testResults
 
                     let carriedFailures =
@@ -4681,14 +4705,21 @@ let create
                     // silently resurrect the laundering bug. `LastCoverage` rides along
                     // as the receipt of what this run covered, for consumers outside the
                     // handler.
+                    let bootScanDebtDuringFullRun = state.BootScanDebtDuringFullRun
+
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
+                            // Debt is scoped to exactly the run that was active when the
+                            // BootScan cohort sealed. Failure keeps it durable, but must not
+                            // let a later unrelated run claim it implicitly.
+                            BootScanDebtDuringFullRun = Set.empty
                             // Carried with them: the pruned map is what the ledger was
                             // just written from, so the next run's coarse-fallback
                             // widening reads the same set the user was shown.
                             UnanalyzableFiles = unanalyzable }
+
 
                     // Outcome-conditional, per-project green-commit. A launched
                     // symbol leaves the needs-testing queue ONLY when the run
@@ -4701,8 +4732,10 @@ let create
                     // results (didn't run this cycle) blocks the commit (we can't claim
                     // it green). A symbol with NO covering project was already dropped at
                     // flush time, but if one slipped through it commits here (nothing to
-                    // wait on). Mid-run arrivals are NOT in launch.Symbols, so they stay
-                    // queued and the PendingRerun flow re-runs them.
+                    // wait on). Genuine in-session mid-run arrivals are NOT in
+                    // launch.Symbols, so they stay queued and the PendingRerun flow
+                    // re-runs them. BootScan debt may join the candidate set only when
+                    // this completion proves the run was actually full-suite.
                     //
                     // AUTOMATION-278. This fold read `TestResult.isPassed`, which was TRUE
                     // for `TestsNoMatch` — so a symbol whose covering project ran under an
@@ -4724,11 +4757,21 @@ let create
                         if aborted then
                             Set.empty
                         else
-                            launch.Symbols
+                            let bootScanCandidates =
+                                match completed.Verification with
+                                | Ran FullSuite -> bootScanDebtDuringFullRun
+                                | _ -> Set.empty
+
+                            Set.union launch.Symbols bootScanCandidates
                             |> Set.filter (fun s ->
                                 match Map.tryFind s launch.CoveringProjectsBySymbol with
                                 | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
-                                | _ -> true)
+                                | Some _ -> true
+                                | None ->
+                                    runnableCoveringTests s
+                                    |> List.map (fun t -> t.TestProject)
+                                    |> Set.ofList
+                                    |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info

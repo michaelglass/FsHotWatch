@@ -6498,6 +6498,137 @@ let barTest () = assert (bar 1 = 2)
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}"))
 
+type private A163ScenarioOutcome =
+    { RunCount: int
+      Queue: Set<string>
+      Status: PluginStatus option }
+
+let private runA163CohortScenario name trigger testExitCode =
+    withTempDir name (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        let runMarker = Path.Combine(tmpDir, "runs")
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        let libSource1 = "module Lib\nlet foo (x: int) = x + 1\n"
+        let libSource2 = "module Lib\nlet foo (x: int) = x + 2\n"
+
+        let testsSource =
+            """module Tests
+open Lib
+
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let fooTest () = assert (foo 1 = 2)
+"""
+
+        File.WriteAllText(libFile, libSource1)
+        File.WriteAllText(testsFile, testsSource)
+
+        let libOptions =
+            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+
+        let projOptions =
+            { libOptions with
+                SourceFiles = [| libFile; testsFile |] }
+
+        pipeline.RegisterProject(libFile, projOptions)
+
+        // Prime the persisted symbol graph in an analysis-only host. The second host is
+        // the cold daemon: empty in-memory state over a warm on-disk impact database.
+        let primingHost = PluginHost.create checker tmpDir
+        primingHost.RegisterHandler(create dbPath tmpDir None None None None None [])
+        primingHost.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginIdle primingHost "test-prune" 5.0
+
+        for file in [ libFile; testsFile ] do
+            match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
+            | Some result -> primingHost.EmitFileChecked(result)
+            | None -> failwith $"priming check failed for {file}"
+
+        emitBatchAndQuiesce primingHost [ libFile; testsFile ]
+
+        let configs =
+            [ { Project = "Lib"
+                Command = "sh"
+                Args = $"-c \"printf 'run\\n' >> '{runMarker}'; sleep 0.8; exit {testExitCode}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create checker tmpDir
+        host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
+
+        host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
+        |> Async.RunSynchronously
+        |> ignore
+
+        File.WriteAllText(libFile, libSource2)
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> true
+                | _ -> false)
+            5000
+
+        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+        | Some result -> host.EmitFileChecked(result)
+        | None -> failwith "cold-scan changed-file check failed"
+
+        host.EmitBatchChecked({ fakeBatchChecked [ libFile ] with Trigger = trigger })
+        waitForQuiescent host 20000
+
+        { RunCount = File.ReadAllLines(runMarker).Length
+          Queue = PendingQueueHelpers.loadQueue tmpDir
+          Status = host.GetStatus("test-prune") })
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-163: boot-scan symbols discovered during a green full run are covered without a second run`` () =
+    // The production change this catches is treating `BootScan` like `InSessionBatch`
+    // when its cohort seal arrives during the full run that a cold confirm launched.
+    // The scan is a baseline over the same built tree, so that full run covers its
+    // symbols; queueing another run silently doubles CI.
+    let outcome = runA163CohortScenario "tp-a163-boot-scan" BootScan 0
+    Assert.Equal(1, outcome.RunCount)
+    test <@ Set.isEmpty outcome.Queue @>
+
+    match outcome.Status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-163: an in-session cohort discovered during a full run still queues exactly one rerun`` () =
+    // Mutation caught: matching every BatchChecked as BootScan would disable the real
+    // edit queue. The only difference from the regression above is cohort provenance.
+    let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
+    let outcome = runA163CohortScenario "tp-a163-in-session" trigger 0
+    Assert.Equal(2, outcome.RunCount)
+    test <@ Set.isEmpty outcome.Queue @>
+
+    match outcome.Status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"expected the edit rerun to converge green, got %A{other}")
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-163: a failing full run cannot discharge boot-scan debt`` () =
+    // Mutation caught: absorbing boot debt on the requested scope rather than the
+    // completed run's actual green evidence would erase work that no passing test proved.
+    let outcome = runA163CohortScenario "tp-a163-failed-full" BootScan 1
+    Assert.Equal(1, outcome.RunCount)
+    test <@ outcome.Queue.Contains "Lib.foo" @>
+
+    match outcome.Status with
+    | Some(Failed _) -> ()
+    | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
+
 [<Fact(Timeout = 20000)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
     // Session 1 queues Lib.foo (covered by P1) but never proves it green. Session 2 — a
