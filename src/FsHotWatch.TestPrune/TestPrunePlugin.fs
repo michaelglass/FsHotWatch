@@ -5187,32 +5187,52 @@ let create
                                     PendingRerun = false
                                     PendingForceRunProjects = Set.empty }
 
-                            match testConfigs with
-                            | Some configs when not configs.IsEmpty ->
-                                // A run just completed (LastResults set above), so the
-                                // baseline exists — hasCachedResults = true. The
-                                // deferred fanout force-runs any test project whose
-                                // dependency fingerprint changed during the prior run.
-                                match
-                                    ctx.RunExclusive
-                                        "tests"
-                                        (runTestsWithImpact
-                                            ctx
-                                            configs
-                                            (TestRunInputs.ofState rerunState)
-                                            true
-                                            deferredFanout)
-                                with
-                                | Claimed -> return rerunState
-                                | SlotBusy ->
-                                    // Another launch site won the slot; ITS
-                                    // TestsFinished will drain this rerun — keep it
-                                    // queued and the fanout un-consumed.
-                                    return
-                                        { rerunState with
-                                            PendingRerun = true
-                                            PendingForceRunProjects = deferredFanout }
-                            | _ -> return rerunState
+                            // AUTOMATION-228. PendingRerun is a hint captured while the
+                            // previous run was still in flight, not proof that work remains
+                            // after it completes. BatchChecked can re-observe exactly the
+                            // debt that active run is about to clear and set the hint; once
+                            // the run passes, launching it blindly produces a second,
+                            // zero-project lifecycle whose NoProjectsSelected result erases
+                            // the passing evidence. Flush above first so genuine mid-run
+                            // arrivals are visible, then ask the durable queue and deferred
+                            // fanout whether anything is still owed.
+                            if nothingOwed () && Set.isEmpty deferredFanout then
+                                Logging.info
+                                    "test-prune"
+                                    "Queued impact rerun is stale — the completed run cleared all verification debt and no dependency fanout remains"
+
+                                return
+                                    { rerunState with
+                                        ChangedFiles = []
+                                        ChangedSymbols = remainingChangedSymbols
+                                        AffectedTests = Analyzed [] }
+                            else
+                                match testConfigs with
+                                | Some configs when not configs.IsEmpty ->
+                                    // A run just completed (LastResults set above), so the
+                                    // baseline exists — hasCachedResults = true. The
+                                    // deferred fanout force-runs any test project whose
+                                    // dependency fingerprint changed during the prior run.
+                                    match
+                                        ctx.RunExclusive
+                                            "tests"
+                                            (runTestsWithImpact
+                                                ctx
+                                                configs
+                                                (TestRunInputs.ofState rerunState)
+                                                true
+                                                deferredFanout)
+                                    with
+                                    | Claimed -> return rerunState
+                                    | SlotBusy ->
+                                        // Another launch site won the slot; ITS
+                                        // TestsFinished will drain this rerun — keep it
+                                        // queued and the fanout un-consumed.
+                                        return
+                                            { rerunState with
+                                                PendingRerun = true
+                                                PendingForceRunProjects = deferredFanout }
+                                | _ -> return rerunState
                     | [] ->
                         // Clear ONLY the committed symbols from the hot view; the
                         // durable queue (post-commit) is the source of truth and is

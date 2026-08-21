@@ -6498,6 +6498,59 @@ let barTest () = assert (bar 1 = 2)
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}"))
 
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-228: a rerun queued for debt the active run clears preserves that run's evidence`` () =
+    // The production lifecycle this pins is RED test -> production edit -> green retry.
+    // While the retry is in flight, BatchChecked sees the same durable debt and queues a
+    // rerun. The green retry then clears that debt. The queued rerun is stale now: if it
+    // launches, it selects zero projects and its NoProjectsSelected completion overwrites
+    // the passing evidence the gate was waiting for.
+    withTempDir "tp-stale-rerun" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.foo")
+
+        let started = Path.Combine(tmpDir, "started")
+        let release = Path.Combine(tmpDir, "release")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = $"-c \"touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitUntil (fun () -> File.Exists started) 10000
+
+        // Re-observe the same debt while its covering run is active. RunCommand is a
+        // mailbox barrier: when it returns, the preceding BatchChecked has set
+        // PendingRerun, so releasing the runner cannot race the setup.
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+
+        File.WriteAllText(release, "")
+        waitForQuiescent host 20000
+
+        let completed = getCompleted ()
+        Assert.Single(completed) |> ignore
+        test <@ not (RunVerification.verifiedNothing completed.Head.Verification) @>
+
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ Set.isEmpty queue @>)
+
 type private A163ScenarioOutcome =
     { RunCount: int
       Queue: Set<string>

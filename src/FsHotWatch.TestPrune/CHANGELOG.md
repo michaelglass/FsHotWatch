@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-228): an impact retry that passes and clears all pending verification
+  debt now remains the gate's final evidence. A redundant rerun queued while that test
+  was still active no longer replaces its passing project result with
+  `NoProjectsSelected`; genuine mid-run changes and dependency fanout still schedule a
+  follow-up run.
+
 ## 0.13.0-alpha.18 - 2026-08-21
 
 - A cold `confirm` full-suite run now discharges symbols discovered by its own BootScan
