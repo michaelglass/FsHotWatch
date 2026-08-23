@@ -12,6 +12,18 @@ type DiagnosticSeverity =
     /// verdict routes it to `Incomplete`/exit 2, never `FailuresFound`/exit 1. Hence
     /// distinct from green-compatible `Info`/`Hint` and from `Error`/`Warning`.
     | Deferred
+    /// NOT a defect and NOT a pass: the RUNNER DIED. A test host that was killed
+    /// mid-run (the box ran out of CPU or memory, something reaped it, the runtime
+    /// aborted) verified nothing, and nothing it half-wrote is a finding about the
+    /// code. Like `Deferred` it denies a green without counting as a failure —
+    /// `RunnerAbort` routes it to `CheckOutcome.RunnerAborted`/exit 2, never
+    /// `FailuresFound`/exit 1.
+    ///
+    /// Its own case rather than a reuse of `Deferred`, because the remedies differ and
+    /// `Deferred`'s words are false here: "waiting on build — re-run once the build
+    /// settles" describes a race that settles on its own, and a host killed under load
+    /// does not settle, it needs a quieter box (AUTOMATION-294).
+    | HostAborted
 
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
@@ -39,6 +51,7 @@ module DiagnosticSeverity =
         | Info -> "info"
         | Hint -> "hint"
         | Deferred -> "deferred"
+        | HostAborted -> "aborted"
 
     let fromString (s: string) =
         match s with
@@ -47,6 +60,7 @@ module DiagnosticSeverity =
         | "info" -> Some Info
         | "hint" -> Some Hint
         | "deferred" -> Some Deferred
+        | "aborted" -> Some HostAborted
         | _ -> None
 
     let order (severity: DiagnosticSeverity) =
@@ -56,23 +70,32 @@ module DiagnosticSeverity =
         // Deferred ranks between Info and Warning: louder than informational (it
         // denies a green) but not a defect (nothing failed).
         | Deferred -> 2
+        // Ranks with `Deferred`, and for the same reason: both say "this did not run".
+        // Louder than informational, quieter than a defect — because nothing failed.
+        | HostAborted -> 2
         | Warning -> 3
         | Error -> 4
 
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
-    /// `Deferred` is never a failure — see the DU case.
+    /// Neither `Deferred` nor `HostAborted` is ever a failure — see the DU cases.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
         match e.Severity with
         | Error -> true
         | Warning -> warningsAreFailures
         | Info
         | Hint
-        | Deferred -> false
+        | Deferred
+        | HostAborted -> false
 
     /// True iff this entry is a "waiting on build" deferral: tests did not run because
     /// a build artifact wasn't ready. Not a failure; see `isFailing`.
     let isWaitingOnBuild (e: ErrorEntry) : bool = e.Severity = Deferred
+
+    /// True iff this entry records a RUNNER that died: the test host was killed
+    /// mid-run, so nothing it was asked to verify was verified. Not a failure; see
+    /// `isFailing`.
+    let isRunnerAbort (e: ErrorEntry) : bool = e.Severity = HostAborted
 
     /// Create an Error-severity entry with no source location.
     let error (message: string) : ErrorEntry =
@@ -106,6 +129,15 @@ module ErrorEntry =
     let deferredWithDetail (message: string) (detail: string) : ErrorEntry =
         { Message = message
           Severity = Deferred
+          Line = 0
+          Column = 0
+          Detail = Some detail }
+
+    /// Create a `HostAborted`-severity entry with detail — a test host that was KILLED
+    /// mid-run, so its project verified nothing and reported no finding.
+    let abortedWithDetail (message: string) (detail: string) : ErrorEntry =
+        { Message = message
+          Severity = HostAborted
           Line = 0
           Column = 0
           Detail = Some detail }

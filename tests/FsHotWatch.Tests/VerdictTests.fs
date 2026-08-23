@@ -424,6 +424,51 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
+    // AUTOMATION-294. A killed test host is INCOMPLETE, never Red: nothing failed there.
+    test <@ incomplete (CheckVerdict.CheckOutcome.RunnerAborted [ "x: aborted — killed" ]) @>
+
+[<Fact>]
+let ``AUTOMATION-294: a killed host serializes as incomplete with an ABORT reason, never red`` () =
+    // The MACHINE-READABLE half of the fix. A consumer reads the structured outcome, and
+    // it used to read `red` — a definite negative about code that had not been tested at
+    // all. It must now be able to tell "the runner died" from "a test failed" WITHOUT
+    // inferring anything from 0ms durations in a suite listing.
+    let aborts =
+        [ "FsHotWatch.Tests: aborted — test host was KILLED by SIGKILL (exit 137)" ]
+
+    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts) with
+    | Verdict.Incomplete reason ->
+        test <@ reason.ToUpperInvariant().Contains "NO VERDICT" @>
+        test <@ reason.ToUpperInvariant().Contains "KILLED" @>
+        // The projects are NAMED — one list, carried, not a second one to keep in step.
+        test <@ reason.Contains "FsHotWatch.Tests" @>
+        test <@ reason.Contains "SIGKILL" @>
+        // And it tells the reader what the per-test lines they are staring at actually
+        // are, which is the sentence that saves the investigation.
+        test <@ reason.ToUpperInvariant().Contains "TRANSCRIPT" @>
+    | other -> failwith $"a killed test host must be incomplete, never red/green, got %A{other}"
+
+    test
+        <@
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)
+            <> Verdict.Red
+        @>
+
+    test
+        <@
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)
+            <> Verdict.Green
+        @>
+
+    test
+        <@ Verdict.Outcome.tag (Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)) = "incomplete" @>
+
+    // THE OTHER DIRECTION, on the surface a consumer actually reads: a genuine failure
+    // still tags `red`, so this cannot have turned every regression into "the box was
+    // busy".
+    test <@ Verdict.Outcome.tag (Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound) = "red" @>
+    test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.RunnerAborted aborts) = 2 @>
+    test <@ CheckVerdict.exitCode CheckVerdict.CheckOutcome.FailuresFound = 1 @>
 
 [<Fact>]
 let ``waiting on build persists as a DISTINCT incomplete verdict (exit 2), never red`` () =
@@ -1386,6 +1431,7 @@ let private impactScopedReading (root: string) (scope: TestScope) (failingDiagno
           FailingDiagnostics = failingDiagnostics
           UnattributableDiagnostics = 0
           WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
+          RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
           Coverage = coverage
           Scope = scope }
 

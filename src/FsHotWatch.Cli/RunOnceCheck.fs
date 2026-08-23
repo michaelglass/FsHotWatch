@@ -192,6 +192,25 @@ let private waitingOnBuild (daemon: Daemon.Daemon) (pluginName: string option) :
     |> List.map (fun (_, e) -> e.Message)
     |> CheckVerdict.BuildWait.classify
 
+/// Did a test HOST DIE mid-run — a `HostAborted`-severity ledger entry (its tests did not
+/// finish) — and with what diagnosis? The in-process twin of `IpcOutput.runnerAborted`:
+/// both read the SAME condition and hand it to the SAME classifier, so the two
+/// transports cannot disagree about what an abort means.
+let private runnerAborted (daemon: Daemon.Daemon) (pluginName: string option) : CheckVerdict.RunnerAbort =
+    let allErrors =
+        match pluginName with
+        | Some name ->
+            daemon.Host.GetErrorsByPlugin(name)
+            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
+        | None -> daemon.Host.GetErrors()
+
+    allErrors
+    |> Map.toList
+    |> List.collect snd
+    |> List.filter (fun (_, e) -> ErrorEntry.isRunnerAbort e)
+    |> List.map (fun (_, e) -> e.Message)
+    |> CheckVerdict.RunnerAbort.classify
+
 /// Did the in-process run actually check every file it is responsible for?
 ///
 /// The SAME question, from the SAME computation, as the daemon's `GetUncheckedCount`.
@@ -269,6 +288,7 @@ let runOnceAndVerdictWith
               FailingDiagnostics = failingCount daemon noWarnFail pluginName
               UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
               WaitingOnBuild = waitingOnBuild daemon pluginName
+              RunnerAborted = runnerAborted daemon pluginName
               Coverage = liveCoverage daemon
               Scope = finalRun.Value.Scope }
 

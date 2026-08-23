@@ -493,19 +493,19 @@ let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: a kill that returned killed the tree (AUTOMATION-149)`` () =
-    Assert.Equal(KillOutcome.Killed, classifyKill None)
+    Assert.Equal(KillOutcome.Killed, classifyKill KillCall.Returned)
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: the already-exited race is benign, not a failure (AUTOMATION-149)`` () =
     // The child exited between the timeout firing and the kill landing: the tree is dead
     // either way. The ONLY exception the old catch-all was entitled to swallow (F17).
-    Assert.Equal(KillOutcome.AlreadyExited, classifyKill (Some(System.InvalidOperationException())))
+    Assert.Equal(KillOutcome.AlreadyExited, classifyKill (KillCall.Threw(System.InvalidOperationException())))
 
 [<Fact(Timeout = 5000)>]
 let ``classifyKill: a permission failure is a kill we did NOT perform (AUTOMATION-149)`` () =
     // Win32Exception = we were refused. The tree is still running, and the old
     // `with _ -> ()` reported that as success.
-    match classifyKill (Some(System.ComponentModel.Win32Exception())) with
+    match classifyKill (KillCall.Threw(System.ComponentModel.Win32Exception())) with
     | KillOutcome.KillFailed reason -> Assert.IsType<System.ComponentModel.Win32Exception>(reason) |> ignore
     | other -> Assert.Fail $"a refused kill must not be spelled like a successful one, got %A{other}"
 
@@ -513,7 +513,7 @@ let ``classifyKill: a permission failure is a kill we did NOT perform (AUTOMATIO
 let ``classifyKill: an unexpected exception is a kill we did NOT perform (AUTOMATION-149)`` () =
     // Anything outside the F17 benign class is a kill we cannot vouch for, and is never
     // rounded down to "killed".
-    match classifyKill (Some(System.NullReferenceException())) with
+    match classifyKill (KillCall.Threw(System.NullReferenceException())) with
     | KillOutcome.KillFailed reason -> Assert.IsType<System.NullReferenceException>(reason) |> ignore
     | other -> Assert.Fail $"an unexplained kill failure must not be spelled like a successful one, got %A{other}"
 
@@ -547,23 +547,213 @@ let ``renderKillBrief marks a leaked tree on a one-line status, and is silent ot
 
 [<Fact(Timeout = 5000)>]
 let ``killTreeWith: a kill that returns reports Killed (AUTOMATION-149)`` () =
-    Assert.Equal(KillOutcome.Killed, killTreeWith (fun () -> "child") id)
+    Assert.Equal(KillOutcome.Killed, killTreeWith TeardownBudget 4242 (fun () -> "child") id)
 
 [<Fact(Timeout = 5000)>]
 let ``killTreeWith: a child that beat us to it reports AlreadyExited (AUTOMATION-149)`` () =
     let kill () =
         raise (System.InvalidOperationException())
 
-    Assert.Equal(KillOutcome.AlreadyExited, killTreeWith (fun () -> "child") kill)
+    Assert.Equal(KillOutcome.AlreadyExited, killTreeWith TeardownBudget 4242 (fun () -> "child") kill)
 
 [<Fact(Timeout = 5000)>]
 let ``killTreeWith: a refused kill reports KillFailed, never Killed (AUTOMATION-149)`` () =
     let boom = System.ComponentModel.Win32Exception()
     let kill () = raise boom
 
-    match killTreeWith (fun () -> "child") kill with
+    match killTreeWith TeardownBudget 4242 (fun () -> "child") kill with
     | KillOutcome.KillFailed reason -> Assert.Same(boom, reason)
     | other -> Assert.Fail $"a kill the OS refused must not be reported as done, got %A{other}"
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-454 — THE OTHER HALF OF AUTOMATION-149: a kill that never ANSWERS.
+//
+// A149 fixed the kill that says no. This is the kill that says nothing. On 2026-08-21 a
+// `check` timed out five test projects at their configured caps, and then TestPrune never
+// emitted `TestRunCompleted` at all: no CTRF, no coverage, no history, no verdict. The
+// plugin stayed Running for another 72 minutes until the daemon's wedge watchdog restarted
+// it, and the waiting check exited 2 with mass 0ms results — a run that could not report,
+// which reads exactly like a run that had nothing to say.
+//
+// Every phase after the per-project timeout was already bounded (the drain window is 2s)
+// EXCEPT the teardown itself: `killTreeWith` called `proc.Kill(entireProcessTree = true)`
+// and waited for it forever. `Kill(entireProcessTree = true)` is not a signal, it is a WALK
+// of the process table, and a walk on a starved box can block. One blocked project task is
+// enough: `Async.Parallel` never completes, so the run never reaches the serial
+// coverage/history/verdict work.
+//
+// The bound is on the CALL, so the injected regression is a kill that BLOCKS — the direct
+// analogue of A149's kill that THROWS, and equally unconjurable from a real process.
+//
+// RED-BEFORE-GREEN: give `callKillWithin` back its unbounded `kill ()` and the blocking
+// tests below hang until xUnit's 5s Timeout fires.
+// ---------------------------------------------------------------------------
+
+/// A budget short enough to keep these tests fast, long enough that a machine hiccup
+/// cannot expire it under a kill that returns immediately.
+let private shortBudget = TimeSpan.FromMilliseconds 250.0
+
+/// A kill that BLOCKS until released — the injectable regression. Returns the kill and the
+/// gate that frees the abandoned thread, so no test leaves a thread parked for the rest of
+/// the run.
+let private blockingKill () =
+    let gate = new Threading.ManualResetEventSlim(false)
+    let kill () = gate.Wait()
+    kill, gate
+
+[<Fact(Timeout = 5000)>]
+let ``classifyKill: a kill that never answered is neither killed nor failed (AUTOMATION-454)`` () =
+    // Not `Killed` — we established nothing. Not `KillFailed` — nobody refused us, and a
+    // `KillFailed` carrying a fabricated exception would put words in the OS's mouth.
+    let budget = TimeSpan.FromSeconds 10.0
+    Assert.Equal(KillOutcome.KillTimedOut budget, classifyKill (KillCall.DidNotReturn budget))
+
+[<Fact(Timeout = 5000)>]
+let ``callKillWithin: a kill that returns is Returned — the positive control (AUTOMATION-454)`` () =
+    Assert.Equal(KillCall.Returned, callKillWithin shortBudget id)
+
+[<Fact(Timeout = 5000)>]
+let ``callKillWithin: a kill that throws reports the throw, not a timeout (AUTOMATION-454)`` () =
+    // The budget must not swallow the exception: A149's classification still has to see it.
+    let boom = System.ComponentModel.Win32Exception()
+
+    match callKillWithin shortBudget (fun () -> raise boom) with
+    | KillCall.Threw ex -> Assert.Same(boom, ex)
+    | other -> Assert.Fail $"a throwing kill must be reported as a throw, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``callKillWithin: a BLOCKING kill is cut off at the budget (AUTOMATION-454)`` () =
+    let kill, gate = blockingKill ()
+
+    try
+        let clock = Diagnostics.Stopwatch.StartNew()
+        let call = callKillWithin shortBudget kill
+        let elapsed = clock.Elapsed
+
+        Assert.Equal(KillCall.DidNotReturn shortBudget, call)
+        // It waited for the budget...
+        Assert.True(elapsed >= shortBudget, $"gave up after %A{elapsed}, before the %A{shortBudget} budget")
+        // ...and then it STOPPED waiting. Without the bound this line is never reached.
+        Assert.True(elapsed < TimeSpan.FromSeconds 3.0, $"the budget did not cut the wait off: %A{elapsed}")
+    finally
+        gate.Set()
+
+[<Fact(Timeout = 5000)>]
+let ``callKillWithin: the budget is not spent on a kill that returns (AUTOMATION-454)`` () =
+    // The other direction: a healthy teardown is untouched by the bound. A tree really dies
+    // in milliseconds, and a bound that made every kill wait out its budget would turn a
+    // five-project run into an extra minute of nothing.
+    let clock = Diagnostics.Stopwatch.StartNew()
+    Assert.Equal(KillCall.Returned, callKillWithin (TimeSpan.FromSeconds 30.0) id)
+    Assert.True(clock.Elapsed < TimeSpan.FromSeconds 3.0, $"a kill that returned still waited %A{clock.Elapsed}")
+
+[<Fact(Timeout = 5000)>]
+let ``killTreeWith: a blocked teardown ends in KillTimedOut, not in a wedge (AUTOMATION-454)`` () =
+    let kill, gate = blockingKill ()
+
+    try
+        // THE regression. Before the bound, this call does not return and the enclosing
+        // project task never produces a result.
+        match killTreeWith shortBudget 4242 (fun () -> "`dotnet test` (pid 4242)") kill with
+        | KillOutcome.KillTimedOut budget -> Assert.Equal(shortBudget, budget)
+        | other -> Assert.Fail $"a teardown that never answered must be named, got %A{other}"
+    finally
+        gate.Set()
+
+[<Fact(Timeout = 5000)>]
+let ``killTreeWith: a normal teardown still completes untouched (AUTOMATION-454)`` () =
+    // Both positive controls, against the same budget the blocked case fails: bounding the
+    // teardown may not change what a teardown that WORKS reports.
+    Assert.Equal(KillOutcome.Killed, killTreeWith shortBudget 4242 (fun () -> "child") id)
+
+    Assert.Equal(
+        KillOutcome.AlreadyExited,
+        killTreeWith shortBudget 4243 (fun () -> "child") (fun () -> raise (InvalidOperationException()))
+    )
+
+[<Fact(Timeout = 5000)>]
+let ``a teardown that never answered is NAMED in the output a human reads (AUTOMATION-454)`` () =
+    let unaccounted =
+        outputOf (
+            TimedOut(
+                TimeSpan.FromSeconds 30.0,
+                ProcessOutput.Drained "tail",
+                KillOutcome.KillTimedOut(TimeSpan.FromSeconds 10.0)
+            )
+        )
+
+    // The timeout is still reported...
+    Assert.Contains("timed out after 30s", unaccounted)
+    Assert.Contains("tail", unaccounted)
+    // ...and so is the fact that we walked away without knowing.
+    Assert.Contains("KILL TIMED OUT", unaccounted)
+    Assert.Contains("STILL RUNNING", unaccounted)
+    // It is NOT spelled like a refusal: "the OS said no" and "the OS said nothing" are
+    // different things to go looking for.
+    Assert.DoesNotContain("KILL FAILED", unaccounted)
+
+[<Fact(Timeout = 5000)>]
+let ``renderKillBrief marks an unaccounted-for tree on a one-line status (AUTOMATION-454)`` () =
+    let brief = renderKillBrief (KillOutcome.KillTimedOut(TimeSpan.FromSeconds 10.0))
+    Assert.Contains("KILL TIMED OUT", brief)
+    Assert.Contains("UNACCOUNTED FOR", brief)
+    // Still silent for the two outcomes that mean the tree is dead.
+    Assert.Equal("", renderKillBrief KillOutcome.Killed)
+    Assert.Equal("", renderKillBrief KillOutcome.AlreadyExited)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-454 — a tree we could not account for is REGISTERED, not only logged.
+//
+// The log line reaches whoever is reading stderr at that moment. Shutdown happens later,
+// possibly hours later, possibly after a watchdog restart, and by then the `Process` handle
+// is disposed and the pid survives only if somebody wrote it down.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``a teardown that never answered registers the leaked pid (AUTOMATION-454)`` () =
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+    let kill, gate = blockingKill ()
+
+    try
+        killTreeWith shortBudget 4242 (fun () -> "`dotnet test` (pid 4242)") kill
+        |> ignore
+    finally
+        gate.Set()
+
+    match FsHotWatch.ProcessRegistry.leaked () with
+    | [ leak ] ->
+        Assert.Equal(4242, leak.Pid)
+        Assert.Contains("dotnet test", leak.Description)
+        Assert.Contains("did not return", leak.Reason)
+    | other -> Assert.Fail $"expected exactly one leaked tree, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``a refused teardown registers the leaked pid too (AUTOMATION-454)`` () =
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+
+    killTreeWith shortBudget 4243 (fun () -> "`dotnet test` (pid 4243)") (fun () ->
+        raise (System.ComponentModel.Win32Exception(1, "Operation not permitted")))
+    |> ignore
+
+    match FsHotWatch.ProcessRegistry.leaked () with
+    | [ leak ] ->
+        Assert.Equal(4243, leak.Pid)
+        Assert.Contains("refused", leak.Reason)
+    | other -> Assert.Fail $"expected exactly one leaked tree, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``a teardown that worked registers nothing — the ledger is not a spawn log (AUTOMATION-454)`` () =
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+
+    killTreeWith shortBudget 4244 (fun () -> "child") id |> ignore
+
+    killTreeWith shortBudget 4245 (fun () -> "child") (fun () -> raise (InvalidOperationException()))
+    |> ignore
+
+    Assert.Empty(FsHotWatch.ProcessRegistry.leaked ())
 
 [<Fact(Timeout = 5000)>]
 let ``isExpectedDrainException accepts AggregateException (F18)`` () =
@@ -629,6 +819,62 @@ let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
     proc.WaitForExit()
 
     registry.KillAll()
+
+// AUTOMATION-454 — shutdown must NAME what it is walking away from.
+//
+// The error at the moment of the failed teardown reaches whoever happens to be reading
+// stderr right then. Shutdown can be hours later, after a watchdog restart, and by then
+// the `Process` handle is long disposed — the pid survives only because it was written
+// down. `KillAll` is where the daemon stops looking, so it is where the ledger is read.
+
+[<Fact(Timeout = 5000)>]
+let ``ProcessRegistry: shutdown names a tree it could not account for (AUTOMATION-454)`` () =
+    let original = FsHotWatch.Logging.logLevel
+    let sb = Text.StringBuilder()
+    let writer = new IO.StringWriter(sb)
+    let prevErr = Console.Error
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+
+    try
+        Console.SetError(writer)
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+
+        FsHotWatch.ProcessRegistry.reportLeak 4242 "`dotnet test Integration` (pid 4242)" "the kill did not return"
+        registry.KillAll()
+    finally
+        Console.SetError(prevErr)
+        FsHotWatch.Logging.setLogLevel original
+
+    let logged = sb.ToString()
+    Assert.Contains("LEAKED process tree", logged)
+    Assert.Contains("4242", logged)
+    Assert.Contains("dotnet test Integration", logged)
+    // It says what shutdown did NOT do, rather than implying the leak is handled.
+    Assert.Contains("NOT reaping it", logged)
+
+    // The ledger outlives the live set: `KillAll` clears what it killed, never what it
+    // could not. A record that vanished at shutdown would be a record nobody could read.
+    match registry.Leaks with
+    | [ _ ] -> ()
+    | other -> Assert.Fail $"KillAll must not clear the leak ledger, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``ProcessRegistry: the leak ledger is scoped, not a process-wide global (AUTOMATION-454)`` () =
+    // Same reason `Registry` itself is AsyncLocal-scoped: two daemons (or two parallel
+    // test runs) must not read each other's unaccounted-for trees.
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+
+    let insideScope =
+        use _ = FsHotWatch.ProcessRegistry.install registry
+        FsHotWatch.ProcessRegistry.reportLeak 4242 "child" "the kill did not return"
+        FsHotWatch.ProcessRegistry.leaked ()
+
+    match insideScope with
+    | [ leak ] -> Assert.Equal(4242, leak.Pid)
+    | other -> Assert.Fail $"expected the leak inside its own scope, got %A{other}"
+
+    Assert.Empty(FsHotWatch.ProcessRegistry.leaked ())
 
 // --- Launch-liveness watchdog (AUTOMATION-65 QA finding: the launch gap) ---
 // The pure decision and the injectable loop are pinned deterministically here — no real
@@ -930,7 +1176,8 @@ type KillFailureIsLoudTests() =
             let boom = System.ComponentModel.Win32Exception(1, "Operation not permitted")
             let kill () = raise boom
 
-            let outcome = killTreeWith (fun () -> "`sleep 10` (pid 4242)") kill
+            let outcome =
+                killTreeWith TeardownBudget 4242 (fun () -> "`sleep 10` (pid 4242)") kill
 
             match outcome with
             | KillOutcome.KillFailed _ -> ()
@@ -962,15 +1209,107 @@ type KillFailureIsLoudTests() =
             Console.SetError(writer)
             FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
 
-            killTreeWith (fun () -> "`sleep 10` (pid 4242)") id |> ignore
+            killTreeWith TeardownBudget 4242 (fun () -> "`sleep 10` (pid 4242)") id
+            |> ignore
             // The already-exited race is benign: the tree is dead either way.
-            killTreeWith (fun () -> "`sleep 10` (pid 4243)") (fun () -> raise (InvalidOperationException()))
+            killTreeWith TeardownBudget 4243 (fun () -> "`sleep 10` (pid 4243)") (fun () ->
+                raise (InvalidOperationException()))
             |> ignore
 
             Assert.Equal("", sb.ToString().Trim())
         finally
             Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel original
+
+    // -----------------------------------------------------------------------
+    // AUTOMATION-454 — the teardown must also be loud when it WORKS.
+    //
+    // The 2026-08-21 evidence recorded that five projects hit their caps and then
+    // recorded nothing else. From that log it is impossible to say whether the run
+    // stopped before the teardown or inside it, or which of the five projects was
+    // the one still holding `Async.Parallel` open. Begin/end/duration for every
+    // kill is what turns "TestPrune stopped" into "TestPrune stopped killing THIS".
+    // -----------------------------------------------------------------------
+
+    /// Capture whatever the daemon writes to stderr at `level` while `body` runs.
+    member private _.CapturingStderr(level, body: unit -> unit) : string =
+        let original = FsHotWatch.Logging.logLevel
+        let sb = Text.StringBuilder()
+        let writer = new IO.StringWriter(sb)
+        let prevErr = Console.Error
+
+        try
+            Console.SetError(writer)
+            FsHotWatch.Logging.setLogLevel level
+            body ()
+            sb.ToString()
+        finally
+            Console.SetError(prevErr)
+            FsHotWatch.Logging.setLogLevel original
+
+    [<Fact(Timeout = 5000)>]
+    member this.``a successful kill records begin, end, duration and outcome (AUTOMATION-454)``() =
+        let logged =
+            this.CapturingStderr(
+                FsHotWatch.Logging.LogLevel.Info,
+                fun () ->
+                    killTreeWith (TimeSpan.FromSeconds 7.0) 4242 (fun () -> "`dotnet test Unit` (pid 4242)") id
+                    |> ignore
+            )
+
+        // BEGIN — which tree, and what it is being given.
+        Assert.Contains("killing process tree", logged)
+        Assert.Contains("dotnet test Unit", logged)
+        Assert.Contains("4242", logged)
+        Assert.Contains("teardown budget 7s", logged)
+        // END — the outcome, and how long it took to get there.
+        Assert.Contains("killed the process tree", logged)
+        Assert.Contains("ms", logged)
+
+    [<Fact(Timeout = 5000)>]
+    member this.``an already-exited kill is recorded as such, not as a kill we performed (AUTOMATION-454)``() =
+        let logged =
+            this.CapturingStderr(
+                FsHotWatch.Logging.LogLevel.Info,
+                fun () ->
+                    killTreeWith (TimeSpan.FromSeconds 7.0) 4243 (fun () -> "`dotnet test Db` (pid 4243)") (fun () ->
+                        raise (InvalidOperationException()))
+                    |> ignore
+            )
+
+        Assert.Contains("killing process tree", logged)
+        Assert.Contains("had already exited", logged)
+        Assert.DoesNotContain("FAILED", logged)
+
+    [<Fact(Timeout = 5000)>]
+    member this.``a teardown that never answered is logged at ERROR, naming the tree and the budget (AUTOMATION-454)``
+        ()
+        =
+        let gate = new Threading.ManualResetEventSlim(false)
+
+        let logged =
+            this.CapturingStderr(
+                FsHotWatch.Logging.LogLevel.Error,
+                fun () ->
+                    try
+                        killTreeWith
+                            (TimeSpan.FromMilliseconds 250.0)
+                            4244
+                            (fun () -> "`dotnet test Integration` (pid 4244)")
+                            (fun () -> gate.Wait())
+                        |> ignore
+                    finally
+                        gate.Set()
+            )
+
+        // WHAT we could not account for...
+        Assert.Contains("dotnet test Integration", logged)
+        Assert.Contains("4244", logged)
+        // ...WHY we stopped waiting...
+        Assert.Contains("TIMED OUT killing", logged)
+        Assert.Contains("did not return", logged)
+        // ...and what it MEANS, in words that cannot be read as "the runaway is over".
+        Assert.Contains("STILL RUNNING", logged)
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-279 — THE OUTPUT SINK, AND WHY IT MUST BE FED AS BYTES ARRIVE.
@@ -1147,3 +1486,79 @@ let ``runProcess is runProcessTo with no sink`` () =
         Assert.Equal("same", a)
         Assert.Equal(a, b)
     | a, b -> Assert.Fail $"expected two identical Succeeded captures, got %A{a} and %A{b}"
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-294 — telling "the program chose this exit code" from "the OS killed it".
+//
+// The whole fix downstream rests on one platform fact: .NET on Unix reports a child
+// terminated by signal N through `Process.ExitCode` as `128 + N`. That is a REMEMBERED
+// fact until something kills a real process and reads the number back, so the last test
+// in this block does exactly that. Without it the pure tests below only prove that the
+// lookup table matches itself.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``tryOfExitCode: the signal-death codes a killed test host actually produces`` () =
+    let name code =
+        TerminatingSignal.tryOfExitCode code |> Option.map (fun s -> s.Name)
+
+    // 134 is the code comment #6 of the ticket recorded from a real gate run (an
+    // unhandled TimeoutException → the runtime calls abort()); 137 is the OOM killer,
+    // `kill -9`, and fshw's own `KillAll`.
+    Assert.Equal(Some "SIGABRT", name 134)
+    Assert.Equal(Some "SIGKILL", name 137)
+    Assert.Equal(Some "SIGSEGV", name 139)
+    Assert.Equal(Some "SIGTERM", name 143)
+    Assert.Equal(Some "SIGINT", name 130)
+
+    // The number rides along, not just the name.
+    Assert.Equal(Some 9, TerminatingSignal.tryOfExitCode 137 |> Option.map (fun s -> s.Number))
+
+[<Fact(Timeout = 5000)>]
+let ``tryOfExitCode: THE OTHER DIRECTION — no exit code a test runner chooses is a signal`` () =
+    // This is the assertion that stops the fix from inverting into the OTHER lie. A real
+    // mass failure must stay a mass failure, and it arrives with a code the RUNNER picked:
+    // Microsoft.Testing.Platform's documented codes are single digits (2 = "a test
+    // failed", 7 = dirty shutdown, 8 = zero tests). None of them may read as a kill.
+    for code in [ 0; 1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12; 13; 14; 100; 127; 128 ] do
+        Assert.True(
+            (TerminatingSignal.tryOfExitCode code).IsNone,
+            $"exit %d{code} — a code a runner CHOOSES — was read as a signal death, which would report a real \
+              failure as an abort"
+        )
+
+    // Above the band, and the ambiguous-numbered signals deliberately left out (SIGBUS is
+    // 10 on macOS and 7 on Linux, so 128+10 would be named wrong on one of them).
+    Assert.True((TerminatingSignal.tryOfExitCode 200).IsNone)
+    Assert.True((TerminatingSignal.tryOfExitCode 138).IsNone)
+
+[<Fact(Timeout = 5000)>]
+let ``terminatingSignalOf: a timeout keeps its OWN outcome and is never folded in`` () =
+    // A timeout already carries who killed it and whether the kill landed. Answering
+    // `Some` here would replace that specific fact with a vaguer one.
+    let timedOut =
+        ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck", KillOutcome.Killed)
+
+    Assert.True((terminatingSignalOf timedOut).IsNone)
+    Assert.True((terminatingSignalOf (Succeeded(ProcessOutput.Drained "fine"))).IsNone)
+    Assert.True((terminatingSignalOf (Failed(2, ProcessOutput.Drained "a test failed"))).IsNone)
+
+[<Fact(Timeout = 30000)>]
+let ``POSITIVE CONTROL: killing a real child really does surface as 128 + signum`` () =
+    // Kill a live process and read the number back, rather than trusting the convention.
+    // If this runtime ever stopped following it, every pure test above would still pass
+    // while the production discriminator silently never fired — and a killed test host
+    // would go straight back to reporting as a mass regression.
+    match runProcessBounded "sh" "-c \"kill -9 $$\"" quick with
+    | Failed(code, _) ->
+        Assert.Equal(137, code)
+
+        match terminatingSignalOf (Failed(code, ProcessOutput.Drained "")) with
+        | Some signal ->
+            Assert.Equal("SIGKILL", signal.Name)
+            Assert.Equal(9, signal.Number)
+        | None ->
+            Assert.Fail
+                $"a child killed with SIGKILL exited %d{code}, and `terminatingSignalOf` did not recognise it — \
+                  the discriminator the whole abort-vs-failure fix rests on is dead on this platform"
+    | other -> Assert.Fail $"expected a Failed outcome from a SIGKILLed child, got %A{other}"

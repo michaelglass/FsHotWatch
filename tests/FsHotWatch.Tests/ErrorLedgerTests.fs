@@ -436,7 +436,22 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     // The wire name is how a severity survives the IPC hop, so one that does not
     // round-trip is one the CLI silently loses: `Deferred` losing its name routes a
     // "waiting on build" back to a plain failure. Every case, both directions.
-    let all = [ Hint; Info; Deferred; Warning; Error ]
+    //
+    // ENUMERATED BY REFLECTION, not by hand (AUTOMATION-294). This list was written out
+    // and a case added later was simply absent from it — a new severity could ship
+    // without a wire name and this test would still pass, which is the one thing it
+    // exists to prevent. `IpcParsing` defaults an unrecognised tag to `Error`, so the
+    // symptom is silent: the severity crosses the wire, comes back a failure, and the
+    // exit code reverts to the very 1 the new case was added to stop returning.
+    let all =
+        Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(typeof<DiagnosticSeverity>)
+        |> Array.map (fun c -> Microsoft.FSharp.Reflection.FSharpValue.MakeUnion(c, [||]) :?> DiagnosticSeverity)
+        |> Array.toList
+
+    // The reflection is the point, so pin that it actually found them all — an empty or
+    // truncated list would make the `forall` below vacuously true.
+    test <@ List.length all >= 6 @>
+    test <@ all |> List.contains HostAborted @>
 
     test
         <@
@@ -451,3 +466,11 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     // Deferred is louder than informational (it denies a green) but is not a defect.
     test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order Deferred @>
     test <@ DiagnosticSeverity.order Deferred < DiagnosticSeverity.order Warning @>
+
+    // AUTOMATION-294. `HostAborted` sits exactly where `Deferred` does, and for the same
+    // reason: both say "this did not run", neither says "this failed".
+    test <@ DiagnosticSeverity.toString HostAborted = "aborted" @>
+    test <@ DiagnosticSeverity.fromString "aborted" = Some HostAborted @>
+    test <@ DiagnosticSeverity.order HostAborted = DiagnosticSeverity.order Deferred @>
+    test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order HostAborted @>
+    test <@ DiagnosticSeverity.order HostAborted < DiagnosticSeverity.order Warning @>

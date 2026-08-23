@@ -376,6 +376,24 @@ module CheckProse =
            NOT clear this, and neither does `fshw confirm` nor restarting the daemon — this is bytes on disk, not \
            the task cache."
 
+    /// AUTOMATION-294. A test HOST that DIED, in its own words.
+    ///
+    /// The sentence that does the work is the second one. A reader who reaches this
+    /// message has, historically, just been shown a wall of per-test rows at 0ms and is
+    /// about to start bisecting; they need to be told, before anything else, that those
+    /// rows are a transcript of a run that was killed and not a list of findings.
+    ///
+    /// It also rules out the remedy that does not apply. This is NOT `waitingOnBuild`:
+    /// nothing settles, so "re-run once the build settles" would send the reader to wait
+    /// for an event that is not coming. A host killed for want of CPU needs a quieter
+    /// machine, and a host that keeps dying on a quiet one is a real defect worth
+    /// chasing — which is the distinction the message has to leave open, because the
+    /// tool cannot tell which it is.
+    let runnerAborted (aborts: string list) =
+        let listed = aborts |> List.map (fun a -> $"\n  · %s{a}") |> String.concat ""
+
+        $"NO VERDICT — %d{List.length aborts} test host(s) were KILLED mid-run, so their tests did not            finish.%s{listed}\nNOTHING WAS VERIFIED: nothing is reported broken — do NOT go looking for a            regression — and nothing is reported sound either. Any per-test lines in the run output are a            TRANSCRIPT of a killed run, not findings: a test the host never reached is written out the same way as            one that ran, which is why they are not counted here.\nRemedy: re-run on a machine with headroom            (`dotnet fshw test-rerun`, or the whole gate). Re-running under the same load will abort again, and a            host that keeps dying on an IDLE machine is a real defect — that one is worth chasing."
+
     /// AUTOMATION-303 AC5. The gate's own answer to "is `fshw stop` still needed?" —
     /// stated by the tool, at the moment it is needed, instead of left in a ticket.
     ///
@@ -448,6 +466,11 @@ module CheckProse =
         // thing that cannot help here, so the generic "re-run once the build settles"
         // above would cost a whole gate cycle to arrive back at this same refusal.
         | CheckVerdict.CheckOutcome.WaitingOnBuild stale -> Some $"Check incomplete: %s{staleBuildOutput stale}"
+        // AUTOMATION-294. A killed host, in its own words — never `waitingOnBuild`'s
+        // (nothing settles here) and never the silence `FailuresFound` gets (the reader
+        // is looking at a transcript that LOOKS like a list of failures, and the whole
+        // point is to tell them it is not).
+        | CheckVerdict.CheckOutcome.RunnerAborted aborts -> Some(runnerAborted aborts)
         // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
         // "the run was too narrow", it is "we could not see what the run was".
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) -> Some(scopeUnreadable reason)
@@ -486,6 +509,11 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
         // this defer does not settle on its own, and the reason has to say so where the
         // retry decision is actually made.
         Incomplete(CheckProse.staleBuildOutput stale)
+    // AUTOMATION-294. `incomplete`, never `red`. This is the machine-readable half of
+    // the whole change: a consumer reading `verdict.json` sees `outcome: "incomplete"`
+    // with a reason that names the abort, so it never has to infer "0ms means never
+    // ran" from a suite listing. Exit 2 beside it, from the SAME `CheckOutcome`.
+    | CheckVerdict.CheckOutcome.RunnerAborted aborts -> Incomplete(CheckProse.runnerAborted aborts)
     | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.

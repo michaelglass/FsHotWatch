@@ -140,8 +140,10 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 | Error
                 | Warning
                 // A "waiting on build" deferral is actionable context worth
-                // showing (it explains a non-green run), so render it too.
-                | Deferred -> true
+                // showing (it explains a non-green run), so render it too — and an
+                // abort all the more so: it is the whole reason the run has no verdict.
+                | Deferred
+                | HostAborted -> true
                 | Info
                 | Hint -> false))
         |> Map.filter (fun _ entries -> not entries.IsEmpty)
@@ -168,6 +170,10 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                     | Error -> $"%s{Color.red}error%s{Color.reset}: "
                     | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
                     | Deferred -> $"%s{Color.yellow}waiting on build%s{Color.reset}: "
+                    // Its own label, never `error`: the point of the whole change is
+                    // that a reader can tell a dead runner from a broken test at a
+                    // glance (AUTOMATION-294).
+                    | HostAborted -> $"%s{Color.yellow}ABORTED (nothing verified)%s{Color.reset}: "
                     | Info
                     | Hint -> ""
 

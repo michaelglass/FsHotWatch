@@ -1232,6 +1232,43 @@ let internal formatFailureReport (projectName: string) (runLog: RunLog.Ref) (out
 
           yield! tail |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
 
+/// The human-readable report for a run whose HOST DIED — the counterpart to
+/// `formatFailureReport`, and deliberately NOT it.
+///
+/// `formatFailureReport` counts the `failed ...` lines it can parse and heads them
+/// "N test(s) failed". Run over a KILLED host's transcript that header is the whole
+/// defect AUTOMATION-294 records: a runner cut off mid-suite still has per-test rows
+/// in its captured output — rows at 0ms, with no assertion message, for tests that
+/// never executed — and printing them under "N test(s) failed" turns a non-result
+/// into a definite negative. Every hour that symptom cost was spent investigating
+/// code that was fine.
+///
+/// So an abort gets its OWN words: what killed the host, that NOTHING was verified,
+/// and that the lines below are a TRANSCRIPT of a run that was killed rather than a
+/// list of findings. The rows are still printed — they are the only evidence of how
+/// far the run got — but they are never counted, and never called failures.
+let internal formatAbortReport
+    (projectName: string)
+    (runLog: RunLog.Ref)
+    (reason: string)
+    (output: string)
+    : string list =
+    let lines = output.Split('\n')
+
+    let transcript =
+        lines
+        |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
+        |> (fun ls -> ls.[max 0 (ls.Length - 40) ..])
+
+    [ $"%s{projectName}: RUN ABORTED — %s{reason}"
+      $"%s{projectName}: NOTHING WAS VERIFIED. This is NOT a test failure: no test was shown to fail, and no         test was shown to pass. Do not read the lines below as a regression — a runner killed mid-suite still         has rows in its capture for tests it never executed (0ms, no assertion message). Re-run on a machine         with headroom (e.g. `dotnet fshw test-rerun`); if it aborts again, the host is dying for a reason that         is not load."
+      match runLog with
+      | RunLog.Ref.Written path ->
+          $"%s{projectName}: the FULL output — including the HEAD, which is where a dying host states its             cause — was streamed to %s{path}. READ THAT FIRST; the transcript tail follows only as a summary:"
+      | RunLog.Ref.Unavailable why ->
+          $"%s{projectName}: NO output log was saved (%s{why}), so the transcript tail below is ALL there is             and the head of the run is gone:"
+      yield! transcript |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
+
 /// What is known about the structured test report for a run — the verdict
 /// input. Modelled as a DU rather than a `bool * report option` so the
 /// meaningless "no report was requested yet somehow a parsed report exists"
@@ -1264,6 +1301,13 @@ type ReportEvidence =
 ///        - report NOT requested (unknown runner) → exit code is the only signal
 ///          we have → `TestsFailed`.
 ///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
+///
+///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
+///      A killed host did not finish, so nothing it wrote is a result — including a
+///      CTRF report it managed to flush on the way down, whose rows for tests that
+///      never executed are exactly the mass 0ms "failures" AUTOMATION-294 is about.
+///      This arm is why the report is not consulted there: outcome 1 would read that
+///      partial report and call a machine that ran out of CPU a mass regression.
 ///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
 ///   run (the filtered case was handled upstream) — a real misconfiguration, so
 ///   it falls to the exit-code tie-break rather than going green.
@@ -1271,14 +1315,22 @@ type ReportEvidence =
 /// Outcome 2 deliberately does NOT also require a whitelisted shutdown exit code: the
 /// benign codes are runner/version-specific, and a report positively showing zero
 /// failures is stronger evidence than the exit number.
+///
+/// Outcome 0 is the one direction where the exit code OUTRANKS the report, and only
+/// because of what that particular exit code means: `TerminatingSignal` recognises
+/// codes no runner CHOOSES, so it can only ever fire for a host that was killed. A
+/// suite that genuinely goes red exits with a code the runner picked (MTP's are single
+/// digits) and still reaches outcome 1 — the assertion this must survive in BOTH
+/// directions, because a real mass failure dressed as an abort is the same lie with
+/// the sign flipped.
 let internal classifyTestOutcome
     (evidence: ReportEvidence)
     (wasFiltered: bool)
     (elapsed: System.TimeSpan)
     (outcome: ProcessOutcome)
     : TestResult =
-    match outcome with
-    | ProcessOutcome.TimedOut(after, output, kill) ->
+    match outcome, terminatingSignalOf outcome with
+    | ProcessOutcome.TimedOut(after, output, kill), _ ->
         // A timeout KILL is a real "stuck" signal; a partial report it may have flushed
         // must not override it.
         //
@@ -1287,7 +1339,25 @@ let internal classifyTestOutcome
         // to kill would be reported as a plain "stuck" timeout while it kept running,
         // holding the test DB / the port / the lock that makes the NEXT run fail too.
         TestsTimedOut(renderOutput output + renderKill kill, after, wasFiltered, elapsed)
-    | _ ->
+    | _, Some signal ->
+        // Outcome 0. The host was KILLED. `TestsErrored` — `NothingVerified`, never a
+        // pass and never a reported failure — because a process that did not reach its
+        // own exit did not finish measuring anything.
+        //
+        // The report state is NAMED rather than consulted: a reader who sees a partial
+        // CTRF beside this message needs to be told the rows in it are a transcript,
+        // not a verdict, or they will open it and find their "mass regression".
+        let reportNote =
+            match evidence with
+            | ReportRequested(Some r) ->
+                $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
+            | ReportRequested None -> " It wrote no parseable report."
+            | NoReportRequested -> " No structured report was requested from this runner."
+
+        TestsErrored(
+            $"test host was KILLED by %s{signal.Name} (exit %d{TerminatingSignal.SignalExitBase + signal.Number})               — it never reached its own exit, so NOTHING was verified.%s{reportNote}"
+        )
+    | _, None ->
         let output = outputOf outcome
         let succeeded = isSucceeded outcome
 
@@ -1686,12 +1756,23 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
               ) ]
         | TestsErrored reason ->
             // NOT a test failure (no test was shown to fail) and NOT a pass
-            // (nothing was verified) — an honest "errored" diagnostic so the
+            // (nothing was verified) — an honest "aborted" diagnostic so the
             // verdict is non-green without the misleading "Tests failed in X".
+            //
+            // AUTOMATION-294: at `HostAborted` SEVERITY, which is what makes that honesty
+            // reach the verdict. At `Error` it was counted by `failingDiagnostics`,
+            // and every surface downstream — the exit code, `verdict.json`'s outcome,
+            // the terminal — then said "failures found" about a run in which nothing
+            // failed. The severity routes it to `CheckOutcome.RunnerAborted`/exit 2
+            // instead, exactly as `Deferred` routes a defer to `WaitingOnBuild`.
+            //
+            // It still joins the OUTSTANDING list, so cache participation stays
+            // refused and an abort is never replayed as a green: the severity governs
+            // the VERDICT, the outstanding list governs the CACHE.
             [ projectLevel (
-                  ErrorLedger.ErrorEntry.errorWithDetail
-                      $"%s{project}: errored — %s{reason}"
-                      $"The %s{project} test host exited non-zero but wrote no parseable test report, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass; re-run (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green."
+                  ErrorLedger.ErrorEntry.abortedWithDetail
+                      $"%s{project}: aborted — %s{reason}"
+                      $"The %s{project} test host did not finish, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass. Any per-test lines in the captured output are a TRANSCRIPT of a killed run, not findings: a test the host never reached is written out the same way as one that ran, which is why an abort must never be counted as failures. Re-run on a machine with headroom (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green."
               ) ]
         // No ledger entry, same as a pass. A filter matching nothing in THIS project is
         // not this project's error — the run-level verdict is where a workspace-wide
@@ -2265,27 +2346,33 @@ let private executeTests
                                 logToCtx $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
                             | TestsErrored reason ->
-                                logToCtx $"{config.Project}: errored — {reason}"
+                                logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
 
                                 Logging.error
                                     "test-prune"
-                                    $"%s{config.Project}: ERRORED — %s{reason}. Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
+                                    $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
                             | TestsFailed _
                             | TestsTimedOut _ ->
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            // Report the failure in full: the failing tests, with
-                            // messages and traces, are in the RETAINED CTRF report the
-                            // verdict points at, and the failure report is logged here
-                            // in full.
+                            // Report the outcome in full. The two reports are DIFFERENT
+                            // documents on purpose (AUTOMATION-294): a failure report
+                            // counts the runner's `failed ...` lines and calls them
+                            // failures, which is true of a run that finished and false —
+                            // expensively, alarmingly false — of one that was killed
+                            // holding a half-written transcript.
                             match result with
                             | TestsFailed _
-                            | TestsTimedOut _
-                            | TestsErrored _ ->
+                            | TestsTimedOut _ ->
                                 for line in formatFailureReport config.Project runLog.Ref output do
                                     Logging.error "test-prune" line
-                            | _ -> ()
+                            | TestsErrored reason ->
+                                for line in formatAbortReport config.Project runLog.Ref reason output do
+                                    Logging.error "test-prune" line
+                            | TestsPassed _
+                            | TestsDeferred _
+                            | TestsNoMatch _ -> ()
 
                             // Collect this project's raw runner cobertura for SERIAL
                             // ingest after Async.Parallel (a parallel DB write +
@@ -4918,11 +5005,22 @@ let create
 
                             let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
 
+                            // AUTOMATION-294. An ABORTED project — its test host died
+                            // mid-run — is counted OUT of `failed`, which used to sweep
+                            // it in (`not isDeferred`). Nothing failed there: the runner
+                            // never finished asking. Reporting it as "N failed: X" is a
+                            // non-result rendered as a definite negative, and it is the
+                            // exact shape a reader mistakes for a mass regression.
+                            let abortedList = nonGreen |> List.filter (fun (_, r) -> TestResult.isErrored r)
+
                             let failedList =
-                                nonGreen |> List.filter (fun (_, r) -> not (TestResult.isDeferred r))
+                                nonGreen
+                                |> List.filter (fun (_, r) ->
+                                    not (TestResult.isDeferred r) && not (TestResult.isErrored r))
 
                             let failed = failedList.Length
                             let deferred = deferredList.Length
+                            let aborted = abortedList.Length
 
                             // Zero-match projects are counted OUT of `passed`. `passed` is
                             // derived by exclusion, and the `nonGreen` fold above
@@ -4933,7 +5031,7 @@ let create
                             let noMatch =
                                 results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
 
-                            let passed = total - failed - deferred - noMatch
+                            let passed = total - failed - deferred - aborted - noMatch
 
                             let noMatchSuffix = if noMatch = 0 then "" else $", %d{noMatch} matched nothing"
 
@@ -4972,6 +5070,17 @@ let create
                                 else
                                     ""
 
+                            // Never folded into the `failed` number it sits beside: the
+                            // summary is the one line most readers see, so it is the one
+                            // line that must not call a dead host a failure.
+                            let abortedSuffix =
+                                if aborted > 0 then
+                                    $", %d{aborted} ABORTED (host died, nothing verified)"
+                                else
+                                    ""
+
+                            let abortedNames = abortedList |> List.map fst |> String.concat ", "
+
                             if not timedOutProjects.IsEmpty then
                                 let names = timedOutProjects |> String.concat ", "
                                 // Flip the recorded outcome to TimedOut; the verdict on
@@ -4986,13 +5095,19 @@ let create
                                 )
                             else
                                 let runSummary =
-                                    $"%d{passed} passed, %d{failed} failed%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+                                    $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
                                 // EVERY terminal below CARRIES the run's evidence —
                                 // `runSummary` + measured duration — on the status
                                 // itself. There is no separate summary channel left to
                                 // forget or contradict (AUTOMATION-99).
-                                if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit && carriedCount = 0 then
+                                if
+                                    failed = 0
+                                    && aborted = 0
+                                    && deferred = 0
+                                    && Set.isEmpty queueAfterCommit
+                                    && carriedCount = 0
+                                then
                                     // AUTOMATION-198. Nothing failed, nothing is owed — and on a
                                     // run that EXECUTED NOTHING that is not a pass, it is an
                                     // absence of evidence. `runSummary` would report it as
@@ -5020,7 +5135,7 @@ let create
                                     ctx.ReportStatus(
                                         Completed(DateTime.UtcNow, RunVerdict.create verdictSummary results.Elapsed)
                                     )
-                                elif failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                                elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
                                     // AUTOMATION-125. Everything this run RAN passed, the
                                     // queue is drained — and yet an earlier failure it did
                                     // not execute is still outstanding. A narrower run
@@ -5034,7 +5149,7 @@ let create
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
-                                elif failed = 0 && deferred = 0 then
+                                elif failed = 0 && aborted = 0 && deferred = 0 then
                                     // Everything that RAN passed, but the pending queue
                                     // still holds symbols this (e.g. filtered) run did not
                                     // cover green — NOT test-equivalent to a green run yet.
@@ -5046,7 +5161,7 @@ let create
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
-                                elif failed = 0 then
+                                elif failed = 0 && aborted = 0 then
                                     // Only deferred projects — nothing FAILED, but
                                     // nothing was verified either. Non-green, honest
                                     // "waiting on build" (never "failed").
@@ -5077,6 +5192,50 @@ let create
                                                 $"%s{runSummary}%s{carriedNote}"
                                                 results.Elapsed
                                         )
+                                elif failed = 0 then
+                                    // AUTOMATION-294. Nothing failed — a test HOST DIED.
+                                    // Killed by a signal under load, or gone before it
+                                    // could write a report. No test was shown to fail and
+                                    // no test was shown to pass, so this is the third
+                                    // answer and it must LOOK like the third answer: a
+                                    // dead host reported as "N failed: X" sends the reader
+                                    // hunting a regression that is not there, which is the
+                                    // hours this ticket is an accounting of.
+                                    //
+                                    // A NON-failing terminal, exactly like the pure-defer
+                                    // arm above: the `HostAborted`-severity ledger entries
+                                    // route the verdict to `RunnerAborted`/exit 2 rather
+                                    // than the exit 1 a red earns. The summary carries
+                                    // `RunSummary.nothingVerified`, so no renderer can
+                                    // give this run a bare `✓` either.
+                                    let deferredNote =
+                                        if deferred > 0 then
+                                            let dn = deferredList |> List.map fst |> String.concat ", "
+                                            $" (+%d{deferred} waiting on build: %s{dn})"
+                                        else
+                                            ""
+
+                                    let abortLine =
+                                        $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{deferredNote}"
+
+                                    if carriedCount = 0 then
+                                        ctx.ReportStatus(
+                                            PluginStatus.completedNow
+                                                (RunSummary.nothingVerified abortLine)
+                                                results.Elapsed
+                                        )
+                                    else
+                                        // A carried RED from an earlier run outranks an
+                                        // abort — same rule the defer arm applies, and for
+                                        // the same reason: an aborted run cannot vindicate
+                                        // a test it never ran. Stay red (exit 1); the
+                                        // carried Error entry keeps the ledger red anyway.
+                                        ctx.ReportStatus(
+                                            PluginStatus.failedNow
+                                                $"%s{abortLine}%s{carriedNote}"
+                                                $"%s{runSummary}%s{carriedNote}"
+                                                results.Elapsed
+                                        )
                                 else
                                     let names = failedList |> List.map fst |> String.concat ", "
 
@@ -5087,9 +5246,19 @@ let create
                                         else
                                             ""
 
+                                    // A real red DOMINATES an abort beside it — but the
+                                    // abort is still NAMED, and named as an abort: those
+                                    // projects proved nothing, and a reader must not add
+                                    // them to the failure count.
+                                    let abortNote =
+                                        if aborted > 0 then
+                                            $" (+%d{aborted} ABORTED, nothing verified: %s{abortedNames})"
+                                        else
+                                            ""
+
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{failed} failed: %s{names}%s{deferredNote}%s{carriedNote}"
+                                            $"%d{failed} failed: %s{names}%s{abortNote}%s{deferredNote}%s{carriedNote}"
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
