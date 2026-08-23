@@ -17,11 +17,14 @@ type IProjectGraphReader =
     /// First <TargetFramework> (or first entry of <TargetFrameworks>) parsed at
     /// fsproj registration time. None if the .fsproj declared neither.
     abstract GetTargetFramework: projectPath: AbsProjectPath -> string option
-    /// `<projDir>/bin/Debug/<TFM>/<projectName>.dll`. None when the project's
-    /// TargetFramework couldn't be parsed.
+    /// The project's primary build output: MSBuild's own `TargetPath` when discovery
+    /// recorded one, else `<projDir>/bin/Debug/<TFM>/<projectName>.dll` inferred from a
+    /// parsed `<TargetFramework>`. None when neither is available.
     abstract GetCanonicalDllPath: projectPath: AbsProjectPath -> string option
-    /// Latest `LastWriteTimeUtc` across the project's on-disk source files.
-    /// None when the project has no sources, or every source path is missing.
+    /// Latest `LastWriteTimeUtc` across the project's on-disk AUTHORED sources —
+    /// compile items under the project's own `bin/`/`obj/` are build OUTPUT and are
+    /// excluded, so this can be compared against one. None when the project has no
+    /// authored sources, or every one of their paths is missing.
     abstract GetMaxSourceMtime: projectPath: AbsProjectPath -> System.DateTime option
 
 /// Extract the first <TargetFramework> or first entry of <TargetFrameworks>
@@ -254,14 +257,45 @@ type ProjectGraph() as this =
                 let projName = Path.GetFileNameWithoutExtension(projPath)
                 Some(Path.Combine(projDir, "bin", "Debug", tfm, projName + ".dll"))
 
-    /// Latest `LastWriteTimeUtc` across the project's on-disk source files.
-    /// None when the project has no sources or every source path is missing.
+    /// Latest `LastWriteTimeUtc` across the project's on-disk AUTHORED sources.
+    /// None when the project has no such sources or every one of their paths is
+    /// missing.
+    ///
+    /// AUTOMATION-368 — sources under the project's own `bin/`/`obj/` are EXCLUDED,
+    /// and that exclusion is the whole reason an answer from here can be compared
+    /// against a build output at all.
+    ///
+    /// The only caller is `BuildPlugin.examineArtifact`, asking "did a source change
+    /// after the DLL was written?" — i.e. did an EDIT outrun the build. But the
+    /// compile-item list MSBuild hands the daemon includes generated files:
+    /// `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs` is a compile item of every SDK
+    /// project, and every design-time evaluation rewrites it. Project DISCOVERY is a
+    /// design-time evaluation. So each discovery pass restamped every project's
+    /// newest "source" to a moment strictly after the last build's outputs, and the
+    /// gate read a tree nobody had touched as universally stale.
+    ///
+    /// That is not a hypothesis. Over the report-only observation window
+    /// (~40 workspaces of the consuming repo, 2026-08-18..23), 2090 stale findings
+    /// were logged and 91% of them fell within 90s of an `MSBuild evaluation`
+    /// pass in the same daemon log. Promoting the gate to reddening with this in
+    /// place would have failed essentially every build in every workspace, on the
+    /// first discovery after each one — which is exactly the failure mode
+    /// AUTOMATION-368 was filed to avoid.
+    ///
+    /// TestPrune's independent `ArtifactFreshness` never had the bug: it walks the
+    /// disk under `SafeWalk.SourceExcludedDirs`, whose own doc comment names this
+    /// precise trap. The two now agree because they are stated in terms of the same
+    /// fact (`SafeWalk.BuildOutputDirs`), not because they were separately taught it.
     member this.GetMaxSourceMtime(projectPath: AbsProjectPath) : System.DateTime option =
+        let projectDir = Path.GetDirectoryName(AbsProjectPath.value projectPath)
+
         this.GetSourceFiles(projectPath)
         |> List.choose (fun f ->
             let path = AbsFilePath.value f
 
-            if File.Exists path then
+            if SafeWalk.isBuildOutput projectDir path then
+                None
+            elif File.Exists path then
                 Some(File.GetLastWriteTimeUtc path)
             else
                 None)

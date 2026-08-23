@@ -166,11 +166,11 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
 /// Why a project contributed nothing — or only half — to an artifact-freshness pass.
 type UnexaminedProject =
     /// The graph could name no build output for this project, so NOTHING about it is
-    /// verified. `GetCanonicalDllPath` needs a TargetFramework, and one reaches the graph
-    /// only from `RegisterFromFsproj`'s XML parse — so a project file that declares none
-    /// of its own (inheriting it from a `Directory.Build.props`) lands here, and so does
-    /// EVERY project registered through `RegisterProject`, which records no framework at
-    /// all.
+    /// verified. `GetCanonicalDllPath` answers from MSBuild's recorded `TargetPath`, or
+    /// failing that from a parsed `<TargetFramework>` — so a project lands here when
+    /// discovery reported no `TargetPath` for it (an evaluation that failed) AND its
+    /// project file declares no framework of its own, e.g. inheriting one from a
+    /// `Directory.Build.props`.
     | NoOutputDerivable of project: string
     /// The output was found, but no source file of this project is on disk to compare
     /// it against, so only its EXISTENCE was checked, never whether it is CURRENT.
@@ -207,6 +207,11 @@ type internal ArtifactExamination =
 /// against, so a content check is not even expressible here; the merkle is the content
 /// guard and this is its temporal complement.
 /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
+///
+/// It is right only over AUTHORED sources, which is `GetMaxSourceMtime`'s contract and
+/// not a free property of MSBuild's compile-item list: that list includes generated
+/// files under `obj/` which every design-time evaluation restamps, and a restamp is not
+/// an edit (AUTOMATION-368).
 let internal examineArtifact
     (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
     (proj: AbsProjectPath)
@@ -319,12 +324,15 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 /// stayed green: the silent-degradation shape AUTOMATION-198 and AUTOMATION-303 removed
 /// elsewhere, and that AUTOMATION-201's preflight names for its own gate.
 ///
-/// The door is not hypothetical, and it is not narrow. `GetCanonicalDllPath` answers
-/// `None` without a registered TargetFramework, and a framework only ever reaches the
-/// graph through `RegisterFromFsproj`. So the gap opens for a repo that centralises
+/// The door is not hypothetical, and it is not narrow. It stood wide open for two
+/// releases: `GetCanonicalDllPath` answered `None` without a registered TargetFramework,
+/// a framework only ever reached the graph through `RegisterFromFsproj`, and nothing in
+/// `src/` called it — so every live daemon examined nothing while every test stayed
+/// green. Discovery now records MSBuild's `TargetPath`, but the gap still opens for a
+/// project whose evaluation FAILED (no `TargetPath` reported) that also centralises
 /// `<TargetFramework>` in a `Directory.Build.props` — the exact file class
-/// AUTOMATION-303 established is an invisible build input — and it opens for any host
-/// that populates the graph some OTHER way, `RegisterProject` included.
+/// AUTOMATION-303 established is an invisible build input — and for any host that
+/// populates the graph without recording an output.
 ///
 /// It REPORTS rather than refuses, for the reason AUTOMATION-201's floor gives: a graph
 /// with no derivable outputs is a legitimate configuration, and bypassing the cache on
@@ -351,8 +359,25 @@ let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : s
 /// possible: the failure mode is not "no protection", it is every build going red
 /// on a false staleness reading. So the daemon passes `false` and the finding is
 /// logged only, while the LOGIC stays exercised by the tests that pass `true`.
-/// Promote once these logs and TestPrune's independent `ArtifactFreshness` agree
-/// on a real tree over a real working week.
+///
+/// THE REPORT-ONLY WINDOW EARNED ITS KEEP. Read back over ~40 workspaces of the
+/// consuming repo (2026-08-18..23), the logs held **2090** stale findings — and
+/// **91%** of them fell within 90s of an `MSBuild evaluation` pass in the same
+/// daemon log. Cause: `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs` is a compile
+/// item of every SDK project, every design-time evaluation rewrites it, and
+/// project DISCOVERY is a design-time evaluation — so each discovery restamped
+/// every project's newest "source" past the DLL the last build had just written.
+/// Promoting on that day would have reddened essentially every build in every
+/// workspace. `GetMaxSourceMtime` now excludes build output, which is what
+/// TestPrune's `ArtifactFreshness` had always done and the source of the
+/// BuildPlugin/TestPrune disagreement the promotion criteria asked about.
+///
+/// STILL `false`, deliberately. The corrected reading has never run against a real
+/// repository either, and promoting a reddening predicate in the change that fixes
+/// it repeats the mistake this flag was created to avoid. Promote after one
+/// observation window in which the corrected detector and `ArtifactFreshness`
+/// agree — the log line below is the instrument, and the discovery correlation
+/// above is the exact statistic to re-measure.
 let createWith
     (artifactGateReddens: bool)
     (command: string)
@@ -459,6 +484,12 @@ let createWith
         // becomes observable. Promote to reddening only after these logs and
         // TestPrune's independent `ArtifactFreshness` agree on a real tree over a
         // real working week, which is the comparison this mode exists to enable.
+        //
+        // That comparison has now been RUN once, and it disagreed: 2090 findings
+        // over ~40 workspaces, 91% of them within 90s of a project-discovery pass,
+        // because `GetMaxSourceMtime` counted MSBuild's own regenerated
+        // `obj/**/AssemblyInfo.fs` as an edit. Fixed there. The window restarts on
+        // the corrected reading — see `createWith`'s doc comment.
         if artifactGateReddens || stale.IsEmpty then
             stale
         else

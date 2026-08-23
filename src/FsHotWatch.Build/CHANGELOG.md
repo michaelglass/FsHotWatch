@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- AUTOMATION-368: no behaviour change here, but the artifact gate this plugin owns can
+  now be believed about a quiescent tree — core's `GetMaxSourceMtime` no longer reads
+  MSBuild's regenerated `obj/` compile items as source edits. `artifactGateReddens` is
+  still `false` in the daemon; promotion waits on one observation window against the
+  corrected reading. See [ADR-015](../../docs/adr-015-a-compile-item-is-not-an-edit.md).
+
 ## 0.7.0-alpha.25 - 2026-08-19
 
 - AUTOMATION-368: give the artifact gate a real path, and keep it report-only

@@ -466,3 +466,133 @@ let ``an empty or whitespace TargetPath is not recorded`` () =
 
     test <@ graph.GetRecordedOutputPath proj = None @>
     test <@ graph.GetCanonicalDllPath proj = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``without a recorded output the path is inferred from the TargetFramework`` () =
+    // The FALLBACK arm, tested where it lives rather than incidentally through a
+    // plugin fixture. `RegisterFromFsproj` has no production callers, so this is the
+    // only registration that still reaches the inference — and an untested fallback
+    // is how the primary path came to be the one nothing exercised.
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-infer-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let fsproj = Path.Combine(tmpDir, "Foo.fsproj")
+
+        File.WriteAllText(
+            fsproj,
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+        )
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(fsproj) |> ignore
+
+        test
+            <@
+                graph.GetCanonicalDllPath(AbsProjectPath.create fsproj) = Some(
+                    Path.Combine(tmpDir, "bin", "Debug", "net10.0", "Foo.dll")
+                )
+            @>
+    finally
+        Directory.Delete(tmpDir, true)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-368 — a build-generated compile item is not a source EDIT
+// ---------------------------------------------------------------------------
+//
+// `GetMaxSourceMtime` answers one question for one caller: did an edit land after
+// the build wrote the DLL? MSBuild's compile-item list is not a list of edits.
+// Every SDK project compiles `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs`, and
+// every design-time evaluation regenerates it — including the one the daemon runs
+// to DISCOVER projects. So each discovery pass pushed every project's newest
+// "source" past its own freshly-built DLL, and the artifact gate read a tree
+// nobody had touched as universally stale.
+//
+// Measured over the report-only window: 2090 stale findings across ~40 consuming
+// workspaces, 91% within 90s of an `MSBuild evaluation` line in the same log.
+
+/// A project whose compile items are what MSBuild really hands the daemon: the
+/// authored source, plus the generated `AssemblyInfo.fs` under `obj/`. Registered
+/// the way `Daemon.fs` registers — `RegisterProject` + `RegisterProjectOutput`,
+/// never `RegisterFromFsproj`.
+let private withGeneratedSourceProject (label: string) (body: ProjectGraph * string * string -> 'a) : 'a =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-%s{label}-{Guid.NewGuid():N}")
+    let objDir = Path.Combine(tmpDir, "obj", "Debug", "net10.0")
+    Directory.CreateDirectory(objDir) |> ignore
+
+    try
+        let projPath = Path.Combine(tmpDir, "MyLib.fsproj")
+        let authored = Path.Combine(tmpDir, "Lib.fs")
+        let generated = Path.Combine(objDir, "MyLib.AssemblyInfo.fs")
+        File.WriteAllText(projPath, "<Project />")
+        File.WriteAllText(authored, "let x = 1")
+        File.WriteAllText(generated, "// generated")
+
+        let graph = ProjectGraph()
+
+        graph.RegisterProject(pp projPath, [ fp authored; fp generated ], [])
+        graph.RegisterProjectOutput(pp projPath, Path.Combine(tmpDir, "bin", "Debug", "net10.0", "MyLib.dll"))
+
+        body (graph, authored, generated)
+    finally
+        Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``a regenerated obj compile item does not move the max source mtime`` () =
+    withGeneratedSourceProject "objsrc" (fun (graph, authored, generated) ->
+        let proj = pp (Path.Combine(Path.GetDirectoryName(authored), "MyLib.fsproj"))
+        let authoredAt = DateTime.UtcNow.AddHours(-1.0)
+        File.SetLastWriteTimeUtc(authored, authoredAt)
+
+        // POSITIVE CONTROL: the authored source IS read. Without it, an
+        // implementation that filtered everything would satisfy the assertion below
+        // by answering `None` — the silent-degradation shape this gate exists to
+        // avoid, reintroduced by the fix for it.
+        test <@ graph.GetMaxSourceMtime proj = Some authoredAt @>
+
+        // Discovery regenerates it, hours after the last real edit.
+        File.SetLastWriteTimeUtc(generated, DateTime.UtcNow)
+
+        test <@ graph.GetMaxSourceMtime proj = Some authoredAt @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a real source edit still moves the max source mtime`` () =
+    // The mutation in the other direction: the exclusion must not have switched the
+    // reading off. This is the edit the gate exists to notice.
+    withGeneratedSourceProject "realsrc" (fun (graph, authored, _) ->
+        let proj = pp (Path.Combine(Path.GetDirectoryName(authored), "MyLib.fsproj"))
+        File.SetLastWriteTimeUtc(authored, DateTime.UtcNow.AddHours(-1.0))
+        let before = graph.GetMaxSourceMtime proj
+
+        let editedAt = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(authored, editedAt)
+
+        test <@ graph.GetMaxSourceMtime proj = Some editedAt @>
+        test <@ before <> graph.GetMaxSourceMtime proj @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a repo nested under a directory named obj still reads its own sources`` () =
+    // The trap in the fix. Matching `obj`/`bin` anywhere in the ABSOLUTE path makes
+    // every file of a repo checked out under such a directory a build output, so
+    // nothing is ever newer than the DLL and the gate answers FRESH forever — the
+    // same silence, arrived at by being more thorough. `isBuildOutput` asks
+    // relative to the project directory for exactly this reason.
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"graph-nested-{Guid.NewGuid():N}", "obj", "checkout", "MyLib")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let projPath = Path.Combine(tmpDir, "MyLib.fsproj")
+        let authored = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(projPath, "<Project />")
+        File.WriteAllText(authored, "let x = 1")
+        let editedAt = DateTime.UtcNow.AddMinutes(-3.0)
+        File.SetLastWriteTimeUtc(authored, editedAt)
+
+        let graph = ProjectGraph()
+        graph.RegisterProject(pp projPath, [ fp authored ], [])
+
+        test <@ graph.GetMaxSourceMtime(pp projPath) = Some editedAt @>
+    finally
+        Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(tmpDir)), true)
