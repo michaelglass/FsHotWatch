@@ -21,7 +21,6 @@
   directory: matching `bin`/`obj` in the absolute path would classify every file of a
   repo checked out under such a directory as output, and the gate would answer FRESH
   forever.
-||||||| /Users/michaelglass/.claude/jobs/d37fdb1d/tmp/m7/core-base.md
 
 - **BREAKING** — `ErrorLedger.DiagnosticSeverity` gains a `HostAborted` case
   (AUTOMATION-294). Every exhaustive match over the severity has to decide it, which is

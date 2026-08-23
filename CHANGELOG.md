@@ -168,7 +168,6 @@ fixtures now register the way `Daemon.fs` does — `RegisterProject` +
 `RegisterProjectOutput`, from what MSBuild reported — and carry the generated `obj/`
 compile item a real project has, so the tests fail for the reason production would.
 
-||||||| /Users/michaelglass/.claude/jobs/d37fdb1d/tmp/m7/root-base.md
 
 ### cli/test-prune: a killed test host is an ABORT, and stops reading as a mass regression
 

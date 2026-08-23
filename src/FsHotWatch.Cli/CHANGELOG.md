@@ -40,7 +40,6 @@
   the verdict is a claim about a particular tree, and that tree is no longer the one
   that was verified.
 
-||||||| /Users/michaelglass/.claude/jobs/d37fdb1d/tmp/m7/cli-base.md
 
 - **BREAKING** — `CheckVerdict.CheckOutcome` gains `RunnerAborted of aborts: string list`
   and `CheckVerdict.CheckInputs` gains a required `RunnerAborted: RunnerAbort` term
