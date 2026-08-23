@@ -61,6 +61,15 @@ type KillOutcome =
     /// we know the child — and every grandchild it spawned — is STILL RUNNING, and
     /// we are about to stop watching it. This is the case that may never be silent.
     | KillFailed of reason: exn
+    /// The kill CALL never RETURNED inside the teardown budget: no success, no
+    /// refusal, no answer at all. We stopped waiting so this run could still reach a
+    /// verdict — an unbounded wait here is a phase that cannot finish, and a phase
+    /// that cannot finish cannot report.
+    ///
+    /// Distinct from `KillFailed`: that is the OS telling us no, this is the OS
+    /// telling us nothing. Both leave the tree unaccounted for and both fail closed,
+    /// but only one of them has a reason to give.
+    | KillTimedOut of budget: TimeSpan
 
 /// Outcome of running an external process. Tagged so callers can tell a
 /// nonzero exit from a timeout-induced kill without parsing the output.
@@ -112,6 +121,16 @@ let renderOutput (output: ProcessOutput) : string =
           %d{int window.TotalSeconds}s (a grandchild is holding the pipe open, or the read died with it). The text \
           above is what we caught, not what the child said."
 
+/// Render a teardown budget the way an operator reads it: whole seconds when it is at
+/// least one, milliseconds when it is shorter. A 250 ms budget rendered as `int
+/// TotalSeconds` is the string "0s" — a diagnostic that hides its own number, and
+/// reads as "we did not wait at all".
+let internal renderBudget (budget: TimeSpan) : string =
+    if budget.TotalSeconds >= 1.0 then
+        $"%d{int budget.TotalSeconds}s"
+    else
+        $"%d{int budget.TotalMilliseconds}ms"
+
 /// The operator-facing note for a kill that did NOT happen — empty string when the
 /// tree is dead (whether we killed it or it beat us to it).
 ///
@@ -126,6 +145,11 @@ let renderKill (kill: KillOutcome) : string =
         $"\n[fshw] KILL FAILED: %s{reason.GetType().Name}: %s{reason.Message} — we could NOT tear down this process \
           tree, so the child (and any grandchild it spawned) is STILL RUNNING and is no longer being watched. It may \
           hold a lock, a port or a pipe; kill it by hand."
+    | KillOutcome.KillTimedOut budget ->
+        $"\n[fshw] KILL TIMED OUT: tearing down this process tree did not return within %s{renderBudget budget}, \
+          so we stopped waiting in order to report this run at all. We never \
+          established that the child (or any grandchild it spawned) is dead, and it is no longer being watched — \
+          assume it is STILL RUNNING. It may hold a lock, a port or a pipe; kill it by hand."
 
 /// The SHORT form of `renderKill`, for the one-line summaries and verdicts a plugin
 /// puts on a status line (`"tests: timed out after 30s"`), where the paragraph above
@@ -136,6 +160,7 @@ let renderKillBrief (kill: KillOutcome) : string =
     | KillOutcome.Killed
     | KillOutcome.AlreadyExited -> ""
     | KillOutcome.KillFailed _ -> " (KILL FAILED — process tree STILL RUNNING)"
+    | KillOutcome.KillTimedOut _ -> " (KILL TIMED OUT — process tree UNACCOUNTED FOR)"
 
 /// Combined output regardless of outcome — for callers that just want the text
 /// to render in a status line. Names a kill we FAILED to perform: every plugin
@@ -188,45 +213,129 @@ let internal pumpReachedEof (failure: exn option) : bool =
     | Some ex when isExpectedDrainException ex -> false
     | Some ex -> raise ex
 
-/// Classify the result of `Process.Kill(entireProcessTree = true)` — `None` for a
-/// kill that returned, `Some ex` for one that threw. `isExpectedKillException`
-/// decides which throw is the benign already-exited race and which is a real
-/// failure.
+/// THE SECOND BUDGET. A run's own timeout bounds how long the child may take; this
+/// bounds how long TEARING IT DOWN may take, and it exists because those are
+/// different failures with the same symptom.
 ///
-/// Pure, so all three arms — including the failure arm, which live-fire would need a
-/// process we are genuinely forbidden to kill — are covered deterministically.
-let internal classifyKill (failure: exn option) : KillOutcome =
-    match failure with
-    | None -> KillOutcome.Killed
-    | Some ex when isExpectedKillException ex -> KillOutcome.AlreadyExited
-    | Some ex -> KillOutcome.KillFailed ex
+/// `Process.Kill(entireProcessTree = true)` is not a signal, it is a WALK: the
+/// runtime enumerates the tree (a `/proc` scan on Linux, a `sysctl` process-table
+/// snapshot on macOS) and kills it from the leaves up. A walk over a starved box, or
+/// over a table the kernel is contending on, can take arbitrarily long — and an
+/// arbitrarily long teardown makes every phase downstream of it arbitrarily long too:
+/// the project task never returns, `Async.Parallel` never completes, the plugin never
+/// emits `TestRunCompleted`, and the only thing that eventually ends the run is the
+/// daemon's hour-scale wedge watchdog, which reports nothing about what happened.
+///
+/// 10s is far past any healthy teardown (a real tree dies in milliseconds) and far
+/// short of the watchdog. A kill that has not returned in 10s is not coming back, and
+/// waiting longer buys evidence nobody will read.
+let internal TeardownBudget = TimeSpan.FromSeconds 10.0
 
-/// Tear down a child's process tree and SAY what happened — the whole of the kill
-/// policy, with the actual `Process.Kill` injected.
-///
-/// `kill` is a parameter because the arm that matters is the one where the OS refuses
-/// us, and no test can conjure an unkillable process reliably on every platform.
-///
-/// `describe` is a thunk so the formatting cost is paid only on the bad-news path.
-let internal killTreeWith (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
-    let outcome =
-        try
-            kill ()
-            KillOutcome.Killed
-        with ex ->
-            classifyKill (Some ex)
+/// What the kill CALL did — the raw, unclassified fact, separated from what it MEANS
+/// so `classifyKill` can stay pure and total.
+[<RequireQualifiedAccess; NoComparison>]
+type internal KillCall =
+    /// The call returned without throwing.
+    | Returned
+    /// The call threw. Whether that is benign is `isExpectedKillException`'s call.
+    | Threw of exn
+    /// The call did not return inside `budget`. We are no longer waiting on it, and
+    /// the thread it is running on is abandoned.
+    | DidNotReturn of budget: TimeSpan
 
+/// Run a process-tree kill under a wall-clock budget and report what the CALL did.
+///
+/// The kill runs on a DEDICATED thread (`LongRunning`), never a pool item. The whole
+/// reason this bound exists is a box loaded flat enough that a walk of the process
+/// table stalls — exactly the state in which a queued pool item may never be
+/// scheduled at all. Reporting "the kill did not return" for a kill that never
+/// STARTED would be a different lie in the same shape as the one we are fixing.
+///
+/// A budget that expires ABANDONS the thread rather than aborting it: there is no
+/// safe way to interrupt a thread inside a syscall, and the caller's problem is that
+/// it needs to report NOW, not that the kill must stop. If the OS eventually answers,
+/// nobody is listening — which is why the tree is booked as leaked either way.
+let internal callKillWithin (budget: TimeSpan) (kill: unit -> unit) : KillCall =
+    let attempt =
+        Task.Factory.StartNew(
+            (fun () ->
+                try
+                    kill ()
+                    None
+                with ex ->
+                    Some ex),
+            TaskCreationOptions.LongRunning
+        )
+
+    if attempt.Wait(int budget.TotalMilliseconds) then
+        match attempt.Result with
+        | None -> KillCall.Returned
+        | Some ex -> KillCall.Threw ex
+    else
+        KillCall.DidNotReturn budget
+
+/// Classify what the kill CALL did into what it means for the tree.
+/// `isExpectedKillException` decides which throw is the benign already-exited race
+/// and which is a real failure.
+///
+/// Pure, so all four arms — including the failure arm, which live-fire would need a
+/// process we are genuinely forbidden to kill, and the no-answer arm, which would
+/// need an unkillable one — are covered deterministically.
+let internal classifyKill (call: KillCall) : KillOutcome =
+    match call with
+    | KillCall.Returned -> KillOutcome.Killed
+    | KillCall.Threw ex when isExpectedKillException ex -> KillOutcome.AlreadyExited
+    | KillCall.Threw ex -> KillOutcome.KillFailed ex
+    | KillCall.DidNotReturn budget -> KillOutcome.KillTimedOut budget
+
+/// Tear down a child's process tree WITHIN `budget` and SAY what happened — the whole
+/// of the kill policy, with the actual `Process.Kill` injected.
+///
+/// `kill` is a parameter because the two arms that matter are the one where the OS
+/// refuses us and the one where it never answers, and no test can conjure a process
+/// that is unkillable — or slow to kill — reliably on every platform.
+///
+/// `pid` is passed as data as well as appearing inside `describe ()`: a tree we could
+/// not account for is registered with `ProcessRegistry` so shutdown can name it, and
+/// a pid buried in prose cannot be registered.
+///
+/// Instrumented at both ends. The begin line is what the AUTOMATION-441 evidence was
+/// missing: with only "the project timed out" retained, a run that stopped inside the
+/// teardown is indistinguishable from one that stopped before reaching it, and the
+/// blocked project cannot be named from the log after the fact.
+let internal killTreeWith (budget: TimeSpan) (pid: int) (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
+    let what = describe ()
+
+    Logging.info "process" $"killing process tree for %s{what} (teardown budget %s{renderBudget budget})"
+
+    let clock = Stopwatch.StartNew()
+    let outcome = classifyKill (callKillWithin budget kill)
+    let took = int clock.ElapsedMilliseconds
+
+    // The returned value carries the outcome to the caller; these lines are so it
+    // also reaches a human who is only reading stderr — and so the DURATION of the
+    // teardown survives in the log whether or not the run produced a verdict.
     match outcome with
+    | KillOutcome.Killed -> Logging.info "process" $"killed the process tree for %s{what} in %d{took}ms"
+    | KillOutcome.AlreadyExited ->
+        Logging.info "process" $"process tree for %s{what} had already exited (%d{took}ms) — nothing to kill"
     | KillOutcome.KillFailed reason ->
-        // The returned value carries this fact to the caller; the log is so it also
-        // reaches a human who is only reading stderr.
         Logging.error
             "process"
-            $"FAILED to kill the process tree for %s{describe ()}: %s{reason.GetType().Name}: %s{reason.Message}. \
-              The child and any grandchildren it spawned are STILL RUNNING, and we are about to stop tracking them — \
-              they may hold a lock, a port or a pipe. Kill them by hand."
-    | KillOutcome.Killed
-    | KillOutcome.AlreadyExited -> ()
+            $"FAILED to kill the process tree for %s{what} after %d{took}ms: %s{reason.GetType().Name}: \
+              %s{reason.Message}. The child and any grandchildren it spawned are STILL RUNNING, and we are about to \
+              stop tracking them — they may hold a lock, a port or a pipe. Kill them by hand."
+
+        ProcessRegistry.reportLeak pid what $"the kill was refused (%s{reason.GetType().Name}: %s{reason.Message})"
+    | KillOutcome.KillTimedOut _ ->
+        Logging.error
+            "process"
+            $"TIMED OUT killing the process tree for %s{what}: the kill did not return within \
+              %s{renderBudget budget}. We are no longer waiting on it, so this run can still report a verdict, \
+              but we never established that the child or its grandchildren are dead — assume they are STILL RUNNING. \
+              They may hold a lock, a port or a pipe. Kill them by hand."
+
+        ProcessRegistry.reportLeak pid what $"the kill did not return within %s{renderBudget budget}"
 
     outcome
 
@@ -717,9 +826,10 @@ let runProcessTo
 
         // A killed tree still needs draining so partial output is reported. The
         // kill's OUTCOME is returned, never discarded: a tree we could not tear down
-        // is still running. The policy lives in `killTreeWith`.
+        // is still running. The policy — including the teardown budget that keeps a
+        // blocked kill from wedging the whole run — lives in `killTreeWith`.
         let killTree () : KillOutcome =
-            killTreeWith (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
+            killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
                 proc.Kill(entireProcessTree = true))
 
         match outcome with

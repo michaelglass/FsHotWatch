@@ -6955,6 +6955,37 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
 
     test <@ TestResult.isTimedOut result @>
 
+// AUTOMATION-454 — the teardown boundary, seen from the plugin that consumes it.
+//
+// A per-project timeout whose TEARDOWN also failed still has to become a terminal project
+// result, and it has to stay distinguishable from the two things it is not: a suite whose
+// tests failed, and a run that reported nothing at all.
+[<Fact(Timeout = 5000)>]
+let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
+    let result =
+        classifyTestOutcome
+            (ReportRequested None)
+            false
+            (TimeSpan.FromSeconds 300.0)
+            (ProcessOutcome.TimedOut(
+                TimeSpan.FromSeconds 300.0,
+                ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0),
+                KillOutcome.KillTimedOut(TimeSpan.FromSeconds 10.0)
+            ))
+
+    // Terminal, and TIMED OUT — never `TestsFailed`. Conflating the two would put a
+    // wedged runner in the same bucket as a suite that ran and went red.
+    test <@ TestResult.isTimedOut result @>
+    test <@ not (isFailed result) @>
+
+    // ...and the leaked tree rides on the text the operator reads, so "the project timed
+    // out" is not mistaken for "and the runaway is over".
+    match result with
+    | TestsTimedOut(output, _, _, _) ->
+        test <@ output.Contains "KILL TIMED OUT" @>
+        test <@ output.Contains "STILL RUNNING" @>
+    | other -> failwith $"expected TestsTimedOut, got %A{other}"
+
 // --- detectCtrfCapable: report injection is scoped to xUnit runners ---
 
 [<Fact(Timeout = 5000)>]
