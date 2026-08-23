@@ -1765,3 +1765,52 @@ let ``an empty project graph is reported, not read as a clean tree`` () =
     let gap = artifactCoverageGap (ProjectGraph())
     test <@ gap.IsSome @>
     test <@ gap.Value.Contains "no projects at all" @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — BUILD's own cold-vs-cached ledger parity
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-343: a cached build replay leaves an out-of-batch finding standing`` () =
+    // The seam regression in PluginFrameworkTests proves the framework replays only
+    // what the run captured. It cannot prove what THIS plugin captures, and that is
+    // the half a plugin-local clear/report divergence would escape through.
+    //
+    // BuildPlugin reports and clears exactly one pseudo-file, `<build>`, and never
+    // calls ClearAllErrors — so nothing it does is licensed to touch a finding about
+    // any other file. Under the deleted blanket `ClearPlugin` the replay wiped the
+    // whole `build` slice anyway, and this test is red.
+    withOneProjectGraph "a343-build-parity" (fun (graph, srcPath, _dllPath) ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+        host.RegisterHandler(BuildPlugin.create "true" "" [] graph [] None [] None)
+
+        // A finding carried from an earlier batch, about a file this build never
+        // mentions — the one the blanket destroyed.
+        seedOutOfBatch host "build"
+
+        // COLD. A real build runs and mints the cache entry.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+        let coldSummary = terminalSummary host
+        test <@ not (coldSummary.Contains "(cached)") @>
+        let cold = ledgerSlice host "build"
+
+        // The real run keeps it — the baseline the replay has to reproduce.
+        test <@ ledgerHasOutOfBatch host "build" @>
+
+        // WARM. Nothing moved, so this dispatch MUST be served from the cache;
+        // asserting the marker is what stops the test passing on a second real build.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        let replayed = waitForCachedReplay host "build" 20000
+        test <@ replayed @>
+
+        let cached = ledgerSlice host "build"
+
+        // The sentinel survived the replay ...
+        test <@ ledgerHasOutOfBatch host "build" @>
+        // ... and so did everything else. Equality, not "both non-empty": the batch's
+        // own `<build>` entry replayed correctly throughout the bug's life.
+        test <@ cached = cold @>)

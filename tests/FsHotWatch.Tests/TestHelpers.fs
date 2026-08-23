@@ -611,3 +611,70 @@ let parseStatuses (json: string) : Map<string, FsHotWatch.Cli.RunOnceOutput.Pars
     match FsHotWatch.Cli.IpcParsing.parsePluginStatuses json with
     | Ok statuses -> statuses
     | Error reason -> failwithf "the plugin-status payload could not be read: %s\n%s" reason json
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — cold-vs-cached ledger parity, against REAL plugin handlers
+// ---------------------------------------------------------------------------
+//
+// A cache HIT must leave the ledger exactly where a cache MISS leaves it. The
+// replay used to call `ClearPlugin` — the plugin's ENTIRE ledger — for every
+// whole-run event and then replay only the errors captured in that one batch, so
+// a hit silently destroyed findings a miss keeps. The verdict gates on the
+// ledger, which made it a FALSE GREEN.
+//
+// `PluginFrameworkTests` pins that at the shared seam with a synthetic handler.
+// These helpers let each PRODUCTION plugin pin it for its OWN handler, whose
+// clear/report shape the seam test does not know: `build` and `file-command`
+// only ever touch their own pseudo-file, while `test-prune` genuinely clears
+// everything and re-reports the outstanding set. The three must therefore assert
+// DIFFERENT outcomes, and a single seam test cannot say which one each plugin
+// owes.
+//
+// The instrument is an OUT-OF-BATCH SENTINEL: a finding about a file the run
+// never mentions, seeded straight into the real ledger. It is precisely what the
+// blanket clear destroyed, and it is what makes a cold-vs-cached comparison
+// non-vacuous — a plugin's own findings were replayed correctly even while the
+// bug was live, so "both ledgers are non-empty" would have passed throughout.
+
+/// A path no plugin under test ever reports about, so nothing short of a blanket
+/// clear can remove a finding keyed to it.
+let outOfBatchFile = "/tmp/fshw-a343-out-of-batch/Earlier.fs"
+
+let outOfBatchEntry: FsHotWatch.ErrorLedger.ErrorEntry =
+    FsHotWatch.ErrorLedger.ErrorEntry.error "out-of-batch sentinel (AUTOMATION-343)"
+
+/// Seed the sentinel into `plugin`'s slice of the host's REAL ledger — the same
+/// ledger `fshw status` lists and the verdict gates on, not a stand-in.
+let seedOutOfBatch (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =
+    host.ReportErrors(plugin, outOfBatchFile, [ outOfBatchEntry ])
+
+/// `plugin`'s whole ledger slice, sorted so equality is about content rather
+/// than insertion order.
+let ledgerSlice (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =
+    host.GetErrorsByPlugin plugin |> Map.toList |> List.sortBy fst
+
+/// Whether the out-of-batch sentinel is still in `plugin`'s ledger slice.
+let ledgerHasOutOfBatch (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =
+    host.GetErrorsByPlugin plugin |> Map.containsKey outOfBatchFile
+
+/// The terminal verdict summary the UI would render for `plugin`; "" while
+/// non-terminal.
+let terminalSummaryOf (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =
+    match host.GetStatus plugin with
+    | Some(Completed(_, v)) -> v.Summary
+    | Some(Failed(_, _, v)) -> v.Summary
+    | _ -> ""
+
+/// Poll until `plugin`'s terminal verdict carries the framework's `(cached)`
+/// marker, returning whether it did.
+///
+/// THE POSITIVE CONTROL for every parity assertion below. Without it a parity
+/// test passes vacuously the moment the second dispatch quietly MISSES: the two
+/// ledgers agree because both were produced by a real run, and the replay path —
+/// the only thing under test — was never entered. `(cached)` is stamped by
+/// `tryReplayCache` itself, so it cannot appear on anything but a served replay.
+///
+/// It also orders the read: the replay writes the ledger BEFORE it reports the
+/// status, so a visible `(cached)` means the replayed ledger has already landed.
+let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) (timeoutMs: int) =
+    waitUntilTrue (fun () -> (terminalSummaryOf host plugin).Contains "(cached)") timeoutMs

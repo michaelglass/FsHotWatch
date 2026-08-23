@@ -9530,3 +9530,82 @@ let ``AUTOMATION-201: an apphost-missing defer still classifies as a build-order
         <@
             FsHotWatch.Cli.CheckVerdict.BuildWait.classify messages = FsHotWatch.Cli.CheckVerdict.BuildWait.ArtifactNotProduced
         @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — TEST-PRUNE's own cold-vs-cached ledger parity
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 60000)>]
+let ``AUTOMATION-343: a cached test-prune replay clears the whole ledger, exactly as its real run does`` () =
+    // THIS PLUGIN IS THE OPPOSITE CASE, and asserting the same thing here as for
+    // build / file-command would paper over the difference.
+    //
+    // `reportOutstanding` is test-prune's ONLY path to the ledger, and it clears the
+    // slate wholesale (`ClearAllErrors`) before re-reporting the outstanding set. So a
+    // finding about a file outside the run is not "preserved" here — a real run
+    // deletes it, on purpose, and a replay that preserved it would be the FALSE RED
+    // the fix's risk inverts towards: findings accumulating across replays because
+    // the replay stopped doing what the run did.
+    //
+    // The framework captures that wholesale clear as a `("*", [])` marker, which is
+    // exactly why deleting the blanket pre-replay `ClearPlugin` was safe: the run that
+    // really cleared everything already says so in its own captured errors. This test
+    // is what proves that claim about the plugin that actually relies on it.
+    withTempDir "a343-tp-parity" (fun tmpDir ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
+
+        // Exit 0 with no parseable report is a PASS (`decideTestOutcome`'s clean-exit
+        // arm), so the run leaves nothing outstanding — which is what lets the entry
+        // be cacheable at all.
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "tests passed"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let handler =
+            create (Path.Combine(tmpDir, "tp.db")) tmpDir (Some configs) None None None None []
+
+        host.RegisterHandler(handler)
+
+        // COLD.
+        seedOutOfBatch host "test-prune"
+        test <@ ledgerHasOutOfBatch host "test-prune" @>
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForTerminalStatus host "test-prune" 30000
+        let settled = waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 30000
+        test <@ settled @>
+        let coldSummary = terminalSummaryOf host "test-prune"
+        test <@ not (coldSummary.Contains "(cached)") @>
+
+        let cold = ledgerSlice host "test-prune"
+
+        // The real run really did wipe it. Asserted, not assumed — if it did not, the
+        // cached assertion below would be pinning the wrong behaviour.
+        test <@ not (ledgerHasOutOfBatch host "test-prune") @>
+
+        // WARM. Re-seed so the replay has something to destroy: without this the
+        // "sentinel is gone" assertion below would hold trivially, since the cold run
+        // already removed it.
+        seedOutOfBatch host "test-prune"
+        test <@ ledgerHasOutOfBatch host "test-prune" @>
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        let replayed = waitForCachedReplay host "test-prune" 30000
+        test <@ replayed @>
+
+        let cached = ledgerSlice host "test-prune"
+
+        // The replay honoured the captured `("*", [])` and cleared it too ...
+        test <@ not (ledgerHasOutOfBatch host "test-prune") @>
+        // ... landing the ledger in exactly the state the real run landed it in.
+        test <@ cached = cold @>)
