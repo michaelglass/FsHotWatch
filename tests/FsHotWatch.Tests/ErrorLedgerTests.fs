@@ -10,6 +10,16 @@ open FsHotWatch.Tests.TestHelpers
 
 let private entry msg sev line = { errorEntry msg sev with Line = line }
 
+/// Every `DiagnosticSeverity` case, enumerated BY REFLECTION rather than by hand.
+/// A hand-written list is the exact thing AUTOMATION-294 found already broken: a case
+/// added later was simply absent from it, so a test that claimed to walk "every
+/// severity" had quietly stopped doing so. Reflection makes the list impossible to
+/// forget to update.
+let private allSeverities () =
+    Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(typeof<DiagnosticSeverity>)
+    |> Array.map (fun c -> Microsoft.FSharp.Reflection.FSharpValue.MakeUnion(c, [||]) :?> DiagnosticSeverity)
+    |> Array.toList
+
 /// The trap: wrapping the agent's mailbox loop in `with ex -> log; loop state`
 /// swallows programming bugs silently. Unhandled exceptions must reach the
 /// MailboxProcessor `Error` event, published as `AgentCrashed`. The fault is
@@ -443,10 +453,7 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     // exists to prevent. `IpcParsing` defaults an unrecognised tag to `Error`, so the
     // symptom is silent: the severity crosses the wire, comes back a failure, and the
     // exit code reverts to the very 1 the new case was added to stop returning.
-    let all =
-        Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(typeof<DiagnosticSeverity>)
-        |> Array.map (fun c -> Microsoft.FSharp.Reflection.FSharpValue.MakeUnion(c, [||]) :?> DiagnosticSeverity)
-        |> Array.toList
+    let all = allSeverities ()
 
     // The reflection is the point, so pin that it actually found them all — an empty or
     // truncated list would make the `forall` below vacuously true.
@@ -474,3 +481,93 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     test <@ DiagnosticSeverity.order HostAborted = DiagnosticSeverity.order Deferred @>
     test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order HostAborted @>
     test <@ DiagnosticSeverity.order HostAborted < DiagnosticSeverity.order Warning @>
+
+/// AUTOMATION-294. `DiagnosticCounts` is the projection the status renderer and the
+/// verdict read to decide "completed with issues", and it tallies only `Error` and
+/// `Warning`. A severity whose whole meaning is "this DID NOT RUN" — `Deferred`,
+/// `HostAborted` — must therefore tally as NEITHER: counted as an error it would render
+/// a killed test host as a defect, which is precisely the confusion AUTOMATION-294
+/// removed from the verdict, re-introduced one layer up in the renderer.
+///
+/// Enumerated by reflection (`allSeverities`) for the same reason the wire-name
+/// round-trip is: the tally's `| _ -> d` swallows every case nobody named, so a
+/// hand-written list here could not tell a deliberate "not a defect" from a case that
+/// was never considered at all.
+[<Fact>]
+let ``DiagnosticCounts.ofEntries tallies only Error and Warning; a severity that did not run is neither`` () =
+    let all = allSeverities ()
+
+    // The reflection is the point, so pin that it actually found them all — an empty or
+    // truncated list would make the `forall` below vacuously true.
+    test <@ List.length all >= 6 @>
+    test <@ all |> List.contains Deferred @>
+    test <@ all |> List.contains HostAborted @>
+
+    // One entry of EVERY severity at once: exactly one error and exactly one warning.
+    let counts =
+        all
+        |> List.map (fun s -> errorEntry (DiagnosticSeverity.toString s) s)
+        |> DiagnosticCounts.ofEntries
+
+    test <@ counts = { Errors = 1; Warnings = 1 } @>
+
+    // Per severity as well, so a miscount cannot cancel out inside that aggregate.
+    let tallies =
+        all |> List.map (fun s -> s, DiagnosticCounts.ofEntries [ errorEntry "x" s ])
+
+    test <@ tallies |> List.contains (Error, { Errors = 1; Warnings = 0 }) @>
+    test <@ tallies |> List.contains (Warning, { Errors = 0; Warnings = 1 }) @>
+
+    let didNotRun = tallies |> List.filter (fun (s, _) -> s <> Error && s <> Warning)
+
+    test <@ List.length didNotRun >= 4 @>
+    test <@ didNotRun |> List.forall (fun (_, c) -> c = DiagnosticCounts.empty) @>
+
+    // And the predicate the renderer actually calls agrees: a tally built from nothing
+    // but did-not-run severities is not failing, even under warnings-are-failures.
+    let didNotRunCounts =
+        didNotRun
+        |> List.map (fun (s, _) -> errorEntry "x" s)
+        |> DiagnosticCounts.ofEntries
+
+    test <@ not (DiagnosticCounts.isFailing true didNotRunCounts) @>
+
+/// `GetCountsByPlugin` is the per-plugin tally the status renderer reads, and it must
+/// AGGREGATE across every file a plugin reported: a tally that only ever folded one
+/// file per plugin under-reports the moment a second file goes red, and the aggregation
+/// step is exactly the branch no test was reaching. Non-defect severities count as
+/// neither here for the same reason as in `ofEntries` — a plugin whose only entry says
+/// "this did not run" is not a plugin with a defect.
+[<Fact(Timeout = 15000)>]
+let ``GetCountsByPlugin sums a plugin's counts across its files and tallies did-not-run entries as neither`` () =
+    let ledger = ErrorLedger()
+
+    ledger.Report(
+        "lint",
+        "/src/A.fs",
+        [ entry "a-err" DiagnosticSeverity.Error 1
+          entry "a-warn" DiagnosticSeverity.Warning 2 ]
+    )
+
+    ledger.Report(
+        "lint",
+        "/src/B.fs",
+        [ entry "b-err" DiagnosticSeverity.Error 3
+          entry "b-aborted" DiagnosticSeverity.HostAborted 4 ]
+    )
+
+    ledger.Report("test-prune", "/src/C.fs", [ entry "c-deferred" DiagnosticSeverity.Deferred 5 ])
+
+    // PostAndReply on the same mailbox is the sync barrier for the posts above.
+    let counts = ledger.GetCountsByPlugin()
+
+    // lint spans two files: the tally is their SUM, and the aborted entry is neither.
+    test <@ Map.tryFind "lint" counts = Some { Errors = 2; Warnings = 1 } @>
+
+    // test-prune reported a "did not run" entry and nothing else: present, but with
+    // zero errors and zero warnings, so nothing downstream renders it as a defect.
+    test <@ Map.tryFind "test-prune" counts = Some DiagnosticCounts.empty @>
+    test <@ not (DiagnosticCounts.isFailing true counts.["test-prune"]) @>
+
+    // A plugin that reported nothing is ABSENT, not zero — the documented contract.
+    test <@ Map.tryFind "format" counts = None @>
