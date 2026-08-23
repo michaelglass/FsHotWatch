@@ -508,6 +508,27 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
             ScopeUnreadable $"the `%s{TestScopeCommand}` request to the daemon faulted: %s{ex.Message}"
         )
 
+/// AUTOMATION-259. Ask what `check`'s impact selection WOULD have reached in the run
+/// this `confirm` did not have to escalate.
+///
+/// Costs nothing and RUNS nothing: the answer was computed at the launch chokepoint and
+/// has been sitting in the plugin since. Every way of not getting one is a value, not an
+/// exception — a daemon without the command (an older build, or no test projects), a
+/// fault, a reply this build cannot read — and every one of them reaches the verdict as
+/// "no sample", never as agreement.
+let internal readCheckReach (ipc: IpcOps) (pipeName: string) : IpcParsing.CheckReachReading =
+    try
+        let reply = ipc.RunCommand pipeName CheckReachCommand "" |> Async.RunSynchronously
+
+        if FsHotWatch.Ipc.isUnknownCommandReply reply then
+            IpcParsing.ReachUnavailable
+                $"the daemon has no `%s{CheckReachCommand}` command — it predates AUTOMATION-259's projection, or it \
+                   has no test projects configured"
+        else
+            IpcParsing.parseCheckReach reply
+    with ex ->
+        IpcParsing.ReachUnavailable $"the `%s{CheckReachCommand}` request to the daemon faulted: %s{ex.Message}"
+
 /// Put the daemon's test-prune plugin into full-suite scope for the rest of this
 /// session. Called BEFORE `confirm` triggers its scan, so the test run the scan provokes
 /// is already unfiltered and `confirm` never pays for two runs.
@@ -668,6 +689,9 @@ let private ensureAndQueryErrors
                     // for. The inner loop reads it too — and ignores it — so there is one
                     // verdict path, not two that can drift.
                     (fun () -> readTestRun ipc pipeName)
+                    // AUTOMATION-259. What `check` would have reached in the run this
+                    // confirm did not have to escalate. Read at publish time, not here.
+                    (fun () -> readCheckReach ipc pipeName)
                     // `confirm`'s teeth — see `CheckVerdict.confirmNeedsFullRun`.
                     (fun () -> forceFullSuiteRun ipc pipeName)
                     // Convergence re-scan: the same helper as the initial scan above, so

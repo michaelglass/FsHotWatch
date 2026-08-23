@@ -451,6 +451,9 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 getStatus
                 getErrors
                 (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 triggerScan)
 
@@ -502,6 +505,9 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                 getStatus
                 cleanDiagnostics
                 (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle"))
 
@@ -556,6 +562,9 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () -> "{}") // getStatus
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
                 (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
@@ -608,6 +617,9 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () -> "{}") // getStatus
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
                 (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle")) // triggerScan
 
@@ -649,6 +661,9 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 (fun () -> "{}") // getStatus
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
                 getTestRun
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1) // forceFullRun
                 (fun () -> "idle")) // triggerScan
 
@@ -684,6 +699,9 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> "{}")
                 (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
                 (fun () -> TestRunReport.ofScopeOnly (FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1)
                 (fun () -> "idle"))
 
@@ -704,14 +722,26 @@ let ``the inner loop NEVER forces a full suite`` () =
 /// `None` it was handed, so a transport that captured nothing at the escalation would
 /// record `no-impact-scoped-run` on a confirm that plainly escalated — and every
 /// producer-level test would still pass.
-let private driveConfirmForVerdict (checkMode: CheckVerdict.CheckMode) (firstScope: TestScope) : Verdict.Verdict =
+/// The run every `driveConfirmForVerdict` report and projection names.
+let private driveRunId = System.Guid.Parse("11111111-1111-1111-1111-111111111111")
+
+let private driveConfirmForVerdict
+    (checkMode: CheckVerdict.CheckMode)
+    (firstScope: TestScope)
+    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    : Verdict.Verdict =
     let mutable forceCalls = 0
 
+    // A RUN ID on both sides, because the projection refuses to attach a selection to a
+    // run it does not belong to — and a drive whose reports name no run would exercise
+    // only that refusal.
     let getTestRun () : TestRunReport =
         if forceCalls > 0 then
-            TestRunReport.ofScopeOnly (FullSuite 1)
+            { TestRunReport.ofScopeOnly (FullSuite 1) with
+                RunId = Some driveRunId }
         else
-            TestRunReport.ofScopeOnly firstScope
+            { TestRunReport.ofScopeOnly firstScope with
+                RunId = Some driveRunId }
 
     TestHelpers.withTempDir "ipcoutput-confirm-259" (fun repoRoot ->
         pollAndRender
@@ -726,6 +756,7 @@ let private driveConfirmForVerdict (checkMode: CheckVerdict.CheckMode) (firstSco
             (fun () -> "{}")
             (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
             getTestRun
+            getCheckReach
             (fun () -> forceCalls <- forceCalls + 1)
             (fun () -> "idle")
         |> ignore
@@ -734,9 +765,20 @@ let private driveConfirmForVerdict (checkMode: CheckVerdict.CheckMode) (firstSco
         | Verdict.Reading.Found v -> v
         | other -> failwithf "the drive must leave a readable verdict, got %A" other)
 
+/// A daemon that has a projection to offer, for the run this drive grades.
+let private offering (reach: IpcParsing.CheckReach) (scope: TestScope) () : IpcParsing.CheckReachReading =
+    IpcParsing.ReachRecorded
+        { RunId = Some driveRunId
+          Scope = scope
+          Reach = reach }
+
+let private offersNothing () : IpcParsing.CheckReachReading =
+    IpcParsing.ReachUnavailable "this drive offers no projection"
+
 [<Fact(Timeout = 15000)>]
 let ``an escalating confirm records the impact-scoped reading it escalated away from`` () =
-    let v = driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(0, 1))
+    let v =
+        driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(0, 1)) offersNothing
 
     // Both runs were clean, so this is the ordinary sample the feature exists to collect.
     test <@ v.Divergence = Verdict.Divergence.Agreed @>
@@ -744,22 +786,52 @@ let ``an escalating confirm records the impact-scoped reading it escalated away 
     match v.ImpactScopedRun with
     // The scope the daemon reported BEFORE the force — not the full suite the verdict
     // itself rests on.
-    | Some pre -> test <@ pre.Scope = ImpactFiltered(0, 1) @>
+    | Some pre ->
+        test <@ pre.Scope = ImpactFiltered(0, 1) @>
+        // It RAN. The projection is a different measurement and must not be able to
+        // masquerade as this one.
+        test <@ pre.Basis = Verdict.SampleBasis.Executed @>
     | None -> failwith "an escalating confirm must record the reading it escalated away from"
 
 [<Fact(Timeout = 15000)>]
-let ``a confirm that never escalated says so, and a check records no comparison at all`` () =
-    // The controls for the test above, one on each side. Without them, a transport that
-    // recorded a reading unconditionally, or one that recorded nothing ever, would still
-    // satisfy it.
-    let noEscalation = driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite 1)
+let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "nothing compared"`` () =
+    // AUTOMATION-259's rework. `confirm` widens the scope BEFORE the scan, so the run its
+    // own scan provokes is unfiltered and this branch — not the escalating one — is what
+    // CI takes every single time. It used to record `no-impact-scoped-run`: a true
+    // statement that produced, in ten days and seventeen confirms, zero samples.
+    let projected =
+        driveConfirmForVerdict
+            CheckVerdict.Confirmation
+            (FullSuite 1)
+            (offering IpcParsing.NoFailuresToReach (ImpactFiltered(0, 1)))
 
-    test <@ noEscalation.Divergence = Verdict.Divergence.NoImpactScopedRun @>
-    test <@ noEscalation.ImpactScopedRun = None @>
+    test <@ projected.Divergence = Verdict.Divergence.Agreed @>
+
+    match projected.ImpactScopedRun with
+    | Some pre ->
+        test <@ pre.Basis = Verdict.SampleBasis.ProjectedFromFullRun @>
+        // The scope `check` WOULD have covered — not the full suite this verdict rests on.
+        test <@ pre.Scope = ImpactFiltered(0, 1) @>
+    | None -> failwith "a non-escalating confirm must record the projected reading"
+
+[<Fact(Timeout = 15000)>]
+let ``a confirm with no projection on offer says nothing was compared, and a check records no comparison at all`` () =
+    // The controls, one on each side. Without them, a transport that recorded a reading
+    // unconditionally, or one that recorded nothing ever, would still satisfy the two
+    // tests above.
+    let noSample =
+        driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite 1) offersNothing
+
+    // An unavailable projection is a REFUSAL, never an agreement: this is the whole
+    // fail-closed direction of the ticket, asserted end to end through the transport.
+    match noSample.Divergence with
+    | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "offers no projection" @>
+    | other -> failwithf "an unavailable projection must be INCOMPARABLE, got %A" other
 
     // `check` never escalates, so it never has a comparison to make — confirm-only, and
     // `Verdict.create` refuses a check that claims otherwise.
-    let inner = driveConfirmForVerdict CheckVerdict.InnerLoop (ImpactFiltered(0, 1))
+    let inner =
+        driveConfirmForVerdict CheckVerdict.InnerLoop (ImpactFiltered(0, 1)) offersNothing
 
     test <@ inner.Command = Verdict.Check @>
     test <@ inner.Divergence = Verdict.Divergence.NotRecorded @>
@@ -1041,6 +1113,9 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 (fun () -> "{}") // getStatus
                 getErrors
                 (fun () -> TestRunReport.ofScopeOnly (FullSuite 1))
+                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                // `Confirmation` that gets this records "no sample", never an agreement.
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
                 (fun () -> "idle") // triggerScan
 

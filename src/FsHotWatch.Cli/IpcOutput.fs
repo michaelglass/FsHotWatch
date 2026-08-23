@@ -736,10 +736,11 @@ let internal publishVerdict
     (checkMode: CheckVerdict.CheckMode)
     (noWarnFail: bool)
     (runReport: TestRunReport)
-    // AUTOMATION-259. What the impact-scoped run concluded, when `confirm` escalated away
-    // from one. `None` means it did not — which is a FACT the verdict states, not a silence
-    // (see `Verdict.Divergence.NoImpactScopedRun`).
-    (impactScoped: Verdict.ImpactScopedRun option)
+    // AUTOMATION-259. The check-vs-confirm sample this run can offer: an EXECUTED reading
+    // when `confirm` escalated away from an impact-scoped run, a PROJECTION through the
+    // retained selection when it did not have to (the common case in CI), or nothing at
+    // all — which is a FACT the verdict states, not a silence.
+    (checkScoped: Verdict.CheckScopedEvidence)
     (statuses: Map<string, ParsedPluginStatus>)
     // AUTOMATION-303. The failing ledger diagnostics the exit code was computed from —
     // including the ones no plugin owns (`fcs`), which is the whole point: a `confirm`
@@ -805,7 +806,7 @@ let internal publishVerdict
         let comparison =
             match command with
             | Verdict.Check -> Verdict.CheckComparison.notRecorded
-            | Verdict.Confirm -> Verdict.CheckComparison.ofRun impactScoped verdictOutcome
+            | Verdict.Confirm -> Verdict.comparisonOf checkScoped runReport verdictOutcome statuses redCauses
 
         // `create` REFUSES a green carrying a failing plugin. It cannot fire from here —
         // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
@@ -894,6 +895,11 @@ let pollAndRender
     (getStatus: unit -> string)
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
+    // AUTOMATION-259. What `check`'s impact selection WOULD have reached in the run this
+    // `confirm` did not have to escalate. Read ONCE, at publish time, so a convergence
+    // re-scan that provokes another run cannot leave the verdict holding an earlier run's
+    // projection — and checked against the run id either way.
+    (getCheckReach: unit -> IpcParsing.CheckReachReading)
     // Run EVERY configured test project, now, and don't come back until it is done
     // (`run-tests` with no filter). Invoked ONLY in `Confirmation`, and only when the
     // settled scope is not already full-suite — see the "CONFIRM EARNS ITS EVIDENCE"
@@ -1038,6 +1044,17 @@ let pollAndRender
         let outcome =
             CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
 
+        // AUTOMATION-259. The sample this run can offer. An escalation produced an
+        // EXECUTED reading; the non-escalating `confirm` — the common case in CI, and the
+        // one that produced ten days of `no-impact-scoped-run` and not one comparison —
+        // offers the PROJECTION instead. `check` offers nothing: it never escalates and
+        // never compares, so there is nothing to ask the daemon for.
+        let checkScoped =
+            match impactScoped.Value, checkMode with
+            | Some reading, _ -> Verdict.ExecutedReading reading
+            | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(getCheckReach ())
+            | None, CheckVerdict.InnerLoop -> Verdict.NoReading
+
         // AUTOMATION-167. The exit code is the one `publishVerdict` WROTE, not a second
         // computation from `outcome`. They differ exactly when the tree moved during
         // the check: the file recorded `incomplete`/2 while this returned 0, so CI —
@@ -1049,7 +1066,7 @@ let pollAndRender
                 checkMode
                 noWarnFail
                 finalRun.Value
-                impactScoped.Value
+                checkScoped
                 finalStatuses.Value
                 finalCauses.Value
                 settledTree.Value
@@ -1081,7 +1098,13 @@ let pollAndRender
                 checkMode
                 noWarnFail
                 finalRun.Value
-                impactScoped.Value
+                // The daemon is gone or wedged — asking it for a projection would hang or
+                // throw. An escalation's EXECUTED reading is already in hand and is
+                // exactly the "the escalated run never completed" sample; without one
+                // there is nothing to offer, and the verdict says so.
+                (match impactScoped.Value with
+                 | Some reading -> Verdict.ExecutedReading reading
+                 | None -> Verdict.NoReading)
                 finalStatuses.Value
                 finalCauses.Value
                 settledTree.Value
@@ -1100,7 +1123,13 @@ let pollAndRender
                 checkMode
                 noWarnFail
                 finalRun.Value
-                impactScoped.Value
+                // The daemon is gone or wedged — asking it for a projection would hang or
+                // throw. An escalation's EXECUTED reading is already in hand and is
+                // exactly the "the escalated run never completed" sample; without one
+                // there is nothing to offer, and the verdict says so.
+                (match impactScoped.Value with
+                 | Some reading -> Verdict.ExecutedReading reading
+                 | None -> Verdict.NoReading)
                 finalStatuses.Value
                 finalCauses.Value
                 settledTree.Value

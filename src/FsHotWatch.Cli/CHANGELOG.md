@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **`confirm` now records a real check-vs-confirm sample on the runs that produce one —
+  which is all of them (AUTOMATION-259).** The comparison shipped in 0.14.0-alpha.16 and
+  then measured nothing: `confirm` sends `set-scope full` BEFORE the scan that provokes
+  the test run, so the run is unfiltered by construction, the capture condition
+  ("did confirm escalate?") is false every time, and every verdict recorded
+  `divergence: "no-impact-scoped-run"` — a true statement that produced, across
+  seventeen confirms in ten days, zero comparisons.
+
+  The suite still runs exactly ONCE. The impact selection is now RETAINED at the moment
+  `confirm` widens past it, and the run's own result is projected back through it to
+  derive what `check` would have concluded. `checkComparison.impactScopedRun` gains a
+  `basis` field — `"executed"` when `confirm` escalated and the impact-scoped run really
+  ran, `"projected-from-full-run"` when it did not have to. A verdict written before the
+  field reads as `"executed"`, which is what those samples were.
+
+  A projection answers about REACH only: whether `check`'s selection would have executed
+  a test the run saw fail. It can never claim a `check-only-failures` — that would assert
+  an order- or isolation-sensitivity one execution cannot observe — and every way of not
+  being able to decide (no projection on offer, a projection belonging to another run, a
+  project-level red under a class filter, a residue of reds fshw cannot attribute to this
+  tree) lands on `incomparable`, never on `agreed`.
+
 ## 0.14.0-alpha.25 - 2026-08-23
 
 - fix(AUTOMATION-245): the replay gate was correct and switched OFF in every live daemon

@@ -26,14 +26,16 @@ open FsHotWatch.Tests.TestHelpers
 let private emptyLaunch: TestRunLaunch =
     { Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
-      Selection = Map.empty }
+      Selection = Map.empty
+      WouldHaveRun = None }
 
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
 let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
-      Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList }
+      Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
+      WouldHaveRun = None }
 
 /// A launch that ran only `classes` in each named project — an impact-filtered
 /// selection. Projects NOT named were skipped entirely.
@@ -43,7 +45,8 @@ let private filteredLaunch (selection: (string * string list) list) : TestRunLau
       Selection =
         selection
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
-        |> Map.ofList }
+        |> Map.ofList
+      WouldHaveRun = None }
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))
@@ -9869,3 +9872,133 @@ let ``AUTOMATION-343: a cached test-prune replay clears the whole ledger, exactl
         test <@ not (ledgerHasOutOfBatch host "test-prune") @>
         // ... landing the ledger in exactly the state the real run landed it in.
         test <@ cached = cold @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 (rework) — retaining the selection `confirm` widens past, and asking
+// whether it would have reached a failure.
+//
+// `confirm` sends `set-scope full` BEFORE the scan that provokes the run, so the impact
+// selection is computed at the launch chokepoint and thrown away in the same breath.
+// Retaining it is what turns each confirm into a same-tree sample instead of a positive
+// assertion that nothing was compared.
+// ---------------------------------------------------------------------------
+
+let private a259Projects =
+    [ testConfigNamed "Alpha.Tests"
+      testConfigNamed "Beta.Tests"
+      testConfigNamed "Gamma.Tests" ]
+
+let private a259Failure (project: string) (cls: string option) : OutstandingFailure =
+    { Project = project
+      Class = cls
+      File = "tests/X.fs"
+      Entry = FsHotWatch.ErrorLedger.ErrorEntry.error $"%s{project}: 1 test(s) failed" }
+
+[<Fact(Timeout = 15000)>]
+let ``the would-have-run selection drops the FULL-SUITE widening and keeps every other one`` () =
+    // The load-bearing line. Remove too much and the projection models a `check` narrower
+    // than the one that runs, and reports misses the selector never made; remove too
+    // little and every project is selected, the projection agrees with everything, and
+    // the sample is worthless.
+    let symbolAffected = Map.ofList [ "Alpha.Tests", [ "Alpha.OneTests" ] ]
+
+    let selection = wouldHaveRunSelection a259Projects symbolAffected Set.empty false
+
+    test <@ selection = Map.ofList [ "Alpha.Tests", ProjectClasses(Set.ofList [ "Alpha.OneTests" ]) ] @>
+
+    // The coarse fallback for unanalysable files (AUTOMATION-113) fires in the inner loop
+    // too, so it SURVIVES the projection — as a whole-project run, which is what it is.
+    let withCoarse =
+        wouldHaveRunSelection a259Projects symbolAffected (Set.ofList [ "Beta.Tests" ]) false
+
+    test <@ Map.tryFind "Beta.Tests" withCoarse = Some ProjectInFull @>
+    test <@ Map.tryFind "Alpha.Tests" withCoarse = Some(ProjectClasses(Set.ofList [ "Alpha.OneTests" ])) @>
+    test <@ Map.containsKey "Gamma.Tests" withCoarse |> not @>
+
+    // An UNREADABLE pending-verification ledger (AUTOMATION-150) widens `check` to the
+    // whole suite as well, and must therefore widen the projection.
+    let withUnreadableLedger =
+        wouldHaveRunSelection a259Projects symbolAffected Set.empty true
+
+    test <@ withUnreadableLedger |> Map.forall (fun _ sel -> sel = ProjectInFull) @>
+    test <@ withUnreadableLedger.Count = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``scopeOfSelection describes what check would have covered, and never rounds up`` () =
+    let projects = a259Projects |> List.map (fun c -> c.Project)
+
+    test <@ scopeOfSelection projects Map.empty = ScopeNone 3 @>
+
+    test
+        <@
+            scopeOfSelection projects (a259Projects |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList) = ScopeFull
+                3
+        @>
+
+    // Every project selected, but one of them under a class filter — NOT a full suite.
+    let allButFiltered =
+        [ "Alpha.Tests", ProjectClasses(Set.ofList [ "X" ])
+          "Beta.Tests", ProjectInFull
+          "Gamma.Tests", ProjectInFull ]
+        |> Map.ofList
+
+    test <@ scopeOfSelection projects allButFiltered = ScopeFiltered(3, 3) @>
+    test <@ scopeOfSelection projects (Map.ofList [ "Alpha.Tests", ProjectInFull ]) = ScopeFiltered(1, 3) @>
+
+[<Fact(Timeout = 15000)>]
+let ``CheckReach.classify decides reach per failure, and refuses what it cannot decide`` () =
+    let inFull = Map.ofList [ "Alpha.Tests", ProjectInFull ]
+
+    let filtered =
+        Map.ofList [ "Alpha.Tests", ProjectClasses(Set.ofList [ "Alpha.OneTests" ]) ]
+
+    // Nothing failed: there was no failure for a selection to miss.
+    test <@ CheckReach.classify (Some inFull) [] = NoFailuresToReach @>
+
+    // A project the selection never launches — the ordinary miss.
+    test <@ CheckReach.classify (Some inFull) [ a259Failure "Beta.Tests" (Some "Beta.OneTests") ] = ReachedNoFailure @>
+
+    // A project it launches in full reaches every failure in it, named class or not.
+    test
+        <@
+            CheckReach.classify (Some inFull) [ a259Failure "Alpha.Tests" (Some "Alpha.TwoTests") ] = ReachedAFailure
+                [ "Alpha.Tests" ]
+        @>
+
+    test <@ CheckReach.classify (Some inFull) [ a259Failure "Alpha.Tests" None ] = ReachedAFailure [ "Alpha.Tests" ] @>
+
+    // A class-filtered project reaches the failure only when the class is in the filter.
+    test
+        <@
+            CheckReach.classify (Some filtered) [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests") ] = ReachedAFailure
+                [ "Alpha.Tests" ]
+        @>
+
+    test
+        <@ CheckReach.classify (Some filtered) [ a259Failure "Alpha.Tests" (Some "Alpha.TwoTests") ] = ReachedNoFailure @>
+
+    // A PROJECT-LEVEL red (a timeout, an errored host, unparseable output) names no
+    // class, so a class-filtered selection cannot be asked whether it reaches it. Refused
+    // rather than guessed — guessing "not reached" invents a missed failure, guessing
+    // "reached" invents an agreement.
+    match CheckReach.classify (Some filtered) [ a259Failure "Alpha.Tests" None ] with
+    | ReachUnknown reason -> test <@ reason.Contains "names no test class" @>
+    | other -> failwithf "a project-level red under a class filter must be UNKNOWN, got %A" other
+
+    // ONE undecidable failure poisons the whole reading, even beside a decided one: the
+    // question is about the RUN, and a run we cannot fully account for is not a sample.
+    match
+        CheckReach.classify
+            (Some filtered)
+            [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests")
+              a259Failure "Alpha.Tests" None ]
+    with
+    | ReachUnknown _ -> ()
+    | other -> failwithf "an undecidable failure beside a decided one must be UNKNOWN, got %A" other
+
+    // No retained selection at all (a forced re-run, an aborted run, a skip): there is
+    // nothing to project through, and `Selection` must NOT be used as a stand-in — under
+    // full-suite scope it names every project in full and would agree forever.
+    match CheckReach.classify None [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests") ] with
+    | ReachUnknown reason -> test <@ reason.Contains "no retained impact selection" @>
+    | other -> failwithf "a run with no retained selection must be UNKNOWN, got %A" other

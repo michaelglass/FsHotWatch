@@ -62,6 +62,25 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
             ScopeUnreadable $"the plugin host's `%s{TestScopeCommand}` command threw: %s{ex.Message}"
         )
 
+/// AUTOMATION-259. Ask the in-process host what `check`'s impact selection WOULD have
+/// reached in the run this `confirm` did not have to escalate — the `--run-once` twin of
+/// `Program.readCheckReach`.
+///
+/// Reads state that already exists; nothing runs. Every way of not getting an answer is a
+/// VALUE — no such command (no test projects, or a plugin build that predates the
+/// projection), a throw, a reply this build cannot read — and each reaches the verdict as
+/// "no sample". None of them may reach it as "they agreed".
+let internal readCheckReach (host: PluginHost.PluginHost) : CheckReachReading =
+    try
+        match runHostCommand host CheckReachCommand [||] with
+        | None ->
+            ReachUnavailable
+                $"the plugin host has no `%s{CheckReachCommand}` command — no test projects are configured, so there \
+                   is no impact selection to project through"
+        | Some reply -> parseCheckReach reply
+    with ex ->
+        ReachUnavailable $"the plugin host's `%s{CheckReachCommand}` command threw: %s{ex.Message}"
+
 /// Turn impact filtering OFF for this process, BEFORE anything runs.
 ///
 /// The ordering matters, and is the same rule the daemon path follows: the scan below
@@ -374,6 +393,15 @@ let runOnceAndVerdictWith
         // it, from the same `CheckOutcome` the exit code below comes from, so
         // `fshw verdict` after a CI run has a machine-readable answer that matches the
         // exit code.
+        // AUTOMATION-259. Same rule as the daemon path: an escalation produced an EXECUTED
+        // reading; a `confirm` that did not have to escalate offers the PROJECTION through
+        // the selection retained at the widening; a `check` offers nothing.
+        let checkScoped =
+            match impactScoped, checkMode with
+            | Some reading, _ -> Verdict.ExecutedReading reading
+            | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(readCheckReach daemon.Host)
+            | None, CheckVerdict.InnerLoop -> Verdict.NoReading
+
         // AUTOMATION-167. Take the code `publishVerdict` WROTE. The comment above
         // claimed this path's exit code came "from the same CheckOutcome" as the file,
         // and it did not: `publishVerdict` downgrades to `incomplete` when the tree
@@ -385,7 +413,7 @@ let runOnceAndVerdictWith
                 checkMode
                 noWarnFail
                 finalRun.Value
-                impactScoped
+                checkScoped
                 finalStatuses.Value
                 (redCauses daemon noWarnFail pluginName)
                 settledTree.Value

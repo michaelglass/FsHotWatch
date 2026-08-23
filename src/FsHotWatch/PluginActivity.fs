@@ -8,6 +8,16 @@ open FsHotWatch.Events
 [<Literal>]
 let FcsPluginName = "fcs"
 
+/// The test-prune plugin's registered name, and therefore its LEDGER KEY.
+///
+/// Named here beside `FcsPluginName` because AUTOMATION-259's projection has to ask of a
+/// red "is this about the TESTS, or about something else this run would have found
+/// either way" — and the only way to ask is by ledger source. The plugin registers with
+/// this literal; a second copy spelled at the asking site is a second copy that can
+/// drift, and a drifted copy answers "not about the tests" for every red there is.
+[<Literal>]
+let TestPrunePluginName = "test-prune"
+
 /// Convention: each plugin emits one long-lived "primary" subtask per run
 /// whose label is the user-facing status line. The renderer prefers this
 /// label over the recent-activity tail.

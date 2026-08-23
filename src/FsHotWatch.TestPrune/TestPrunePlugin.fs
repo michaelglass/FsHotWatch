@@ -246,6 +246,37 @@ type ProjectSelection =
     /// Launched under a class filter — only these classes were asked to run.
     | ProjectClasses of Set<string>
 
+/// AUTOMATION-259. Would the impact selection `check` WOULD have used have EXECUTED a
+/// test this run saw fail?
+///
+/// The question `confirm` destroys by construction. `confirm` sends `set-scope full`
+/// BEFORE the scan that provokes the run, so the run is unfiltered and the impact
+/// selection — still computed, still correct — is discarded at the widening. Retaining
+/// it and asking this one question of the run's OWN failures turns every confirm into a
+/// same-tree, same-daemon, same-instant sample of the thing AUTOMATION-160 is about: does
+/// the selector choose the test that fails?
+///
+/// It answers ONLY about REACH. A test that fails here failed in a full suite; whether it
+/// would also have failed alone — order, isolation, a shared fixture — is not observable
+/// from one run and is never claimed. That is why the wire records the sample's BASIS.
+type CheckReach =
+    /// At least one test this run saw fail is inside the retained selection. `check`
+    /// would have executed it, so `check` would have been red too.
+    | ReachedAFailure of projects: string list
+    /// This run saw tests fail and the retained selection reaches NONE of them. The
+    /// selector did not choose a failing test — the case the whole record exists for.
+    | ReachedNoFailure
+    /// This run saw no test fail at all, so there was no failure for a selection to
+    /// reach. NOT the same as `ReachedNoFailure`: nothing was missed, because nothing
+    /// was there.
+    | NoFailuresToReach
+    /// The reach could not be decided. A project-level red (a timeout, an errored host,
+    /// unparseable failure output) names no class, and a class-FILTERED selection cannot
+    /// be asked whether it reaches a failure with no class — so it is refused rather
+    /// than guessed. Every unknown must stay an unknown: a guess in the reaching
+    /// direction manufactures an agreement that was never compared.
+    | ReachUnknown of reason: string
+
 /// What a completed run may VINDICATE in one project — the honest reach of the
 /// evidence it produced. Absent from `RunCoverage` ⇒ this run says nothing at all
 /// about the project (it was skipped, it never ran, or it ran under a filter whose
@@ -518,9 +549,74 @@ module TestRunInputs =
 /// recorded as a filtered PASS. Empty for the zero-affected skip and the aborted-run
 /// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
-    { Symbols: Set<string>
-      CoveringProjectsBySymbol: Map<string, Set<string>>
-      Selection: Map<string, ProjectSelection> }
+    {
+        Symbols: Set<string>
+        CoveringProjectsBySymbol: Map<string, Set<string>>
+        Selection: Map<string, ProjectSelection>
+        /// AUTOMATION-259. The selection this run would have been launched against had
+        /// `confirm` not widened the scope to full — i.e. what `check` would have run over
+        /// the same tree, same daemon, same instant.
+        ///
+        /// `Some` ONLY where an impact selection was actually computed and then widened
+        /// past. `None` — a `run-tests` force run, an aborted lifecycle, the zero-affected
+        /// skip — means THERE IS NO SELECTION TO PROJECT THROUGH, and the projection must
+        /// refuse rather than fall back to `Selection` (which under full-suite scope is
+        /// every project in full, and would read as "check would have run everything": a
+        /// perfect, permanent, false agreement).
+        WouldHaveRun: Map<string, ProjectSelection> option
+    }
+
+module CheckReach =
+    /// The wire token. Total.
+    let token (r: CheckReach) : string =
+        match r with
+        | ReachedAFailure _ -> "reached-a-failure"
+        | ReachedNoFailure -> "reached-no-failure"
+        | NoFailuresToReach -> "no-failures-to-reach"
+        | ReachUnknown _ -> "unknown"
+
+    /// Does the retained selection reach `failure`?
+    ///
+    /// `None` where it cannot be decided. A project ABSENT from the selection is decided
+    /// — `check` would not have launched it at all — but a project selected under a
+    /// CLASS filter cannot be asked about a failure that names no class.
+    let private reaches (selection: Map<string, ProjectSelection>) (failure: OutstandingFailure) : bool option =
+        match Map.tryFind failure.Project selection with
+        | None -> Some false
+        | Some ProjectInFull -> Some true
+        | Some(ProjectClasses classes) ->
+            match failure.Class with
+            | Some cls -> Some(Set.contains cls classes)
+            | None -> None
+
+    /// Classify one completed run against the selection `check` would have used.
+    ///
+    /// `failures` is `failuresOf` — the very list the outstanding ledger is rewritten
+    /// from, so the reds this asks about are exactly the reds the verdict reports.
+    let classify (wouldHaveRun: Map<string, ProjectSelection> option) (failures: OutstandingFailure list) : CheckReach =
+        match wouldHaveRun with
+        | None ->
+            ReachUnknown
+                "this run carries no retained impact selection (a forced re-run, an aborted run, or a skip), so there                  is nothing to project the result through"
+        | Some _ when List.isEmpty failures -> NoFailuresToReach
+        | Some selection ->
+            let decided = failures |> List.map (fun f -> f, reaches selection f)
+
+            match decided |> List.tryFind (fun (_, r) -> r = None) with
+            | Some(undecidable, _) ->
+                ReachUnknown
+                    $"the %s{undecidable.Project} red names no test class (a timeout, an errored host, or unparseable                        failure output) and the retained selection runs that project under a CLASS filter, so whether                        `check` would have executed it cannot be decided"
+            | None ->
+                let reached =
+                    decided
+                    |> List.choose (fun (f, r) -> if r = Some true then Some f.Project else None)
+                    |> List.distinct
+                    |> List.sort
+
+                if List.isEmpty reached then
+                    ReachedNoFailure
+                else
+                    ReachedAFailure reached
 
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
@@ -1061,6 +1157,73 @@ let internal scopeOf (projects: string list) (coverage: RunCoverage) : ScopeRepo
         ScopeNone total
     else
         ScopeFiltered(Set.count covered, total)
+
+/// The launch selection `executeTests` will actually honour, from the per-project class
+/// map. ONE derivation, so the run's real selection and the one AUTOMATION-259 projects
+/// through cannot read the same map differently.
+///
+/// An EMPTY map means "no selection" → every project runs in full; a project present with
+/// `[]` runs in full; present with classes runs filtered; ABSENT is skipped entirely.
+let internal selectionOf
+    (configs: TestConfig list)
+    (byProject: Map<string, string list>)
+    : Map<string, ProjectSelection> =
+    if Map.isEmpty byProject then
+        configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
+    else
+        configs
+        |> List.choose (fun c ->
+            match Map.tryFind c.Project byProject with
+            | None -> None
+            | Some [] -> Some(c.Project, ProjectInFull)
+            | Some classes -> Some(c.Project, ProjectClasses(Set.ofList classes)))
+        |> Map.ofList
+
+/// AUTOMATION-259. What `check` would have launched over this tree — the run's own
+/// selection with the FULL-SUITE widening taken back out, and only that one.
+///
+/// The other widenings stay, and that is the whole care in this function. The coarse
+/// fallback for unanalysable files (AUTOMATION-113) and the unreadable-ledger fallback
+/// (AUTOMATION-150) fire in the inner loop too, so a projection that dropped them would
+/// model a `check` narrower than the one that actually runs — and would then report
+/// misses the selector never made. Only `set-scope full`, which is `confirm`'s own doing,
+/// is removed.
+let internal wouldHaveRunSelection
+    (configs: TestConfig list)
+    (symbolAffectedByProject: Map<string, string list>)
+    (coarseWidened: Set<string>)
+    (ledgerUnreadable: bool)
+    : Map<string, ProjectSelection> =
+    let checkForceRunProjects =
+        if ledgerUnreadable then
+            Set.union coarseWidened (fullSuiteProjects configs)
+        else
+            coarseWidened
+
+    checkForceRunProjects
+    |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
+    |> selectionOf configs
+
+/// AUTOMATION-259. The same `ScopeReport`, for a selection that was never LAUNCHED — the
+/// one `check` would have used before `confirm` widened it.
+///
+/// Reads the REQUEST, where `scopeOf` reads the receipt, and that is the whole difference
+/// between them: there is no run to produce evidence for a run that did not happen. It is
+/// used only to describe the projected reading's scope in the verdict file, never to
+/// grant coverage — `RunCoverage` still comes from what executed.
+let internal scopeOfSelection (projects: string list) (selection: Map<string, ProjectSelection>) : ScopeReport =
+    let total = List.length projects
+    let selected = projects |> List.filter (fun p -> Map.containsKey p selection)
+
+    if List.isEmpty selected then
+        ScopeNone total
+    elif
+        List.length selected = total
+        && selected |> List.forall (fun p -> selection.[p] = ProjectInFull)
+    then
+        ScopeFull total
+    else
+        ScopeFiltered(List.length selected, total)
 
 module internal OutstandingFailure =
 
@@ -3051,6 +3214,21 @@ let create
     /// selection is empty), which is right: a run that never executed establishes nothing.
     let mutable sessionCoverageRef: RunCoverage = RunCoverage.none
 
+    /// AUTOMATION-259. The last completed run's check-vs-confirm projection: which run it
+    /// belongs to, the selection `check` WOULD have used, and whether that selection
+    /// reached a failure the run saw.
+    ///
+    /// A ref rather than a `TestPruneState` field on purpose. The completion handler
+    /// returns state through five branches (queued force-run, rerun-drain, flush-failed,
+    /// stale-rerun, idle) and a record copy that one branch forgot would silently serve
+    /// the PREVIOUS run's projection under this run's id — which is the one failure mode
+    /// a sample recorded for comparison must not have. Written ONCE, before the branches.
+    ///
+    /// `None` until a run completes: nothing has been projected, and the CLI must read
+    /// that as "no sample", never as "they agreed".
+    let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach) option =
+        None
+
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
@@ -3588,22 +3766,37 @@ let create
                 /// full, a project present with classes runs filtered, and a project
                 /// ABSENT is skipped entirely (and recorded as a filtered pass that
                 /// proves nothing — the laundering vector).
-                let selection: Map<string, ProjectSelection> =
-                    if Map.isEmpty affectedByProject then
-                        configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
+                let selection: Map<string, ProjectSelection> = selectionOf configs affectedByProject
+
+                // AUTOMATION-259. The SAME derivation with the full-suite widening taken
+                // back out — what `check` would have launched over this tree, this
+                // instant. Every OTHER widening stays: the coarse fallback
+                // (AUTOMATION-113) and the unreadable-ledger fallback (AUTOMATION-150)
+                // apply to the inner loop too, so removing them would project a selection
+                // narrower than the one `check` actually uses and manufacture misses the
+                // selector never made.
+                //
+                // Computed here, at the chokepoint, and NOT re-derived later: by
+                // completion the symbol queue has moved on, which is exactly why the
+                // reading was previously unrecoverable.
+                let wouldHaveRun: Map<string, ProjectSelection> option =
+                    if not scopeIsFullSuite then
+                        // Nothing was widened past — the run IS the impact selection, and
+                        // there is no second reading to project.
+                        None
                     else
-                        configs
-                        |> List.choose (fun c ->
-                            match Map.tryFind c.Project affectedByProject with
-                            | None -> None
-                            | Some [] -> Some(c.Project, ProjectInFull)
-                            | Some classes -> Some(c.Project, ProjectClasses(Set.ofList classes)))
-                        |> Map.ofList
+                        wouldHaveRunSelection
+                            configs
+                            symbolAffectedByProject
+                            (coarseFallbackProjects configs unanalyzablePaths fanoutProjects)
+                            ledgerUnreadable
+                        |> Some
 
                 let launch =
                     { Symbols = launchedSymbols
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
-                      Selection = selection }
+                      Selection = selection
+                      WouldHaveRun = wouldHaveRun }
 
                 // The skip gate counts symbol-affected classes only. A pure
                 // dependency-fanout (force-run projects, zero symbol classes) must
@@ -3679,7 +3872,16 @@ let create
                     // `RunCoverage`; the empty selection says so at the source too, so
                     // the "0 affected, green, 0 ran" path can never be mistaken for
                     // evidence about a project.
-                    return TestsFinished(started, completed, { launch with Selection = Map.empty })
+                    return
+                        TestsFinished(
+                            started,
+                            completed,
+                            { launch with
+                                Selection = Map.empty
+                                // Executed nothing, so it neither covers nor projects
+                                // anything (AUTOMATION-259).
+                                WouldHaveRun = None }
+                        )
                 else
                     if totalClasses = 0 then
                         Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
@@ -3746,7 +3948,8 @@ let create
                 let launch =
                     { Symbols = launchedSymbols
                       CoveringProjectsBySymbol = Map.empty
-                      Selection = Map.empty }
+                      Selection = Map.empty
+                      WouldHaveRun = None }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -3784,7 +3987,12 @@ let create
         let commandLaunch: TestRunLaunch =
             { Symbols = Set.empty
               CoveringProjectsBySymbol = Map.empty
-              Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList }
+              Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
+              // A FORCE run has no impact selection behind it — nothing was widened past,
+              // so there is no `check` reading to project (AUTOMATION-259). This is the
+              // ESCALATING `confirm`'s path, and it already carries an EXECUTED
+              // impact-scoped reading taken before the escalation.
+              WouldHaveRun = None }
 
         async {
             try
@@ -4010,6 +4218,67 @@ let create
                                     )
                     }
 
+                // AUTOMATION-259. What `check` WOULD have concluded about the run
+                // `confirm` just widened to full — the sample `confirm` used to destroy.
+                //
+                // A SEPARATE command from `test-scope`, not another field on it. The two
+                // answer opposite questions (`test-scope`: what DID run; this: what would
+                // NOT have) and `test-scope` is on the path that earns every verdict,
+                // where a new field is a new way for the reply to fail to parse. A daemon
+                // that has never heard of this command returns the unknown-command
+                // sentinel, which the CLI reads as "no sample" — never as agreement.
+                "check-reach",
+                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+                    async {
+                        match Volatile.Read(&checkReachRef) with
+                        | None ->
+                            return
+                                JsonSerializer.Serialize(
+                                    {| recorded = false
+                                       reason =
+                                        "no test run has completed in this session, so there is no result to project" |}
+                                )
+                        | Some(runId, wouldHaveRun, reach) ->
+                            let projects = allConfigs |> List.map (fun c -> c.Project)
+
+                            let scope, ranProjects, totalProjects =
+                                match wouldHaveRun |> Option.map (scopeOfSelection projects) with
+                                | Some(ScopeFull n) -> box "full", n, n
+                                | Some(ScopeFiltered(ran, total)) -> box "filtered", ran, total
+                                | Some(ScopeNone total) -> box "none", 0, total
+                                // No retained selection ⇒ no scope to describe. `null`,
+                                // never a count: a zero here would read as "check would
+                                // have run nothing", which is a claim, and this is an
+                                // absence.
+                                | None -> null, 0, List.length projects
+
+                            let failingSuites =
+                                match reach with
+                                | ReachedAFailure ps -> List.toArray ps
+                                | ReachedNoFailure
+                                | NoFailuresToReach
+                                | ReachUnknown _ -> [||]
+
+                            let reason =
+                                match reach with
+                                | ReachUnknown r -> box r
+                                | ReachedAFailure _
+                                | ReachedNoFailure
+                                | NoFailuresToReach -> null
+
+                            return
+                                JsonSerializer.Serialize(
+                                    {| recorded = true
+                                       runId = runId.ToString("N")
+                                       scope = scope
+                                       ranProjects = ranProjects
+                                       totalProjects = totalProjects
+                                       reach = CheckReach.token reach
+                                       failingSuites = failingSuites
+                                       reason = reason |}
+                                )
+                    }
+
                 "run-tests",
                 fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
@@ -4161,7 +4430,7 @@ let create
                     } ]
         | _ -> commands
 
-    { Name = PluginName.create "test-prune"
+    { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
       Init = initialState
       Update =
         fun ctx state event ->
@@ -4755,6 +5024,19 @@ let create
 
 
                     let foundFailures = failuresOf state.TestClassFiles testResults
+
+                    // AUTOMATION-259. Classified HERE, against THIS run's failures and the
+                    // selection retained at its launch, and written before the branch
+                    // explosion below so no return path can drop it. Nothing extra runs
+                    // and nothing is re-read: both inputs are already in hand.
+                    Volatile.Write(
+                        &checkReachRef,
+                        Some(
+                            completed.RunId,
+                            launch.WouldHaveRun,
+                            CheckReach.classify launch.WouldHaveRun foundFailures
+                        )
+                    )
 
                     let carriedFailures =
                         OutstandingFailure.carriedOver runnableProjects coverage state.OutstandingFailures

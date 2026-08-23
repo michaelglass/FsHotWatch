@@ -148,6 +148,17 @@ let TestScopeCommand = "test-scope"
 [<Literal>]
 let SetScopeCommand = "set-scope"
 
+/// AUTOMATION-259. Ask what `check`'s impact selection WOULD have executed in the run
+/// `confirm` widened to full — and whether it would have reached a test that run saw
+/// fail.
+///
+/// `test-scope` says what DID run. This says what would NOT have, and the two are
+/// separate commands rather than two fields of one reply on purpose: `test-scope` is on
+/// the path that earns every verdict, and a second field there is a second way for the
+/// reply that decides a merge to fail to parse.
+[<Literal>]
+let CheckReachCommand = "check-reach"
+
 /// The `run-tests` command, with no filter and no project selection: run EVERY
 /// configured test project. This is how `confirm` FORCES the run it demands rather
 /// than merely asking for it (see `RunOnceCheck` / `IpcOutput.pollAndRender`).
@@ -518,6 +529,136 @@ let parseTestRunReport (json: string) : TestRunReport =
           RunId = None
           Seeds = []
           SeedCount = 0 }
+
+/// AUTOMATION-259. Did the impact selection `check` WOULD have used reach a test this
+/// run saw fail?
+///
+/// The one question a `confirm` can answer for free about `check`. `confirm` widens the
+/// scope to full BEFORE the scan that provokes the run, so the impact selection is
+/// computed, discarded, and — until it was retained — unrecoverable: `check` and
+/// `confirm` are separate invocations, and a day of running them side by side
+/// (2026-08-06) produced not one clean pair because the tree moved between every one.
+///
+/// It is a claim about REACH and nothing else. A test that failed here failed inside a
+/// full suite; whether it would also have failed in a narrower run — order, isolation, a
+/// shared fixture — cannot be observed from one execution and is never asserted. That is
+/// what the verdict's `basis` field exists to tell a reader.
+type CheckReach =
+    /// At least one test this run saw fail is inside the retained selection: `check`
+    /// would have executed it, and would have been red for the same reason.
+    | ReachedAFailure of failingSuites: string list
+    /// The run saw tests fail; the retained selection reaches NONE of them. `check` would
+    /// have gone green over a tree with a real failure in it — AUTOMATION-160's defect,
+    /// caught on the same tree that produced it.
+    | ReachedNoFailure
+    /// No test failed, so there was no failure for a selection to reach. Distinct from
+    /// `ReachedNoFailure`: nothing was missed because nothing was there.
+    | NoFailuresToReach
+    /// The reach could not be decided, and says why. Refused rather than guessed: a guess
+    /// in either direction invents a comparison, and a guess in the reaching direction
+    /// invents an AGREEMENT — the one reading this record must never manufacture.
+    | ReachUnknown of reason: string
+
+/// The `check-reach` reply, parsed.
+type CheckReachReport =
+    {
+        /// The run the projection belongs to. Compared with the run the VERDICT is about,
+        /// so a projection left over from an earlier run can never be attached to a later
+        /// one. `None` when the daemon did not name a run — which is itself a mismatch.
+        RunId: Guid option
+        /// What `check` would have covered, in the same shape `test-scope` reports what
+        /// actually ran. `ScopeUnreadable` where there is no retained selection to
+        /// describe.
+        Scope: TestScope
+        Reach: CheckReach
+    }
+
+/// Whether there is a projection to read at all. Absence is a VALUE — a daemon with no
+/// `check-reach` command, a reply that would not parse, a session with no completed run —
+/// because every one of those must reach the verdict as "nothing was compared" and none
+/// of them may reach it as "they agreed".
+type CheckReachReading =
+    | ReachRecorded of CheckReachReport
+    | ReachUnavailable of reason: string
+
+/// Parse a `check-reach` reply. TOTAL and FAIL-CLOSED: every way of not understanding the
+/// reply lands on `ReachUnavailable` or `ReachUnknown`, never on a reach that claims the
+/// selection covered anything.
+let parseCheckReach (json: string) : CheckReachReading =
+    try
+        use doc = JsonDocument.Parse(json)
+        let root = doc.RootElement
+
+        let readInt (name: string) =
+            match root.TryGetProperty(name) with
+            | true, v when v.ValueKind = JsonValueKind.Number ->
+                match v.TryGetInt32() with
+                | true, n -> Some n
+                | _ -> None
+            | _ -> None
+
+        let recorded =
+            match root.TryGetProperty("recorded") with
+            | true, v when v.ValueKind = JsonValueKind.True -> true
+            | _ -> false
+
+        if not recorded then
+            ReachUnavailable(
+                tryGetStringProp root "reason"
+                |> Option.defaultValue $"the daemon's `%s{CheckReachCommand}` reply records no projection"
+            )
+        else
+            let reason =
+                tryGetStringProp root "reason"
+                |> Option.defaultValue "the daemon did not say why the reach could not be decided"
+
+            let failingSuites =
+                match root.TryGetProperty("failingSuites") with
+                | true, v when v.ValueKind = JsonValueKind.Array ->
+                    v.EnumerateArray()
+                    |> Seq.choose (fun el ->
+                        if el.ValueKind = JsonValueKind.String then
+                            Some(el.GetString())
+                        else
+                            None)
+                    |> Seq.toList
+                | _ -> []
+
+            let reach =
+                match tryGetStringProp root "reach" with
+                | Some "reached-a-failure" when not (List.isEmpty failingSuites) -> ReachedAFailure failingSuites
+                // A reach that claims a failure and names no suite is not a reading this
+                // build can record: the classification and the evidence for it travel
+                // together or not at all.
+                | Some "reached-a-failure" ->
+                    ReachUnknown "the daemon reported a reached failure but named no failing suite"
+                | Some "reached-no-failure" -> ReachedNoFailure
+                | Some "no-failures-to-reach" -> NoFailuresToReach
+                | Some "unknown" -> ReachUnknown reason
+                | Some other ->
+                    ReachUnknown $"the daemon reported reach '%s{other}', which this build does not understand"
+                | None -> ReachUnknown "the daemon's reply does not say what the selection reached"
+
+            let scope =
+                match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
+                | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
+                | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
+                | Some "none", _, _ -> NoTestsRun
+                | _ -> ScopeUnreadable "the daemon reported no scope for the selection `check` would have used"
+
+            let runId =
+                tryGetStringProp root "runId"
+                |> Option.bind (fun s ->
+                    match Guid.TryParse s with
+                    | true, g -> Some g
+                    | _ -> None)
+
+            ReachRecorded
+                { RunId = runId
+                  Scope = scope
+                  Reach = reach }
+    with ex ->
+        ReachUnavailable $"the daemon's `%s{CheckReachCommand}` reply could not be parsed: %s{ex.Message}"
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

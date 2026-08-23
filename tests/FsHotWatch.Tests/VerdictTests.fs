@@ -1351,7 +1351,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 mode
                 false
                 (TestRunReport.ofScopeOnly scope)
-                None
+                Verdict.NoReading
                 Map.empty
                 []
                 (IpcOutput.SettledTree.capture root [])
@@ -1449,7 +1449,9 @@ let private publishConfirm
         CheckVerdict.Confirmation
         false
         (TestRunReport.ofScopeOnly finalScope)
-        impactScoped
+        (match impactScoped with
+         | Some reading -> Verdict.ExecutedReading reading
+         | None -> Verdict.NoReading)
         Map.empty
         []
         (IpcOutput.SettledTree.capture root [])
@@ -1483,7 +1485,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
                 CheckVerdict.InnerLoop
                 false
                 (TestRunReport.ofScopeOnly (FullSuite 6))
-                None
+                Verdict.NoReading
                 Map.empty
                 []
                 (IpcOutput.SettledTree.capture root [])
@@ -1633,7 +1635,8 @@ let ``every comparison round-trips through the verdict JSON`` () =
                 Some
                     { Scope = ImpactFiltered(5, 6)
                       Outcome = Verdict.Red
-                      FailingSuites = [ "Lib.Tests"; "Api.Tests" ] } }
+                      FailingSuites = [ "Lib.Tests"; "Api.Tests" ]
+                      Basis = Verdict.SampleBasis.Executed } }
 
         let cases =
             [ withRun Verdict.Divergence.Agreed
@@ -1710,7 +1713,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
         Some
             { Scope = ImpactFiltered(5, 6)
               Outcome = Verdict.Green
-              FailingSuites = [] }
+              FailingSuites = []
+              Basis = Verdict.SampleBasis.Executed }
 
     // Claims a comparison, records nothing to have compared against.
     raises<ArgumentException>
@@ -3262,7 +3266,8 @@ let private comparisonWith (d: Verdict.Divergence) : Verdict.CheckComparison =
         Some
             { Scope = ImpactFiltered(5, 6)
               Outcome = Verdict.Green
-              FailingSuites = [] } }
+              FailingSuites = []
+              Basis = Verdict.SampleBasis.Executed } }
 
 [<Fact>]
 let ``AUTOMATION-111: a recall miss is named as a SELECTION BUG in the verdict output`` () =
@@ -3419,3 +3424,264 @@ let ``the gaps are stated on every scope kind, because they are a fact about the
           ScopeUnknown
           ScopeUnreadable "faulted" ] do
         test <@ (gapsOn scope).Contains "tests/X" @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 (rework) — the PROJECTED check-scoped reading.
+//
+// The feature shipped and its premise did not close. `confirm` requests full scope
+// BEFORE the scan that provokes the test run, in both transports, so the run is
+// unfiltered by construction, the capture condition is false at the capture point, and
+// every verdict records `no-impact-scoped-run`: a true statement that produced, across
+// seventeen confirms in ten days, exactly zero comparisons.
+//
+// So the suite still runs ONCE, and the reading is derived instead: the impact selection
+// is retained at the moment `confirm` widens past it, and the run's own result is
+// projected back through it. These tests pin the ONE property that matters more than any
+// other here — every way of not being able to decide lands somewhere that is NOT
+// `Agreed`. An agreement that compared nothing is the defect the record exists to stop.
+// ---------------------------------------------------------------------------
+
+let private projectionRunId = Guid.Parse("22222222-2222-2222-2222-222222222222")
+
+let private gradedRun =
+    { TestRunReport.ofScopeOnly (FullSuite 6) with
+        RunId = Some projectionRunId }
+
+/// A daemon reply that names THIS run and reports `reach`.
+let private reachOf (reach: CheckReach) : CheckReachReading =
+    ReachRecorded
+        { RunId = Some projectionRunId
+          Scope = ImpactFiltered(2, 6)
+          Reach = reach }
+
+/// The projection, then the classification the verdict would record for it.
+let private classify
+    (reading: CheckReachReading)
+    (earned: Verdict.Outcome)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (causes: Verdict.RedCause list)
+    : Verdict.CheckComparison =
+    Verdict.comparisonOf (Verdict.ProjectedThrough reading) gradedRun earned statuses causes
+
+let private aboutThisTree (source: string) : Verdict.RedCause =
+    { Source = source
+      File = "<build>"
+      Severity = "error"
+      Message = "boom"
+      Kind = Verdict.AboutThisTree }
+
+let private failedPlugin (name: string) : string * ParsedPluginStatus =
+    name,
+    { Status = StatusView.Failed("crashed", DateTime.UtcNow)
+      Subtasks = []
+      ActivityTail = []
+      LastRun = None
+      Diagnostics = ErrorLedger.DiagnosticCounts.empty }
+
+[<Fact>]
+let ``a confirm that did not escalate records a PROJECTED sample, and says it is projected`` () =
+    // The case that produced no data: the run its own scan provoked was already
+    // unfiltered, nothing failed, and `check`'s narrower selection could therefore not
+    // have found anything either.
+    let c = classify (reachOf NoFailuresToReach) Verdict.Green Map.empty []
+
+    test <@ c.Divergence = Verdict.Divergence.Agreed @>
+
+    match c.ImpactScoped with
+    | Some pre ->
+        test <@ pre.Basis = Verdict.SampleBasis.ProjectedFromFullRun @>
+        test <@ pre.Outcome = Verdict.Green @>
+        // The scope `check` WOULD have covered — not the full suite the verdict rests on.
+        test <@ pre.Scope = ImpactFiltered(2, 6) @>
+    | None -> failwith "a projected sample must record the reading it classified"
+
+[<Fact>]
+let ``the selection missing the failure is CHECK-MISSED-FAILURES, which is the whole point`` () =
+    // AUTOMATION-160, caught on the tree that produced it: the suite is red, and the
+    // tests `check` would have chosen do not include the one that failed.
+    let c =
+        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune" ]
+
+    test <@ c.Divergence = Verdict.Divergence.CheckMissedFailures @>
+
+    match c.ImpactScoped with
+    | Some pre -> test <@ pre.Outcome = Verdict.Green @>
+    | None -> failwith "the missed-failure sample must record the projected reading"
+
+[<Fact>]
+let ``a selection that DOES reach the failure agrees, and names the suites it reaches`` () =
+    let c =
+        classify (reachOf (ReachedAFailure [ "Lib.Tests" ])) Verdict.Red Map.empty [ aboutThisTree "test-prune" ]
+
+    test <@ c.Divergence = Verdict.Divergence.Agreed @>
+
+    match c.ImpactScoped with
+    | Some pre ->
+        test <@ pre.Outcome = Verdict.Red @>
+        // The suites its SELECTION reaches, not every suite that failed — the run's own
+        // record already carries those.
+        test <@ pre.FailingSuites = [ "Lib.Tests" ] @>
+    | None -> failwith "a reached-failure sample must record the projected reading"
+
+[<Fact>]
+let ``a red that is not about the tests reddens check too, so the sample AGREES`` () =
+    // `check` reads the same ledger and the same plugin statuses. Removing the test
+    // failures it would not have run does not remove a failing lint plugin or an FCS
+    // diagnostic — those redden it for the same reason `confirm` was red.
+    let viaPlugin =
+        classify (reachOf ReachedNoFailure) Verdict.Red (Map.ofList [ failedPlugin "lint" ]) []
+
+    test <@ viaPlugin.Divergence = Verdict.Divergence.Agreed @>
+
+    let viaDiagnostic =
+        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune"; aboutThisTree "fcs" ]
+
+    test <@ viaDiagnostic.Divergence = Verdict.Divergence.Agreed @>
+
+    // CONTROL. A failing TEST-PRUNE plugin is the test dimension itself and must NOT be
+    // read as a red beyond the tests — otherwise every missed failure would agree, and
+    // the classification above would be unreachable.
+    let viaTestPrune =
+        classify (reachOf ReachedNoFailure) Verdict.Red (Map.ofList [ failedPlugin "test-prune" ]) []
+
+    test <@ viaTestPrune.Divergence = Verdict.Divergence.CheckMissedFailures @>
+
+[<Fact>]
+let ``a red made only of causes fshw cannot attribute is INCOMPARABLE, never agreement`` () =
+    // Set the unreachable test failures aside and what is left is a ledger `check` would
+    // route to `StaleDaemonState` — NO VERDICT, exit 3. That is neither the green nor the
+    // red this sample would have to compare, so it is refused.
+    let unattributable: Verdict.RedCause =
+        { Source = "fcs"
+          File = "/gone/Vanished.fs"
+          Severity = "error"
+          Message = "internal error: boom"
+          Kind = Verdict.CheckerFault }
+
+    let c =
+        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune"; unattributable ]
+
+    match c.Divergence with
+    | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "NO VERDICT" @>
+    | other -> failwithf "an unattributable-only residue must be INCOMPARABLE, got %A" other
+
+[<Fact>]
+let ``every way of not being able to decide lands somewhere that is NOT agreement`` () =
+    // THE property. Each of these is a different way of not having a comparison, and a
+    // single one of them collapsing into `Agreed` would let "N confirms with zero
+    // divergence" be satisfied by runs that compared nothing — the exact failure this
+    // record was built to make impossible.
+    let otherRun = Guid.Parse("33333333-3333-3333-3333-333333333333")
+
+    let undecidable: (string * CheckReachReading * Verdict.Outcome) list =
+        [ "the daemon has no projection to offer", ReachUnavailable "no such command", Verdict.Green
+          "the daemon could not decide the reach", reachOf (ReachUnknown "a project-level red"), Verdict.Green
+          "the projection belongs to another run",
+          ReachRecorded
+              { RunId = Some otherRun
+                Scope = ImpactFiltered(2, 6)
+                Reach = NoFailuresToReach },
+          Verdict.Green
+          "the projection names no run",
+          ReachRecorded
+              { RunId = None
+                Scope = ImpactFiltered(2, 6)
+                Reach = NoFailuresToReach },
+          Verdict.Green
+          "the escalated run reached no verdict", reachOf NoFailuresToReach, Verdict.Incomplete "the tree moved"
+          "the run says failures exist and green at once", reachOf ReachedNoFailure, Verdict.Green ]
+
+    for label, reading, earned in undecidable do
+        let c = classify reading earned Map.empty []
+
+        test <@ c.Divergence <> Verdict.Divergence.Agreed @>
+        test <@ c.Divergence <> Verdict.Divergence.CheckMissedFailures @>
+        test <@ c.Divergence <> Verdict.Divergence.CheckOnlyFailures @>
+
+        match c.Divergence with
+        | Verdict.Divergence.Incomparable _ -> ()
+        | other -> failwithf "%s must be INCOMPARABLE, got %A" label other
+
+    // CONTROL. Without it, a `classify` that had started refusing everything would pass
+    // every assertion above.
+    test <@ (classify (reachOf NoFailuresToReach) Verdict.Green Map.empty []).Divergence = Verdict.Divergence.Agreed @>
+
+[<Fact>]
+let ``a PROJECTION may never claim a check-only failure`` () =
+    // A check-only failure asserts that the same code fails narrow and passes wide —
+    // order, isolation, a shared fixture. Only a reading that RAN can have seen that; a
+    // projection reads one run, so a test it saw pass is a test that passed. The pair is
+    // a contradiction in the arithmetic, not a finding about the tests.
+    let projected: Verdict.ImpactScopedRun =
+        { Scope = ImpactFiltered(2, 6)
+          Outcome = Verdict.Red
+          FailingSuites = [ "Lib.Tests" ]
+          Basis = Verdict.SampleBasis.ProjectedFromFullRun }
+
+    match (Verdict.CheckComparison.ofRun (Some projected) Verdict.Green).Divergence with
+    | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "projection" @>
+    | other -> failwithf "a projected check-only failure must be INCOMPARABLE, got %A" other
+
+    // CONTROL. The very same pair from an EXECUTED reading is a real, reportable
+    // check-only failure — the classification is not simply switched off.
+    match
+        (Verdict.CheckComparison.ofRun
+            (Some
+                { projected with
+                    Basis = Verdict.SampleBasis.Executed })
+            Verdict.Green)
+            .Divergence
+    with
+    | Verdict.Divergence.CheckOnlyFailures -> ()
+    | other -> failwithf "an executed check-only failure must still be reported, got %A" other
+
+[<Fact>]
+let ``the sample's BASIS round-trips, and a verdict that predates the field reads as EXECUTED`` () =
+    withTempDir "verdict-259-basis" (fun root ->
+        for basis in
+            [ Verdict.SampleBasis.Executed
+              Verdict.SampleBasis.ProjectedFromFullRun
+              Verdict.SampleBasis.UnknownBasis "extrapolated" ] do
+            writeSpec
+                root
+                { greenVerdict "sha256:basis" 1 with
+                    Comparison =
+                        { Divergence = Verdict.Divergence.Agreed
+                          ImpactScoped =
+                            Some(
+                                { Scope = ImpactFiltered(2, 6)
+                                  Outcome = Verdict.Green
+                                  FailingSuites = []
+                                  Basis = basis }
+                                : Verdict.ImpactScopedRun
+                            ) } }
+
+            match Verdict.read root with
+            | Verdict.Reading.Found v ->
+                match v.ImpactScopedRun with
+                | Some pre -> test <@ pre.Basis = basis @>
+                | None -> failwith "the reading must survive the round-trip"
+            | other -> failwithf "a verdict carrying basis %A must read back, got %A" basis other
+
+        // A sample written before the field existed WAS a second execution — every one of
+        // them came from an escalation — so an ABSENT basis reads as `Executed`. A token
+        // this build does not know is a different fact and keeps its own case, because
+        // rounding it to `Executed` would claim a run that may never have happened.
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","command":"confirm",
+                "scope":{"kind":"full","ranProjects":6,"totalProjects":6},
+                "outcome":{"kind":"green"},"exitCode":0,"plugins":[],
+                "checkComparison":{"divergence":{"kind":"agreed"},
+                  "impactScopedRun":{"scope":{"kind":"filtered","ranProjects":2,"totalProjects":6},
+                                     "outcome":{"kind":"green"},"failingSuites":[]}}}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            match v.ImpactScopedRun with
+            | Some pre -> test <@ pre.Basis = Verdict.SampleBasis.Executed @>
+            | None -> failwith "a legacy sample must still read back"
+        | other -> failwithf "a legacy verdict must read, got %A" other)

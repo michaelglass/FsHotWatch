@@ -311,3 +311,97 @@ let ``parseTaggedOutcome parses timedOut with its reason`` () =
 let ``parseTaggedOutcome parses failed with its error`` () =
     let el = parseEl """{"tag":"failed","error":"3 failed"}"""
     test <@ parseTaggedOutcome el = Some(FailedRun "3 failed") @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 — `check-reach`, the projection's wire.
+//
+// The reply decides whether a `confirm` records a comparison or records that it could
+// not make one. So every way of not understanding it has to land on a value that is not
+// a reach, and the parser is where that is enforced — not at the reader, which by then
+// has a shape it believes.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 10000)>]
+let ``parseCheckReach reads a recorded projection, run id and scope included`` () =
+    let reading =
+        parseCheckReach
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+                "ranProjects":2,"totalProjects":6,"reach":"reached-a-failure",
+                "failingSuites":["Lib.Tests"],"reason":null}"""
+
+    match reading with
+    | ReachRecorded r ->
+        test <@ r.RunId = Some(Guid.Parse "5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e") @>
+        test <@ r.Scope = ImpactFiltered(2, 6) @>
+        test <@ r.Reach = ReachedAFailure [ "Lib.Tests" ] @>
+    | other -> failwithf "a well-formed reply must parse, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
+    let replyWith (reach: string) =
+        parseCheckReach
+            $"""{{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full",
+                 "ranProjects":6,"totalProjects":6,"reach":"%s{reach}","failingSuites":[],
+                 "reason":"a project-level red"}}"""
+
+    let reachOf (reading: CheckReachReading) =
+        match reading with
+        | ReachRecorded r -> r.Reach
+        | other -> failwithf "expected a recorded projection, got %A" other
+
+    test <@ reachOf (replyWith "reached-no-failure") = ReachedNoFailure @>
+    test <@ reachOf (replyWith "no-failures-to-reach") = NoFailuresToReach @>
+    test <@ reachOf (replyWith "unknown") = ReachUnknown "a project-level red" @>
+
+    match replyWith "no-failures-to-reach" with
+    | ReachRecorded r -> test <@ r.Scope = FullSuite 6 @>
+    | other -> failwithf "expected a recorded projection, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``every unreadable check-reach reply refuses, and none of them reads as a reach`` () =
+    // The one property. A reply this build cannot make sense of must never produce a
+    // reach — the reach is what turns into `Agreed`.
+    let refusals =
+        [ "not JSON at all", "}{"
+          "a reply that records nothing", """{"recorded":false,"reason":"no run has completed"}"""
+          "a reply with no `recorded` flag", """{"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e"}""" ]
+
+    for label, json in refusals do
+        match parseCheckReach json with
+        | ReachUnavailable _ -> ()
+        | other -> failwithf "%s must be UNAVAILABLE, got %A" label other
+
+    let undecidable =
+        [ "a reach token from another version",
+          """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"probably-fine"}"""
+          "a reply that names no reach at all", """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e"}"""
+          // A classification with no evidence for it. The two travel together or not at
+          // all: a reached failure that names no suite cannot be recorded as one.
+          "a reached failure that names no suite",
+          """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"reached-a-failure","failingSuites":[]}""" ]
+
+    for label, json in undecidable do
+        match parseCheckReach json with
+        | ReachRecorded r ->
+            match r.Reach with
+            | ReachUnknown _ -> ()
+            | other -> failwithf "%s must be UNKNOWN, got %A" label other
+        | other -> failwithf "%s must still parse to a record, got %A" label other
+
+    // CONTROL. Without it, a parser that had started refusing every reply would satisfy
+    // all six cases above.
+    match
+        parseCheckReach
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"no-failures-to-reach"}"""
+    with
+    | ReachRecorded r -> test <@ r.Reach = NoFailuresToReach @>
+    | other -> failwithf "a well-formed reply must still parse, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``a reply that names no scope for the selection reads as UNREADABLE, never full-suite`` () =
+    match
+        parseCheckReach
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","reach":"no-failures-to-reach"}"""
+    with
+    | ReachRecorded r -> test <@ TestScope.isUnreadable r.Scope @>
+    | other -> failwithf "expected a recorded projection, got %A" other

@@ -539,29 +539,98 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
 // AUTOMATION-259 — the check-vs-confirm sample every `confirm` already had
 // ---------------------------------------------------------------------------
 
-/// What the IMPACT-SCOPED run concluded — the run `confirm` graded BEFORE it escalated to
-/// the full suite.
+/// HOW the impact-scoped reading was obtained. On the wire, and required to read the
+/// sample honestly.
 ///
-/// `confirm` does not start with a full run. It grades what the daemon already has, sees
-/// that it was filtered (`CheckVerdict.confirmNeedsFullRun`), says so, and runs the whole
-/// suite to earn a verdict. That first reading existed in-process and survived only as a
-/// log line.
+/// The two are not interchangeable evidence. An EXECUTED reading is a second run: it
+/// answers what `check` would have concluded including the effects of running fewer tests
+/// — order, isolation, shared fixtures. A PROJECTED one is arithmetic over ONE run: it
+/// answers what `check`'s selection would have REACHED, and nothing about what a narrower
+/// execution would have done differently. A consumer counting divergences that cannot
+/// tell them apart is averaging two different measurements.
+[<RequireQualifiedAccess>]
+type SampleBasis =
+    /// `confirm` escalated. The impact-scoped run RAN, and this is what it concluded.
+    | Executed
+    /// `confirm` did not escalate — the run its own scan provoked was already unfiltered,
+    /// which is the common case in CI. The reading is derived by projecting THAT run's
+    /// result through the impact selection `check` would have used, retained at the
+    /// moment the scope was widened past it.
+    | ProjectedFromFullRun
+    /// A basis token from another version. Kept VERBATIM so a round-trip does not rewrite
+    /// a newer file into a claim this build invented, and treated as the weaker evidence
+    /// everywhere it matters: a basis we cannot attribute may not license the strongest
+    /// classification.
+    ///
+    /// Deliberately NOT what an ABSENT field reads as — absence means the verdict predates
+    /// the field, and every one of those samples was executed.
+    | UnknownBasis of token: string
+
+module SampleBasis =
+    /// The wire token. Total, and verbatim for a token this build did not write.
+    let token (b: SampleBasis) : string =
+        match b with
+        | SampleBasis.Executed -> "executed"
+        | SampleBasis.ProjectedFromFullRun -> "projected-from-full-run"
+        | SampleBasis.UnknownBasis t -> t
+
+    /// Read a token back. TOTAL — an unrecognized token is recorded as such, never
+    /// rounded to `Executed`, which would claim a second run happened.
+    let ofToken (s: string) : SampleBasis =
+        match s with
+        | "executed" -> SampleBasis.Executed
+        | "projected-from-full-run" -> SampleBasis.ProjectedFromFullRun
+        | other -> SampleBasis.UnknownBasis other
+
+    /// Can this basis produce a `CheckOnlyFailures`?
+    ///
+    /// A PROJECTION cannot, structurally: it reads one run, so a test that passed in that
+    /// run is a test it saw pass, and it has no way to know the narrower run would have
+    /// failed it. Claiming a check-only failure from a projection would be asserting an
+    /// isolation- or order-sensitivity nobody observed. `ofRun` enforces this rather than
+    /// trusting every future caller to remember it.
+    let canSeeCheckOnlyFailures (b: SampleBasis) : bool =
+        match b with
+        | SampleBasis.Executed -> true
+        | SampleBasis.ProjectedFromFullRun
+        | SampleBasis.UnknownBasis _ -> false
+
+/// What the IMPACT-SCOPED reading concluded — what `check` would have said about the very
+/// tree, daemon and instant this `confirm` graded.
 ///
-/// It is also the ONE reading fshw cannot get any other way. `check` and `confirm` are
-/// separate invocations, so comparing them means comparing two trees: a full day of
-/// running them side by side (2026-08-06) produced not one clean pair, because the tree
-/// moved between every invocation. Recorded here, the two readings share a tree, a daemon,
-/// a scan generation and an instant — for free, because nothing extra runs.
+/// It is the ONE reading fshw cannot get any other way. `check` and `confirm` are separate
+/// invocations, so comparing them means comparing two trees: a full day of running them
+/// side by side (2026-08-06) produced not one clean pair, because the tree moved between
+/// every invocation. Recorded here, the two readings share a tree, a daemon, a scan
+/// generation and an instant — for free, because nothing extra runs.
 ///
-/// Graded in `InnerLoop` mode, deliberately — see `impactScopedRun`.
+/// It arrives two ways, and `Basis` says which (see `SampleBasis`):
+///
+///   * EXECUTED — `confirm` found the run it was handed impact-filtered
+///     (`CheckVerdict.confirmNeedsFullRun`), graded it in `InnerLoop`, said so, and ran the
+///     whole suite to earn a verdict. That first reading used to survive only as a log
+///     line. See `impactScopedRun`.
+///   * PROJECTED — `confirm` did not have to escalate, because it had already widened the
+///     scope before the scan. The suite still runs once and the reading is derived from
+///     it, through the impact selection retained at the widening. See
+///     `projectedImpactScopedRun`.
+///
+/// Graded in `InnerLoop` mode on the executed path, deliberately — see `impactScopedRun`.
 type ImpactScopedRun =
     {
         Scope: TestScope
         Outcome: Outcome
-        /// Projects whose CTRF report recorded at least one failing test IN THAT RUN.
+        /// The projects this reading saw fail. For an EXECUTED reading, the ones whose
+        /// CTRF report recorded at least one failing test in that run; for a PROJECTED
+        /// one, the ones where the retained selection actually REACHES a failure — not
+        /// every suite that failed, which the verdict's own `suites` already carries.
+        ///
         /// Names only: the counts live in the run's own reports, and a second copy here
         /// would be a second thing to keep in step.
         FailingSuites: string list
+        /// EXECUTED or PROJECTED — see `SampleBasis`. A verdict written before this field
+        /// existed reads as `Executed`, which is what those samples were.
+        Basis: SampleBasis
     }
 
 /// How the impact-scoped reading compared with the full-suite verdict `confirm` went on to
@@ -586,13 +655,20 @@ type Divergence =
     /// a test-isolation defect (a test that only passes with company). `check` may well be
     /// the honest one here — what it is not is agreement.
     | CheckOnlyFailures
-    /// `confirm` did not escalate: the run it graded was ALREADY full-suite, so there is no
-    /// impact-scoped reading beside it to compare with.
+    /// `confirm` offered NEITHER reading: it did not escalate (so there is no executed
+    /// impact-scoped run beside the verdict) and no projection was even attempted.
     ///
-    /// STATED, never left as an absence. `confirm` sends `set-scope full` before it scans
-    /// (`Program.ensureAndQueryErrors`, `RunOnceCheck.runOnceAndVerdict`), so any run its
-    /// own scan provokes is unfiltered — which is why this is the COMMON case in CI and why
-    /// it must not be counted as an agreement: nothing was compared.
+    /// This USED to be the common case, and that is the bug the rework fixed. `confirm`
+    /// sends `set-scope full` before it scans (`Program.ensureAndQueryErrors`,
+    /// `RunOnceCheck.runOnceAndVerdictWith`), so any run its own scan provokes is
+    /// unfiltered — which meant the escalation never fired in CI and every verdict landed
+    /// here, honestly stating that nothing was compared and producing no data at all.
+    /// A non-escalating `confirm` now offers `CheckScopedEvidence.ProjectedThrough`
+    /// instead, so it reaches a real classification or an `Incomparable` that says why.
+    ///
+    /// What is left here: a `confirm` that aborted before it could ask (a wedged plugin, a
+    /// daemon that went away mid-wait) without having escalated first. STATED, never left
+    /// as an absence, and never counted as an agreement — nothing was compared.
     | NoImpactScopedRun
     /// One of the two readings reached no answer to compare. An escalated run that dies on
     /// compile errors produces no full-suite result, and "could not compare" may never
@@ -688,6 +764,18 @@ module CheckComparison =
                 | Some checkFoundFailures, Some confirmFoundFailures ->
                     match checkFoundFailures, confirmFoundFailures with
                     | false, true -> Divergence.CheckMissedFailures
+                    // A check-only failure is a claim that the SAME code fails narrow and
+                    // passes wide — order, isolation, a shared fixture. Only an EXECUTED
+                    // reading can have observed that. A projection reads one run: a test
+                    // it saw pass is a test that passed, and this pair means its own
+                    // arithmetic contradicted the run it was derived from. Refused, not
+                    // reported: an unobserved isolation defect is a worse thing to assert
+                    // than an unanswered question.
+                    | true, false when not (SampleBasis.canSeeCheckOnlyFailures pre.Basis) ->
+                        Divergence.Incomparable
+                            "the projected reading found failures the full run did not — a projection cannot observe \
+                             an isolation- or order-sensitive failure, so this is a contradiction in the projection, \
+                             not a finding about the tests"
                     | true, false -> Divergence.CheckOnlyFailures
                     | _ -> Divergence.Agreed
                 // The escalated run is checked FIRST: when neither side answered, the fact
@@ -1132,7 +1220,8 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
              box
                  {| scope = scopeJson excluded r.Scope
                     outcome = outcomeJson r.Outcome
-                    failingSuites = r.FailingSuites |}
+                    failingSuites = r.FailingSuites
+                    basis = SampleBasis.token r.Basis |}
          | None -> null) |}
     :> obj
 
@@ -1337,7 +1426,15 @@ let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
                 |> Option.defaultValue (
                     Incomplete "the recorded impact-scoped outcome is not a shape this build recognizes"
                 )
-              FailingSuites = failingSuites }
+              FailingSuites = failingSuites
+              // ABSENT means the verdict predates the field, and every sample written
+              // before it was an EXECUTED second run — so absence reads as `Executed`. A
+              // token this build does not know is a different fact and keeps its own
+              // case; see `SampleBasis.UnknownBasis`.
+              Basis =
+                tryString el "basis"
+                |> Option.map SampleBasis.ofToken
+                |> Option.defaultValue SampleBasis.Executed }
 
 /// The whole `checkComparison` block. An ABSENT block is `NotRecorded` — the verdict
 /// predates AUTOMATION-259, which is not corruption and is not agreement.
@@ -1846,4 +1943,182 @@ let impactScopedRun (repoRoot: string) (runReport: TestRunReport) (inputs: Check
       FailingSuites =
         suiteVerdicts repoRoot runReport.RunId
         |> List.filter (fun s -> s.Failed > 0)
-        |> List.map (fun s -> s.Project) }
+        |> List.map (fun s -> s.Project)
+      // A second RUN, not arithmetic over this one: `confirm` graded it before it
+      // escalated, so it carries whatever a narrower execution would have done.
+      Basis = SampleBasis.Executed }
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-259 (rework) — the PROJECTED reading.
+// ---------------------------------------------------------------------------
+
+/// What the run's red is made of once the TESTS are set aside.
+///
+/// The projection's hardest question. When the retained selection reaches none of the
+/// failing tests, `check` would not have seen those failures — but `check` reads the same
+/// ledger and the same plugin statuses as `confirm` did, so whatever ELSE is red in there
+/// reddens `check` too. Answering "nothing else" turns the sample into
+/// `CheckMissedFailures`; answering "something else" turns it into `Agreed`. Both are
+/// claims, so the state where neither is provable gets its own case.
+type NonTestRed =
+    /// Nothing outside the tests is red. Remove the unreachable test failures and `check`
+    /// is GREEN.
+    | NoneBeyondTheTests
+    /// Something outside the tests is red AND is a claim about this tree — a failing
+    /// plugin that is not test-prune, or a failing diagnostic from another source.
+    /// `check` is red for that reason alone.
+    | AttributableBeyondTheTests
+    /// The only non-test reds are ones fshw cannot attribute to the tree on disk (a
+    /// vanished file, an FCS internal error). `check` over that ledger minus the tests
+    /// would reach `StaleDaemonState` — NO VERDICT, exit 3 — which is neither red nor
+    /// green, so the comparison has nothing to compare. Refused, never rounded either way.
+    | OnlyUnattributableBeyondTheTests
+
+module NonTestRed =
+    /// Classify the run's non-test reds. `statuses` and `causes` are exactly what the
+    /// verdict file records, so what this reads and what a human reads are the same
+    /// entries.
+    let classify (statuses: Map<string, ParsedPluginStatus>) (causes: RedCause list) : NonTestRed =
+        let testPlugin = FsHotWatch.PluginActivity.TestPrunePluginName
+
+        // THE definition of "a plugin failed", asked of every plugin but test-prune —
+        // not a second copy of the status match, which is how a new failing status
+        // becomes invisible to one caller and not the other.
+        let otherPluginFailed =
+            statuses
+            |> Map.filter (fun name _ -> name <> testPlugin)
+            |> CheckVerdict.CheckInputs.anyPluginFailed
+
+        let otherCauses = causes |> List.filter (fun c -> c.Source <> testPlugin)
+
+        if otherPluginFailed then
+            AttributableBeyondTheTests
+        elif otherCauses |> List.exists (fun c -> RedCauseKind.isAboutThisTree c.Kind) then
+            AttributableBeyondTheTests
+        elif List.isEmpty otherCauses then
+            NoneBeyondTheTests
+        else
+            OnlyUnattributableBeyondTheTests
+
+/// AUTOMATION-259, reworked. The check-scoped reading for the `confirm` that did NOT have
+/// to escalate.
+///
+/// THE CASE THAT PRODUCED NO DATA. `confirm` sends `set-scope full` BEFORE the scan that
+/// provokes the run (`Program.ensureAndQueryErrors`, `RunOnceCheck.runOnceAndVerdictWith`),
+/// so in CI the run is unfiltered by construction, nothing is escalated, and the original
+/// capture condition — "did `confirm` escalate?" — is false every time. Ten days of
+/// confirms recorded `no-impact-scoped-run` and not one comparison.
+///
+/// Moving the widening after the scan is not the fix: it would either let filtered
+/// evidence satisfy `confirm` or force a second execution of the whole suite. So the
+/// suite runs ONCE, the impact selection is RETAINED at the moment it is widened past
+/// (`TestPrunePlugin.runTestsWithImpact`), and this projects the run's own result back
+/// through it.
+///
+/// FAIL CLOSED, in one direction, deliberately: every way of not being able to decide
+/// produces an `Incomplete` outcome, which `CheckComparison.ofRun` classifies
+/// `Incomparable`. An `Agreed` that compared nothing is the exact defect this record
+/// exists to prevent, and it is worse than a missing sample — a missing sample is
+/// countable.
+let projectedImpactScopedRun
+    (reading: CheckReachReading)
+    (runReport: TestRunReport)
+    (earned: Outcome)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (causes: RedCause list)
+    : ImpactScopedRun =
+    /// No reading. The scope is `ScopeUnreadable` and the outcome `Incomplete` for the
+    /// SAME reason, so whichever surface a reader lands on says the same thing.
+    let refuse (reason: string) : ImpactScopedRun =
+        { Scope = ScopeUnreadable reason
+          Outcome = Incomplete reason
+          FailingSuites = []
+          Basis = SampleBasis.ProjectedFromFullRun }
+
+    let recorded (scope: TestScope) (outcome: Outcome) (failingSuites: string list) : ImpactScopedRun =
+        { Scope = scope
+          Outcome = outcome
+          FailingSuites = failingSuites
+          Basis = SampleBasis.ProjectedFromFullRun }
+
+    match reading with
+    | ReachUnavailable why -> refuse why
+    | ReachRecorded report ->
+        match report.RunId, runReport.RunId with
+        // The projection and the verdict must be about the SAME execution. A daemon that
+        // ran another suite between the settle and this read holds a projection for a run
+        // this verdict is not about, and attaching it would compare two trees — the very
+        // thing recording the sample in-process was supposed to stop.
+        | Some projected, Some graded when projected <> graded ->
+            let projectedId = projected.ToString("N")
+            let gradedId = graded.ToString("N")
+
+            refuse
+                $"the retained impact selection belongs to run %s{projectedId}, and this verdict grades run \
+                   %s{gradedId} — a projection through another run's selection is not a comparison"
+        | None, _ -> refuse "the daemon did not say which run the retained impact selection belongs to"
+        | _, None -> refuse "this verdict names no run, so there is nothing to project through the selection"
+        | Some _, Some _ ->
+            match report.Reach with
+            | ReachUnknown why -> refuse why
+            | ReachedAFailure suites ->
+                // `check` would have executed a test this run saw fail, so `check` would
+                // have been red. The suites are the ones its selection REACHES — not every
+                // suite that failed, which is what the run already records above.
+                recorded report.Scope Red suites
+            | NoFailuresToReach ->
+                // Nothing failed anywhere, so removing what `check` would not have run
+                // removes nothing: its reading is this run's own, whatever that is. An
+                // `Incomplete` here is refused by `ofRun` on the earned side.
+                recorded report.Scope earned []
+            | ReachedNoFailure ->
+                match earned with
+                // A run whose tests failed cannot be GREEN. If it reads that way the two
+                // sources disagree about the same run, and a comparison built on a
+                // contradiction is not a comparison.
+                | Green ->
+                    refuse
+                        "the run recorded failing tests and a green verdict at the same time — the projection will \
+                         not compare two readings that contradict each other"
+                | Incomplete why -> refuse why
+                | Red ->
+                    match NonTestRed.classify statuses causes with
+                    | NoneBeyondTheTests -> recorded report.Scope Green []
+                    | AttributableBeyondTheTests -> recorded report.Scope Red []
+                    | OnlyUnattributableBeyondTheTests ->
+                        refuse
+                            "with the unreachable test failures set aside, every remaining red is one fshw cannot \
+                             attribute to this tree — `check` over that ledger reaches NO VERDICT, which is neither \
+                             the green nor the red this sample would have to compare"
+
+/// AUTOMATION-259. What a transport can OFFER for the check-vs-confirm sample. Three
+/// values, because there are three situations and collapsing any two of them is how a
+/// record comes to claim a comparison it never made.
+type CheckScopedEvidence =
+    /// `confirm` escalated: the impact-scoped run it threw away was EXECUTED and graded
+    /// in-process, before the forced full suite.
+    | ExecutedReading of ImpactScopedRun
+    /// `confirm` did not escalate — the run its own scan provoked was already unfiltered.
+    /// The reading is PROJECTED from that run through the retained impact selection.
+    | ProjectedThrough of CheckReachReading
+    /// Nothing is on offer: a `check` (which never escalates and never compares), or a
+    /// `confirm` that aborted before it could ask.
+    | NoReading
+
+/// Turn the evidence a transport gathered into the sample the verdict records.
+///
+/// `earned` is what THIS verdict records — including the tree-moved-underneath downgrade
+/// — because that is the answer `confirm` actually earned and so the only one worth
+/// comparing with.
+let comparisonOf
+    (evidence: CheckScopedEvidence)
+    (runReport: TestRunReport)
+    (earned: Outcome)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (causes: RedCause list)
+    : CheckComparison =
+    match evidence with
+    | ExecutedReading r -> CheckComparison.ofRun (Some r) earned
+    | ProjectedThrough reading ->
+        CheckComparison.ofRun (Some(projectedImpactScopedRun reading runReport earned statuses causes)) earned
+    | NoReading -> CheckComparison.ofRun None earned

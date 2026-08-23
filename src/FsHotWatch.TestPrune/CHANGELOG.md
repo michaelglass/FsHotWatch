@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The impact selection `confirm` widens past is retained, and a new `check-reach`
+  command reports whether it would have reached a failure (AUTOMATION-259).** The
+  selection was computed at the launch chokepoint and discarded in the same breath, so
+  the one reading fshw could not get any other way — what `check` would have run over
+  the same tree, same daemon, same instant — existed only in a log line. It is now
+  recorded on the run's launch (`TestRunLaunch.WouldHaveRun`) with every widening except
+  `set-scope full` intact, and classified against the run's own failures.
+
+  `check-reach` answers `reached-a-failure` / `reached-no-failure` /
+  `no-failures-to-reach` / `unknown`, with the run id it belongs to. A project-level red
+  (a timeout, an errored host, unparseable output) under a class-filtered selection is
+  `unknown`, never a guess: guessing "not reached" invents a missed failure and guessing
+  "reached" invents an agreement.
+
 ## 0.13.0-alpha.20 - 2026-08-23
 
 - **A test host that was KILLED is now reported as an ABORT, not as N failed tests**
