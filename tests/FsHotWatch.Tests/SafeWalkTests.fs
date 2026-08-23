@@ -245,3 +245,48 @@ let ``enumerateEntries is lazy — an early-stopping caller never walks the rest
 
         test <@ found @>
         test <@ List.ofSeq seen = [ "a.fsproj" ] @>)
+
+// --- isBuildOutput: the walk's pruning rule, asked about one known path ---
+//
+// AUTOMATION-368. `ProjectGraph` is handed MSBuild's compile items, which include
+// generated files under the project's own `obj/`. It cannot prune a walk it never
+// runs, so it asks this instead — and the two must be the same rule, or a lookup
+// and a walk disagree about what a source is.
+
+[<Fact(Timeout = 2000)>]
+let ``isBuildOutput classifies obj and bin items under the project`` () =
+    let projDir = Path.Combine("/repo", "src", "MyLib")
+
+    test
+        <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "obj", "Debug", "net10.0", "MyLib.AssemblyInfo.fs")) @>
+
+    test <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "bin", "Debug", "net10.0", "MyLib.dll")) @>
+
+[<Fact(Timeout = 2000)>]
+let ``isBuildOutput leaves authored sources alone, in the project or beside it`` () =
+    let projDir = Path.Combine("/repo", "src", "MyLib")
+
+    test <@ not (SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "Lib.fs"))) @>
+    test <@ not (SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "Nested", "Deep.fs"))) @>
+    // A linked compile item from a sibling project — still authored.
+    test <@ not (SafeWalk.isBuildOutput projDir (Path.Combine("/repo", "src", "Other", "Shared.fs"))) @>
+
+[<Fact(Timeout = 2000)>]
+let ``isBuildOutput ignores bin and obj ABOVE the project directory`` () =
+    // The trap. Answering over the absolute path would classify every file of a repo
+    // checked out under such a directory as build output — and a caller asking "is
+    // anything newer than the DLL" would then find nothing and answer FRESH forever.
+    // The live instance is this project's own `.workspaces/` convention.
+    let projDir = Path.Combine("/obj", "checkout", "src", "MyLib")
+
+    test <@ not (SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "Lib.fs"))) @>
+
+    let binRooted = Path.Combine("/bin", "checkout", "src", "MyLib")
+    test <@ not (SafeWalk.isBuildOutput binRooted (Path.Combine(binRooted, "Lib.fs"))) @>
+
+[<Fact(Timeout = 2000)>]
+let ``SourceExcludedDirs is stated in terms of BuildOutputDirs`` () =
+    // One fact, two consumers. A walk that pruned `obj/` while a lookup did not is
+    // exactly the drift AUTOMATION-368 cost two releases to find.
+    test <@ Set.isSubset SafeWalk.BuildOutputDirs SafeWalk.SourceExcludedDirs @>
+    test <@ SafeWalk.BuildOutputDirs = set [ "bin"; "obj" ] @>

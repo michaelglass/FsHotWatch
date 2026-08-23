@@ -874,3 +874,80 @@ let ``requestFullRun survives a THROWING run-tests command`` () =
         hostWith [ FsHotWatch.Cli.IpcParsing.RunTestsCommand, fun _ -> failwith "runner exploded" ]
 
     FsHotWatch.Cli.RunOnceCheck.requestFullRun host
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-167 — the SECOND transport, over the same defect.
+//
+// `--run-once` is what CI runs, so this is the transport whose exit code actually gates
+// a merge. It publishes through the very same `IpcOutput.publishVerdict`, so it inherits
+// the same requirement: the tree it captures at ITS settle boundary (the in-process
+// scan's return) is the only thing a publication-time hash can honestly be compared with.
+// ---------------------------------------------------------------------------
+
+/// The real `--run-once` driver over a repo carrying one tracked file, rewriting that
+/// file from inside `renderSummary` when `moveTree` — i.e. after the in-process scan has
+/// settled and before the verdict is published.
+///
+/// `renderSummary` is the production injection point the CLI already hands its own
+/// renderer to; nothing was added to `RunOnceCheck` to make this window reachable from a
+/// test.
+let private runOnceWithTreeMovedMidCheck (moveTree: bool) (repoRoot: string) : int =
+    // `withProjectOnlyRepo` already created `src/`, which is a discovery root — so
+    // `TreeHash` walks this file, and rewriting it genuinely moves the tree.
+    let tracked = System.IO.Path.Combine(repoRoot, "src", "Tracked.txt")
+    System.IO.File.WriteAllText(tracked, "the content the check was run against")
+
+    let mutable moved = false
+
+    let createDaemon (root: string) =
+        Daemon.createWith
+            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+            root
+            Daemon.DaemonOptions.defaults
+
+    FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+        (fun _ ->
+            if moveTree && not moved then
+                moved <- true
+                System.IO.File.WriteAllText(tracked, "an edit that landed while the check was finishing")
+
+            "")
+        FsHotWatch.Cli.CheckVerdict.InnerLoop
+        false
+        createDaemon
+        repoRoot
+        (noTestProjectsConfig ())
+        None
+
+/// The verdict the drive above left on disk, read inside the temp repo's lifetime.
+let private verdictOnDisk (repoRoot: string) : FsHotWatch.Cli.Verdict.Verdict =
+    match FsHotWatch.Cli.Verdict.read repoRoot with
+    | FsHotWatch.Cli.Verdict.Reading.Found v -> v
+    | other -> failwithf "expected a published verdict, got %A" other
+
+[<Fact(Timeout = 60000)>]
+let ``run-once: a tree that moves mid-check exits 2 AND records incomplete`` () =
+    withProjectOnlyRepo "runonce-167-tree-moved" (fun repoRoot ->
+        // The code CI gates on...
+        let exitCode = runOnceWithTreeMovedMidCheck true repoRoot
+        test <@ exitCode = 2 @>
+
+        // ...and the file a deploy preflight gates on. One decision, two renderings.
+        let v = verdictOnDisk repoRoot
+        test <@ v.ExitCode = 2 @>
+
+        match v.Outcome with
+        | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains "working tree changed" @>
+        | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other)
+
+[<Fact(Timeout = 60000)>]
+let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in both renderings`` () =
+    // The control: same driver, same repo, same config — the ONLY variable is whether the
+    // tracked file was rewritten inside the window.
+    withProjectOnlyRepo "runonce-167-tree-still" (fun repoRoot ->
+        let exitCode = runOnceWithTreeMovedMidCheck false repoRoot
+        test <@ exitCode = 0 @>
+
+        let v = verdictOnDisk repoRoot
+        test <@ v.ExitCode = 0 @>
+        test <@ v.Outcome = FsHotWatch.Cli.Verdict.Green @>)

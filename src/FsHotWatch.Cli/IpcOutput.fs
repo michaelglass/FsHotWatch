@@ -669,15 +669,42 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
          && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
 
+/// The tree a check had just finished verifying, captured by the TRANSPORT at the
+/// instant it settled.
+///
+/// AUTOMATION-167. Deliberately NOT computed inside `publishVerdict`. Everything
+/// between settling and publishing — reading diagnostics, reading the test scope,
+/// rendering the summary, converging — runs against a LIVE working tree, so a
+/// publisher that hashes on entry takes BOTH of its snapshots after that window and
+/// sees one consistent post-move tree. The move it exists to catch is invisible to it,
+/// and it publishes green over a tree nobody checked. The comparison is only sound if
+/// one side of it was taken where the verifying stopped.
+type internal SettledTree =
+    /// The content address of the tree at the moment the check settled — the tree this
+    /// verdict is about to make a claim about.
+    | VerifiedTree of FsHotWatch.TreeHash.Tree
+    /// The check aborted before it ever settled (a wedged plugin, a daemon that went
+    /// away mid-wait). There is no verified tree, so there is nothing for a
+    /// publication-time tree to be compared WITH. Stated, rather than faked with a hash
+    /// taken now — which would make the comparison vacuously pass and read as "the tree
+    /// held still" over a check that never ran.
+    | NeverSettled
+
+module internal SettledTree =
+    /// Capture the tree the check has just finished verifying. Call this AT the settle
+    /// boundary — where `WaitForComplete` returns on the daemon path, where the
+    /// in-process scan returns on the `--run-once` one — and nowhere later.
+    let capture (repoRoot: string) (excludePatterns: string list) : SettledTree =
+        VerifiedTree(FsHotWatch.TreeHash.compute repoRoot excludePatterns)
+
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
 /// (stdout not a TTY) — print the steering block that names it. The file and the exit
 /// code are two renderings of ONE `CheckOutcome`, never a second computation.
 ///
-/// TREE HASH: taken TWICE — once after the daemon has settled (that is the tree
-/// it just finished verifying) and once again immediately before the write. If
-/// the two differ, the working tree moved underneath the verdict while it was
-/// being produced, and the honest answer is `incomplete`, not a green over a tree
-/// nobody checked.
+/// TREE HASH: compared against `settledTree`, the tree the caller captured when its
+/// check settled, using a second hash taken immediately before the write. If the two
+/// differ, the working tree moved underneath the verdict while it was being produced,
+/// and the honest answer is `incomplete`, not a green over a tree nobody checked.
 ///
 /// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
 /// its exit code. The verdict is an additional surface, never a new way to fail.
@@ -697,6 +724,11 @@ let internal publishVerdict
     // returned exit 1 with every plugin `ok` and 9,064 tests passed, and the file it
     // wrote named nothing at all.
     (redCauses: Verdict.RedCause list)
+    // AUTOMATION-167. The tree the CALLER was verifying, captured at its settle
+    // boundary. Required, not derived: see `SettledTree` — a tree hashed here is
+    // hashed too late to catch a move, because the move happens between settling and
+    // publishing and both of a publisher's own snapshots fall on the far side of it.
+    (settledTree: SettledTree)
     (outcome: CheckVerdict.CheckOutcome)
     // AUTOMATION-167. RETURNS the exit code it wrote, so the caller cannot compute a
     // second one. The tree-moved downgrade below is decided HERE — it needs the two
@@ -705,18 +737,23 @@ let internal publishVerdict
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
     try
-        let settled = FsHotWatch.TreeHash.compute repoRoot excludePatterns
         let suites = Verdict.suiteVerdicts repoRoot runReport.RunId
         let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
         let verdictOutcome, exitCode =
-            if settled.Hash <> atWrite.Hash then
+            match settledTree with
+            | VerifiedTree settled when settled.Hash <> atWrite.Hash ->
                 Verdict.Incomplete
                     "the working tree changed while the verdict was being produced — nothing is claimed about it",
                 CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
-            else
-                Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+            // A tree that held still — and, on the abort paths, a check that never
+            // settled at all. `NeverSettled` cannot be what makes a verdict incomplete:
+            // the abort already did, and both callers that reach here hand in an
+            // `Incomplete`. Re-deciding it from a comparison with no left-hand side
+            // would invent an answer rather than read one.
+            | VerifiedTree _
+            | NeverSettled -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -852,6 +889,13 @@ let pollAndRender
             eprintfn "  %s" consoleLabel
             fn ()
 
+    // AUTOMATION-167. The tree as it was when the daemon last said it had finished.
+    // Re-captured at EVERY settle (the first one, the forced-full-suite one, and each
+    // convergence re-settle), so it always names the tree the verdict below actually
+    // rests on. `NeverSettled` until the first one returns — which is the state the
+    // abort handlers publish from, and it is a fact about them, not a missing value.
+    let settledTree = ref NeverSettled
+
     // Settle the host through its AUTHORITATIVE verdict (`WaitForComplete` →
     // `waitForVerdict`), rendering live status while it blocks. `WaitForComplete` runs on
     // a background task; the render loop terminates only when THAT task finishes, never
@@ -864,6 +908,10 @@ let pollAndRender
         // Surface a fault (daemon shutdown / IPC error) rather than swallowing it
         // behind a vacuous clean — re-raises the original RPC exception.
         completeTask.GetAwaiter().GetResult()
+        // HERE, and not one line later: `getErrors`, `getTestRun` and the render below
+        // all run against a live tree, so a hash taken after them is a hash of whatever
+        // the tree became, not of what the daemon just verified.
+        settledTree.Value <- SettledTree.capture repoRoot excludePatterns
 
     // The LAST state the verdict was computed from. Captured at every read (the first
     // one and each convergence re-read) so the file records what the final verdict was
@@ -982,6 +1030,7 @@ let pollAndRender
                 impactScoped.Value
                 finalStatuses.Value
                 finalCauses.Value
+                settledTree.Value
                 outcome
 
         // `Verdict.CheckProse.explainOutcome`, not a local match: the daemon-less path
@@ -1013,6 +1062,7 @@ let pollAndRender
                 impactScoped.Value
                 finalStatuses.Value
                 finalCauses.Value
+                settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
@@ -1031,6 +1081,7 @@ let pollAndRender
                 impactScoped.Value
                 finalStatuses.Value
                 finalCauses.Value
+                settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail

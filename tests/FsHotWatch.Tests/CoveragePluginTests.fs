@@ -660,3 +660,97 @@ let ``coverage-status distinguishes never-run from OK from FAILED`` () =
 
         waitUntil (fun () -> status () = Some "coverage: FAILED (run `fshw errors` for details)") 10000
         test <@ status () = Some "coverage: FAILED (run `fshw errors` for details)" @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — COVERAGE's honest control: it never participates in the cache
+// ---------------------------------------------------------------------------
+//
+// The other three plugins get a cold-vs-cached ledger comparison. Coverage
+// cannot: it is deliberately non-cacheable (`CacheKey = None`), because its
+// result is a function of the Cobertura XML the preceding test run just wrote —
+// files no key it could compute covers. Handing it a synthetic cache entry would
+// prove something about a fixture rather than about production.
+//
+// So the property to pin is the ABSENCE, and the absence has to be pinned where
+// it bites: `handler.CacheKey = None` makes the dispatch loop compute no key at
+// all, which is what makes replay AND store impossible. Asserting the field
+// alone would leave "and therefore the framework never touches the cache" as an
+// unchecked inference — so the cache itself is instrumented and asked.
+
+/// A task cache that counts every framework lookup and store. Delegates
+/// everything; the counters are the whole point.
+type private CountingTaskCache(inner: FsHotWatch.TaskCache.ITaskCache) =
+    let mutable gets = 0
+    let mutable sets = 0
+
+    member _.Gets = System.Threading.Volatile.Read(&gets)
+    member _.Sets = System.Threading.Volatile.Read(&sets)
+
+    interface FsHotWatch.TaskCache.ITaskCache with
+        member _.TryGet compositeKey cacheKey =
+            System.Threading.Interlocked.Increment(&gets) |> ignore
+            inner.TryGet compositeKey cacheKey
+
+        member _.Set compositeKey cacheKey result =
+            System.Threading.Interlocked.Increment(&sets) |> ignore
+            inner.Set compositeKey cacheKey result
+
+        member _.Clear() = inner.Clear()
+        member _.ClearPlugin plugin = inner.ClearPlugin plugin
+        member _.ClearFile file = inner.ClearFile file
+        member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-343: the coverage plugin never reads or writes the task cache`` () =
+    withTempDir "a343-coverage-noncacheable" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+
+        let counting = CountingTaskCache(FsHotWatch.TaskCache.InMemoryTaskCache())
+
+        let host =
+            PluginHost(Unchecked.defaultof<_>, dir, taskCache = (counting :> FsHotWatch.TaskCache.ITaskCache))
+
+        let handler = CovPlugin.create configPath dir
+
+        // The declaration, pinned so a future "let's cache coverage too" has to
+        // come back through this test and its reasoning.
+        test <@ handler.CacheKey.IsNone @>
+
+        host.RegisterHandler(handler)
+
+        // NO out-of-batch sentinel here, deliberately. The other three controls seed
+        // one because their question is what a REPLAY does to the ledger. Coverage has
+        // no replay — and it clears wholesale on every check anyway (`ClearAllErrors`
+        // before re-reporting the shortfalls), so a surviving-sentinel assertion would
+        // be false and a cleared-sentinel assertion would be about `ClearAllErrors`,
+        // not about the cache. The cache key's ABSENCE is the whole property.
+
+        let status () =
+            host.RunCommand("coverage-status", [||]) |> Async.RunSynchronously
+
+        // Two identical runs, the second dispatched only once the first has landed
+        // — for any cacheable plugin that second one is a hit.
+        //
+        // POSITIVE CONTROL, and the reason the wait is on `coverage: OK` rather than
+        // on a terminal status: the plugin starts Idle, so a terminal-status poll can
+        // return before the first check even begins, and "the cache was never touched"
+        // would then be a true statement about a plugin that never ran.
+        emitRunCompleted host
+        let ranCold = waitUntilTrue (fun () -> status () = Some "coverage: OK") 15000
+        test <@ ranCold @>
+
+        emitRunCompleted host
+        let settled = waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 15000
+        test <@ settled @>
+        let afterSecond = status ()
+        test <@ afterSecond = Some "coverage: OK" @>
+
+        // Never replayed ...
+        let summary = terminalSummaryOf host "coverage"
+        test <@ not (summary.Contains "(cached)") @>
+        // ... and never even consulted. `None` short-circuits before the lookup, so
+        // both counters stay at zero rather than merely missing.
+        test <@ counting.Gets = 0 @>
+        test <@ counting.Sets = 0 @>)

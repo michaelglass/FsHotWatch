@@ -984,3 +984,91 @@ let ``redCausesOf reports NOTHING on a clean ledger`` () =
           Coverage = Complete }
 
     test <@ List.isEmpty (redCausesOf false clean) @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-167 — a tree that MOVES under the check.
+//
+// The double tree-hash exists to catch exactly one condition: the working tree changing
+// while a verdict is being produced. It catches it only if ONE of the two hashes is
+// taken where the daemon stopped verifying — so the transport captures it at its settle
+// boundary (`SettledTree`) and hands it to `publishVerdict`, which compares it with a
+// hash taken at the write. A publisher that takes both hashes itself takes them on the
+// same side of the move and sees a tree that never budged.
+//
+// Both halves are asserted TOGETHER, which is the whole ticket: the process exit and the
+// verdict FILE are two renderings of one decision, and a deploy preflight authorises on
+// the FILE. A run that exits 0 while the file records `incomplete` tells its two
+// consumers opposite things about the same tree.
+// ---------------------------------------------------------------------------
+
+/// Drive `pollAndRender` over a repo with one tracked file, rewriting that file from
+/// inside `getErrors` when `moveTree` — i.e. after `waitForComplete` has returned and
+/// before the verdict is published, which is precisely the window the ticket describes.
+///
+/// `getErrors` is the seam production already reads its diagnostics through (`Program.fs`
+/// passes the IPC call); nothing was added to `IpcOutput` to make this window reachable
+/// from a test.
+let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict =
+    TestHelpers.withTempDir "ipcoutput-167-tree" (fun repoRoot ->
+        // The file has to sit under a DISCOVERY ROOT. Outside one, `TreeHash` never walks
+        // it: both hashes are then the hash of an EMPTY tree, they agree no matter what
+        // the test does to the file, and the control below would pass against a
+        // publisher that compares nothing at all.
+        let srcDir = System.IO.Path.Combine(repoRoot, "src")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+        let tracked = System.IO.Path.Combine(srcDir, "Tracked.txt")
+        System.IO.File.WriteAllText(tracked, "the content the check was run against")
+
+        let mutable moved = false
+
+        let getErrors () : string =
+            if moveTree && not moved then
+                moved <- true
+                System.IO.File.WriteAllText(tracked, "an edit that landed while the check was finishing")
+
+            """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle") // waitForScan
+                (fun () -> "idle") // waitForComplete
+                (fun () -> "{}") // getStatus
+                getErrors
+                (fun () -> TestRunReport.ofScopeOnly (FullSuite 1))
+                ignore // forceFullRun: never fires — the scope is already full-suite
+                (fun () -> "idle") // triggerScan
+
+        // Read inside the temp dir's lifetime: the verdict dies with it.
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v -> exitCode, v
+        | other -> failwithf "the drive must leave a readable verdict, got %A" other)
+
+[<Fact(Timeout = 15000)>]
+let ``a tree that moves mid-check exits 2 AND records incomplete — the file and the process agree`` () =
+    let exitCode, v = driveWithTreeMovedMidCheck true
+
+    // What CI reads...
+    test <@ exitCode = 2 @>
+    // ...and what the deploy preflight reads. Asserting only one of these is what let
+    // the defect ship: the file was already right and the process was already wrong.
+    test <@ v.ExitCode = 2 @>
+
+    match v.Outcome with
+    | Verdict.Incomplete reason -> test <@ reason.Contains "working tree changed" @>
+    | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderings`` () =
+    // The control. Without it, a publisher that answered `incomplete`/2 unconditionally
+    // would satisfy the test above, and `check` would never go green again.
+    let exitCode, v = driveWithTreeMovedMidCheck false
+
+    test <@ exitCode = 0 @>
+    test <@ v.ExitCode = 0 @>
+    test <@ v.Outcome = Verdict.Green @>

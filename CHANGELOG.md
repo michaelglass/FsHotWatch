@@ -126,6 +126,49 @@ solution-wide `dotnet test` and `mise run test-integration` both run it.
 config record gains `Excluded` and `Solution`. See
 [`src/FsHotWatch.Cli/CHANGELOG.md`](src/FsHotWatch.Cli/CHANGELOG.md).
 
+
+### core/build: MSBuild's own generated `obj/` sources stop reading as edits (AUTOMATION-368)
+
+The artifact-freshness gate asks one question — *did a source change after the build
+wrote the DLL?* — and `ProjectGraph.GetMaxSourceMtime` was answering it over MSBuild's
+whole compile-item list. That list is not a list of edits. Every SDK project compiles
+`obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs`, every design-time evaluation regenerates
+it, and **project discovery is a design-time evaluation** — so each discovery pass
+stamped every project's newest "source" strictly after the DLL the last build had just
+produced, and a tree nobody had touched read as universally stale.
+
+The gate shipped report-only for exactly this reason, and the window paid for itself.
+Read back over ~40 workspaces of a consuming repo (2026-08-18..23) the logs held **2090
+stale findings, 91% of them within 90 s of an `MSBuild evaluation` pass in the same
+daemon log**. Promoting it to reddening on that reading would have failed essentially
+every build in every workspace, on the first discovery after each one.
+
+`GetMaxSourceMtime` now excludes build output. TestPrune's independent
+`ArtifactFreshness` never had the bug — it walks under `SafeWalk.SourceExcludedDirs`,
+whose own doc comment names this precise trap — so this **is** the
+BuildPlugin/TestPrune disagreement the promotion criteria asked about, and the two now
+answer from one shared fact (`SafeWalk.BuildOutputDirs`) rather than having been
+separately taught it.
+
+`SafeWalk.isBuildOutput` asks that question **relative to the project directory**, never
+over the absolute path. Matching segments of the absolute path would classify every file
+of a repo checked out under a directory named `bin` or `obj` as build output — nothing
+would ever be newer than the DLL, and the gate would answer FRESH forever. Same silence,
+arrived at by being more thorough. (`.workspaces/` is the live instance: jj workspaces
+are full checkouts nested under an excluded name.)
+
+**The gate is still report-only.** The corrected reading has not run against a real
+repository either, and promoting a build-reddening predicate in the change that fixes it
+is the mistake the flag exists to prevent. One observation window on the corrected
+detector comes first.
+
+Also here, and the reason this was invisible for two releases: every test of this gate
+built its fixture through `RegisterFromFsproj`, a path no live daemon takes. The
+fixtures now register the way `Daemon.fs` does — `RegisterProject` +
+`RegisterProjectOutput`, from what MSBuild reported — and carry the generated `obj/`
+compile item a real project has, so the tests fail for the reason production would.
+
+
 ### docs: the replacement for `isPassed` is now something you can copy
 
 `TestResult.isPassed` was deleted this cycle and `TestResult.verdict` /

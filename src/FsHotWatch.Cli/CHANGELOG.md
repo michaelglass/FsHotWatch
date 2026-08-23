@@ -24,6 +24,21 @@
     between the tree and the outcome; `DaemonConfiguration.Tests` gains `Excluded` and
     `Solution`. New module `FsHotWatch.Cli.SolutionScope`.
 
+
+- fix: **a tree that changes while a check is finishing is now actually caught** — both
+  `check`/`confirm` and their `--run-once` twin exit `2` and record `incomplete`
+  (AUTOMATION-167). The mid-check tree-move detector compared two hashes it took
+  ITSELF, at publish time; everything between the daemon settling and the verdict being
+  written — reading diagnostics, reading the test scope, rendering the summary — runs
+  against a live working tree, so both of its snapshots landed on the far side of the
+  move and saw one consistent tree that had "never budged". The transports now capture
+  the tree at their settle boundary and hand it to the publisher, which is the only
+  place the comparison has a left-hand side. A run that edits a tracked file while a
+  check is settling can therefore go from green to `incomplete`/2 — which is the point:
+  the verdict is a claim about a particular tree, and that tree is no longer the one
+  that was verified.
+
+
 ## 0.14.0-alpha.23 - 2026-08-21
 
 - chore: rebuild to bundle updated dependencies

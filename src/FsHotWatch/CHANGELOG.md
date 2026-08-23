@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- AUTOMATION-368: **a compile item is not an edit** — `ProjectGraph.GetMaxSourceMtime`
+  now excludes build output. It folded over MSBuild's whole compile-item list, which
+  includes `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs`; every design-time evaluation
+  regenerates that file and project discovery IS a design-time evaluation, so each
+  discovery pass stamped every project's newest "source" after its own freshly-built
+  DLL and the artifact gate read an untouched tree as universally stale. Measured over
+  the report-only window across ~40 workspaces of a consuming repo: 2090 stale
+  findings, 91% within 90 s of an `MSBuild evaluation` pass in the same daemon log.
+  The gate stays report-only — the corrected reading has not run against a real
+  repository either. See [ADR-015](../../docs/adr-015-a-compile-item-is-not-an-edit.md).
+- `SafeWalk` gains `BuildOutputDirs` and `isBuildOutput`. `SourceExcludedDirs` is now
+  defined in terms of `BuildOutputDirs`, so the walk TestPrune's `ArtifactFreshness`
+  does and the per-path lookup the project graph does answer from one fact rather than
+  having been separately taught it. `isBuildOutput` asks RELATIVE to the project
+  directory: matching `bin`/`obj` in the absolute path would classify every file of a
+  repo checked out under such a directory as output, and the gate would answer FRESH
+  forever.
+
 ## 0.10.0-alpha.14 - 2026-08-19
 
 - **BREAKING** — `SafeWalk` now reports what it could not see (AUTOMATION-164).

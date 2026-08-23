@@ -1369,3 +1369,55 @@ let ``a command that exceeds its timeout reports Failed with a timed-out verdict
     | other -> failwithf "expected a TimedOut run outcome, got %A" other
 
     test <@ record.Elapsed > TimeSpan.Zero @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-343 — FILE-COMMAND's own cold-vs-cached ledger parity
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-343: a cached file-command replay leaves an out-of-batch finding standing`` () =
+    // Same shape as the build control, different plugin: FileCommandPlugin reports
+    // and clears exactly one pseudo-file, `<run-scripts>`, and never calls
+    // ClearAllErrors. Its cache key is whole-run (`File = None`), which is precisely
+    // the combination the deleted blanket `ClearPlugin` was destructive for — a
+    // per-file ledger under a whole-run key.
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
+            "echo"
+            "hello"
+            "/tmp"
+            None
+
+    host.RegisterHandler(handler)
+
+    // A finding carried from an earlier batch, about a file this command never
+    // mentions.
+    seedOutOfBatch host "run-scripts"
+
+    // COLD. The command really runs and mints the cache entry.
+    host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
+    waitForTerminalStatus host "run-scripts" 15000
+    let coldSummary = terminalSummaryOf host "run-scripts"
+    test <@ not (coldSummary.Contains "(cached)") @>
+    let cold = ledgerSlice host "run-scripts"
+
+    // The real run keeps it.
+    test <@ ledgerHasOutOfBatch host "run-scripts" @>
+
+    // WARM. Same command, same args, no arg-file moved — so the merkle is unchanged
+    // and this dispatch MUST be served from the cache.
+    host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
+    let replayed = waitForCachedReplay host "run-scripts" 15000
+    test <@ replayed @>
+
+    let cached = ledgerSlice host "run-scripts"
+
+    test <@ ledgerHasOutOfBatch host "run-scripts" @>
+    test <@ cached = cold @>
