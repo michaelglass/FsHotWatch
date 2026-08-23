@@ -1294,7 +1294,17 @@ let ``a confirm whose forced full run did not complete records no filtered scope
     // projection of `LastCoverage`), and publishing must not write that down verbatim.
     withTempDir "verdict-confirm-escalation" (fun root ->
         let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
-            IpcOutput.publishVerdict root [] mode false (TestRunReport.ofScopeOnly scope) None Map.empty [] outcome
+            IpcOutput.publishVerdict
+                root
+                []
+                mode
+                false
+                (TestRunReport.ofScopeOnly scope)
+                None
+                Map.empty
+                []
+                (IpcOutput.SettledTree.capture root [])
+                outcome
             |> ignore
 
             match Verdict.read root with
@@ -1390,6 +1400,7 @@ let private publishConfirm
         impactScoped
         Map.empty
         []
+        (IpcOutput.SettledTree.capture root [])
         outcome
     |> ignore
 
@@ -1407,6 +1418,11 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
     // during a check, and the caller then re-derived the code from the ORIGINAL
     // outcome and returned 0. The file said "no verdict"; the shell said "pass"; CI
     // reads the shell. Returning the code removes the second computation entirely.
+    //
+    // This is the INVARIANT half only — it pins that the two renderings cannot be
+    // computed separately. The half that proves the tree-move is actually SEEN lives at
+    // the transports, where the move can happen between settling and publishing:
+    // `IpcOutputTests` (daemon) and `RunOnceOutputTests` (`--run-once`).
     withTempDir "verdict-167-returns-code" (fun root ->
         let publishedFor (outcome: CheckVerdict.CheckOutcome) =
             IpcOutput.publishVerdict
@@ -1418,6 +1434,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
                 None
                 Map.empty
                 []
+                (IpcOutput.SettledTree.capture root [])
                 outcome
 
         // Asserted against the FILE rather than a duplicate of the production

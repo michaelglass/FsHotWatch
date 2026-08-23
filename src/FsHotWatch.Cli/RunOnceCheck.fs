@@ -236,7 +236,19 @@ let runOnceAndVerdictWith
         if checkMode = CheckVerdict.Confirmation then
             requestFullSuiteScope daemon.Host
 
-        let statuses = runScan daemon
+        // AUTOMATION-167. The `--run-once` twin of the daemon path's
+        // post-`WaitForComplete` capture: the tree as it was when the in-process run
+        // finished. Re-captured at EVERY settle — the first scan, the forced full suite,
+        // each convergence re-scan — and never after the reads, the summary render and
+        // the staleness scan below, all of which run against a live working tree.
+        let settledTree = ref IpcOutput.NeverSettled
+
+        let scanAndSettle () : Map<string, PluginStatus> =
+            let statuses = runScan daemon
+            settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
+            statuses
+
+        let statuses = scanAndSettle ()
 
         // What the run produced. Re-read after every step that can change it (a forced
         // run, a convergence re-scan) — never carried over from an earlier snapshot,
@@ -262,7 +274,7 @@ let runOnceAndVerdictWith
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
-        let rescan () : unit = runScan daemon |> ignore
+        let rescan () : unit = scanAndSettle () |> ignore
 
         // CONFIRM EARNS ITS EVIDENCE. A cold run-once scan reaches the test-prune launch
         // chokepoint (build → BuildCompleted), where full-suite scope has already forced
@@ -292,6 +304,7 @@ let runOnceAndVerdictWith
                     (TestScope.describe preEscalation.Scope)
 
                 forceFullRun daemon
+                settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
                 // Re-read: the forced run's failures ARE the answer.
                 reread ()
             | None -> preEscalation
@@ -355,6 +368,7 @@ let runOnceAndVerdictWith
                 impactScoped
                 finalStatuses.Value
                 (redCauses daemon noWarnFail pluginName)
+                settledTree.Value
                 outcome
 
         // `Verdict.CheckProse.explainOutcome`, the very call the daemon path makes:
