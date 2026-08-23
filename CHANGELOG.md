@@ -74,6 +74,38 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli/test-prune: a killed test host is an ABORT, and stops reading as a mass regression
+
+Under CPU load the gate returned large numbers of failures at 0ms. A 0ms failure is a
+test that **never ran** — the host was killed and everything it had not reached was
+written out in exactly the shape of a test that ran and failed. The gate then reported
+`N failed`, exit `1`, `red` in `.fshw/verdict.json`, and a console list of test names.
+Every surface asserted a definite negative about code that had not been tested at all,
+and each occurrence cost hours of investigation into code that was fine.
+
+The discriminator is the exit code, and only the part of it no runner chooses: .NET on
+Unix reports a child terminated by signal N as `128 + N`, so `137` (SIGKILL, the OOM
+killer or a reaper) and `134` (SIGABRT, the runtime aborting on an unhandled exception)
+mean *the host did not finish*. Microsoft.Testing.Platform's own exit codes are single
+digits, so a genuine mass failure can never be mistaken for one — that direction is
+asserted as explicitly as the first.
+
+What changed, given that fact:
+
+- A signalled host is classified as an abort **regardless of any CTRF report it flushed
+  on the way down**. Reading that partial report as the verdict is what minted the
+  phantom regression.
+- The abort has its own console report. It never prints the "N test(s) failed" headline,
+  it says NOTHING WAS VERIFIED first, and it labels the transcript as a transcript.
+- **`fshw check` / `confirm` exit `2`, not `1`**, and `.fshw/verdict.json` records
+  `outcome: "incomplete"` with a reason naming the signal and the projects. If you branch
+  on `red` to mean "a test broke", a killed host stops matching. A real failure beside an
+  abort is still `red` / exit `1`.
+- **No retry was added.** An automatic retry cannot tell a host killed by a busy box from
+  one that aborts every time because something is genuinely broken, so a loop that
+  retried until it got a verdict would turn a real crash into a slow green. The abort is
+  reported honestly, once; the reader is the one who can see whether the machine was busy.
+
 ### docs: the replacement for `isPassed` is now something you can copy
 
 `TestResult.isPassed` was deleted this cycle and `TestResult.verdict` /
