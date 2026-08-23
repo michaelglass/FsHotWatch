@@ -272,6 +272,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                     {| BeforeRun = None
                        Extensions = []
                        Projects = []
+                       Excluded = []
+                       Solution = None
                        CoverageDir = "coverage"
                        DependsOn = [] |} }
 
@@ -300,6 +302,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             CoverageArgsTemplate = None
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ]
+                       Excluded = []
+                       Solution = None
                        CoverageDir = "coverage"
                        DependsOn = [] |} }
 

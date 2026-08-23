@@ -42,6 +42,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="SolutionScope.fs" />
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />

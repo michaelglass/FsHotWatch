@@ -175,6 +175,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                         {| BeforeRun = None
                            Extensions = []
                            Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
+                           Excluded = []
+                           Solution = None
                            CoverageDir = covDir
                            DependsOn = [] |} }
 

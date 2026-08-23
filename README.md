@@ -216,6 +216,12 @@ hand. Every field is optional — sensible defaults apply when omitted.
         "classJoin": " ",
         "group": "unit"
       }
+    ],
+    "excluded": [
+      {
+        "project": "tests/MyProject.IntegrationTests",
+        "reason": "end-to-end; run by `make integration` and by CI's solution-wide dotnet test"
+      }
     ]
   },
   "analyzers": {
@@ -273,6 +279,50 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 | `dependsOn` | `string[]` | `[]` | Repo-root-relative globs (`*`, `?`, `**`) naming **external** test inputs the symbol-diff can't see — DB migrations, generated files, schemas. Their content hash salts the test cache key, so editing a matched file forces a real test re-run even when no test source changed. |
 | `coverageDir` | `string` | `"coverage"` | Directory (repo-root-relative) for per-project Cobertura artifacts. |
 | `projects` | `array` | `[]` | List of test project configurations. |
+| `excluded` | `array` | `[]` | Solution test projects the gate deliberately does **not** run, each with the reason it does not. The only sanctioned way for a test project in the solution to be outside the scope — see [The scope must cover the solution](#the-scope-must-cover-the-solution). |
+| `solution` | `string` | — | The solution the test scope is reconciled against. Only needed when the repo root holds more than one `*.slnx`/`*.sln`, or when the authority is not at the root. |
+
+**`tests.excluded[]` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `project` | `string` | — | The project, by repo-relative directory (`tests/App.Tests`), by `.fsproj` path, or by bare name (`App.Tests`). |
+| `reason` | `string` | — | Why it is not run. **Required and non-blank** — an exclusion without a written reason is refused. |
+
+### The scope must cover the solution
+
+`confirm` reports its scope as `{"kind":"full","ranProjects":N,"totalProjects":N}`.
+Both numbers count `tests.projects`, so on its own "full" would mean *every suite the
+config named* — never *every suite in the solution*. A test project sitting in the
+solution and in no gated list would not be reported as UNRUN; it would simply be
+absent, and absent is indistinguishable from passing.
+
+So every config load reconciles `tests.projects` with the solution at the repo root,
+and **refuses to load** (exit `2`, `config error:`) when they disagree:
+
+- a solution test project that is neither gated nor excluded;
+- an exclusion with no `reason`, or naming a project the solution does not contain;
+- a project listed in **both** `tests.projects` and `tests.excluded`;
+- a gated project the solution does not contain;
+- more than one solution file at the repo root with no `tests.solution` to pick one.
+
+A test project is one that declares a **test runner** — `UseMicrosoftTestingPlatformRunner`,
+`IsTestProject`, `TestingPlatformDotnetTestSupport`, or a reference to
+`Microsoft.NET.Test.Sdk` / `Microsoft.Testing.Platform` / `xunit.v3.mtp-v2` /
+`xunit.runner.visualstudio` / `NUnit3TestAdapter` / `MSTest.TestAdapter`. A library that
+merely references a test framework is not one. A project you gate is one whether or not
+that list recognises it.
+
+A declared, reasoned exclusion is fine — the silence is the bug. Every exclusion is
+logged on the green path and recorded in `.fshw/verdict.json` under `scope.excluded`,
+so a consumer reading `"kind": "full"` can see the gap rather than infer completeness
+from a count.
+
+A repo with **no** solution file has no declared universe to be complete against, and
+nothing is reconciled: the full-suite claim is complete *relative to the solution*, and
+with no solution there is no such claim. A repo that configures no test projects is left
+alone entirely — it makes no full-suite claim, and `confirm` already refuses to build a
+merge verdict without one.
 
 **`tests.projects[]` fields:**
 
