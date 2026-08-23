@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **BREAKING** — `CheckVerdict.CheckOutcome` gains `RunnerAborted of aborts: string list`
+  and `CheckVerdict.CheckInputs` gains a required `RunnerAborted: RunnerAbort` term
+  (AUTOMATION-294). Both transports supply it; a transport that forgets fails to compile
+  rather than quietly reporting the old exit 1.
+- **`fshw check` / `confirm` now exit `2` where they previously exited `1`** when a test
+  HOST DIED mid-run — killed by a signal under load, or gone before it could write a
+  report. Nothing failed there and nothing passed, so it is the same class of answer as
+  `WaitingOnBuild`: "could not complete", not "failures found". `.fshw/verdict.json`
+  records `outcome: "incomplete"` with a reason naming the signal and every affected
+  project, where it used to record `red`. **If you branch on `red` to mean "a test
+  broke", a killed host stops matching — which is the fix.** A genuine failure beside an
+  abort still short-circuits to `FailuresFound`/exit 1, in both modes.
+- `converge` treats `RunnerAborted` as TERMINAL — no automatic retry. A re-scan cannot
+  un-kill a host, and a retry loop cannot tell a host killed by a busy box from one that
+  aborts every time because something is genuinely broken, so retrying until a verdict
+  appeared would convert a real crash into a slow green.
+
 ## 0.14.0-alpha.23 - 2026-08-21
 
 - chore: rebuild to bundle updated dependencies

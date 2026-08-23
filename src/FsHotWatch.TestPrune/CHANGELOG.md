@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A test host that was KILLED is now reported as an ABORT, not as N failed tests**
+  (AUTOMATION-294). Under CPU load the gate returned large numbers of 0ms "failures" —
+  a 0ms failure is a test that never ran, written out in the same shape as one that ran
+  and failed. Three changes make that non-result stop reading as a definite negative:
+  - `classifyTestOutcome` gains a precedence-0 arm: a host terminated by a signal is
+    `TestsErrored`, **regardless of any CTRF report it flushed on the way down**. A
+    partial report's rows for tests the host never reached were what minted the phantom
+    mass regression. A runner that reached its own exit is unaffected — a genuine red
+    still exits with a code the runner chose (MTP's are single digits) and stays
+    `TestsFailed`.
+  - The abort gets its own console report (`formatAbortReport`). The failure report
+    counts the runner's `failed ...` lines and heads them "N test(s) failed", which is
+    true of a run that finished and expensively false of one killed mid-suite. The
+    transcript is still printed — it is the only evidence of how far the run got — but
+    it is never counted and never called failures.
+  - The run-level status counts aborts OUT of `failed`. A killed host now completes with
+    a `NOTHING VERIFIED: N test host(s) ABORTED …` summary instead of `N failed: X`, and
+    its ledger entry is `HostAborted` severity, which routes the verdict to exit 2. A
+    real failure beside an abort still short-circuits to a red, and names the abort
+    separately so a reader cannot add it to the failure count.
+
 ## 0.13.0-alpha.19 - 2026-08-21
 
 - fix(AUTOMATION-228): an impact retry that passes and clears all pending verification

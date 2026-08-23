@@ -84,7 +84,11 @@ let internal failingDiagnosticEntries (noWarnFail: bool) (resp: DiagnosticsRespo
         | Hint
         // `Deferred` ("waiting on build") is never a failure — it routes the
         // verdict to `Incomplete`/exit 2 via `WaitingOnBuild`, not to a red.
-        | Deferred -> false
+        | Deferred
+        // Nor is `HostAborted` ("the test host died"): it routes to `RunnerAborted`/exit 2
+        // via `RunnerAbort`. Counting it here is precisely how a killed host used to
+        // report as a red (AUTOMATION-294).
+        | HostAborted -> false
 
     resp.Files
     |> Map.toList
@@ -133,6 +137,23 @@ let private waitingOnBuild (resp: DiagnosticsResponse) : CheckVerdict.BuildWait 
     |> List.ofSeq
     |> CheckVerdict.BuildWait.classify
 
+/// Did any test HOST DIE mid-run — and with what diagnosis? A `HostAborted`-severity
+/// entry means a runner did not finish: non-green (nothing verified) but not a failure.
+/// The verdict routes this to `RunnerAborted`/exit 2.
+///
+/// The in-process twin is `RunOnceCheck.runnerAborted`; both read the SAME condition and
+/// hand it to the SAME classifier. Fail-closed like `waitingOnBuild`: a severity that
+/// does not round-trip the wire defaults to `Error` and is counted as failing, so the
+/// worst case of a wire bug is the OLD exit 1, never a false green.
+let private runnerAborted (resp: DiagnosticsResponse) : CheckVerdict.RunnerAbort =
+    resp.Files
+    |> Map.toSeq
+    |> Seq.collect snd
+    |> Seq.filter (fun (e: DiagnosticEntry) -> e.Severity = HostAborted)
+    |> Seq.map (fun e -> e.Message)
+    |> List.ofSeq
+    |> CheckVerdict.RunnerAbort.classify
+
 /// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
 ///
 /// This is the daemon's half of "one verdict, two transports"; the in-process half is
@@ -143,6 +164,7 @@ let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: Diagnostic
       FailingDiagnostics = failingDiagnosticCount noWarnFail resp
       UnattributableDiagnostics = unattributableCountOf noWarnFail resp
       WaitingOnBuild = waitingOnBuild resp
+      RunnerAborted = runnerAborted resp
       Coverage = resp.Coverage
       Scope = scope }
 

@@ -34,6 +34,7 @@ let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) :
       FailingDiagnostics = (if hasFailures then 1 else 0)
       UnattributableDiagnostics = 0
       WaitingOnBuild = BuildWait.NotWaiting
+      RunnerAborted = RunnerAbort.NoAbort
       Coverage = coverage
       Scope = scope }
 
@@ -53,6 +54,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -69,6 +71,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -84,6 +87,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -107,6 +111,7 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.ArtifactNotProduced
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -124,6 +129,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
           FailingDiagnostics = 1
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.ArtifactNotProduced
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -567,6 +573,7 @@ let ``AUTOMATION-303: an all-unattributable ledger is NO VERDICT (exit 3), not a
           FailingDiagnostics = 51
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -586,6 +593,7 @@ let ``AUTOMATION-303: ONE attributable diagnostic among them keeps the red`` () 
           FailingDiagnostics = 52
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -604,6 +612,7 @@ let ``AUTOMATION-303: a FAILING PLUGIN beside a stale ledger keeps the red`` () 
           FailingDiagnostics = 51
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -621,6 +630,7 @@ let ``AUTOMATION-303: a CLEAN ledger is still Clean, never stale-daemon-state`` 
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -638,6 +648,7 @@ let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
           FailingDiagnostics = 7
           UnattributableDiagnostics = 7
           WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -703,6 +714,7 @@ let ``AUTOMATION-201: the verdict carries the stale deferrals, still exit 2, sti
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.StaleOutput stale
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = anyScope }
 
@@ -727,7 +739,137 @@ let ``AUTOMATION-201: a real failure beside a stale-output defer is still Failur
           FailingDiagnostics = 1
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.StaleOutput [ "stale build output — x" ]
+          RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
           Scope = anyScope }
 
     test <@ verdict InnerLoop both = CheckOutcome.FailuresFound @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-294 — a dead test host is exit 2, and a red is still exit 1.
+// ---------------------------------------------------------------------------
+
+let private abortMessages =
+    [ "FsHotWatch.Tests: aborted — test host was KILLED by SIGKILL (exit 137)" ]
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-294: a killed test host is RunnerAborted — exit 2, never the exit 1 it used to return`` () =
+    // The whole ticket in one assertion. A `TestsErrored` project used to reach here as a
+    // failing diagnostic, so the exit code said 1, `verdict.json` said `red`, and the
+    // console listed the killed runner's half-written transcript under "N test(s) failed".
+    // Nothing failed. Nothing passed either — which is why this may never be green.
+    let aborted =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.HostDied abortMessages
+          Coverage = Complete
+          Scope = anyScope }
+
+    // Both modes: an abort is not a scope question, so `confirm` may not treat it as one.
+    test <@ verdict InnerLoop aborted = CheckOutcome.RunnerAborted abortMessages @>
+    test <@ verdict Confirmation aborted = CheckOutcome.RunnerAborted abortMessages @>
+
+    test <@ exitCode (CheckOutcome.RunnerAborted abortMessages) = 2 @>
+    // And emphatically not the two codes it must never be confused with.
+    test
+        <@
+            exitCode (CheckOutcome.RunnerAborted abortMessages)
+            <> exitCode CheckOutcome.FailuresFound
+        @>
+
+    test
+        <@
+            exitCode (CheckOutcome.RunnerAborted abortMessages)
+            <> exitCode CheckOutcome.Clean
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-294: THE OTHER DIRECTION — a real failure beside an abort is still FailuresFound`` () =
+    // The assertion that stops the abort from laundering a red. If a run holds a genuine
+    // failing diagnostic AND a killed host, the failure wins: failures short-circuit
+    // before the abort is ever consulted.
+    let both =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 1
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.HostDied abortMessages
+          Coverage = Complete
+          Scope = anyScope }
+
+    test <@ verdict InnerLoop both = CheckOutcome.FailuresFound @>
+    test <@ verdict Confirmation both = CheckOutcome.FailuresFound @>
+
+    // A crashed PLUGIN with a spotless ledger is the other half of "found problems", and
+    // it must win over an abort too.
+    let crashedBeside =
+        { both with
+            FailingDiagnostics = 0
+            PluginStatuses = statusOf (StatusView.Failed("plugin exploded", DateTime.UtcNow)) }
+
+    test <@ verdict InnerLoop crashedBeside = CheckOutcome.FailuresFound @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-294: NoAbort changes nothing — a clean run is still Clean`` () =
+    // The negative control. Adding the term must not perturb any verdict that has no
+    // abort in it, or the fix would be paid for by every ordinary run.
+    let clean =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    test <@ verdict InnerLoop clean = CheckOutcome.Clean @>
+    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+
+    test <@ RunnerAbort.classify [] = RunnerAbort.NoAbort @>
+    test <@ RunnerAbort.classify abortMessages = RunnerAbort.HostDied abortMessages @>
+    test <@ not (RunnerAbort.isAborted RunnerAbort.NoAbort) @>
+    test <@ RunnerAbort.isAborted (RunnerAbort.HostDied abortMessages) @>
+    test <@ RunnerAbort.aborts (RunnerAbort.HostDied abortMessages) = abortMessages @>
+    test <@ List.isEmpty (RunnerAbort.aborts RunnerAbort.NoAbort) @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-294: an abort DOMINATES a concurrent build defer`` () =
+    // When a box is saturated enough to kill a test host it is also saturated enough to
+    // lose a build race, so the two arrive together. The abort must be the one reported:
+    // a defer's remedy is "wait for the build to settle", and that event never comes for
+    // a machine that is simply out of CPU.
+    let both =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.ArtifactNotProduced
+          RunnerAborted = RunnerAbort.HostDied abortMessages
+          Coverage = Complete
+          Scope = anyScope }
+
+    test <@ verdict InnerLoop both = CheckOutcome.RunnerAborted abortMessages @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-294: converge does NOT retry an abort — no automatic retry to mask a real crash`` () =
+    // Deliberately terminal. A re-scan cannot un-kill a host, and an automatic retry
+    // cannot tell a host killed by a busy box from one that aborts every time because
+    // something is genuinely broken — so a loop that retried until it got a verdict would
+    // convert a real crash into a slow green. Honest once, rather than survivable wrongly.
+    let mutable scans = 0
+
+    let aborted =
+        { PluginStatuses = Map.empty
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.HostDied abortMessages
+          Coverage = Complete
+          Scope = anyScope }
+
+    let outcome =
+        converge InnerLoop 3 (fun () -> scans <- scans + 1) (fun () -> aborted) aborted
+
+    test <@ outcome = CheckOutcome.RunnerAborted abortMessages @>
+    test <@ scans = 0 @>

@@ -6955,6 +6955,170 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
 
     test <@ TestResult.isTimedOut result @>
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-294 — a KILLED host is an abort, and a real red is still a red.
+//
+// Under CPU load the gate reported large numbers of 0ms "failures". A 0ms failure is a
+// test that never ran: the host was killed and everything it had not reached was written
+// out in the same shape as a test that ran and failed. That is a non-result rendered as a
+// definite negative — the fail-open degrade inverted, and more expensive, because a red
+// gets investigated where a green merely gets trusted.
+//
+// Every test in this block has a partner asserting the OTHER direction. A fix that made a
+// genuine mass failure look like an abort would be the same lie with the sign flipped.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: a SIGKILLed host is an ABORT even though it flushed a report full of failures`` () =
+    // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
+    // report behind whose rows for tests it never reached are marked failed at 0ms.
+    // Reading that report as the verdict is what minted the phantom mass regression.
+    let phantomMassRegression = Some(rep 2171 2032 139 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested phantomMassRegression)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(137, ProcessOutput.Drained "failed FsHotWatch.Tests.AbsFilePath.roundtrips (0ms)"))
+
+    test <@ TestResult.isErrored result @>
+    test <@ not (isFailed result) @>
+    test <@ not (TestResult.verifiedGreen result) @>
+    // Never a pass and never a failure: NOTHING was verified.
+    test <@ TestResult.verdict result = NothingVerified @>
+
+    // And the reason SAYS what killed it, so nobody has to infer "0ms means never ran".
+    let reason = TestResult.output result
+    test <@ reason.Contains "SIGKILL" @>
+    test <@ reason.Contains "137" @>
+    test <@ reason.ToUpperInvariant().Contains "NOTHING" @>
+    // The partial report is named as a transcript, with its counts, rather than hidden.
+    test <@ reason.Contains "PARTIAL" @>
+    test <@ reason.Contains "139" @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` () =
+    // Same report, same counts, same 139 failures. The ONLY difference is that the runner
+    // reached its own exit and chose the code (MTP's 2 = "at least one test failed")
+    // instead of being killed. This must stay a red, or the fix has merely inverted the
+    // lie: a gate that reported every genuine regression as "the machine was busy" would
+    // be worse than the bug it replaced.
+    let realMassRegression = Some(rep 2171 2032 139 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested realMassRegression)
+            false
+            (TimeSpan.FromMinutes 4.0)
+            (ProcessOutcome.Failed(2, ProcessOutput.Drained "failed FsHotWatch.Tests.Foo.bar (312ms)"))
+
+    test <@ isFailed result @>
+    test <@ not (TestResult.isErrored result) @>
+    test <@ TestResult.verdict result = Refuted @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
+    // The direction that must NOT go green. Exit 134 is what a real gate run produced
+    // (an unhandled TimeoutException → the runtime aborts). A clean report from a process
+    // that never reached its own exit describes the part of the suite it got through, and
+    // outcome 2 ("a report showing zero failures beats the exit code") would have called
+    // that a pass.
+    let partialButClean = Some(rep 812 812 0 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested partialButClean)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(134, ProcessOutput.Drained ""))
+
+    test <@ not (TestResult.verifiedGreen result) @>
+    test <@ TestResult.isErrored result @>
+    test <@ (TestResult.output result).Contains "SIGABRT" @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
+    // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
+    // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
+    // swallowed it, every dirty shutdown would stop being a pass.
+    let clean = Some(rep 12 12 0 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested clean)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(7, ProcessOutput.Drained "host crashed during shutdown"))
+
+    test <@ TestResult.verifiedGreen result @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: an abort report never counts the killed run's transcript as failures`` () =
+    // The CONSOLE half. A killed host's capture still holds per-test rows, and
+    // `formatFailureReport` would head them "N test(s) failed" — which is the sentence
+    // that sent people hunting a regression that was not there.
+    let transcript =
+        "Discovering: probe\nfailed FsHotWatch.Tests.AbsFilePath.roundtrips (0ms)\nfailed FsHotWatch.Tests.Foo.bar (0ms)"
+
+    let abort =
+        formatAbortReport "FsHotWatch.Tests" savedLog "test host was KILLED by SIGKILL (exit 137)" transcript
+        |> String.concat "\n"
+
+    test <@ abort.Contains "ABORTED" @>
+    test <@ abort.Contains "SIGKILL" @>
+    test <@ abort.ToUpperInvariant().Contains "NOTHING WAS VERIFIED" @>
+    test <@ abort.Contains "NOT a test failure" @>
+    // It must NEVER produce the count-of-failures headline.
+    test <@ not (abort.Contains "test(s) failed") @>
+    // The transcript is still shown — it is the only evidence of how far the run got.
+    test <@ abort.Contains "AbsFilePath.roundtrips" @>
+
+    // THE OTHER DIRECTION: the same lines through the FAILURE report still say "failed",
+    // because for a run that finished they are findings.
+    let failure =
+        formatFailureReport "FsHotWatch.Tests" savedLog transcript |> String.concat "\n"
+
+    test <@ failure.Contains "2 test(s) failed" @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-294: an aborted project is a HostAborted ledger entry, and a failed one still Error`` () =
+    // The VERDICT half. At `Error` severity the abort was counted by `failingDiagnostics`,
+    // so the exit code said 1 and `verdict.json` said `red` about a run in which nothing
+    // failed.
+    let aborted: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsErrored "test host was KILLED by SIGKILL (exit 137)" ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry = (failuresOf Map.empty aborted |> List.exactlyOne).Entry
+
+    test <@ entry.Severity = FsHotWatch.ErrorLedger.HostAborted @>
+    test <@ FsHotWatch.ErrorLedger.ErrorEntry.isRunnerAbort entry @>
+    // Never a failure, under EITHER warn-fail policy.
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing true entry) @>
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isFailing false entry) @>
+    // And not a DEFER either: the remedies are opposite, and "re-run once the build
+    // settles" is advice that never arrives for a host killed by a busy box.
+    test <@ not (FsHotWatch.ErrorLedger.ErrorEntry.isWaitingOnBuild entry) @>
+    test <@ entry.Message.ToLowerInvariant().Contains "aborted" @>
+
+    // THE OTHER DIRECTION: a genuine failure is untouched — still Error, still failing.
+    let failed: TestResults =
+        { Results = Map.ofList [ "ProjB", TestsFailed("Some.Test FAILED", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let realFailures = failuresOf Map.empty failed
+    test <@ not realFailures.IsEmpty @>
+
+    test
+        <@
+            realFailures
+            |> List.forall (fun f ->
+                f.Entry.Severity = FsHotWatch.ErrorLedger.Error
+                && FsHotWatch.ErrorLedger.ErrorEntry.isFailing true f.Entry
+                && not (FsHotWatch.ErrorLedger.ErrorEntry.isRunnerAbort f.Entry))
+        @>
+
 // --- detectCtrfCapable: report injection is scoped to xUnit runners ---
 
 [<Fact(Timeout = 5000)>]
@@ -8151,6 +8315,68 @@ let ``AUTOMATION-198: a run that DID execute keeps its counts verdict`` () =
     | other -> Assert.Fail($"a run that executed and passed must complete green, got %A{other}")
 
 [<Fact(Timeout = 20000)>]
+let ``AUTOMATION-294: a run whose test HOST DIED completes as an ABORT, never as "N failed"`` () =
+    // The RUN-LEVEL console half. `recordRunOutcome` used to fold an errored project into
+    // `failedList` (`not isDeferred`), so a killed host produced `1 failed: ProjB` on the
+    // status line and `PluginStatus.Failed` underneath it — a definite negative about a
+    // project whose tests never finished running.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let aborted =
+        TestsErrored "test host was KILLED by SIGKILL (exit 137) — it never reached its own exit"
+
+    let run =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", aborted ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, _ledger, _final = driveRuns handler [ run ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) ->
+        // `Completed`, exactly like the pure-defer case: nothing FAILED, and a `Failed`
+        // here would turn the honest exit 2 back into the exit 1 this ticket is about.
+        // The SUMMARY is what carries the fact, and it says NOTHING VERIFIED — so no
+        // renderer can glyph this run with a bare tick either.
+        test <@ RunSummary.saysNothingVerified verdict.Summary @>
+        test <@ verdict.Summary.Contains "ABORTED" @>
+        test <@ verdict.Summary.Contains "ProjB" @>
+        test <@ verdict.Summary.Contains "NOT a test failure" @>
+        // The words that used to be there, and must not be.
+        test <@ not (verdict.Summary.Contains "1 failed:") @>
+    | other ->
+        Assert.Fail(
+            $"a run whose host was killed must complete as an ABORT, not fail as though a test broke — got %A{other}"
+        )
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-294: THE OTHER DIRECTION — a run with a REAL failure still fails, and names the abort apart`` () =
+    // The guard against inverting the lie. A genuine red alongside a killed host stays a
+    // red: `PluginStatus.Failed`, "1 failed: ProjA". The abort is still NAMED — it proved
+    // nothing and a reader must not add it to the failure count — but it neither
+    // launders the failure nor is counted as one.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let aborted = TestsErrored "test host was KILLED by SIGKILL (exit 137)"
+
+    let run =
+        testsFinishedEvent [ "ProjA", failedProjA; "ProjB", aborted ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, _ledger, _final = driveRuns handler [ run ]
+
+    match lastStatus statuses with
+    | PluginStatus.Failed(msg, _, verdict) ->
+        test <@ msg.Contains "1 failed: ProjA" @>
+        // Named, and named as an abort — never rolled into the "1".
+        test <@ msg.Contains "ABORTED" @>
+        test <@ msg.Contains "ProjB" @>
+        test <@ not (msg.Contains "2 failed") @>
+        // The counts line agrees with the status line: one failure, one abort.
+        test <@ verdict.Summary.Contains "1 failed" @>
+        test <@ verdict.Summary.Contains "1 ABORTED" @>
+    | other -> Assert.Fail($"a real failure beside an abort must stay a red, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not a class-filtered one`` () =
     // A project killed for being stuck is a fact about the PROJECT (`Class = None`), so
     // only a run that executed the project in full can clear it.
@@ -8718,6 +8944,7 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                   FailingDiagnostics = 0
                   UnattributableDiagnostics = 0
                   WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
+                  RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
@@ -8753,6 +8980,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
+          RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
 
@@ -8789,6 +9017,7 @@ let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, 
           FailingDiagnostics = 0
           UnattributableDiagnostics = 0
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
+          RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
 

@@ -1147,3 +1147,79 @@ let ``runProcess is runProcessTo with no sink`` () =
         Assert.Equal("same", a)
         Assert.Equal(a, b)
     | a, b -> Assert.Fail $"expected two identical Succeeded captures, got %A{a} and %A{b}"
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-294 — telling "the program chose this exit code" from "the OS killed it".
+//
+// The whole fix downstream rests on one platform fact: .NET on Unix reports a child
+// terminated by signal N through `Process.ExitCode` as `128 + N`. That is a REMEMBERED
+// fact until something kills a real process and reads the number back, so the last test
+// in this block does exactly that. Without it the pure tests below only prove that the
+// lookup table matches itself.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``tryOfExitCode: the signal-death codes a killed test host actually produces`` () =
+    let name code =
+        TerminatingSignal.tryOfExitCode code |> Option.map (fun s -> s.Name)
+
+    // 134 is the code comment #6 of the ticket recorded from a real gate run (an
+    // unhandled TimeoutException → the runtime calls abort()); 137 is the OOM killer,
+    // `kill -9`, and fshw's own `KillAll`.
+    Assert.Equal(Some "SIGABRT", name 134)
+    Assert.Equal(Some "SIGKILL", name 137)
+    Assert.Equal(Some "SIGSEGV", name 139)
+    Assert.Equal(Some "SIGTERM", name 143)
+    Assert.Equal(Some "SIGINT", name 130)
+
+    // The number rides along, not just the name.
+    Assert.Equal(Some 9, TerminatingSignal.tryOfExitCode 137 |> Option.map (fun s -> s.Number))
+
+[<Fact(Timeout = 5000)>]
+let ``tryOfExitCode: THE OTHER DIRECTION — no exit code a test runner chooses is a signal`` () =
+    // This is the assertion that stops the fix from inverting into the OTHER lie. A real
+    // mass failure must stay a mass failure, and it arrives with a code the RUNNER picked:
+    // Microsoft.Testing.Platform's documented codes are single digits (2 = "a test
+    // failed", 7 = dirty shutdown, 8 = zero tests). None of them may read as a kill.
+    for code in [ 0; 1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12; 13; 14; 100; 127; 128 ] do
+        Assert.True(
+            (TerminatingSignal.tryOfExitCode code).IsNone,
+            $"exit %d{code} — a code a runner CHOOSES — was read as a signal death, which would report a real \
+              failure as an abort"
+        )
+
+    // Above the band, and the ambiguous-numbered signals deliberately left out (SIGBUS is
+    // 10 on macOS and 7 on Linux, so 128+10 would be named wrong on one of them).
+    Assert.True((TerminatingSignal.tryOfExitCode 200).IsNone)
+    Assert.True((TerminatingSignal.tryOfExitCode 138).IsNone)
+
+[<Fact(Timeout = 5000)>]
+let ``terminatingSignalOf: a timeout keeps its OWN outcome and is never folded in`` () =
+    // A timeout already carries who killed it and whether the kill landed. Answering
+    // `Some` here would replace that specific fact with a vaguer one.
+    let timedOut =
+        ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck", KillOutcome.Killed)
+
+    Assert.True((terminatingSignalOf timedOut).IsNone)
+    Assert.True((terminatingSignalOf (Succeeded(ProcessOutput.Drained "fine"))).IsNone)
+    Assert.True((terminatingSignalOf (Failed(2, ProcessOutput.Drained "a test failed"))).IsNone)
+
+[<Fact(Timeout = 30000)>]
+let ``POSITIVE CONTROL: killing a real child really does surface as 128 + signum`` () =
+    // Kill a live process and read the number back, rather than trusting the convention.
+    // If this runtime ever stopped following it, every pure test above would still pass
+    // while the production discriminator silently never fired — and a killed test host
+    // would go straight back to reporting as a mass regression.
+    match runProcessBounded "sh" "-c \"kill -9 $$\"" quick with
+    | Failed(code, _) ->
+        Assert.Equal(137, code)
+
+        match terminatingSignalOf (Failed(code, ProcessOutput.Drained "")) with
+        | Some signal ->
+            Assert.Equal("SIGKILL", signal.Name)
+            Assert.Equal(9, signal.Number)
+        | None ->
+            Assert.Fail
+                $"a child killed with SIGKILL exited %d{code}, and `terminatingSignalOf` did not recognise it — \
+                  the discriminator the whole abort-vs-failure fix rests on is dead on this platform"
+    | other -> Assert.Fail $"expected a Failed outcome from a SIGKILLed child, got %A{other}"

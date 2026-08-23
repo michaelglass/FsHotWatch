@@ -101,6 +101,89 @@ let isTimedOut =
     | TimedOut _ -> true
     | _ -> false
 
+/// A child that did NOT choose its exit code — the OS terminated it.
+///
+/// The distinction is the whole point. A test runner's exit code is normally
+/// EVIDENCE: 0 means the suite passed, Microsoft.Testing.Platform's small codes say
+/// which way it failed. For a SIGNALLED child it is evidence of nothing about the
+/// tests — whatever the runner had written when the signal landed is a partial
+/// transcript, not a result. `AUTOMATION-294`: a saturated box that gets its test
+/// host killed used to report the transcript's half-written per-test rows as a mass
+/// regression, which is a non-result rendered as a definite negative.
+type TerminatingSignal =
+    {
+        /// The POSIX signal number (`SIGKILL` = 9).
+        Number: int
+        /// Its conventional name (`"SIGKILL"`).
+        Name: string
+    }
+
+module TerminatingSignal =
+    /// The signals whose delivery is recognised as "this child was killed".
+    ///
+    /// A NAMED, CLOSED list, not the whole `129..160` band. Two reasons, and they pull
+    /// the same way:
+    ///
+    ///   * every number here means the SAME signal on Linux and on macOS, so the name
+    ///     reported is never a platform guess. The ones that differ (SIGBUS is 10 on
+    ///     macOS and 7 on Linux; 10 is SIGUSR1 on Linux) are deliberately ABSENT — an
+    ///     unrecognised code falls through to the pre-existing behaviour, which is a
+    ///     red, so the omission costs a wrong-but-still-non-green verdict rather than
+    ///     inventing a signal name;
+    ///   * every number here is far outside the exit codes a test runner CHOOSES.
+    ///     MTP's documented codes are single digits, so nothing a runner deliberately
+    ///     returns can be mistaken for a signal death. That is the direction that
+    ///     matters: a REAL mass failure must never be reported as an abort.
+    let private named =
+        Map
+            [ 1, "SIGHUP"
+              2, "SIGINT"
+              3, "SIGQUIT"
+              4, "SIGILL"
+              6, "SIGABRT"
+              8, "SIGFPE"
+              9, "SIGKILL"
+              11, "SIGSEGV"
+              13, "SIGPIPE"
+              15, "SIGTERM"
+              24, "SIGXCPU"
+              25, "SIGXFSZ" ]
+
+    /// The shell convention .NET follows on Unix: a child terminated by signal N is
+    /// reported through `Process.ExitCode` as `128 + N`.
+    [<Literal>]
+    let SignalExitBase = 128
+
+    /// Was this exit code produced by a SIGNAL rather than chosen by the program?
+    /// `None` for every ordinary exit code, including every code a test runner emits.
+    ///
+    /// Pure and total, so both directions are assertable without killing a real
+    /// process — and `ProcessHelperTests` additionally kills one, so the `128 + N`
+    /// convention is a MEASURED fact about this runtime and not a remembered one.
+    ///
+    /// The convention is POSIX; on Windows nothing produces these codes and a program
+    /// that returned one anyway would be reported as an abort rather than a red. Both
+    /// are non-green, so the gate still refuses — this can never manufacture a pass.
+    let tryOfExitCode (exitCode: int) : TerminatingSignal option =
+        named
+        |> Map.tryFind (exitCode - SignalExitBase)
+        |> Option.map (fun name ->
+            { Number = exitCode - SignalExitBase
+              Name = name })
+
+/// Was this process TERMINATED by a signal? The `ProcessOutcome`-level form of
+/// `TerminatingSignal.tryOfExitCode`.
+///
+/// `TimedOut` answers `None` deliberately, even though we killed that child ourselves:
+/// a timeout already HAS its own outcome, carrying who killed it and whether the kill
+/// landed. Folding it in here would replace a specific fact ("it overran its budget")
+/// with a vaguer one ("something killed it").
+let terminatingSignalOf (outcome: ProcessOutcome) : TerminatingSignal option =
+    match outcome with
+    | Failed(code, _) -> TerminatingSignal.tryOfExitCode code
+    | Succeeded _
+    | TimedOut _ -> None
+
 /// Render a capture for a HUMAN — a log line, a plugin status, an error entry. An
 /// incomplete drain is NAMED in the rendered text. (`ProcessOutput.text` is the
 /// untagged form for text-searching.)

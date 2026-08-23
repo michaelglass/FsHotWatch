@@ -100,6 +100,48 @@ module BuildWait =
                 BuildWait.ArtifactNotProduced
         | stale -> BuildWait.StaleOutput stale
 
+/// DID A TEST HOST DIE? The `BuildWait` of AUTOMATION-294, and deliberately its twin:
+/// "the runner never finished" is the same CLASS of answer as "the runner never
+/// started" — non-green because nothing was verified, and NOT a red because nothing
+/// failed.
+///
+/// Its own type rather than a reuse of `BuildWait`, because the remedies are opposite
+/// in the way that costs time. A defer settles on its own (the next build produces the
+/// artifact); a host killed on a saturated box does NOT settle, and telling its reader
+/// to "re-run once the build settles" sends them to wait for an event that is not
+/// coming. The abort's remedy is a machine with headroom.
+///
+/// Carries the abort MESSAGES verbatim — each already names its project and what killed
+/// it — so the terminal and `verdict.json` name every affected project from one list.
+[<RequireQualifiedAccess>]
+type RunnerAbort =
+    /// Every runner that started also finished.
+    | NoAbort
+    /// At least one test host did not finish. `aborts` are the ledger messages.
+    | HostDied of aborts: string list
+
+module RunnerAbort =
+    /// Did any test host die? THE predicate the verdict branches on, so a new case
+    /// cannot be added without deciding this question for it.
+    let isAborted (a: RunnerAbort) : bool =
+        match a with
+        | RunnerAbort.NoAbort -> false
+        | RunnerAbort.HostDied _ -> true
+
+    /// The abort messages, empty when nothing aborted.
+    let aborts (a: RunnerAbort) : string list =
+        match a with
+        | RunnerAbort.NoAbort -> []
+        | RunnerAbort.HostDied msgs -> msgs
+
+    /// Classify the abort messages a run produced. ONE implementation, asked by both
+    /// transports, so a socket-served check and an in-process one cannot disagree about
+    /// what an abort means.
+    let classify (abortMessages: string list) : RunnerAbort =
+        match abortMessages with
+        | [] -> RunnerAbort.NoAbort
+        | msgs -> RunnerAbort.HostDied msgs
+
 /// The decided outcome of a `check`, in one-to-one correspondence with an exit
 /// code. `Incomplete` carries the residual unchecked count for reporting
 /// (`-1` when coverage was `Unknown` — count not reported by the daemon).
@@ -122,6 +164,22 @@ type CheckOutcome =
     /// the two causes have opposite remedies and every surface that explains this
     /// outcome — both terminals and the verdict file — must be able to tell them apart.
     | WaitingOnBuild of staleOutput: string list
+    /// No failures — but a test HOST DIED mid-run, so its tests did not finish.
+    /// AUTOMATION-294.
+    ///
+    /// The case this whole ticket is about. A killed host used to arrive here as
+    /// `FailuresFound`: its `TestsErrored` result was counted among the failures, the
+    /// exit code said 1, `verdict.json` said `red`, and the console listed the runner's
+    /// half-written transcript under "N test(s) failed". Every one of those surfaces
+    /// asserted a definite negative about code that had not been tested at all — which
+    /// is the fail-open degrade inverted, and more expensive, because a red is
+    /// investigated where a green is merely trusted.
+    ///
+    /// So it is its OWN exit-2 outcome beside `WaitingOnBuild`: nothing was verified
+    /// (never green), nothing failed (never red), and the reason names what killed the
+    /// host. A real failure alongside an abort still short-circuits to `FailuresFound`
+    /// — failures are checked first, so this can never launder a red.
+    | RunnerAborted of aborts: string list
     /// A CONFIRMATION run whose tests did not cover the whole suite. Nothing failed —
     /// but the run did not produce the evidence a merge verdict is made of, so there
     /// is no verdict to give. Distinct from `FailuresFound` (nothing is known to be
@@ -158,6 +216,9 @@ let exitCode (outcome: CheckOutcome) : int =
     // "Waiting on build" is the same class of answer as `Incomplete`: the run
     // could not be completed, not that it failed. Same exit 2.
     | CheckOutcome.WaitingOnBuild _ -> 2
+    // A dead test host is the same class of answer again — "could not complete", not
+    // "failed". Exit 2, NEVER the 1 it used to return (AUTOMATION-294).
+    | CheckOutcome.RunnerAborted _ -> 2
     | CheckOutcome.UnearnedScope _ -> 3
     // Same exit code as an unearned scope, and for the same reason: the run produced
     // no verdict. "I cannot tell" is not a pass and it is not a failure.
@@ -200,6 +261,14 @@ type CheckInputs =
         /// (`BuildWait.classify` over the `Deferred`-severity ledger messages); a
         /// transport that forgets it fails to compile.
         WaitingOnBuild: BuildWait
+        /// Did a test host DIE mid-run — killed, so its tests did not finish — and if
+        /// so, with what diagnosis? Non-green (nothing verified) but NOT a failure.
+        ///
+        /// A distinct term for the same reason `WaitingOnBuild` is one, and enforced the
+        /// same way: it is NOT folded into `FailingDiagnostics`, so the verdict can route
+        /// it to `RunnerAborted`/exit 2 instead of a red, and a transport that forgets to
+        /// supply it fails to compile rather than quietly reporting the old exit 1.
+        RunnerAborted: RunnerAbort
         /// Did the run actually check every file it is responsible for? `Unknown` is
         /// never `Complete`.
         Coverage: Coverage
@@ -272,6 +341,17 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         CheckOutcome.StaleDaemonState inputs.UnattributableDiagnostics
     elif CheckInputs.hasFailures inputs then
         CheckOutcome.FailuresFound
+    elif RunnerAbort.isAborted inputs.RunnerAborted then
+        // AUTOMATION-294. No real failure, but a test host was KILLED mid-run, so its
+        // tests did not finish. Non-green, but "could not complete", never a red.
+        //
+        // Checked AFTER failures — a genuine failure alongside an abort is still a red,
+        // and that ordering is what stops this from laundering one. Checked BEFORE
+        // `WaitingOnBuild` because when a run has both, the abort is the fact that
+        // explains the other: a box that killed a test host is a box that also lost a
+        // build race, and "re-run once the build settles" is advice that never arrives
+        // for a machine that is simply out of CPU.
+        CheckOutcome.RunnerAborted(RunnerAbort.aborts inputs.RunnerAborted)
     elif BuildWait.isWaiting inputs.WaitingOnBuild then
         // No real failure, but a project's tests DID NOT RUN because its build
         // artifact wasn't ready. Non-green, but "could not complete", never a red.
@@ -386,6 +466,16 @@ let converge
     // re-scanning does not retroactively run a test the settled run already
     // deferred. exit 2 says "could not complete — retry", which is the answer.
     | CheckOutcome.WaitingOnBuild _
+    // Terminal, and DELIBERATELY not retried (AUTOMATION-294). A re-scan cannot un-kill
+    // a host, and re-running the check inside the same convergence loop would re-run it
+    // under the same load that killed it — buying, at best, a slower identical answer.
+    //
+    // It is also the retry that must NOT be built here. An automatic retry cannot tell a
+    // host killed by a busy box from a host that aborts every time because something is
+    // genuinely broken, so a loop that retried until it got a verdict would convert a
+    // real crash into a slow green. Reporting the abort honestly, once, keeps that
+    // distinction in the hands of the reader — who can see whether the machine was busy.
+    | CheckOutcome.RunnerAborted _
     | CheckOutcome.UnearnedScope _
     // Terminal for the same reason: a re-scan does not clear stale daemon state. That
     // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **BREAKING** — `ErrorLedger.DiagnosticSeverity` gains a `HostAborted` case
+  (AUTOMATION-294). Every exhaustive match over the severity has to decide it, which is
+  the point: it is the third answer — "this did not run because the runner died" —
+  alongside `Deferred`'s "this did not run because the build was not ready". Like
+  `Deferred` it is never a failure (`ErrorEntry.isFailing` is `false` for it in both
+  warn-fail policies); `ErrorEntry.isRunnerAbort` and `ErrorEntry.abortedWithDetail` are
+  the reader and the writer.
+- `ProcessHelper.TerminatingSignal` + `tryOfExitCode` / `terminatingSignalOf` — tell
+  "the program chose this exit code" from "the OS killed it". .NET on Unix reports a
+  child terminated by signal N as `128 + N`; the recognised set is a NAMED, closed list
+  (SIGKILL, SIGABRT, SIGSEGV, SIGTERM, …) whose numbers mean the same signal on Linux and
+  macOS, and which no test runner's chosen exit code can collide with. A timeout answers
+  `None` deliberately — it already has its own outcome carrying who killed it.
+
 ## 0.10.0-alpha.14 - 2026-08-19
 
 - **BREAKING** — `SafeWalk` now reports what it could not see (AUTOMATION-164).
