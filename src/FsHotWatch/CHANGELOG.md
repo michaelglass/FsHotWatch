@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.15 - 2026-08-23
+
 - AUTOMATION-368: **a compile item is not an edit** — `ProjectGraph.GetMaxSourceMtime`
   now excludes build output. It folded over MSBuild's whole compile-item list, which
   includes `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs`; every design-time evaluation

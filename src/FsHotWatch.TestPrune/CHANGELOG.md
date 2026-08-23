@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.20 - 2026-08-23
+
 - **A test host that was KILLED is now reported as an ABORT, not as N failed tests**
   (AUTOMATION-294). Under CPU load the gate returned large numbers of 0ms "failures" —
   a 0ms failure is a test that never ran, written out in the same shape as one that ran

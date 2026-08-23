@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-08-23
+
 - AUTOMATION-368: no behaviour change here, but the artifact gate this plugin owns can
   now be believed about a quiescent tree — core's `GetMaxSourceMtime` no longer reads
   MSBuild's regenerated `obj/` compile items as source edits. `artifactGateReddens` is

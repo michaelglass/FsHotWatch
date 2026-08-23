@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.24 - 2026-08-23
+
 - **A test project in the solution but not in `.fshw.json` is now a `config error`, not a
   silence (AUTOMATION-158).** `confirm`'s `scope: {"kind":"full"}` counted only
   `tests.projects`, so "full" meant "the suites I was told about"; a suite in the solution
