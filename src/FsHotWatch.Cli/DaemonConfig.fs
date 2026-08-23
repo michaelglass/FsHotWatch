@@ -1405,6 +1405,13 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 // switching a build-reddening predicate on across every consuming
                 // repo in the same change that makes it possible is how you turn
                 // "no protection" into "every build red on a false reading".
+                //
+                // The first report-only window proved that concretely: 2090 stale
+                // findings across ~40 consuming workspaces, 91% of them within 90s
+                // of a project-discovery pass, all from MSBuild's own regenerated
+                // `obj/**/AssemblyInfo.fs` being read as an edit. Fixed in
+                // `ProjectGraph.GetMaxSourceMtime`; the window restarts on the
+                // corrected reading before this `false` becomes `true`.
                 FsHotWatch.Build.BuildPlugin.createWith
                     false
                     b.Command
