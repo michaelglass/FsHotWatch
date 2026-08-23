@@ -1641,6 +1641,104 @@ let ``a warm cache does not replay a pass over stale outputs — the build recov
         test <@ not (recovered.Contains "(cached)") @>)
 
 // ---------------------------------------------------------------------------
+// AUTOMATION-245 (production reachability) — every test above builds the plugin with
+// `create`, i.e. `artifactGateReddens = true`. NO LIVE DAEMON DOES: `DaemonConfig`
+// passes `false` so AUTOMATION-368 can hold the mtime reading back until it has been
+// watched on a real tree. In that mode the arbiter returned `[]` unconditionally, so
+// the whole replay gate was dead exactly where it was supposed to be running — proved
+// by 820 `artifact-gate (report-only)` lines in one consuming repo's daemon log, every
+// one of them discarded, including runs whose canonical DLLs were simply ABSENT.
+//
+// The split these tests pin: refusing a replay cannot redden anything (it returns
+// `None` from the cache key — one real build, whose own result decides the colour), so
+// the flag governs only the reading that can be WRONG. `DllOlderThanSources` is an
+// mtime comparison and stays behind it. `DllMissing` is not a reading; the file is not
+// there, and no stored "built N projects" can be true about an output that does not
+// exist.
+//
+// Each absence assertion is paired with a positive control on the SAME detector, and
+// the mode tests are paired with each other: a gate that had simply gone blind (or one
+// that suppressed every key) fails one half of every pair.
+// ---------------------------------------------------------------------------
+
+/// The production wiring: report-only, exactly as `DaemonConfig` constructs it.
+let private reportOnlyPlugin graph =
+    BuildPlugin.createWith false "true" "" [] graph [] None [] None
+
+[<Fact(Timeout = 15000)>]
+let ``report-only: a missing build output still bypasses the cache`` () =
+    // THE PRODUCTION WEDGE. First `check` in a brand-new `jj workspace add`: sources
+    // byte-identical to the workspace whose entry it hits, no `bin/` at all.
+    withOneProjectGraph "replay-reportonly-missing" (fun (graph, srcPath, dllPath) ->
+        let cacheKeyFn = (reportOnlyPlugin graph).CacheKey.Value
+        let fileEvt = FileChanged(SourceChanged [ srcPath ])
+
+        // POSITIVE CONTROL: served while the DLL is there, in this same mode. Without
+        // it the assertion below would also pass against a gate that suppressed
+        // everything and turned report-only into rebuild-every-time.
+        let withDll = cacheKeyFn fileEvt
+        test <@ withDll.IsSome @>
+
+        System.IO.File.Delete dllPath
+        let withoutDll = cacheKeyFn fileEvt
+        test <@ withoutDll.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``report-only: an mtime-stale output still replays, as AUTOMATION-368 intends`` () =
+    // The other half of the split, and the reason this is not just "flip the flag".
+    // The mtime reading is the one the report-only window caught being wrong (2090
+    // findings, 91% of them a design-time evaluation restamping AssemblyInfo.fs), so
+    // promoting it belongs to 368 and not here.
+    withOneProjectGraph "replay-reportonly-mtime" (fun (graph, srcPath, dllPath) ->
+        let fileEvt = FileChanged(SourceChanged [ srcPath ])
+        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
+        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
+
+        // POSITIVE CONTROL on the same tree: the reddening plugin DOES bypass here, so
+        // the tree really is mtime-stale and this test cannot pass by staging nothing.
+        let reddening =
+            ((BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value) fileEvt
+
+        test <@ reddening.IsNone @>
+
+        let reportOnly = ((reportOnlyPlugin graph).CacheKey.Value) fileEvt
+        test <@ reportOnly.IsSome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a build that does not produce an output stops it justifying a bypass`` () =
+    // THE FLOOR, without which the arm above has no termination argument: a project the
+    // build command never builds is missing before the build and missing after it, so
+    // every lookup would bypass and the repo would rebuild on every `check`.
+    //
+    // `true` as the build command is exactly that situation — it succeeds and writes
+    // nothing. So the bypass is worth ONE build, and then the cache is served again.
+    withOneProjectGraph "replay-unproduced" (fun (graph, srcPath, dllPath) ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+        let handler = BuildPlugin.createWith false "true" "" [] graph [] None [] None
+        host.RegisterHandler(handler)
+
+        System.IO.File.Delete dllPath
+
+        // Warm the cache with a build that passes and produces nothing.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+        let first = terminalSummary host
+        test <@ not (first.Contains "(cached)") @>
+
+        // The output is STILL absent — but the build just demonstrated it will never
+        // produce it, so the cache is served rather than rebuilt forever.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        let replayed =
+            waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 15000
+
+        test <@ replayed @>
+        test <@ not (System.IO.File.Exists dllPath) @>)
+
+// ---------------------------------------------------------------------------
 // AUTOMATION-245 (QA rework) — the gate has to cover every event that READS the
 // cache, and it has to say so when it examined nothing.
 //

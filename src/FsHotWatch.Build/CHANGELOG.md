@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- AUTOMATION-245: **a cache replay is now actually refused over a MISSING build output
+  — in the daemon, where it never was.** The replay gate shipped correct and inert: the
+  daemon constructs this plugin with `artifactGateReddens = false` (AUTOMATION-368),
+  the arbiter returned `[]` unconditionally in that mode, and every lookup fell through
+  to the merkle. One consuming repo's log holds **820** `artifact-gate (report-only)`
+  findings, all discarded, including runs where the canonical DLL was simply absent —
+  so `built N projects (cached)` kept being asserted about outputs that did not exist.
+  Refusing a replay cannot turn anything red (it returns `None` from the cache key —
+  the same bypass `force-rebuild` uses, costing one real build whose own result decides
+  the colour), so the flag that holds back the *mtime* reading has no jurisdiction over
+  a file that is not there. `DllOlderThanSources` stays behind `artifactGateReddens`;
+  `DllMissing` now blocks a replay in both modes. Highest-frequency instance closed:
+  the first `check` in a brand-new `jj workspace add`, whose sources hash identically
+  to the workspace whose entry it hits and whose `bin/` has never existed.
+- AUTOMATION-245: a build that reports success and produces no output for a project
+  stops that project justifying a bypass, so the new refusal is worth at most **one**
+  extra build per unproduced output rather than a rebuild-every-time regression. Said
+  out loud the first time each one appears — a project in the graph that the build
+  command's solution does not contain is a finding nothing else was reporting.
+
 ## 0.7.0-alpha.26 - 2026-08-23
 
 - AUTOMATION-368: no behaviour change here, but the artifact gate this plugin owns can

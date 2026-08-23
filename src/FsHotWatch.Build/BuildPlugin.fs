@@ -407,6 +407,26 @@ let createWith
     /// actually completed, so the fresh result still gets stored normally.
     let forceRebuild = ref false
 
+    /// Canonical DLL paths that a build reported SUCCESS without producing.
+    ///
+    /// THE FLOOR under the missing-output half of the replay gate below. That gate
+    /// refuses to replay a stored pass while a graph project's output is absent —
+    /// and on its own that refusal has no termination argument. A project the build
+    /// command never actually builds (outside the solution the build verb names, or
+    /// carrying a `TargetPath` from an evaluation that produces nothing) is absent
+    /// before the build and absent after it, so every lookup would bypass and the
+    /// repo would rebuild on every `check`: the inner-loop regression AUTOMATION-245's
+    /// own acceptance forbids, arrived at from the opposite direction.
+    ///
+    /// A build that ran and did not produce the file is proof the CACHE is not what
+    /// is wrong, so the file stops being a reason to distrust one. The bypass is
+    /// therefore worth at most ONE extra build per unproduced output, ever.
+    ///
+    /// RECOMPUTED, never accumulated, and only after a build that PASSED: a failed
+    /// build proves nothing about which outputs it would produce, and an output that
+    /// starts being produced has to be able to leave the set.
+    let unproducedOutputs: Set<string> ref = ref Set.empty
+
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -448,20 +468,39 @@ let createWith
             | Some gap -> warn "build" gap
             | None -> ()
 
-    /// Post-build contract enforcement. For every project the graph knows
-    /// about, compare the canonical DLL's mtime against the max source mtime.
-    /// Returns the stale projects so the worker can demote BuildPassed to
-    /// BuildArtifactsStale and downstream plugins (TestPrune) receive a
-    /// BuildFailed signal instead of running against artifacts MSBuild's
-    /// incremental cache silently failed to update.
-    ///
-    /// ONE walk, whose result answers both questions: the stale projects it returns and
-    /// the coverage gap it reports are `List.choose`d out of the same classification, so
-    /// the gate and the floor under it cannot disagree about which projects were
-    /// examined at all. See `examineArtifact` for why mtime is the right signal here.
-    let verifyArtifactsFresh () : StaleArtifact list =
+    /// ONE classified walk, with the coverage floor reported off it. Every gate in this
+    /// plugin starts here and is handed the RESULT, so no two of them can be looking at
+    /// a different filesystem, the stale projects and the coverage gap are `List.choose`d
+    /// out of the same classification, and the floor cannot disagree with the gate about
+    /// which projects were examined at all. See `examineArtifact` for why mtime is the
+    /// right signal here.
+    let examineNow () : ArtifactExamination list =
         let examinations = examineArtifacts graph
         reportCoverageGapOnce examinations
+        examinations
+
+    /// AUTOMATION-368's instrument: name a finding this mode is not acting on.
+    let reportWithoutActing (s: StaleArtifact) =
+        // Phrased inline rather than via `formatStaleArtifact`, which is declared
+        // below this point.
+        let detail =
+            match s.Reason with
+            | DllMissing path -> $"DLL missing at %s{path}"
+            | DllOlderThanSources(dllTime, srcTime) -> sprintf "DLL %O older than newest source %O" dllTime srcTime
+
+        info "build" $"artifact-gate (report-only, AUTOMATION-368): would have reported %s{s.Project}: %s{detail}"
+
+    /// Post-build contract enforcement, over a walk the caller already took. For every
+    /// project the graph knows about, compare the canonical DLL's mtime against the max
+    /// source mtime. Returns the stale projects so the worker can demote BuildPassed to
+    /// BuildArtifactsStale and downstream plugins (TestPrune) receive a BuildFailed
+    /// signal instead of running against artifacts MSBuild's incremental cache silently
+    /// failed to update.
+    ///
+    /// This is the REDDENING consumer, and the only one `artifactGateReddens` governs in
+    /// full — `replayBlockers` below explains why refusing a replay is a different
+    /// question with a different answer.
+    let verifyArtifactsFresh (examinations: ArtifactExamination list) : StaleArtifact list =
         let stale = staleArtifactsOf examinations
 
         // AUTOMATION-368 — REPORT-ONLY, DELIBERATELY.
@@ -494,19 +533,82 @@ let createWith
             stale
         else
             for s in stale do
-                // Phrased inline rather than via `formatStaleArtifact`, which is
-                // declared below this point.
-                let detail =
-                    match s.Reason with
-                    | DllMissing path -> $"DLL missing at %s{path}"
-                    | DllOlderThanSources(dllTime, srcTime) ->
-                        sprintf "DLL %O older than newest source %O" dllTime srcTime
-
-                info
-                    "build"
-                    $"artifact-gate (report-only, AUTOMATION-368): would have reported %s{s.Project}: %s{detail}"
+                reportWithoutActing s
 
             []
+
+    /// The findings that may REFUSE A CACHE REPLAY — a strictly different question
+    /// from `verifyArtifactsFresh`'s, and the reason the report-only flag does not
+    /// govern all of it.
+    ///
+    /// `artifactGateReddens` exists to stop a predicate turning builds RED across
+    /// every consuming repo at once on a reading that has never run for real. Refusing
+    /// a replay reddens nothing: it returns `None` from the cache key, which is the
+    /// framework's documented "skip the cache, run Update" bypass — the same one
+    /// `force-rebuild` uses (AUTOMATION-224). The worst case is one real build, whose
+    /// own result then decides the colour. So the flag's jurisdiction is the
+    /// post-build DEMOTION, and it is applied here only to the finding whose reading
+    /// can actually be wrong:
+    ///
+    ///   * `DllOlderThanSources` is an MTIME COMPARISON, and mtime comparisons are
+    ///     exactly what the report-only window caught being wrong — 2090 findings over
+    ///     ~40 workspaces, 91% of them a design-time evaluation restamping
+    ///     `obj/**/AssemblyInfo.fs`. It stays behind the flag.
+    ///
+    ///   * `DllMissing` is not a reading at all. The file the graph names as this
+    ///     project's build output does not exist. There is no skew, no clock and no
+    ///     generated-file class to get wrong, and no stored "built N projects" can be
+    ///     true about an output that is absent. Serving that entry is precisely the
+    ///     thing AUTOMATION-245 exists to stop, and it is the highest-frequency
+    ///     instance of it: the first `check` in a brand-new `jj workspace add` has
+    ///     byte-identical sources to the workspace whose entry it therefore hits, and
+    ///     no `bin/` whatsoever — so `built N projects (cached)` gets asserted about
+    ///     outputs that have never existed in that checkout, and TestPrune correctly
+    ///     refuses to run `--no-build` against them. Every agent that opens a
+    ///     per-ticket workspace meets it.
+    ///
+    /// `unproducedOutputs` is what keeps the missing-output arm terminating — see it
+    /// for why a bypass is worth at most one extra build.
+    let replayBlockers () : StaleArtifact list =
+        let blocks (s: StaleArtifact) =
+            match s.Reason with
+            | DllMissing path -> not (unproducedOutputs.Value.Contains path)
+            | DllOlderThanSources _ -> artifactGateReddens
+
+        let acting, notActing = examineNow () |> staleArtifactsOf |> List.partition blocks
+
+        for s in notActing do
+            match s.Reason with
+            | DllOlderThanSources _ -> reportWithoutActing s
+            // Not a report-only suppression — the build itself declined to produce
+            // this one, which `recordUnproducedOutputs` has already said out loud.
+            | DllMissing _ -> ()
+
+        acting
+
+    /// After a build that PASSED: whatever outputs are still absent, it did not make.
+    ///
+    /// Said out loud the first time each one appears, because "the build reported
+    /// success and produced no output for this project" is a finding in its own right
+    /// — usually a project in the graph that the build verb's solution does not
+    /// contain — and this is the only place anything notices.
+    let recordUnproducedOutputs (stale: StaleArtifact list) =
+        let missing =
+            stale
+            |> List.choose (fun s ->
+                match s.Reason with
+                | DllMissing path -> Some path
+                | DllOlderThanSources _ -> None)
+            |> Set.ofList
+
+        for path in Set.difference missing unproducedOutputs.Value do
+            warn
+                "build"
+                $"the build reported success but produced no output at %s{path} — the cache is not what is stale \
+                  here, so a replay will no longer be refused over it. If that project should be built, it is \
+                  missing from what the build command names."
+
+        unproducedOutputs.Value <- missing
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -593,7 +695,14 @@ let createWith
     let verifyAndDemote (outcome: BuildOutcome) : BuildOutcome =
         match outcome with
         | BuildPassed out ->
-            match verifyArtifactsFresh () with
+            // ONE walk answers both: what this build left stale, and what it declined
+            // to produce at all. Taken here rather than at `BuildDone` so the stat
+            // calls stay off the synchronous handler's capture window, and because a
+            // build that FAILED is not evidence about either question.
+            let examinations = examineNow ()
+            recordUnproducedOutputs (staleArtifactsOf examinations)
+
+            match verifyArtifactsFresh examinations with
             | [] -> outcome
             | stale -> BuildArtifactsStale(stale, out)
         | _ -> outcome
@@ -1061,14 +1170,19 @@ let createWith
             // and re-running `check` reproduces it verbatim because nothing in the loop
             // is a function of the previous attempt.
             //
-            // `verifyArtifactsFresh` is the arbiter because outputs are the ground
-            // truth for a claim ABOUT outputs: a cache hit may not assert freshness it
-            // has never confirmed. This is the SAME predicate the real-build path runs
+            // `replayBlockers` is the arbiter because outputs are the ground truth for
+            // a claim ABOUT outputs: a cache hit may not assert freshness it has never
+            // confirmed. It is the same walk the real-build path runs
             // (`verifyAndDemote`), so cache-hit and real-build become genuinely
-            // indistinguishable downstream — and no repo can be newly condemned to
-            // rebuild-every-time by it, because a repo whose artifacts fail this
-            // predicate after a build was already being demoted to
-            // `BuildArtifactsStale` (i.e. permanently red) today.
+            // indistinguishable downstream.
+            //
+            // It is NOT the same MODE, and that is deliberate — see `replayBlockers`.
+            // Refusing a replay cannot turn anything red, so the report-only flag that
+            // holds back the mtime reading has no jurisdiction over a build output
+            // that is simply ABSENT. Without that split this whole gate was dead in
+            // every live daemon: production passes `artifactGateReddens = false`, so
+            // the arbiter returned `[]` unconditionally and the wedge stayed exactly
+            // as reachable as it was before the gate shipped.
             //
             // Cheap on the hot path, and it reads no file CONTENTS: two stats per
             // project (canonical DLL) and per graph source (`GetMaxSourceMtime` walks
@@ -1086,7 +1200,7 @@ let createWith
             // Ordered BEFORE the merkle so a bypass skips that hash entirely: the
             // WEDGE path is now cheaper than the warm path, not dearer.
             | _ ->
-                match verifyArtifactsFresh () with
+                match replayBlockers () with
                 | [] -> merkleKey ()
                 | stale ->
                     info "build" (replayBypassDiagnostic stale)
