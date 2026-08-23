@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **A test project in the solution but not in `.fshw.json` is now a `config error`, not a
+  silence (AUTOMATION-158).** `confirm`'s `scope: {"kind":"full"}` counted only
+  `tests.projects`, so "full" meant "the suites I was told about"; a suite in the solution
+  and in no gated list was not reported as UNRUN, it was simply absent. Every config load
+  now reconciles `tests.projects` with the solution at the repo root and refuses (exit `2`)
+  on an undeclared test project, an exclusion with no reason or naming nothing in the
+  solution, a project both gated and excluded, a gated project the solution lacks, an
+  ambiguous set of root solution files, or a scan that recognised nothing at all.
+  - **BREAKING for a repo with an undeclared test project**: it stops loading until the
+    project is gated or declared.
+  - **New config: `tests.excluded`** — `[{"project": …, "reason": …}]`, reason required and
+    non-blank. The only sanctioned way for a solution test project to be out of scope.
+  - **New config: `tests.solution`** — names the authority when the repo root holds more
+    than one `*.slnx`/`*.sln`.
+  - **New verdict field: `scope.excluded`** — the declared gaps, project and reason, on
+    every scope kind. `null` (not `[]`) on verdicts written before the field existed: "does
+    not say" is not "nothing was excluded".
+  - A repo with no solution file, or with no test projects configured, is left alone.
+  - **BREAKING (F# API)**: `Verdict.create` takes `SolutionScope.Exclusion list option`
+    between the tree and the outcome; `DaemonConfiguration.Tests` gains `Excluded` and
+    `Solution`. New module `FsHotWatch.Cli.SolutionScope`.
+
 ## 0.14.0-alpha.23 - 2026-08-21
 
 - chore: rebuild to bundle updated dependencies

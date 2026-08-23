@@ -60,6 +60,7 @@
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
+    <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />
     <Compile Include="RunOnceOutputTests.fs" />

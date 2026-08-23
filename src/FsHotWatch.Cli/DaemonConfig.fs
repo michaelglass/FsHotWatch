@@ -185,6 +185,8 @@ type DaemonConfiguration =
             {| BeforeRun: string list option
                Extensions: TestExtensionConfig list
                Projects: TestProjectConfig list
+               Excluded: SolutionScope.Exclusion list
+               Solution: string option
                CoverageDir: string
                DependsOn: string list |} option
         FileCommands:
@@ -576,6 +578,18 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     |> Seq.toList
                 | _ -> []
 
+            // AUTOMATION-158: `tests.excluded` — first-class, and the only
+            // sanctioned way a solution test project may be outside the gate's
+            // scope. Parsed by `SolutionScope.exclusionsOf`, the same function the
+            // verdict writer reads them with, so the config that is VALIDATED and
+            // the config that is RECORDED cannot be two different readings.
+            let excluded = SolutionScope.exclusionsOf v
+
+            let solution =
+                match v.TryGetProperty("solution") with
+                | true, s when s.ValueKind = JsonValueKind.String -> Some(s.GetString())
+                | _ -> None
+
             let coverageDir =
                 match v.TryGetProperty("coverageDir") with
                 | true, cd when cd.ValueKind = JsonValueKind.String -> cd.GetString()
@@ -598,6 +612,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     {| BeforeRun = beforeRun
                        Extensions = extensions
                        Projects = projects
+                       Excluded = excluded
+                       Solution = solution
                        CoverageDir = coverageDir
                        DependsOn = dependsOn |}
         | _ -> None
@@ -911,6 +927,43 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Tests = None
         FileCommands = [] }
 
+/// AUTOMATION-158. Reconcile the configured test scope with the solution and
+/// raise `ConfigError` on any disagreement.
+///
+/// Runs on EVERY config load — which is every fshw invocation, in the CLI
+/// process — rather than once when a daemon boots. That placement is the whole
+/// guarantee: a test project added to the solution without a matching
+/// `.fshw.json` edit fails the very next `check` / `confirm`, even against a
+/// warm daemon that has not reloaded anything since before the project existed.
+///
+/// Only fires when the config CLAIMS a test scope. A repo that configures no test
+/// projects makes no full-suite claim to be incomplete: its scope is
+/// `NoTestsRun`/`ScopeUnknown` and `confirm` already refuses to build a merge
+/// verdict from either. So there is nothing here to fail closed about, and
+/// failing a lint-only repo over test projects it never asked fshw to run would
+/// be noise, not safety.
+let internal validateTestScope (repoRoot: string) (config: DaemonConfiguration) : unit =
+    match config.Tests with
+    | None -> ()
+    | Some t ->
+        let gated =
+            t.Projects
+            |> List.map (fun p ->
+                { SolutionScope.GatedProject.Project = p.Project
+                  SolutionScope.GatedProject.Args = p.Args })
+
+        match SolutionScope.reconcile repoRoot t.Solution gated t.Excluded with
+        | [] ->
+            // The declared gaps are LOGGED on the green path too. A declaration
+            // that only ever appears inside a config file nobody re-reads is one
+            // refactor away from being the silence again.
+            for e in t.Excluded do
+                Logging.warn "config" $"NOT RUN — %s{e.Project}: %s{e.Reason}"
+        | findings ->
+            raise (
+                ConfigError(SolutionScope.describeFindings (SolutionScope.solutionNameFor repoRoot t.Solution) findings)
+            )
+
 /// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
@@ -930,6 +983,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
 
         try
             let config = parseConfig json defaults
+            validateTestScope repoRoot config
             Logging.info "config" "Loaded .fshw.json"
             config
         with

@@ -1303,6 +1303,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                     {| BeforeRun = None
                        Extensions = []
                        Projects = []
+                       Excluded = []
+                       Solution = None
                        CoverageDir = "coverage"
                        DependsOn = [] |}
             FileCommands =
@@ -1740,3 +1742,94 @@ let ``analyzerPathFailures silent when every configured path loads at least one`
 [<Fact(Timeout = 2000)>]
 let ``analyzerPathFailures silent when analyzers unconfigured`` () =
     test <@ (analyzerPathFailures []).IsNone @>
+
+// --- loadConfig: AUTOMATION-158, the test scope must cover the solution ---
+//
+// THE REGRESSION THE TICKET ASKS FOR, at the boundary that matters: a dummy test
+// project staged into the solution and left out of `.fshw.json` must make the
+// config load FAIL. `loadConfig` is what every fshw verb calls, in the CLI
+// process, on every invocation — so a run cannot reach a suite, let alone a
+// verdict, over a scope that does not cover the solution.
+
+/// Stage a repo whose solution holds one gated suite and one that is not gated.
+let private stageSolutionRepo (root: string) (configJson: string) =
+    let testProject =
+        """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner></PropertyGroup>
+</Project>"""
+
+    File.WriteAllText(
+        Path.Combine(root, "Repo.slnx"),
+        "<Solution>\n\
+         \  <Project Path=\"tests/App.Tests/App.Tests.fsproj\" />\n\
+         \  <Project Path=\"tests/App.Dummy.Tests/App.Dummy.Tests.fsproj\" />\n\
+         </Solution>\n"
+    )
+
+    for name in [ "App.Tests"; "App.Dummy.Tests" ] do
+        let dir = Path.Combine(root, "tests", name)
+        Directory.CreateDirectory dir |> ignore
+        File.WriteAllText(Path.Combine(dir, $"%s{name}.fsproj"), testProject)
+
+    File.WriteAllText(Path.Combine(root, ".fshw.json"), configJson)
+
+let private gatingOnlyAppTests =
+    """{ "tests": { "projects": [ { "project": "App.Tests",
+                                   "args": "run --project tests/App.Tests --no-build --" } ] } }"""
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig REFUSES a config whose test scope omits a solution test project`` () =
+    withTempDir "cfg-scope-undeclared" (fun tmpDir ->
+        stageSolutionRepo tmpDir gatingOnlyAppTests
+
+        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+
+        // Names the project, the solution, and both ways out — a refusal nobody
+        // can act on is its own kind of silence.
+        Assert.Contains("tests/App.Dummy.Tests", ex.Message)
+        Assert.Contains("Repo.slnx", ex.Message)
+        Assert.Contains("tests.excluded", ex.Message))
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig ACCEPTS the same repo once the omission is declared with a reason`` () =
+    // The other direction of the mutation. Without this, "fail closed" could be
+    // satisfied by a check that never passes, and the escape hatch the ticket
+    // blesses would not exist.
+    withTempDir "cfg-scope-declared" (fun tmpDir ->
+        let json =
+            """{ "tests": { "projects": [ { "project": "App.Tests",
+                                            "args": "run --project tests/App.Tests --no-build --" } ],
+                            "excluded": [ { "project": "tests/App.Dummy.Tests",
+                                            "reason": "slow end-to-end suite; run by `mise run test-integration`" } ] } }"""
+
+        stageSolutionRepo tmpDir json
+
+        let config = loadConfig tmpDir
+
+        test <@ config.Tests.Value.Excluded |> List.map (fun e -> e.Project) = [ "tests/App.Dummy.Tests" ] @>
+        test <@ config.Tests.Value.Excluded.Head.Reason.Contains "test-integration" @>)
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig REFUSES an exclusion with no reason — a declaration must declare something`` () =
+    withTempDir "cfg-scope-noreason" (fun tmpDir ->
+        let json =
+            """{ "tests": { "projects": [ { "project": "App.Tests",
+                                            "args": "run --project tests/App.Tests --no-build --" } ],
+                            "excluded": [ { "project": "tests/App.Dummy.Tests", "reason": "  " } ] } }"""
+
+        stageSolutionRepo tmpDir json
+
+        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        Assert.Contains("reason", ex.Message))
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig leaves a repo that configures no tests alone`` () =
+    // A repo that gates no suites makes no full-suite claim to be incomplete —
+    // its scope is `NoTestsRun`/`ScopeUnknown` and `confirm` already refuses to
+    // build a merge verdict from either. Failing a lint-only repo over test
+    // projects it never asked fshw to run would be noise, not safety.
+    withTempDir "cfg-scope-notests" (fun tmpDir ->
+        stageSolutionRepo tmpDir """{ "format": true }"""
+
+        let config = loadConfig tmpDir
+        test <@ config.Tests = None @>)

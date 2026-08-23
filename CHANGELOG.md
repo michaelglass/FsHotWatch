@@ -74,6 +74,58 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: "full suite" now has to mean every suite in the solution — BREAKING for repos with an undeclared test project
+
+`confirm` reports its scope as `{"kind":"full","ranProjects":N,"totalProjects":N}`, and a
+deploy preflight authorises on exactly that field. Both numbers counted `.fshw.json`'s
+`tests.projects`, so "full" meant *every suite the config named* — never *every suite in
+the solution*. A test project sitting in the solution and in no gated list was not
+reported as UNRUN. It was simply absent, and absent is indistinguishable from passing.
+
+This repo was the example. `FsHotWatch.IntegrationTests` — 64 end-to-end tests — is in
+`FsHotWatch.slnx`, is a runnable test project, and was in no list `confirm` read. Every
+local green this repo has ever produced was `FsHotWatch.Tests` alone, and nothing in the
+verdict said so.
+
+**Every config load now reconciles `tests.projects` with the solution at the repo root
+and raises a `config error` (exit `2`) when they disagree.** That is a load, not a daemon
+boot: the reconciliation is re-done in the CLI process on every `check` / `confirm` /
+`start`, so adding a test project to the solution without touching `.fshw.json` fails the
+very next command, even against a warm daemon that never reloaded anything. The refusals:
+
+- a solution test project that is neither gated nor excluded;
+- an exclusion with no `reason`, or naming a project the solution does not contain;
+- a project listed in **both** `tests.projects` and `tests.excluded`;
+- a gated project the solution does not contain;
+- more than one solution file at the repo root with no `tests.solution` to pick one;
+- a scan that recognised nothing at all — the floor, because an empty problem list from a
+  blind scan is byte-identical to the one from a fully governed repo.
+
+**`tests.excluded` is the escape hatch, and it is first-class**: an array of
+`{"project": …, "reason": …}` where the reason is required and non-blank. A declared,
+reasoned exclusion is not the bug — the silence is. Every exclusion is logged on the
+green path and recorded in `.fshw/verdict.json` under **`scope.excluded`**, so a consumer
+reading `"kind": "full"` can see the gap instead of inferring completeness from a count.
+`scope.excluded` is `null` — not `[]` — on a verdict written before the field existed:
+"this verdict does not say" and "nothing was excluded" are different facts and are
+different bytes.
+
+`tests.solution` names the authority when the repo root holds more than one solution file.
+A repo with **no** solution file is not reconciled at all: the full-suite claim is complete
+*relative to the solution*, and with no solution there is no such claim to make. A repo
+that configures no test projects is untouched — it makes no full-suite claim, and `confirm`
+already refuses to build a merge verdict without one.
+
+`FsHotWatch.IntegrationTests` is now a declared exclusion carrying its reason (it stands up
+real daemons and asserts on wall-clock behaviour, so running it from inside the daemon that
+IS the gate makes its timing assertions a function of machine load). It is not ungated: CI's
+solution-wide `dotnet test` and `mise run test-integration` both run it.
+
+*F# API, BREAKING:* `Verdict.create` takes the declared exclusions
+(`SolutionScope.Exclusion list option`) between the tree and the outcome, and the `tests`
+config record gains `Excluded` and `Solution`. See
+[`src/FsHotWatch.Cli/CHANGELOG.md`](src/FsHotWatch.Cli/CHANGELOG.md).
+
 ### docs: the replacement for `isPassed` is now something you can copy
 
 `TestResult.isPassed` was deleted this cycle and `TestResult.verdict` /

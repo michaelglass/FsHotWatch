@@ -99,6 +99,12 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                 {| BeforeRun = None
                    Extensions = []
                    Projects = testProjects
+                   // A freshly-initialised repo excludes nothing. That is the
+                   // honest starting state and the strict one: `fshw init`
+                   // discovers every test project it can see, so an exclusion it
+                   // wrote itself would be a gap nobody asked for.
+                   Excluded = []
+                   Solution = None
                    CoverageDir = "coverage"
                    DependsOn = [] |}
       FileCommands = []

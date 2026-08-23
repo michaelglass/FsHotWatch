@@ -743,6 +743,20 @@ type Verdict =
             treeHashAlgorithm: string
             treeFileCount: int
             scope: TestScope
+            /// AUTOMATION-158. The test projects in the solution that this run
+            /// deliberately did NOT cover, each with the reason, exactly as
+            /// `.fshw.json`'s `tests.excluded` declares them.
+            ///
+            /// `None` is NOT `Some []`, and the distinction is the point.
+            /// `Some []` says "nothing was excluded" — a positive completeness
+            /// claim this build establishes by reconciling the config against
+            /// the solution before any test runs (`SolutionScope`). `None` says
+            /// "this verdict does not answer that question", which is what a
+            /// verdict written before the field existed is entitled to say and
+            /// no more. Reading the second as the first would restore the very
+            /// silence this field exists to end: a gap that is absent from the
+            /// record, and absent is indistinguishable from none.
+            excluded: SolutionScope.Exclusion list option
             outcome: Outcome
             exitCode: int
             plugins: PluginVerdict list
@@ -788,6 +802,10 @@ type Verdict =
     member this.TreeHashAlgorithm = this.treeHashAlgorithm
     member this.TreeFileCount = this.treeFileCount
     member this.Scope = this.scope
+
+    /// AUTOMATION-158. The declared, reasoned gaps in this run's scope — see the
+    /// `excluded` field. `None` means the verdict does not say.
+    member this.Excluded = this.excluded
 
     /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
     member this.Outcome = this.outcome
@@ -936,6 +954,12 @@ let create
     (command: Command)
     (runReport: TestRunReport)
     (tree: TreeHash.Tree)
+    // AUTOMATION-158. The declared, reasoned gaps in this run's scope. REQUIRED
+    // (not a defaulted argument): a caller that could omit it is a caller that can
+    // produce a verdict silent about its own gaps, which is the defect this
+    // records. `Some []` is the positive claim "nothing was excluded"; `None` is
+    // "I could not establish that", and the two must not be spelled the same way.
+    (excluded: SolutionScope.Exclusion list option)
     (outcome: Outcome)
     (exitCode: int)
     (plugins: PluginVerdict list)
@@ -956,6 +980,7 @@ let create
           treeHashAlgorithm = TreeHash.Algorithm
           treeFileCount = tree.FileCount
           scope = runReport.Scope
+          excluded = excluded
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
@@ -983,33 +1008,65 @@ let RelativePath = ".fshw/verdict.json"
 // Serialization
 // ---------------------------------------------------------------------------
 
+/// AUTOMATION-158. The declared gaps, on the wire, INSIDE `scope`.
+///
+/// Placed there rather than at the top level because it is part of what the scope
+/// MEANS: `{"kind":"full"}` beside `"excluded":[]` is a complete answer, and the
+/// same `kind` beside a non-empty `excluded` is "complete over everything except
+/// these, for these written reasons". A consumer that reads `kind` and stops has
+/// always read a claim whose limits sit in the same object.
+///
+/// ALWAYS EMITTED, on every kind. It is a fact about the CONFIG this run was
+/// governed by, not about what the run managed to do, so it is as true of a
+/// `none` scope as of a `full` one — and a field that appears only sometimes is a
+/// field a consumer has to guess about.
+/// `null` for `None` — "this verdict does not say" — and an array (possibly
+/// empty) for `Some`. The two are different facts and must stay different bytes;
+/// see the `excluded` field.
+let private excludedJson (excluded: SolutionScope.Exclusion list option) : obj =
+    match excluded with
+    | None -> null
+    | Some gaps ->
+        gaps
+        |> List.map (fun e ->
+            {| project = e.Project
+               reason = e.Reason |}
+            :> obj)
+        |> Array.ofList
+        :> obj
+
 /// Scope on the wire. UNIFORMLY TAGGED (`kind` always present) rather than
 /// "sometimes a string, sometimes an object", so a consumer never has to
 /// discriminate a JSON string from a JSON object before it can read a field.
-let private scopeJson (scope: TestScope) : obj =
+let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: TestScope) : obj =
+    let gaps = excludedJson excluded
+
     match scope with
     | FullSuite n ->
         {| kind = "full"
            ranProjects = n
-           totalProjects = n |}
+           totalProjects = n
+           excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
         {| kind = "filtered"
            ranProjects = ran
-           totalProjects = total |}
+           totalProjects = total
+           excluded = gaps |}
         :> obj
     | NoTestsRun ->
         // NO counts. `TestScope.NoTestsRun` carries none, and `ranProjects: 0,
         // totalProjects: 0` would state, of a repo with six test projects, that it has
         // none. `kind: "none"` already says the only thing that matters: nothing ran.
-        {| kind = "none" |} :> obj
-    | ScopeUnknown -> {| kind = "unknown" |} :> obj
+        {| kind = "none"; excluded = gaps |} :> obj
+    | ScopeUnknown -> {| kind = "unknown"; excluded = gaps |} :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
     // ordinary tests-less repo, while "the scope read faulted" is a check that could not
     // see what it was judging, and a consumer must be able to tell them apart.
     | ScopeUnreadable reason ->
         {| kind = "unreadable"
-           reason = reason |}
+           reason = reason
+           excluded = gaps |}
         :> obj
 
 let private outcomeJson (outcome: Outcome) : obj =
@@ -1039,13 +1096,13 @@ let private divergenceJson (d: Divergence) : obj =
 /// The sub-record, nested under `checkComparison` beside its classification. Not spliced
 /// into the top level: `scope` and `outcome` up there describe the verdict that was
 /// EARNED, and two same-named fields one nesting apart is how a reader lifts the wrong one.
-let private checkComparisonJson (c: CheckComparison) : obj =
+let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) (c: CheckComparison) : obj =
     {| divergence = divergenceJson c.Divergence
        impactScopedRun =
         (match c.ImpactScoped with
          | Some r ->
              box
-                 {| scope = scopeJson r.Scope
+                 {| scope = scopeJson excluded r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites |}
          | None -> null) |}
@@ -1069,9 +1126,9 @@ let serialize (v: Verdict) : string =
            treeHash = v.TreeHash
            treeHashAlgorithm = v.TreeHashAlgorithm
            treeFileCount = v.TreeFileCount
-           scope = scopeJson v.Scope
+           scope = scopeJson v.Excluded v.Scope
            outcome = outcomeJson v.Outcome
-           checkComparison = checkComparisonJson v.Comparison
+           checkComparison = checkComparisonJson v.Excluded v.Comparison
            exitCode = v.ExitCode
            plugins =
             [ for p in v.Plugins ->
@@ -1177,6 +1234,28 @@ let private parseScope (el: JsonElement) : TestScope =
             tryString el "reason"
             |> Option.defaultValue "the recorded scope is not a shape this build recognizes"
         )
+
+/// AUTOMATION-158, read back from inside `scope`.
+///
+/// An ABSENT or `null` field is `None` — the verdict does not answer the
+/// question — and only an ARRAY becomes `Some`. An entry with no `project` is
+/// dropped (there is nothing to name), and one with no `reason` round-trips with
+/// an empty reason rather than vanishing: a declaration that lost its reason is
+/// still a declaration, and dropping it here would silently improve the record.
+let private parseExcluded (scopeEl: JsonElement) : SolutionScope.Exclusion list option =
+    match tryProp scopeEl "excluded" with
+    | Some arr when arr.ValueKind = JsonValueKind.Array ->
+        arr.EnumerateArray()
+        |> Seq.choose (fun el ->
+            match tryString el "project" with
+            | Some project ->
+                Some
+                    { SolutionScope.Project = project
+                      SolutionScope.Reason = tryString el "reason" |> Option.defaultValue "" }
+            | None -> None)
+        |> List.ofSeq
+        |> Some
+    | _ -> None
 
 let private parseOutcome (el: JsonElement) : Outcome option =
     match tryString el "kind" with
@@ -1356,10 +1435,11 @@ let read (repoRoot: string) : Reading =
             else
                 let outcome = tryProp root "outcome" |> Option.bind parseOutcome
 
-                let scope =
-                    tryProp root "scope"
-                    |> Option.map parseScope
-                    |> Option.defaultValue ScopeUnknown
+                let scopeEl = tryProp root "scope"
+
+                let scope = scopeEl |> Option.map parseScope |> Option.defaultValue ScopeUnknown
+
+                let excluded = scopeEl |> Option.bind parseExcluded
 
                 match tryString root "treeHash", outcome, parsePlugins root, parseSuites root with
                 | _, _, Error e, _ -> Reading.Unreadable e
@@ -1410,6 +1490,7 @@ let read (repoRoot: string) : Reading =
                           treeHashAlgorithm = tryString root "treeHashAlgorithm" |> Option.defaultValue "(none)"
                           treeFileCount = tryInt root "treeFileCount" |> Option.defaultValue 0
                           scope = scope
+                          excluded = excluded
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins

@@ -438,6 +438,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                    FileCount = tree.FileCount
                    SkippedCount = tree.SkippedCount }
                 : TreeHash.Tree)
+                (Some [])
                 FsHotWatch.Cli.Verdict.Green
                 0
                 ([ { Name = "test-prune"

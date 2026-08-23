@@ -1,5 +1,10 @@
 {
   "overrides": {
+    "SolutionScope.fs": {
+      "line": 95,
+      "branch": 77,
+      "reason": "new file, AUTOMATION-158. Floor = the MEASURED value on macOS 2026-08-23 (line 95.5%, branch 77.9% = 53/68) less a ~1pp margin for the load/platform wobble every other floor in this file documents. The uncovered branches are IO-failure filters (unreadable solution, unreadable project, missing repo root) and the null-input guards, all of which exist so a malformed checkout produces a FINDING rather than a crash - left honest rather than hidden with ExcludeFromCodeCoverage. Everything that decides a scope is covered: all eight Finding cases are constructed and rendered, both solution formats are parsed, and the undeclared/declared mutation is proved in both directions. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges."
+    },
     "AnalyzersPlugin.fs": [
       {
         "line": 80,

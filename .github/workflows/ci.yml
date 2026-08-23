@@ -45,7 +45,13 @@ jobs:
       #
       # NOTE ON "FULL SUITE": it means every test project `.fshw.json` knows about,
       # which today is FsHotWatch.Tests alone. FsHotWatch.IntegrationTests is in the
-      # solution but not in `.fshw.json`, so `confirm` does not run it (AUTOMATION-158).
+      # solution and is DECLARED OUT of that scope — `.fshw.json`'s `tests.excluded`
+      # carries the project and the reason, the config load prints it, and the verdict
+      # records it under `scope.excluded`. Since AUTOMATION-158 the omission cannot be
+      # silent: a solution test project that is neither gated nor excluded-with-a-reason
+      # is a `config error` and this step exits 2 before any suite runs, exactly like the
+      # analyzer-path guard below. The integration suite is covered by the solution-wide
+      # `dotnet test` in the reusable workflow, and by `mise run test-integration`.
       #
       # This is ALSO how the repo's own convention rules run in CI
       # (analyzers/FsHotWatch.Rules → FSHW-CLAIM-001, FSHW-CLOCK-001): the

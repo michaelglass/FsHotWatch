@@ -89,6 +89,10 @@ type private Spec =
         /// The TRUE seed count before truncation. Set it above `Seeds.Length` to
         /// exercise the "and N more" suffix; 0 means "however many Seeds there are".
         SeedTotal: int
+        /// AUTOMATION-158. The declared, reasoned gaps in this run's scope.
+        /// `Some []` — a positive "nothing was excluded" — is the default, because
+        /// that is what a governed repo records.
+        Excluded: SolutionScope.Exclusion list option
         Tree: TreeHash.Tree
     }
 
@@ -100,6 +104,7 @@ let private build (s: Spec) : Verdict.Verdict =
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds) }
         s.Tree
+        s.Excluded
         s.Outcome
         s.ExitCode
         s.Plugins
@@ -123,6 +128,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       RedCauses = []
       Seeds = []
       SeedTotal = 0
+      Excluded = Some []
       Tree =
         { Hash = treeHash
           FileCount = fileCount
@@ -3249,3 +3255,104 @@ let ``AUTOMATION-111: no recall alarm when the two readings agreed`` () =
 
         let text = String.concat "\n" hints
         test <@ not (text.Contains "SELECTION BUG") @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-158 — the declared gaps travel INSIDE `scope`
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a declared exclusion round-trips inside scope, project and reason both`` () =
+    // The acceptance criterion the ticket states in so many words: `confirm` runs
+    // the suite, or DECLARES in verdict.json's scope that it did not, "so a
+    // consumer of the verdict can SEE the gap". A reason that did not survive the
+    // write would leave a consumer with a gap and no way to judge it.
+    withTempDir "verdict-158-roundtrip" (fun root ->
+        let gap: SolutionScope.Exclusion =
+            { Project = "tests/App.IntegrationTests"
+              Reason = "end-to-end; run by `mise run test-integration` and by CI's solution-wide dotnet test" }
+
+        writeSpec
+            root
+            { greenVerdict "sha256:abc" 1 with
+                Excluded = Some [ gap ] }
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v.Excluded = Some [ gap ] @>
+            // ...and the scope is still a FULL one. A declared, reasoned exclusion
+            // is not the bug — the silence is — so it must not cost the green.
+            test <@ TestScope.isFullSuite v.Scope @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``"nothing was excluded" and "this verdict does not say" are different bytes`` () =
+    // The whole shape of AUTOMATION-158 one level down: an absent gap must not
+    // read as no gap. `Some []` is a claim this build establishes by reconciling
+    // the config with the solution before any test runs; `None` is what a verdict
+    // written before the field existed is entitled to say, and no more.
+    let claimsNothingExcluded =
+        System.Text.Json.Nodes.JsonNode
+            .Parse(
+                serializeSpec
+                    { greenVerdict "sha256:abc" 1 with
+                        Excluded = Some [] }
+            )
+            .Item("scope")
+            .Item("excluded")
+
+    let saysNothing =
+        System.Text.Json.Nodes.JsonNode
+            .Parse(
+                serializeSpec
+                    { greenVerdict "sha256:abc" 1 with
+                        Excluded = None }
+            )
+            .Item("scope")
+            .Item("excluded")
+
+    test <@ claimsNothingExcluded.ToJsonString() = "[]" @>
+    test <@ isNull saysNothing @>
+
+[<Fact>]
+let ``a verdict written before the field existed does not get to claim completeness`` () =
+    withTempDir "verdict-158-legacy" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green"},
+                "scope":{"kind":"full","ranProjects":6,"totalProjects":6}}"""
+        )
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            // NOT `Some []`. The old file said nothing about exclusions, and
+            // "said nothing" is not "there were none".
+            test <@ v.Excluded = None @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``the gaps are stated on every scope kind, because they are a fact about the config`` () =
+    // Not only on `full`. A `none` scope over a config with a declared exclusion
+    // still has that exclusion, and a field that appears only sometimes is a field
+    // a consumer has to guess about.
+    let gapsOn (scope: TestScope) =
+        System.Text.Json.Nodes.JsonNode
+            .Parse(
+                serializeSpec
+                    { greenVerdict "sha256:abc" 1 with
+                        Command = Verdict.Check
+                        Scope = scope
+                        Excluded = Some [ { Project = "tests/X"; Reason = "why" } ] }
+            )
+            .Item("scope")
+            .Item("excluded")
+            .ToJsonString()
+
+    for scope in
+        [ FullSuite 6
+          ImpactFiltered(2, 6)
+          NoTestsRun
+          ScopeUnknown
+          ScopeUnreadable "faulted" ] do
+        test <@ (gapsOn scope).Contains "tests/X" @>

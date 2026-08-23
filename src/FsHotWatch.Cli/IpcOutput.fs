@@ -752,8 +752,33 @@ let internal publishVerdict
         // `outcome` is computed by `CheckVerdict.verdict` from the very statuses
         // `pluginVerdicts` renders — but if the two ever drift apart, fshw stops rather
         // than stamping the contradiction on disk.
+        // AUTOMATION-158. The declared gaps in this run's scope, re-read from
+        // `.fshw.json` HERE rather than plumbed down from the config load.
+        //
+        // Deliberate, and safe for the same reason the tree hash is taken twice
+        // around this write: `.fshw.json` is part of the hashed tree, so a config
+        // edit between the load and this read moves `atWrite` and downgrades the
+        // verdict to `incomplete` — the file cannot record exclusions from a
+        // config the run was not governed by and still claim a green.
+        //
+        // Failing to read them is NOT an empty list: `[]` is the positive claim
+        // "nothing was excluded", and a config we could not parse has not
+        // established that. `readExclusions` returns `None` there, and the verdict
+        // says it does not know.
+        let excluded = SolutionScope.readExclusions repoRoot
+
         let v =
-            Verdict.create command runReport atWrite verdictOutcome exitCode plugins suites comparison redCauses
+            Verdict.create
+                command
+                runReport
+                atWrite
+                excluded
+                verdictOutcome
+                exitCode
+                plugins
+                suites
+                comparison
+                redCauses
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
         // tests, the prior verdict is the only thing that can answer the reader's
