@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-08-23
+
 - AUTOMATION-245: **a cache replay is now actually refused over a MISSING build output
   — in the daemon, where it never was.** The replay gate shipped correct and inert: the
   daemon constructs this plugin with `artifactGateReddens = false` (AUTOMATION-368),

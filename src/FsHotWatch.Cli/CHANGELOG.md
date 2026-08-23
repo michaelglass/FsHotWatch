@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.25 - 2026-08-23
+
+- fix(AUTOMATION-245): the replay gate was correct and switched OFF in every live daemon
+- docs: remove three stray diff3 base markers from the changelogs
+
+
 ## 0.14.0-alpha.24 - 2026-08-23
 
 - **A test project in the solution but not in `.fshw.json` is now a `config error`, not a

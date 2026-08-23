@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.16 - 2026-08-23
+
+- docs: remove three stray diff3 base markers from the changelogs
+
+
 ## 0.10.0-alpha.15 - 2026-08-23
 
 - AUTOMATION-368: **a compile item is not an edit** — `ProjectGraph.GetMaxSourceMtime`
