@@ -1282,3 +1282,59 @@ let ``fsproj fingerprint applies user exclude patterns like discovery does`` () 
         File.SetLastWriteTimeUtc(Path.Combine(srcDir, "A.fsproj"), DateTime.UtcNow)
         let after = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir excludes
         test <@ before <> after @>)
+
+// ============================================================================
+// AUTOMATION-300 — the rename pruning that stops a vanished path being analysed
+// ============================================================================
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``a renamed file leaves the scan set — the old path is vanished, the new one is not`` () =
+    // The ticket's actual trigger. Before the fix a rename left the old path
+    // registered, FCS was asked to parse a file that cannot be opened, and the
+    // resulting finding was keyed to a path nothing would ever check again — so
+    // the gate stayed red until the daemon was stopped, which is the one command
+    // the docs tell you not to run.
+    let oldPath = "/repo/src/OldName.fs"
+    let newPath = "/repo/src/NewName.fs"
+    let onDisk = set [ newPath; "/repo/src/Untouched.fs" ]
+
+    let files, vanished =
+        partitionVanished onDisk.Contains [ oldPath; newPath; "/repo/src/Untouched.fs" ]
+
+    // The property that matters: the scan never sees the dead path. Clearing
+    // AFTER scanning would leave the finding standing, and a scan that saw the
+    // path is a scan the clear did not precede — so this catches a reordering,
+    // not merely a missing filter.
+    test <@ not (List.contains oldPath files) @>
+    test <@ List.contains oldPath vanished @>
+
+    // And the rename's destination is scanned rather than swept out with it.
+    test <@ List.contains newPath files @>
+    test <@ not (List.contains newPath vanished) @>
+
+[<Fact>]
+[<Trait("PositiveControl", "AUTOMATION-300")>]
+let ``nothing vanishes when every registered file is still on disk`` () =
+    // Without this, a partition that reported EVERYTHING as vanished would pass
+    // the test above while clearing the findings of every file in the repository
+    // on each scan — a far worse failure than the one being fixed, and invisible
+    // from the refusal side alone.
+    let registered = [ "/repo/src/A.fs"; "/repo/src/B.fs"; "/repo/tests/C.fs" ]
+    let files, vanished = partitionVanished (fun _ -> true) registered
+
+    test <@ files = registered @>
+    test <@ List.isEmpty vanished @>
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``a deleted file is pruned the same way a renamed one is`` () =
+    // The fix is existence-based rather than rename-aware on purpose: the
+    // fsproj-fingerprint path does not fire for a glob-matched file whose
+    // removal leaves every project file byte-identical, so existence is the
+    // backstop that does not depend on how the removal happened to touch them.
+    let deleted = "/repo/src/Gone.fs"
+    let files, vanished = partitionVanished (fun p -> p <> deleted) [ deleted; "/repo/src/Stays.fs" ]
+
+    test <@ vanished = [ deleted ] @>
+    test <@ files = [ "/repo/src/Stays.fs" ] @>

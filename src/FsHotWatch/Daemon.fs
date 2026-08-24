@@ -1818,6 +1818,23 @@ let internal runChecksWithRetry
     }
 
 /// Execute the full scan logic, returning the updated agent state.
+/// AUTOMATION-300 — split the registered set into what can still be scanned and
+/// what has vanished, with existence injected so the decision is testable
+/// without touching a disk.
+///
+/// Extracted from `performScan` because the pruning had no test of its own: the
+/// clearing primitive was covered on a synthetic ledger, and the partition that
+/// decides WHAT to clear — the half a rename actually exercises — was not.
+///
+/// The property worth pinning is the SECOND element never reaching the scan.
+/// `performScan` clears the vanished paths before scanning, and the ordering is
+/// load-bearing: clearing afterwards would leave a finding keyed to a path
+/// nothing will look at again, which is the wedge this ticket exists to close.
+/// A test asserting the scan list excludes a vanished path catches a reordering,
+/// because a scan that saw the path is a scan the clear did not precede.
+let internal partitionVanished (exists: string -> bool) (registered: string list) : string list * string list =
+    registered |> List.partition exists
+
 let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: ScanAgentState) (ct: CancellationToken) =
     async {
         let host = ctx.Host
@@ -1859,7 +1876,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         // rename happened to touch the project files.
         let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
 
-        let files, vanished = registeredFiles |> List.partition System.IO.File.Exists
+        let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
         if not vanished.IsEmpty then
             // Clear first, THEN scan: a finding left behind here outlives the
