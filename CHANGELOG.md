@@ -74,6 +74,32 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a kill that never ANSWERS is its own outcome, and a tree we lost is booked — BREAKING (API)
+
+**Breaking (API):** `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`. A
+consumer matching it exhaustively will not compile until the case is handled.
+
+An earlier entry below, under "A process tree we failed to kill is no longer reported as killed",
+documents `KillOutcome` as `Killed | AlreadyExited | KillFailed of exn`. That was true when it was
+written and is no longer the whole type — this entry is the correction, and the reason to read it
+before matching on the type.
+
+The new case is not a flavour of `KillFailed`, and collapsing them would lose the distinction that
+matters during an incident: `KillFailed` is the operating system telling us **no**, with a reason
+it can name. `KillTimedOut` is the operating system telling us **nothing** — the kill call never
+returned inside the teardown budget, so there is no success, no refusal, and no answer at all.
+Both leave the tree unaccounted for and both fail closed; only one of them has a reason to give.
+
+The budget exists so a teardown cannot hang a run forever. An unbounded wait there is a phase that
+cannot finish, and a phase that cannot finish cannot report — so the run would never reach a
+verdict at all, which is a worse failure than reporting an unaccounted tree.
+
+**New public surface on `ProcessRegistry`,** so a tree we could not account for is named rather
+than silently dropped: the `LeakedTree` record (`Pid`, `Description`, and why termination could not
+be established), the `reportLeak` function, and the registry's own `ReportLeak` / `Leaks` members.
+The leak list is append-only by design — a tree we could not account for is never un-leaked,
+because nothing later observed would prove it died rather than that its pid was reused.
+
 ### cli: "full suite" now has to mean every suite in the solution — BREAKING for repos with an undeclared test project
 
 `confirm` reports its scope as `{"kind":"full","ranProjects":N,"totalProjects":N}`, and a
