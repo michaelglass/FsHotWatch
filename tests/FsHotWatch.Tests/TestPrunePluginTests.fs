@@ -9998,3 +9998,143 @@ let ``CheckReach.classify decides reach per failure, and refuses what it cannot 
     match CheckReach.classify None [ seamFailure "Alpha.Tests" (Some "Alpha.OneTests") ] with
     | ReachUnknown reason -> test <@ reason.Contains "no retained impact selection" @>
     | other -> failwithf "a run with no retained selection must be UNKNOWN, got %A" other
+
+// ---------------------------------------------------------------------------
+// rework — the DAEMON SEAM, end to end.
+//
+// Everything above grades the projection's arithmetic on values handed straight to it.
+// These two drive the WIRING that arithmetic depends on and nothing else covers:
+// `runTestsWithImpact` retaining `WouldHaveRun` at the launch chokepoint, the completion
+// handler writing `checkReachRef`, and the `check-reach` command serving it.
+//
+// That seam is precisely where this ticket failed QA twice. Both times the types were
+// present, correct and unit-tested, and the capture condition was false in production
+// every single time — seventeen confirms over ten days, zero comparisons. A unit test of
+// `CheckReach.classify` cannot see that, because it supplies the retained selection the
+// daemon is supposed to have kept.
+//
+// The tree is built so the two scopes GENUINELY DIFFER: only `Lib.foo` is owed and only
+// P1Tests covers it, so `check` would run P1 alone, while `confirm`'s `set-scope full`
+// makes the actual run cover P1 AND P2. A `WouldHaveRun` wired to the run's own
+// `Selection` answers "full, 2 of 2"; one hard-wired to `None` answers with a null scope.
+// Neither can pass the assertions below, which is what makes this a control rather than a
+// field-presence check.
+// ---------------------------------------------------------------------------
+
+/// A two-project tree owing exactly ONE symbol, covered by P1 alone. Returns the db path,
+/// the two run markers, and the configs.
+let private reachSeamTree (tmpDir: string) =
+    let dbPath = Path.Combine(tmpDir, "tp.db")
+    let db = Database.create dbPath
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.debt" "Debt.fs" "P2" "P2Tests" "debtTest"
+
+    // Only P1's symbol is owed. THIS is what makes the impact selection narrower than the
+    // suite — P2 is configured, runnable, and no impact selection would choose it.
+    FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+    let p1Ran = Path.Combine(tmpDir, "p1-ran")
+    let p2Ran = Path.Combine(tmpDir, "p2-ran")
+    dbPath, p1Ran, p2Ran, [ ledgerRunner "P1" p1Ran; ledgerRunner "P2" p2Ran ]
+
+/// Ask the daemon for the projection. A plugin that does not serve the command at all is
+/// the seam being absent, and must fail loudly rather than read as "no sample".
+let private seamCheckReachReply (host: PluginHost) : string =
+    match host.RunCommand("check-reach", [||]) |> Async.RunSynchronously with
+    | Some reply -> reply
+    | None -> failwith "the plugin serves no `check-reach` command — the daemon seam is not wired at all"
+
+[<Fact(Timeout = 25000)>]
+let ``a confirm-style full-suite run SERVES the narrower selection check would have used`` () =
+    withTempDir "tp-seam-projected" (fun tmpDir ->
+        let dbPath, p1Ran, p2Ran, configs = reachSeamTree tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // What `confirm` does, in the order it does it: widen BEFORE the scan, so the run
+        // the scan provokes is already unfiltered. This exact sequence is what made the
+        // original capture condition ("did confirm escalate?") false every time.
+        let setScope =
+            host.RunCommand("set-scope", [| """{"scope":"full"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ setScope.IsSome && setScope.Value.Contains "\"scope\":\"full\"" @>
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        waitForQuiescent host 5000
+
+        // The RUN was FULL — both projects executed, including the one no impact selection
+        // would have chosen. Without this the divergence asserted below is unproven.
+        test <@ File.Exists p1Ran @>
+        test <@ File.Exists p2Ran @>
+
+        use doc = JsonDocument.Parse(seamCheckReachReply host)
+        let root = doc.RootElement
+        let recorded = root.GetProperty("recorded").GetBoolean()
+        let scope = root.GetProperty("scope").GetString()
+        let ranProjects = root.GetProperty("ranProjects").GetInt32()
+        let totalProjects = root.GetProperty("totalProjects").GetInt32()
+        let reach = root.GetProperty("reach").GetString()
+
+        // A run completed, so a projection exists. `recorded = false` here means the
+        // completion handler never wrote one.
+        test <@ recorded @>
+
+        // THE ASSERTION. The run covered 2 of 2 projects; the selection `check` would have
+        // used covers 1 of 2. This is the same-tree, same-daemon, same-instant divergence
+        // the whole ticket exists to record, and it is only reachable if the retained map
+        // survived the widening.
+        test <@ scope = "filtered" @>
+        test <@ ranProjects = 1 @>
+        test <@ totalProjects = 2 @>
+
+        // Nothing failed, so there was no failure for the selection to miss. Distinct from
+        // "the selection reached none of them", which is the selector defect.
+        test <@ reach = "no-failures-to-reach" @>)
+
+[<Fact(Timeout = 25000)>]
+let ``an impact-scoped run retains NO selection, and says so rather than inventing one`` () =
+    // The control for the test above. Here the run IS the impact selection — nothing was
+    // widened past it — so there is no second reading to project and the seam must report
+    // an ABSENCE. If this also answered "filtered", the test above would be passing
+    // against a constant rather than against the map the daemon retained.
+    withTempDir "tp-seam-impact" (fun tmpDir ->
+        let dbPath, p1Ran, p2Ran, configs = reachSeamTree tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // No `set-scope full` — the inner-loop default, which is what `check` runs under.
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        waitForQuiescent host 5000
+
+        // Genuinely filtered: P1 ran and P2 was skipped entirely. This is the same tree as
+        // the test above, run the other way, so the two differ ONLY in the widening.
+        test <@ File.Exists p1Ran @>
+        test <@ not (File.Exists p2Ran) @>
+
+        use doc = JsonDocument.Parse(seamCheckReachReply host)
+        let root = doc.RootElement
+        let recorded = root.GetProperty("recorded").GetBoolean()
+        let scopeKind = root.GetProperty("scope").ValueKind
+        let reach = root.GetProperty("reach").GetString()
+
+        test <@ recorded @>
+
+        // No selection was widened past, so there is no scope to describe. `null`, never a
+        // count: a zero would read as "check would have run nothing", which is a claim.
+        test <@ scopeKind = JsonValueKind.Null @>
+        test <@ reach = "unknown" @>
+
+        // And the refusal READS. The reason reaches `verdict.json` verbatim as the
+        // `incomparable` explanation, so the sentence a human is handed is asserted here
+        // whole — a wrapped literal that lost its line-continuation would fail this.
+        let reason = root.GetProperty("reason").GetString()
+        test <@ reason.Contains "so there is nothing to project the result through" @>)
