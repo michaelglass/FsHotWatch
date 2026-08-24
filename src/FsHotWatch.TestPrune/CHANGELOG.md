@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.21 - 2026-08-24
+
 - **The impact selection `confirm` widens past is retained, and a new `check-reach`
   command reports whether it would have reached a failure (AUTOMATION-259).** The
   selection was computed at the launch chokepoint and discarded in the same breath, so

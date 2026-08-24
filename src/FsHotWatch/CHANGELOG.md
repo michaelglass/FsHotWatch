@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.17 - 2026-08-24
+
+- AUTOMATION-259: confirm records the check-scoped verdict it already computes — as a PROJECTION when it does not have to escalate
+
+
 ## 0.10.0-alpha.16 - 2026-08-23
 
 - docs: remove three stray diff3 base markers from the changelogs

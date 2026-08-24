@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.26 - 2026-08-24
+
 - **`confirm` now records a real check-vs-confirm sample on the runs that produce one —
   which is all of them (AUTOMATION-259).** The comparison shipped in 0.14.0-alpha.16 and
   then measured nothing: `confirm` sends `set-scope full` BEFORE the scan that provokes
