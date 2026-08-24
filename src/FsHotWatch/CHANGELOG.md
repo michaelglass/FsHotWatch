@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **BREAKING (API)** AUTOMATION-454: `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`
+  — an exhaustive match will not compile until it is handled. It is deliberately NOT a flavour of
+  `KillFailed`: that case is the OS refusing with a reason it can name, this one is the OS answering
+  nothing at all inside the teardown budget. Both leave the tree unaccounted for and both fail closed;
+  only one has a reason to give. The budget exists because an unbounded teardown is a phase that cannot
+  finish, and a phase that cannot finish cannot report a verdict.
+- AUTOMATION-454: new public surface on `ProcessRegistry` so an unaccounted tree is named rather than
+  dropped — the `LeakedTree` record, `reportLeak`, and the registry's `ReportLeak` / `Leaks` members.
+  The leak list is append-only: a tree we could not account for is never un-leaked, because nothing
+  observed later would distinguish it having died from its pid being reused.
+
 ## 0.10.0-alpha.17 - 2026-08-24
 
 - AUTOMATION-259: confirm records the check-scoped verdict it already computes — as a PROJECTION when it does not have to escalate
