@@ -1334,7 +1334,9 @@ let ``a deleted file is pruned the same way a renamed one is`` () =
     // removal leaves every project file byte-identical, so existence is the
     // backstop that does not depend on how the removal happened to touch them.
     let deleted = "/repo/src/Gone.fs"
-    let files, vanished = partitionVanished (fun p -> p <> deleted) [ deleted; "/repo/src/Stays.fs" ]
+
+    let files, vanished =
+        partitionVanished (fun p -> p <> deleted) [ deleted; "/repo/src/Stays.fs" ]
 
     test <@ vanished = [ deleted ] @>
     test <@ files = [ "/repo/src/Stays.fs" ] @>

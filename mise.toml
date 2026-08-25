@@ -179,7 +179,20 @@ run = "dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
 # reader actually copies still MATCHES it. Without it the drift guard was a guard
 # nothing ran — an unenforced check and a passing one look alike from the outside,
 # which is the very thing this repo refuses to ship.
-depends = ["compile", "lint-project", "coverage-check", "sync-docs-check"]
+# `check-msbuild-deps`: the app-local MSBuild support assemblies cannot be
+# silently downgraded (AUTOMATION-290). `Microsoft.NET.StringTools` is TRANSITIVE
+# — nothing here names it — so an unrelated bump once moved it backwards, MSBuild
+# project loading threw for every project, and the published CLI registered zero
+# projects in the consuming repo. `failIfNoProjects` makes that state loud in
+# seconds instead of an hour, but only in the consumer, after the bad package
+# shipped. This is the half that stops it shipping. It reads the BUILT deps.json,
+# so it needs `compile` above it.
+depends = ["compile", "lint-project", "coverage-check", "sync-docs-check", "check-msbuild-deps"]
+
+[tasks.check-msbuild-deps]
+description = "Verify app-local MSBuild support assemblies are not downgraded (AUTOMATION-290)"
+run = "dotnet fsi scripts/check-msbuild-deps.fsx"
+depends = ["compile"]
 
 [tasks.run]
 description = "Run the CLI"
