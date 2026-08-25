@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.27 - 2026-08-25
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.26 - 2026-08-24
 
 - **`confirm` now records a real check-vs-confirm sample on the runs that produce one —
