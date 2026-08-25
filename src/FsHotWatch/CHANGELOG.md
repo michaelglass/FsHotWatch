@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.18 - 2026-08-25
+
 - **BREAKING (API)** AUTOMATION-454: `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`
   — an exhaustive match will not compile until it is handled. It is deliberately NOT a flavour of
   `KillFailed`: that case is the OS refusing with a reason it can name, this one is the OS answering
