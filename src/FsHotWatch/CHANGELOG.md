@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **AUTOMATION-165: `TreeHash.Algorithm` is `fshw-tree-sha256-v3` — the hashed set now covers
+  what DECIDES a check, not just its source.** Up to v2 the set was the `src/`+`tests/` walk
+  plus `.fshw.json`; everything outside those roots that changes an answer — the coverage
+  floors, the analyzer rules, `Directory.Build.props` — contributed nothing, so weakening a
+  check left a green earned under the stronger one still reporting `Applies`.
+- New module `FsHotWatch.VerdictInputs`, which owns the derivation rule (*a file belongs in
+  the tree hash iff changing it can change what a check concludes*) and both halves of its
+  application: `toolKnownInputs` (`.fshw.json` plus the root-level toolchain/dependency
+  files) and the repo's own `verdictInputs.hashed` / `verdictInputs.notInputs` declarations,
+  each entry carrying a required, reviewable reason. A declaration that resolves to no file
+  contributes a sentinel entry rather than zero — see `VerdictInputs.AbsentDeclaration`.
+- `TreeHash.Tree` gains `DeclaredCount` and `AbsentDeclarationCount`; `TreeHash.Walked` gains
+  `AbsentDeclarations` and `DeclaredCount`. Both are additive record fields, so a consumer
+  CONSTRUCTING either type must supply them.
+- `DepsFreshness`'s dependency-file name list is now sourced from
+  `VerdictInputs.DependencyFileNames` rather than restated — "is the restore stale?" and "can
+  this file change what a check concludes?" are two questions with one answer.
+
+- AUTOMATION-245: **the copy-consistency predicate now lives in core** (`OutputCopyFreshness`),
+  which is what makes it reachable from `FsHotWatch.Build`. It had lived only in
+  `FsHotWatch.TestPrune.ArtifactFreshness`; the two plugins are siblings over core, so the
+  one that owns the build cache could not ask the question that its wedges were actually
+  made of. `ArtifactFreshness` now goes through the same rule rather than restating it —
+  two implementations of a rule that has to agree is how a gate degrades without anyone
+  noticing.
+  Two questions, deliberately separate, because the answer decides what a caller may DO:
+  `isPending` is MSBuild's own `SkipUnchangedFiles` predicate (same size AND same mtime),
+  pure `stat`, and a build provably clears it — so a cache gate may use it. `verdict` is
+  the byte comparison, and it is not a substitute: a copy that differs in content while
+  matching on size and mtime is one MSBuild skips for ever. Measured on a real
+  two-project build — a plain `dotnet build` leaves that destination byte-for-byte as it
+  found it, while a copy merely left behind by a refreshed producer is re-emitted and
+  comes back with size and mtime equal again.
+
 ## 0.10.0-alpha.18 - 2026-08-25
 
 - **BREAKING (API)** AUTOMATION-454: `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`

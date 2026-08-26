@@ -44,11 +44,12 @@ let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: DateTime lis
 
 /// Names of dependency-declaring files that live alongside / above a project.
 /// `*.fsproj` is handled separately (it is the project file itself).
-let private ancestorDepFileNames =
-    [ "Directory.Packages.props"
-      "Directory.Build.props"
-      "paket.lock"
-      "paket.dependencies" ]
+///
+/// Sourced from `VerdictInputs`, not restated here. "Is the restore stale?" and
+/// "can changing this file change what a check concludes?" are two questions with
+/// one answer, and two copies of the list is how they come to disagree — with the
+/// disagreement invisible, because each copy looks complete on its own.
+let private ancestorDepFileNames = VerdictInputs.DependencyFileNames
 
 /// Directories from a project's directory up to (and including) `repoRoot`.
 /// Stops if the project dir is not under root (defensive — then just the

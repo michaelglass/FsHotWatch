@@ -2000,3 +2000,216 @@ let ``AUTOMATION-343: a cached build replay leaves an out-of-batch finding stand
         // ... and so did everything else. Equality, not "both non-empty": the batch's
         // own `<build>` entry replayed correctly throughout the bug's life.
         test <@ cached = cold @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-245 (QA rework) — the COPY, which is what the wedge is actually made of.
+//
+// Everything above asks about a project's OWN assembly: is it there, is it older than
+// its sources. The refusals that blocked real merges named something else — a
+// dependency assembly that had not been copied into a test project's output directory.
+// That predicate lived only in `FsHotWatch.TestPrune`, which this plugin cannot see
+// (siblings over core), and the ticket named exactly that as the reason its acceptance
+// could not be met. The rule now lives in core's `OutputCopyFreshness`, so the plugin
+// that owns the build cache can ask it.
+//
+// What it asks is MSBuild's own incremental-copy predicate — same size AND same mtime
+// — and not the byte comparison, deliberately. MEASURED on a real two-project build:
+// a copy left behind by a refreshed producer is re-emitted by a plain `dotnet build`
+// and comes back with size and mtime equal again, while a copy that differs in BYTES
+// at equal size and mtime is skipped by that same build and left exactly as it was.
+// Gating a cache on the second class would buy a rebuild that provably cannot fix it,
+// on every lookup, for ever.
+//
+// Every absence assertion below is paired with a positive control on the same detector
+// over the same tree.
+// ---------------------------------------------------------------------------
+
+/// Producer `Lib` ← consumer `App`, each with its own output dir, registered THE WAY
+/// THE DAEMON DOES. `settled` chooses what a build left behind: the copy carrying the
+/// origin's bytes/size/mtime (what a real `dotnet build` produces, measured), or the
+/// copy left behind while the producer's output was refreshed — the merge-flip shape.
+///
+/// Both projects' DLLs are newer than their sources, so no test here inherits a
+/// staleness the mtime gate would have caught anyway.
+let private withProducerConsumerGraph
+    (label: string)
+    (settled: bool)
+    (body: ProjectGraph * string * string -> 'a)
+    : 'a =
+    withTempDir label (fun tmpDir ->
+        let now = DateTime.UtcNow
+
+        let mk name =
+            let dir = System.IO.Path.Combine(tmpDir, name)
+            let outDir = System.IO.Path.Combine(dir, "bin", "Debug", "net10.0")
+            System.IO.Directory.CreateDirectory(outDir) |> ignore
+            let proj = System.IO.Path.Combine(dir, name + ".fsproj")
+            let src = System.IO.Path.Combine(dir, "Lib.fs")
+            let dll = System.IO.Path.Combine(outDir, name + ".dll")
+            writeMinimalFsproj proj "net10.0" [ "Lib.fs" ]
+            System.IO.File.WriteAllText(src, "let x = 1")
+            System.IO.File.WriteAllText(dll, name + "-bytes-v2")
+            System.IO.File.SetLastWriteTimeUtc(src, now - TimeSpan.FromMinutes 10.0)
+            System.IO.File.SetLastWriteTimeUtc(dll, now)
+            proj, src, dll
+
+        let libProj, libSrc, libDll = mk "Lib"
+        let appProj, appSrc, appDll = mk "App"
+
+        let copy = System.IO.Path.Combine(System.IO.Path.GetDirectoryName appDll, "Lib.dll")
+
+        if settled then
+            System.IO.File.WriteAllText(copy, System.IO.File.ReadAllText libDll)
+            System.IO.File.SetLastWriteTimeUtc(copy, System.IO.File.GetLastWriteTimeUtc libDll)
+        else
+            // Same length, so nothing below can be passing on a size difference alone.
+            System.IO.File.WriteAllText(copy, "Lib-bytes-v1")
+            System.IO.File.SetLastWriteTimeUtc(copy, now - TimeSpan.FromMinutes 5.0)
+
+        let graph = ProjectGraph()
+        graph.RegisterProject(AbsProjectPath.create libProj, [ AbsFilePath.create libSrc ], [])
+
+        graph.RegisterProject(
+            AbsProjectPath.create appProj,
+            [ AbsFilePath.create appSrc ],
+            [ AbsProjectPath.create libProj ]
+        )
+
+        graph.RegisterProjectOutput(AbsProjectPath.create libProj, libDll)
+        graph.RegisterProjectOutput(AbsProjectPath.create appProj, appDll)
+        body (graph, libSrc, copy))
+
+[<Fact(Timeout = 15000)>]
+let ``a dependency copy the build still owes bypasses the cache`` () =
+    // THE MERGE-FLIP WEDGE, at the key. The producer's output was refreshed and the
+    // consumer's copy of it was not — and because the merkle is over SOURCES, the
+    // stored entry replayed `built N projects (cached)` without running, so nothing
+    // ever made the copy. Both sides correct, neither moving.
+    withProducerConsumerGraph "replay-copy-pending" false (fun (graph, srcPath, _copy) ->
+        let cacheKeyFn =
+            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+
+        let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        test <@ wedged.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a settled dependency copy still serves the cache`` () =
+    // THE NEGATIVE CONTROL for the test above, on the same fixture with the same
+    // detector: a gate that suppressed every key would satisfy the absence half while
+    // turning every check in every repo into a full rebuild.
+    withProducerConsumerGraph "replay-copy-settled" true (fun (graph, srcPath, _copy) ->
+        let cacheKeyFn =
+            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+
+        let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        test <@ served.IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``report-only: a dependency copy the build still owes bypasses the cache`` () =
+    // PRODUCTION WIRING. `DaemonConfig` constructs this plugin with
+    // `artifactGateReddens = false`, and the last time a gate shipped here it was inert
+    // in exactly that mode for two releases. Refusing a replay reddens nothing — it
+    // returns `None` from the cache key, the same bypass `force-rebuild` uses — so the
+    // flag that holds back the mtime READING has no jurisdiction over MSBuild's own
+    // copy predicate.
+    withProducerConsumerGraph "replay-copy-reportonly" false (fun (graph, srcPath, _copy) ->
+        let cacheKeyFn = (reportOnlyPlugin graph).CacheKey.Value
+        let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        test <@ wedged.IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``report-only: a settled dependency copy still serves the cache`` () =
+    // The negative control for the production wiring specifically. Without it,
+    // report-only mode could have become rebuild-every-time and every test above would
+    // still pass.
+    withProducerConsumerGraph "replay-copy-reportonly-ok" true (fun (graph, srcPath, _copy) ->
+        let cacheKeyFn = (reportOnlyPlugin graph).CacheKey.Value
+        let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        test <@ served.IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a pending dependency copy suppresses the cache LOOKUP only, never the STORE`` () =
+    // Same asymmetry `force-rebuild` and the missing-output arm rely on: suppressing
+    // the store too would make every recovered build permanently uncacheable.
+    withProducerConsumerGraph "replay-copy-store" false (fun (graph, srcPath, _copy) ->
+        let cacheKeyFn =
+            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+
+        let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
+        let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
+        test <@ lookupKey.IsNone @>
+        test <@ storeKey.IsSome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a build that cannot settle a copy stops it justifying a bypass`` () =
+    // THE FLOOR, and the reason this gate is not a rebuild-every-time regression.
+    //
+    // A copy that differs in bytes at equal size and mtime is one MSBuild skips for
+    // ever (measured); so is one whose producer the build command does not build. Both
+    // reach this plugin as "still pending after a build that passed", and without a
+    // floor each would bypass the cache on every single lookup while the rebuild it
+    // paid for changed nothing. `true` as the build command is that situation exactly:
+    // it succeeds and touches nothing.
+    withProducerConsumerGraph "replay-copy-floor" false (fun (graph, srcPath, copy) ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+        host.RegisterHandler(BuildPlugin.createWith false "true" "" [] graph [] None [] None)
+
+        // Warm the cache with a real build that passes and settles nothing.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+        let first = terminalSummary host
+        test <@ not (first.Contains "(cached)") @>
+
+        // The copy is STILL pending — but the build just demonstrated it will not settle
+        // it, so the cache is served rather than rebuilt for ever.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        let replayed =
+            waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 15000
+
+        test <@ replayed @>
+        test <@ System.IO.File.ReadAllText copy = "Lib-bytes-v1" @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a build that settles the copy restores an ordinary cached replay`` () =
+    // The floor's other direction, and what makes the wedge RECOVER rather than merely
+    // be reported: when the forced build does re-emit the copy (measured — a plain
+    // `dotnet build` of the consumer re-copies a left-behind dependency and leaves size
+    // and mtime equal again), the very next dispatch is an ordinary cache hit.
+    //
+    // `cp` stands in for that copy step, so the recovery is observable without a real
+    // MSBuild in a unit test.
+    withProducerConsumerGraph "replay-copy-recovers" false (fun (graph, srcPath, copy) ->
+        let origin =
+            graph.GetAllProjects()
+            |> List.pick (fun p ->
+                if System.IO.Path.GetFileName(AbsProjectPath.value p) = "Lib.fsproj" then
+                    graph.GetCanonicalDllPath p
+                else
+                    None)
+
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+        // `-p` preserves the timestamp, which is what MSBuild's own copy does and what
+        // makes the pair settled afterwards.
+        host.RegisterHandler(BuildPlugin.createWith false "cp" $"-p %s{origin} %s{copy}" [] graph [] None [] None)
+
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        let settled =
+            waitUntilTrue (fun () -> System.IO.File.ReadAllText copy = System.IO.File.ReadAllText origin) 15000
+
+        test <@ settled @>
+
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        let replayed =
+            waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 15000
+
+        test <@ replayed @>)

@@ -858,6 +858,17 @@ type Verdict =
             treeHash: string
             treeHashAlgorithm: string
             treeFileCount: int
+            /// AUTOMATION-165. How many of `treeFileCount` came from
+            /// `.fshw.json`'s `verdictInputs.hashed` rather than from the discovery
+            /// walk, and how many declarations matched no file at all.
+            ///
+            /// Recorded because a declaration the tool ignores and a declaration the
+            /// tool honours look IDENTICAL from outside — which is precisely how
+            /// `verdictInputs` sat inert in a consuming repo while reading as
+            /// protection. A repo that declares 29 inputs and reads back
+            /// `treeDeclaredCount: 0` has been told.
+            treeDeclaredCount: int
+            treeAbsentDeclarationCount: int
             scope: TestScope
             /// AUTOMATION-158. The test projects in the solution that this run
             /// deliberately did NOT cover, each with the reason, exactly as
@@ -917,6 +928,14 @@ type Verdict =
     member this.TreeHash = this.treeHash
     member this.TreeHashAlgorithm = this.treeHashAlgorithm
     member this.TreeFileCount = this.treeFileCount
+
+    /// AUTOMATION-165. Files hashed because the repo DECLARED them — see the
+    /// `treeDeclaredCount` field.
+    member this.TreeDeclaredCount = this.treeDeclaredCount
+
+    /// AUTOMATION-165. Declarations that matched no file and contributed a sentinel.
+    /// Non-zero means the repo is not gating on what it thinks it is.
+    member this.TreeAbsentDeclarationCount = this.treeAbsentDeclarationCount
     member this.Scope = this.scope
 
     /// AUTOMATION-158. The declared, reasoned gaps in this run's scope — see the
@@ -1095,6 +1114,8 @@ let create
           treeHash = tree.Hash
           treeHashAlgorithm = TreeHash.Algorithm
           treeFileCount = tree.FileCount
+          treeDeclaredCount = tree.DeclaredCount
+          treeAbsentDeclarationCount = tree.AbsentDeclarationCount
           scope = runReport.Scope
           excluded = excluded
           outcome = outcome
@@ -1243,6 +1264,8 @@ let serialize (v: Verdict) : string =
            treeHash = v.TreeHash
            treeHashAlgorithm = v.TreeHashAlgorithm
            treeFileCount = v.TreeFileCount
+           treeDeclaredCount = v.TreeDeclaredCount
+           treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
            scope = scopeJson v.Excluded v.Scope
            outcome = outcomeJson v.Outcome
            checkComparison = checkComparisonJson v.Excluded v.Comparison
@@ -1614,6 +1637,11 @@ let read (repoRoot: string) : Reading =
                           treeHash = treeHash
                           treeHashAlgorithm = tryString root "treeHashAlgorithm" |> Option.defaultValue "(none)"
                           treeFileCount = tryInt root "treeFileCount" |> Option.defaultValue 0
+                          // Absent in verdicts written before AUTOMATION-165. Zero is
+                          // the honest reading either way: such a verdict hashed no
+                          // declared inputs, because the build that wrote it could not.
+                          treeDeclaredCount = tryInt root "treeDeclaredCount" |> Option.defaultValue 0
+                          treeAbsentDeclarationCount = tryInt root "treeAbsentDeclarationCount" |> Option.defaultValue 0
                           scope = scope
                           excluded = excluded
                           outcome = outcome
@@ -1686,18 +1714,37 @@ type Applicability =
     /// still made by a binary whose behaviour we are not running. A stale daemon's
     /// green about an unchanged tree is exactly the hole this closes.
     | StaleProducer of verdictBinary: string * currentBinary: string
+    /// AUTOMATION-165. Its `treeHash` was computed by a DIFFERENT hashing scheme, so
+    /// the two hashes are not comparable — equal or unequal, neither would mean
+    /// anything. Named separately from `StaleTree` because the reader's question is
+    /// different: a stale tree says "the code moved, re-run"; this says "that verdict
+    /// answers a narrower question than the one you are asking". A v2 verdict was
+    /// earned over a tree that did NOT include the coverage floors or the analyzer
+    /// rules; it cannot be promoted to a v3 claim by a string comparison that happens
+    /// to match.
+    | StaleAlgorithm of verdictAlgorithm: string * currentAlgorithm: string
 
 /// Total. Content equality on the SUBJECT and on the PRODUCER — no mtimes, no
 /// "close enough", no heuristic that can fail open.
 ///
 /// The producer is checked FIRST: a verdict from a binary we are not running tells us
 /// nothing about the tree, whatever its treeHash says.
+///
+/// The ALGORITHM is checked SECOND, and before the hashes are ever compared. The
+/// verdict has always recorded `treeHashAlgorithm` and never read it (AUTOMATION-165):
+/// the producer check masked that, which is exactly why it was easy to leave wrong. If
+/// a producer identity ever failed to capture a change to the recipe — a hand-edited
+/// verdict, a rebuild that reproduces the same binary hash — a v1 hash would be
+/// compared against a v3 hash as two opaque strings, and "they differ" would be
+/// reported as a stale TREE. That reading is a puzzle, not an answer.
 let applicability (currentProducer: Producer) (currentTreeHash: string) (v: Verdict) : Applicability =
     if not (Producer.same v.Producer currentProducer) then
         Applicability.StaleProducer(
             DaemonIdentity.BinaryIdentity.render v.Producer,
             DaemonIdentity.BinaryIdentity.render currentProducer
         )
+    elif not (String.Equals(v.TreeHashAlgorithm, TreeHash.Algorithm, StringComparison.Ordinal)) then
+        Applicability.StaleAlgorithm(v.TreeHashAlgorithm, TreeHash.Algorithm)
     elif String.Equals(v.TreeHash, currentTreeHash, StringComparison.Ordinal) then
         Applicability.Applies
     else
@@ -1751,6 +1798,11 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
             Report.Stale(
                 v,
                 $"stale: the verdict was produced by a DIFFERENT fshw binary (verdict %s{verdictBinary}, current %s{current}) — a stale daemon's green about an unchanged tree is still a stale daemon's green"
+            )
+        | Applicability.StaleAlgorithm(verdictAlgorithm, current) ->
+            Report.Stale(
+                v,
+                $"stale: the verdict's tree hash was computed by a DIFFERENT scheme (verdict %s{verdictAlgorithm}, current %s{current}) — it addresses a different set of files, so the two hashes are not comparable"
             )
 
 // ---------------------------------------------------------------------------

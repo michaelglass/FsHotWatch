@@ -1833,3 +1833,56 @@ let ``loadConfig leaves a repo that configures no tests alone`` () =
 
         let config = loadConfig tmpDir
         test <@ config.Tests = None @>)
+
+// --- loadConfig: AUTOMATION-165, a verdictInputs declaration is never half-understood ---
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig REFUSES a verdictInputs declaration it cannot honour as written`` () =
+    // The defect this closes is a declaration with no consumer: a consuming repo
+    // listed the files that decide its checks, the tool read none of them, and
+    // nothing said so. Replacing that with a declaration honoured only when
+    // well-formed — and skipped in silence otherwise — would be the same bug in a
+    // new place, so a declaration this build cannot act on stops the daemon.
+    withTempDir "cfg-verdict-inputs-bad" (fun tmpDir ->
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".fshw.json"),
+            """{"verdictInputs": {"hashed": [{"path": "coverage-counts.json"}]}}"""
+        )
+
+        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        Assert.Contains("verdictInputs", ex.Message)
+        Assert.Contains("why", ex.Message))
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig ACCEPTS a well-formed verdictInputs declaration — the control for the refusal above`` () =
+    // Without this, the test above would also pass against a build that rejected
+    // every config containing the key at all.
+    withTempDir "cfg-verdict-inputs-ok" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, "coverage-counts.json"), "{}")
+
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".fshw.json"),
+            """{"verdictInputs": {"hashed": [
+                 {"path": "coverage-counts.json", "why": "lower a floor and the prior green must stop applying"}]}}"""
+        )
+
+        loadConfig tmpDir |> ignore)
+
+[<Fact(Timeout = 30000)>]
+let ``loadConfig tolerates a declared input that is not on disk yet — but the tree hash still records it`` () =
+    // An analyzer assembly a repo declares does not exist until the first build, and
+    // refusing to start would wedge the very command that creates it. So this is a
+    // warning, not a refusal — and the guarantee is carried structurally instead: the
+    // declaration is hashed as ABSENT, so no verdict can apply as though the file had
+    // been read.
+    withTempDir "cfg-verdict-inputs-absent" (fun tmpDir ->
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".fshw.json"),
+            """{"verdictInputs": {"hashed": [
+                 {"path": "analyzers/bin/Rules.dll", "why": "the assembly the analyze plugin loads"}]}}"""
+        )
+
+        loadConfig tmpDir |> ignore
+
+        let tree = FsHotWatch.TreeHash.compute tmpDir []
+        test <@ tree.AbsentDeclarationCount = 1 @>)

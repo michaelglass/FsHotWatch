@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **AUTOMATION-165: a verdict from a different tree-hashing SCHEME no longer validates.**
+  `verdict.json` has always recorded `treeHashAlgorithm` and `applicability` never read it;
+  the producer check masked that, which is exactly why it was easy to leave wrong. A
+  mismatch is now `Applicability.StaleAlgorithm` — `applies: false`, exit 4, reported as a
+  different scheme rather than a different tree, and checked BEFORE the two hashes are
+  compared as strings.
+- `verdict.json` gains `treeDeclaredCount` and `treeAbsentDeclarationCount`: how many files
+  the repo's `verdictInputs.hashed` declarations contributed, and how many declarations
+  matched nothing. Recorded because an ignored declaration and an honoured one look
+  identical from outside — which is how `verdictInputs` sat inert in a consuming repo while
+  reading as protection. Absent in older verdicts, which read as 0.
+- `loadConfig` REFUSES a `verdictInputs` declaration it cannot honour as written (no `path`,
+  no stated reason, a duplicate, a path declared as both an input and a not-an-input, a path
+  outside the repo). A declared path that is not on disk yet is a warning rather than a
+  refusal — an analyzer assembly does not exist until the first build — and the guarantee is
+  carried structurally instead, by the absent-declaration entry in the tree hash.
+
 ## 0.14.0-alpha.27 - 2026-08-25
 
 - chore: rebuild to bundle updated dependencies

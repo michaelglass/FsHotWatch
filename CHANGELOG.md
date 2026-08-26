@@ -74,6 +74,49 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core/cli: the tree hash now covers what DECIDES the check — BREAKING (verdict applicability)
+
+**A verdict is content-addressed to the tree it verified, and that tree was never the
+whole tree.** Up to `fshw-tree-sha256-v2` the hashed set was a walk of `src/`+`tests/`
+plus `.fshw.json` — a list inherited from the *watcher*, whose job is a different one.
+Everything that decides an answer from outside those roots was omitted. Lower a coverage
+floor, edit an analyzer rule, flip `TreatWarningsAsErrors` off, and the green earned
+under the **stronger** check still reported `Applies`. The failure was silent and in the
+worst possible direction: weaken a check, and the verdict that was earned before you
+weakened it certifies the tree afterwards (AUTOMATION-165).
+
+`fshw-tree-sha256-v3` derives the set from one rule, written down in `VerdictInputs`:
+
+> **A file belongs in the tree hash iff changing it can change what a check concludes.**
+
+- **Tool-known, no configuration needed.** The root-level toolchain and dependency files
+  — `Directory.Build.props`, `Directory.Build.targets`, `Directory.Packages.props`,
+  `global.json`, `nuget.config`, `paket.lock`, `paket.dependencies` — are hashed. So a
+  repo that declares nothing still stops reusing a green across a `TreatWarningsAsErrors`
+  flip.
+- **Declared, for everything fshw cannot know.** A new `.fshw.json` key,
+  `verdictInputs.hashed`, names your coverage floors, your analyzer rules, your
+  baselines — each with a `why` a reviewer can check. `verdictInputs.notInputs` states
+  the opposite decision with a `reason`, so "not hashed" is reviewable rather than an
+  omission nobody noticed. See
+  [Configuration](README.md#what-decides-the-verdict-is-what-is-hashed).
+- **A declaration is never silently skipped.** One that cannot be honoured as written —
+  no `path`, no stated reason, a duplicate, a path in both lists, a path outside the repo
+  — is a hard config error and the daemon refuses to start. One that matches no file is
+  hashed as *absent* under its own entry, so a typo cannot quietly restore the old
+  behaviour; the hash moves when the file appears, and `verdict.json` reports
+  `treeAbsentDeclarationCount`.
+- **`treeHashAlgorithm` is now read, not merely recorded.** A verdict from a different
+  hashing scheme is `applies: false` / exit **4**, reported as a different *scheme*
+  rather than a different tree — a `v2` hash and a `v3` hash address different file sets,
+  so comparing them as strings answers a question nobody asked.
+
+**What this means for you:** every verdict written by an earlier build is now
+inapplicable — that is the point, since each of them was earned over a narrower tree.
+The first `check`/`confirm` after upgrading runs for real. `verdict.json` gains
+`treeDeclaredCount` and `treeAbsentDeclarationCount`, so a repo can see in the artifact
+whether its declaration is being honoured rather than merely written down.
+
 ### core: a kill that never ANSWERS is its own outcome, and a tree we lost is booked — BREAKING (API)
 
 **Breaking (API):** `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`. A

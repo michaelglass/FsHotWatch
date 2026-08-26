@@ -258,6 +258,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `afterRun` | `string \| false` | — | Shell command run **once** at the end of the run, as a `finally`. Best-effort — never changes the verdict. See [Run-level hooks](#run-level-hooks). |
 | `runHookTimeoutSec` | `number \| false` | — | Timeout bounding **each** run-level hook. See [Run-level hooks](#run-level-hooks). |
 | `runHookCommands` | `string[]` | `["check","confirm"]` | Which verbs the run-level hooks bracket. See [Run-level hooks](#run-level-hooks). |
+| `verdictInputs` | `object` | — | The files that decide what a check concludes but that no walk of `src/`+`tests/` would find — your coverage floors, your analyzer rules, your baselines. Folded into the verdict's tree hash, so editing one stops a prior green from applying. See [What decides the verdict is what is hashed](#what-decides-the-verdict-is-what-is-hashed). |
 | `includeOutsideRepo` | `bool` | `false` | Report on compile items that resolve **outside** the repo root — e.g. NuGet-injected `_content` source (xunit's `DefaultRunnerReporters.fs`), or files above/beside the repo. Default `false`: the report-producing plugins (analyzers, lint) skip such third-party source — it's compiled into your project, but not yours to lint, and a latent analyzer-crash surface (AUTOMATION-49). Set `true` to lint them anyway. |
 
 For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
@@ -288,6 +289,80 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 |-------|------|---------|-------------|
 | `project` | `string` | — | The project, by repo-relative directory (`tests/App.Tests`), by `.fsproj` path, or by bare name (`App.Tests`). |
 | `reason` | `string` | — | Why it is not run. **Required and non-blank** — an exclusion without a written reason is refused. |
+
+### What decides the verdict is what is hashed
+
+A verdict is content-addressed to the tree it verified: read `verdict.json`, and if
+its `treeHash` is not the hash of the tree on disk, **the verdict does not apply**.
+That guarantee is only as wide as the set of files being hashed.
+
+The rule the set is derived from, stated so the next addition is derived rather than
+remembered:
+
+> **A file belongs in the tree hash iff changing it can change what a check
+> concludes.**
+
+fshw applies that rule itself for the files it can know about — everything under
+`src/` and `tests/`, its own `.fshw.json`, and the root-level toolchain and
+dependency files (`Directory.Build.props`, `Directory.Build.targets`,
+`Directory.Packages.props`, `global.json`, `nuget.config`, `paket.lock`,
+`paket.dependencies`). Flip `TreatWarningsAsErrors` off and every prior green stops
+applying, with no configuration needed.
+
+It cannot know the rest. fshw has no way to tell that `coverage-counts.json` holds
+your floors, or that `probe-collapse-baseline.json` is the census a finding is
+measured against. **You name those**, each with a `why` a reviewer can check:
+
+```json
+{
+  "verdictInputs": {
+    "hashed": [
+      { "path": "coverage-counts.json",
+        "why": "lower a floor and a verdict earned under the higher one must stop applying" },
+      { "path": "analyzers/**/*.fs",
+        "why": "these ARE the house rules the analyze plugin enforces" },
+      { "path": "analyzers/Rules/bin/Debug/net10.0/Rules.dll",
+        "why": "the assembly the analyze plugin actually loads" }
+    ],
+    "notInputs": [
+      { "path": "CHANGELOG.md",
+        "reason": "prose about work that was already gated; re-gating on it buys nothing" }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hashed[].path` | `string` | Repo-relative file, directory (taken whole), or gitignore-style glob. **Required.** |
+| `hashed[].why` | `string` | How changing it can change an answer. **Required and non-blank.** |
+| `notInputs[].path` | `string` | Repo-relative path deliberately left out of the hash. **Required.** |
+| `notInputs[].reason` | `string` | Why changing it cannot change an answer. **Required and non-blank.** |
+
+**A declaration is never silently skipped** — that silence was the defect this
+feature exists to end:
+
+- A declaration fshw cannot honour as written — no `path`, no stated reason, the
+  same path declared twice, a path declared as both an input and a not-an-input, a
+  path outside the repo — is a **hard config error**. The daemon refuses to start.
+- A declaration that matches **no file** is hashed as *absent* under its own entry,
+  never as nothing. A typo cannot quietly restore the old behaviour, the hash moves
+  when the file appears, and `fshw` warns at load. `verdict.json` records
+  `treeAbsentDeclarationCount` so you can see it in the artifact.
+- `verdict.json` records `treeDeclaredCount`: how many files your declarations
+  actually contributed. A repo that declares twenty-nine inputs and reads back `0`
+  has been told.
+
+A declared path is **not** filtered by `exclude`, nor by the implicit `bin/`+`obj/`
+skip. Those decide where the walk goes *looking*; a declaration is an explicit
+statement that this file decides an answer, and the specific statement wins over the
+general one. It is what makes the analyzer assembly a check actually loads
+declarable at all.
+
+`notInputs` never **removes** anything from the hash. It records a decision so that
+"not hashed" is reviewable rather than an omission nobody noticed. A config key that
+could delete files from the tree hash would be a supported, one-line way to weaken
+the gate — with a `reason` field to make it look considered.
 
 ### The scope must cover the solution
 

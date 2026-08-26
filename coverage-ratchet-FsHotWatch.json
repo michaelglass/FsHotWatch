@@ -748,6 +748,20 @@
         "platform": "linux"
       }
     ],
+    "VerdictInputs.fs": [
+      {
+        "line": 100,
+        "branch": 85,
+        "reason": "new file, AUTOMATION-165. Floor = the ACTUAL achieved value on macOS 2026-08-26 (line 100%, branch 86.4% = 19/22) less a ~1pp margin for the load wobble every floor in this file documents. Every reachable arm is covered: each parse rejection, the glob/literal/directory resolution paths, the absent-declaration sentinel in both directions, and the mode-000 config and mode-000 repo root that drive the IO fallbacks. The three uncovered branch points are all short-circuits that cannot both be forced - the `||` in escapesRepo, the JsonException filter in parse, and the IOException half of tryRead (only UnauthorizedAccessException is forceable from a test, which is why this module has ONE such arm rather than one per call site). Left honest rather than hidden with ExcludeFromCodeCoverage. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 77,
+        "reason": "provisional Linux floor (AUTOMATION-165): not measured locally - the dev boxes are macOS, and this module's IO-fallback tests are guarded on `not IsWindows` but still depend on Unix file modes behaving as they do here. Set below the macOS actual by the margin this repo already sees on pure-logic files (cf. Verdict.fs), to be settled from CI artifacts. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "Verdict.fs": [
       {
         "line": 94,

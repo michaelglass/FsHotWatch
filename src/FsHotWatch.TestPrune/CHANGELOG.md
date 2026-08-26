@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- AUTOMATION-245: `ArtifactFreshness`'s copy rule now goes through core's
+  `OutputCopyFreshness.verdict` instead of restating it. Behaviour is unchanged — the same
+  content comparison, the same fail-closed arms for an unreadable copy or origin — but
+  there is now ONE implementation, and `FsHotWatch.Build` can ask the same question without
+  depending on this assembly. `consumerTfmFirst` and `claimantsOf` hand back the primary
+  candidate separately from the rest, so the non-emptiness their callers had already
+  established survives into the rule rather than becoming an unreachable arm inside it.
+
 ## 0.13.0-alpha.21 - 2026-08-24
 
 - **The impact selection `confirm` widens past is retained, and a new `check-reach`
