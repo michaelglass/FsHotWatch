@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.28 - 2026-08-26
+
 - AUTOMATION-245: **a cache replay is now refused over a dependency copy the build still
   owes** — the class the wedge is actually made of, and the one this plugin could not see.
   Everything the gate asked before was about a project's OWN assembly (is it there, is it

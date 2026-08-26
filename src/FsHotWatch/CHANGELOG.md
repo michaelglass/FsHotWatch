@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.19 - 2026-08-26
+
 - **AUTOMATION-165: `TreeHash.Algorithm` is `fshw-tree-sha256-v3` — the hashed set now covers
   what DECIDES a check, not just its source.** Up to v2 the set was the `src/`+`tests/` walk
   plus `.fshw.json`; everything outside those roots that changes an answer — the coverage

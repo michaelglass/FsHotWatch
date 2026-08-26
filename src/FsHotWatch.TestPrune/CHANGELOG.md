@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.22 - 2026-08-26
+
 - AUTOMATION-245: `ArtifactFreshness`'s copy rule now goes through core's
   `OutputCopyFreshness.verdict` instead of restating it. Behaviour is unchanged — the same
   content comparison, the same fail-closed arms for an unreadable copy or origin — but

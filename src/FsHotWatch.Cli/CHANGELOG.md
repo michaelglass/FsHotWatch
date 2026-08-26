@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.28 - 2026-08-26
+
 - **AUTOMATION-165: a verdict from a different tree-hashing SCHEME no longer validates.**
   `verdict.json` has always recorded `treeHashAlgorithm` and `applicability` never read it;
   the producer check masked that, which is exactly why it was easy to leave wrong. A
