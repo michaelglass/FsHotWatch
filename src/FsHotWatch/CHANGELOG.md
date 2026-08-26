@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- AUTOMATION-245: **the copy-consistency predicate now lives in core** (`OutputCopyFreshness`),
+  which is what makes it reachable from `FsHotWatch.Build`. It had lived only in
+  `FsHotWatch.TestPrune.ArtifactFreshness`; the two plugins are siblings over core, so the
+  one that owns the build cache could not ask the question that its wedges were actually
+  made of. `ArtifactFreshness` now goes through the same rule rather than restating it —
+  two implementations of a rule that has to agree is how a gate degrades without anyone
+  noticing.
+
+  Two questions, deliberately separate, because the answer decides what a caller may DO:
+  `isPending` is MSBuild's own `SkipUnchangedFiles` predicate (same size AND same mtime),
+  pure `stat`, and a build provably clears it — so a cache gate may use it. `verdict` is
+  the byte comparison, and it is not a substitute: a copy that differs in content while
+  matching on size and mtime is one MSBuild skips for ever. Measured on a real
+  two-project build — a plain `dotnet build` leaves that destination byte-for-byte as it
+  found it, while a copy merely left behind by a refreshed producer is re-emitted and
+  comes back with size and mtime equal again.
+
 ## 0.10.0-alpha.18 - 2026-08-25
 
 - **BREAKING (API)** AUTOMATION-454: `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- AUTOMATION-245: **a cache replay is now refused over a dependency copy the build still
+  owes** — the class the wedge is actually made of, and the one this plugin could not see.
+  Everything the gate asked before was about a project's OWN assembly (is it there, is it
+  older than its sources). The refusals that blocked real merges named something else: a
+  dependency assembly that had not been copied into a test project's output directory,
+  after a working-copy flip refreshed `src/**` and the build then REPLAYED
+  `built N projects (cached)` so nothing ever made the copy. The predicate moved into core
+  (`OutputCopyFreshness`), so `FsHotWatch.Build` no longer has to depend on
+  `FsHotWatch.TestPrune` to ask it.
+
+  It gates on MSBuild's own incremental-copy predicate (same size AND same mtime), not on
+  the bytes, and that is a deliberate scope boundary rather than an oversight. MEASURED: a
+  copy left behind by a refreshed producer is re-emitted by a plain `dotnet build`; a copy
+  that differs in BYTES at equal size and mtime is skipped by that same build and left
+  exactly as it was. Gating a cache on the second class would buy a rebuild that provably
+  cannot fix it, on every lookup, for ever — the rebuild-every-time regression this
+  ticket's own acceptance forbids, reached from the opposite direction.
+
+  Like the missing-output arm, refusing a replay reddens nothing (it returns `None` from
+  the cache key, the same bypass `force-rebuild` uses), so this blocks in BOTH modes —
+  `artifactGateReddens = false` does not switch it off, which is how the previous two
+  gates in this file came to be inert in every live daemon.
+- AUTOMATION-245: `unrepairedCopies` is the floor that makes the new refusal terminate — a
+  copy a build RAN and did not settle stops justifying a bypass, so it is worth at most ONE
+  extra build. The cold path is also where the byte comparison earns its cost: a copy the
+  build left pending is reported either as harmless (the bytes match; only size-or-mtime
+  bookkeeping disagrees) or as the class no re-run can fix, with the two remedies that were
+  measured to work — `dotnet build --no-incremental`, or delete the named copy and build
+  again.
+- AUTOMATION-245: the plugin now logs how many dependency copies it examined, once per
+  instance. Two gates in this file examined NOTHING in every live daemon for two releases
+  while every test stayed green; a count is the one reading that tells that apart from a
+  healthy tree from the outside. Measured on this repo: `artifact copy check: 33 dependency
+  copies across 10 consumer project(s) of 11 in the graph`.
+
 ## 0.7.0-alpha.27 - 2026-08-23
 
 - AUTOMATION-245: **a cache replay is now actually refused over a MISSING build output

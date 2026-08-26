@@ -353,54 +353,60 @@ type Cache() =
 let private projectLabel (projectDir: string) =
     Path.GetFileName(projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
 
-/// THE copy rule: is `copy` — the file the `--no-build` run will actually load —
-/// byte-identical to one of the `candidates` the build could have copied it from?
-/// `None` = current. `Some` = the run would read bytes no current build produces.
+/// THE copy rule, phrased in this module's verdict type. The rule ITSELF lives in
+/// core (`OutputCopyFreshness.verdict`) — is `copy` byte-identical to one of the
+/// origins the build could have copied it from? `None` = current, `Some` = the run
+/// would read bytes no current build produces.
 ///
-/// No mtime anywhere in here, and no attempt to work out WHICH candidate MSBuild
-/// picked. Answering that needs the nearest-compatible-framework rules (a net10.0
-/// consumer takes a netstandard2.0 dependency's netstandard2.0 output quite
-/// happily), which a graph-free on-disk parse cannot do — and need not: bytes
-/// matching ANY current output of the origin means the run loads code that matches
-/// the sources; matching NONE means old bytes whichever framework produced them.
+/// It moved to core for AUTOMATION-245: `FsHotWatch.Build` and `FsHotWatch.TestPrune`
+/// are siblings over core, so the plugin that owns the build cache could not see this
+/// rule at all, and the ticket named that as the reason its acceptance was unmet.
+/// Restating it there would have been two implementations of a rule that has to agree,
+/// which is how a gate degrades without anyone noticing — so there is one, here
+/// through it.
 ///
-/// FAILS CLOSED on a file it cannot read (`ContentHash`'s sentinel matches
-/// nothing, so an unreadable file could otherwise masquerade as a mismatch — or,
-/// worse, a match): "I could not read it" is `InputsUndeterminable`, never a
-/// verdict.
-let private copyVerdict (cache: Cache) (project: string) (copy: string) (candidates: string list) : StaleInput option =
-    let copyHash = cache.Hash copy
-
-    if not (ContentHash.isReadable copyHash) then
-        Some(InputsUndeterminable(project, $"could not read the build's copy at %s{copy}"))
-    else
-        let hashed = candidates |> List.map (fun c -> c, cache.Hash c)
-
-        if hashed |> List.exists (fun (_, h) -> h = copyHash) then
-            None // the copy IS one of the origin's current outputs
-        else
-            // No match. Before calling it stale, make sure we could actually READ
-            // everything we compared against — a mismatch we could not fully check
-            // is ignorance, not evidence.
-            match hashed |> List.tryFind (fun (_, h) -> not (ContentHash.isReadable h)) with
-            | Some(unreadable, _) -> Some(InputsUndeterminable(project, $"could not read %s{unreadable}"))
-            | None -> Some(CopyDiffersFromOrigin(List.head candidates, copy))
+/// `primary`/`others` rather than a candidate list because "there is at least one
+/// origin to compare against" is a fact of both call sites below, and a list makes it
+/// an unreachable arm every caller has to carry.
+///
+/// FAILS CLOSED on a file it cannot read: "I could not read it" is
+/// `InputsUndeterminable`, never a verdict.
+let private copyVerdict
+    (cache: Cache)
+    (project: string)
+    (copy: string)
+    (primary: string)
+    (others: string list)
+    : StaleInput option =
+    match OutputCopyFreshness.verdict cache.Hash copy primary others with
+    | OutputCopyFreshness.MatchesAnOrigin -> None
+    | OutputCopyFreshness.DiffersFromOrigins origin -> Some(CopyDiffersFromOrigin(origin, copy))
+    | OutputCopyFreshness.CopyUnreadable path ->
+        Some(InputsUndeterminable(project, $"could not read the build's copy at %s{path}"))
+    | OutputCopyFreshness.OriginUnreadable path -> Some(InputsUndeterminable(project, $"could not read %s{path}"))
 
 /// The origin candidates, ordered so the one the consumer most likely consumes is
 /// FIRST — purely so a stale message names the framework the reader is looking at.
 /// The VERDICT is content over the whole set and does not depend on this order.
-let private consumerTfmFirst (tfmDir: string) (candidates: string list) : string list =
+///
+/// Takes and returns the head separately so the non-emptiness the caller already
+/// established survives the reordering.
+let private consumerTfmFirst (tfmDir: string) (first: string) (rest: string list) : string * string list =
     let consumerTfm =
         Path.GetFileName(tfmDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
 
     let tfmOf (candidate: string) =
         Path.GetFileName(Path.GetDirectoryName candidate)
 
-    let matching, rest =
-        candidates
+    let matching, others =
+        first :: rest
         |> List.partition (fun c -> String.Equals(tfmOf c, consumerTfm, StringComparison.OrdinalIgnoreCase))
 
-    matching @ rest
+    match matching with
+    | m :: moreMatching -> m, moreMatching @ others
+    // Nothing was built for the consumer's framework, so the partition left the
+    // candidates exactly as they came in.
+    | [] -> first, rest
 
 /// Is one project's contribution to `tfmDir` stale? `projectDir`/`assemblyName`
 /// name a project in the test project's closure (possibly the test project
@@ -432,7 +438,9 @@ let private staleContribution
     | Ok sources ->
 
         /// Every file in the CLOSURE that the build could have copied to `rel` — this
-        /// project's first, so a stale message names the project being judged. Not
+        /// project's returned separately as the primary, so a stale message names the
+        /// project being judged, and so the caller's non-emptiness survives into
+        /// `copyVerdict` rather than becoming an unreachable arm there. Not
         /// always this project's alone: two closure projects may hold a file at the SAME
         /// relative path (`xunit.runner.json` sits in five of them here), MSBuild copies
         /// both to one destination and the last writer wins. Checked against every
@@ -446,7 +454,7 @@ let private staleContribution
                 |> List.map (fun (dir, _) -> Path.Combine(dir, rel))
                 |> List.filter (fun candidate -> candidate <> mine && File.Exists candidate)
 
-            mine :: others
+            mine, others
 
         // (1) COMPILE. The project's own assembly must be newer than every compile
         //     input it was built from. Judged against the project's OWN output, never
@@ -471,7 +479,8 @@ let private staleContribution
             sources
             |> List.tryPick (fun (rel, _) ->
                 if outputs.Contains rel then
-                    copyVerdict cache project (Path.Combine(tfmDir, rel)) (claimantsOf rel)
+                    let primary, others = claimantsOf rel
+                    copyVerdict cache project (Path.Combine(tfmDir, rel)) primary others
                 else
                     None)
 
@@ -487,7 +496,9 @@ let private staleContribution
             else
                 match cache.OwnAssemblyOutputs(projectDir, assemblyName) with
                 | [] -> None // not built yet — likewise
-                | candidates -> copyVerdict cache project copy (consumerTfmFirst tfmDir candidates)
+                | first :: rest ->
+                    let primary, others = consumerTfmFirst tfmDir first rest
+                    copyVerdict cache project copy primary others
 
         staleCompile
         |> Option.orElseWith staleCopy
