@@ -234,8 +234,10 @@ sufficient.
   "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
   "runId": "24bf66063d004decb0447e3cc3ece719",
   "treeHash": "sha256:24bf6606…",
-  "treeHashAlgorithm": "fshw-tree-sha256-v2",
+  "treeHashAlgorithm": "fshw-tree-sha256-v3",
   "treeFileCount": 144,
+  "treeDeclaredCount": 29,
+  "treeAbsentDeclarationCount": 0,
   "scope":   { "kind": "full", "ranProjects": 6, "totalProjects": 6 },
   "outcome": { "kind": "green" },
   "exitCode": 0,
@@ -330,17 +332,28 @@ can never be mistaken for a current one:
   "verdict": { "…the file, verbatim…" } }
 ```
 
-If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v2`) is:
+If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v3`) is:
 
 - take every file under `src/` and `tests/`, excluding `bin/`, `obj/`, tooling
   dirs, and your `.fshw.json` `exclude` patterns — **sources _and_ content/fixture
-  files** — plus `.fshw.json` itself;
+  files**;
+- **plus the tool-known inputs**: `.fshw.json` itself, and the root-level toolchain
+  and dependency files (`Directory.Build.props`, `Directory.Build.targets`,
+  `Directory.Packages.props`, `global.json`, `nuget.config`, `paket.lock`,
+  `paket.dependencies`);
+- **plus every file your `.fshw.json` `verdictInputs.hashed` declares** — your
+  coverage floors, your analyzer rules, your baselines. These are *not* filtered by
+  `exclude` or by the `bin/`+`obj/` skip: a declaration outranks both;
 - for each, in ordinal order of its repo-relative path, emit
   `relPath + NUL + sha256hex(bytes) + LF`;
 - **plus one entry per directory the walk could not see** — unreadable, or nested
   past its depth cap — emitted as `relPath + "/" + NUL + "unhashable" + LF` and
   sorted in with the rest. A trailing `/` is a relative path no file can have, so a
   hole and a file never collide;
+- **plus one entry per declaration that matched no file**, emitted as
+  `"!verdict-input:" + declaredPath + NUL + "declared-but-absent" + LF`. A
+  declaration that resolved to nothing must not contribute nothing, or a typo would
+  silently return you to the older, narrower hash;
 - `treeHash = "sha256:" + sha256hex(utf8(that))`.
 
 Fixtures are in the hash on purpose. A changed JSON fixture that MSBuild declined
@@ -354,6 +367,22 @@ exactly like the same tree readable — and a green verdict earned over the part
 could see applied to the part we could not. `v2` makes "I could not look" a
 different tree, which is what `treeFileCount` alone could not express: it made an
 *empty* walk visible, never a *truncated* one.
+
+The **rules** are in the hash from `v3`, for the third instance of the same shape.
+Up to `v2` the hashed set was the walk plus one config file, so everything that
+decides an answer from outside `src/`+`tests/` was omitted: lower a coverage floor,
+edit an analyzer rule, flip `TreatWarningsAsErrors` off, and the green earned under
+the **stronger** check still reported `Applies`. `v3` derives the set from one rule
+— *a file belongs in the tree hash iff changing it can change what a check
+concludes* — applying it to the files fshw can know about and letting the repo
+declare the rest via `verdictInputs`. See
+[Configuration](../../README.md#what-decides-the-verdict-is-what-is-hashed).
+
+**`treeHashAlgorithm` is now read, not merely recorded.** A verdict whose algorithm
+is not the one this build computes is `applies: false` with exit **4**, reported as a
+different *scheme* rather than a different tree — a `v2` hash and a `v3` hash address
+different sets of files, so comparing them as strings would answer a question nobody
+asked. It is checked before the hashes are compared.
 
 ### `.fshw/test-runs/<runId>/` — per-suite detail. **The directory IS the run.**
 
