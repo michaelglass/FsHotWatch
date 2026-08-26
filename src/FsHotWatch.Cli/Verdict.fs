@@ -514,10 +514,11 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     // with a reason that names the abort, so it never has to infer "0ms means never
     // ran" from a suite listing. Exit 2 beside it, from the SAME `CheckOutcome`.
     | CheckVerdict.CheckOutcome.RunnerAborted aborts -> Incomplete(CheckProse.runnerAborted aborts)
-    | CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun ->
+    | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason) ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.
-        Incomplete "NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence."
+        Incomplete
+            $"NO TESTS RAN — nothing was verified. This is not a pass; it is an absence of evidence. (%s{NoTestsReason.describe reason})"
     | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) ->
         // Not "the scope was too narrow" — the scope is UNKNOWN because reading it
         // failed, so this run cannot say whether anything ran at all. Its own reason,
@@ -1210,11 +1211,27 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
            totalProjects = total
            excluded = gaps |}
         :> obj
-    | NoTestsRun ->
+    | NoTestsRun reason ->
         // NO counts. `TestScope.NoTestsRun` carries none, and `ranProjects: 0,
         // totalProjects: 0` would state, of a repo with six test projects, that it has
         // none. `kind: "none"` already says the only thing that matters: nothing ran.
-        {| kind = "none"; excluded = gaps |} :> obj
+        {| kind = "none"
+           reason =
+            (match reason with
+             | NoTestsReason.AlreadyVerified -> box "already-verified"
+             | NoTestsReason.ChangesUncovered _ -> box "changes-uncovered"
+             | NoTestsReason.UnknownReason token -> box token
+             | NoTestsReason.Unstated -> null)
+           uncoveredSymbols =
+            (match reason with
+             | NoTestsReason.ChangesUncovered(symbols, _) -> box (List.toArray symbols)
+             | _ -> null)
+           uncoveredSymbolCount =
+            (match reason with
+             | NoTestsReason.ChangesUncovered(_, total) -> box total
+             | _ -> null)
+           excluded = gaps |}
+        :> obj
     | ScopeUnknown -> {| kind = "unknown"; excluded = gaps |} :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
     // ordinary tests-less repo, while "the scope read faulted" is a check that could not
@@ -1401,7 +1418,31 @@ let private parseScope (el: JsonElement) : TestScope =
     match tryString el "kind", ran, total with
     | Some "full", Some r, Some t when r > 0 && r = t -> FullSuite t
     | Some "filtered", Some r, Some t -> ImpactFiltered(r, t)
-    | Some "none", _, _ -> NoTestsRun
+    | Some "none", _, _ ->
+        let symbols =
+            match tryProp el "uncoveredSymbols" with
+            | Some value when value.ValueKind = JsonValueKind.Array ->
+                value.EnumerateArray()
+                |> Seq.choose (fun item -> if item.ValueKind = JsonValueKind.String then Some(item.GetString()) else None)
+                |> Seq.toList
+            | _ -> []
+
+        let total =
+            tryProp el "uncoveredSymbolCount"
+            |> Option.bind (fun value ->
+                if value.ValueKind = JsonValueKind.Number then
+                    match value.TryGetInt32() with
+                    | true, count -> Some count
+                    | _ -> None
+                else
+                    None)
+            |> Option.defaultValue (List.length symbols)
+
+        let token =
+            tryProp el "reason"
+            |> Option.bind (fun value -> if value.ValueKind = JsonValueKind.String then Some(value.GetString()) else None)
+
+        NoTestsRun(NoTestsReason.ofToken token symbols total)
     | Some "unknown", _, _ -> ScopeUnknown
     // Everything else — a kind from another version, a self-contradicting "full",
     // outright garbage. The file said something about its scope and this build cannot
@@ -1962,7 +2003,7 @@ let describeStillApplies (v: Verdict) : string =
             // Unreachable: `isFullSuiteGreen` is the only door in. Named, not
             // wildcarded, so a future scope cannot slip through as "full suite".
             | ImpactFiltered _
-            | NoTestsRun
+            | NoTestsRun _
             | ScopeUnknown
             | ScopeUnreadable _ -> TestScope.describe v.Scope
 

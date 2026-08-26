@@ -431,7 +431,7 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
             <> Verdict.Green
         @>
 
-    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun) @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated)) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
     // AUTOMATION-294. A killed test host is INCOMPLETE, never Red: nothing failed there.
@@ -824,7 +824,7 @@ let ``a check that ran no tests is pointed at confirm too — the emptiest evide
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
-            Scope = NoTestsRun }
+            Scope = (NoTestsRun NoTestsReason.Unstated) }
 
     let text = hintsFor v |> String.concat "\n"
     test <@ text.Contains "fshw confirm" @>
@@ -865,7 +865,7 @@ let ``a run with no suites SAYS so rather than pointing at nothing`` () =
 /// different facts are different values, and a report that collapses them turns
 /// a reader against the tool.
 ///
-/// The verdict itself is UNCHANGED — `NoTestsRun` is still not merge evidence.
+/// The verdict itself is UNCHANGED — `(NoTestsRun NoTestsReason.Unstated)` is still not merge evidence.
 /// This adds context to a refusal; it must never soften one.
 [<Fact>]
 let ``a no-suite run names the prior verdict that DID verify this same tree`` () =
@@ -1124,7 +1124,7 @@ let ``every scope round-trips through the file`` () =
 
         test <@ roundTrip (FullSuite 6) = FullSuite 6 @>
         test <@ roundTrip (ImpactFiltered(2, 6)) = ImpactFiltered(2, 6) @>
-        test <@ roundTrip NoTestsRun = NoTestsRun @>
+        test <@ roundTrip (NoTestsRun NoTestsReason.Unstated) = (NoTestsRun NoTestsReason.Unstated) @>
         test <@ roundTrip ScopeUnknown = ScopeUnknown @>
         // The reason travels with it: a consumer that has to ask "unreadable why?" and
         // gets no answer will treat the check as flaky rather than as broken.
@@ -2460,7 +2460,7 @@ let ``every Report case has its own exit code, and none of them is a silent 0`` 
 [<Fact>]
 let ``a verdict that says NO TESTS RAN is incomplete, and says so in words`` () =
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun)
+        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated))
 
     match outcome with
     | Verdict.Incomplete reason ->
@@ -2600,7 +2600,7 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
     let json =
         serializeSpec
             { greenVerdict "sha256:abc" 1 with
-                Scope = NoTestsRun }
+                Scope = (NoTestsRun NoTestsReason.Unstated) }
 
     use doc = JsonDocument.Parse(json)
     let scope = doc.RootElement.GetProperty("scope")
@@ -2615,7 +2615,7 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
     // ...and it is still never green.
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun)
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated))
             <> Verdict.Green
         @>
 
@@ -2724,8 +2724,8 @@ let ``AUTOMATION-161: an impact-filtered green is NOT the claim confirm makes`` 
         test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
 
 [<Fact>]
-let ``AUTOMATION-161: NoTestsRun is an absence of evidence, and stays a refusal`` () =
-    // AUTOMATION-161 fixed a replayed full-suite pass being MISREPORTED as `NoTestsRun`;
+let ``AUTOMATION-161: (NoTestsRun NoTestsReason.Unstated) is an absence of evidence, and stays a refusal`` () =
+    // AUTOMATION-161 fixed a replayed full-suite pass being MISREPORTED as `(NoTestsRun NoTestsReason.Unstated)`;
     // the rule itself does not move: nothing ran ⇒ nothing was verified ⇒ never a green,
     // and never a shortcut past the run either.
     withTempDir "confirm-no-tests" (fun root ->
@@ -2735,7 +2735,7 @@ let ``AUTOMATION-161: NoTestsRun is an absence of evidence, and stays a refusal`
         writeSpec
             root
             { greenVerdict tree.Hash tree.FileCount with
-                Scope = NoTestsRun
+                Scope = (NoTestsRun NoTestsReason.Unstated)
                 Outcome = Verdict.Incomplete "NO TESTS RAN"
                 ExitCode = 3 }
 
@@ -3211,7 +3211,7 @@ let ``AUTOMATION-201: the verdict file's reason carries the stale-output remedy`
 let private redCheckWithCauses (pluginSummary: string) =
     { greenVerdict "deadbeef" 10 with
         Command = Verdict.Check
-        Scope = NoTestsRun
+        Scope = (NoTestsRun NoTestsReason.Unstated)
         Outcome = Verdict.Red
         ExitCode = 1
         Suites = []
@@ -3544,7 +3544,7 @@ let ``the gaps are stated on every scope kind, because they are a fact about the
     for scope in
         [ FullSuite 6
           ImpactFiltered(2, 6)
-          NoTestsRun
+          (NoTestsRun NoTestsReason.Unstated)
           ScopeUnknown
           ScopeUnreadable "faulted" ] do
         test <@ (gapsOn scope).Contains "tests/X" @>

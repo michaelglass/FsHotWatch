@@ -380,7 +380,7 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // question ("did we test AT ALL?"), so unlike `ImpactFiltered` it is
             // refused in the inner loop too. The inner loop is allowed to test LESS;
             // it is not allowed to test NOTHING and call it green.
-            | _, NoTestsRun -> CheckOutcome.UnearnedScope NoTestsRun
+            | _, NoTestsRun _ -> CheckOutcome.UnearnedScope testScope
             // THE SCOPE COULD NOT BE READ — in EITHER mode.
             //
             // Not "the daemon reported no scope" (that is `ScopeUnknown`, below, and it

@@ -805,6 +805,33 @@ type ProjectSelection =
     /// Launched under a class filter — only these classes were asked to run.
     | ProjectClasses of Set<string>
 
+[<RequireQualifiedAccess>]
+type UncoveredChanges =
+    | No
+    | AllUncovered of symbols: string list
+
+module UncoveredChanges =
+    let isAll = function
+        | UncoveredChanges.No -> false
+        | UncoveredChanges.AllUncovered _ -> true
+
+[<RequireQualifiedAccess>]
+type ZeroSelection =
+    | NotAZero
+    | AlreadyVerified
+    | ChangesUncovered of symbols: string list
+
+module ZeroSelection =
+    let token = function
+        | ZeroSelection.NotAZero -> None
+        | ZeroSelection.AlreadyVerified -> Some "already-verified"
+        | ZeroSelection.ChangesUncovered _ -> Some "changes-uncovered"
+
+    let symbols = function
+        | ZeroSelection.ChangesUncovered symbols -> symbols
+        | ZeroSelection.NotAZero
+        | ZeroSelection.AlreadyVerified -> []
+
 /// AUTOMATION-259. Would the impact selection `check` WOULD have used have EXECUTED a
 /// test this run saw fail?
 ///
@@ -1210,7 +1237,7 @@ type TestPruneState =
         /// session baseline. Distinct from a genuine cold start with NO pending symbols,
         /// which must still run the full-suite baseline to establish one (guarded by
         /// `hasCachedResults`). Recomputed on every flush; only read right after one.
-        ChangedSymbolsAllUncovered: bool
+        ChangedSymbolsAllUncovered: UncoveredChanges
         /// Repo-relative paths of files whose symbol analysis FAILED and has not
         /// since succeeded. These files contribute NO symbols, so they are invisible
         /// to the impact graph — an edit to one has nothing to diff and selects
@@ -1252,6 +1279,7 @@ type TestPruneState =
         /// inventing a parallel notion of scope that could drift from the one the ledger
         /// clears by. Empty until the first run completes.
         LastCoverage: RunCoverage
+        LastZeroSelection: ZeroSelection
     }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
@@ -1276,7 +1304,7 @@ type TestRunInputs =
         ChangedSymbols: string list
         /// Every changed symbol proved to have no covering test — the "nothing to
         /// verify" green.
-        ChangedSymbolsAllUncovered: bool
+        ChangedSymbolsAllUncovered: UncoveredChanges
         /// Files whose symbol analysis failed: while non-empty, the run widens to
         /// every test project (AUTOMATION-113).
         UnanalyzableFiles: Map<string, UnanalyzableFile>
@@ -1342,6 +1370,7 @@ type TestRunLaunch =
         /// every project in full, and would read as "check would have run everything": a
         /// perfect, permanent, false agreement).
         WouldHaveRun: Map<string, ProjectSelection> option
+        ZeroSelection: ZeroSelection
     }
 
 module CheckReach =
@@ -4705,7 +4734,11 @@ let internal createWithLaunchDeadline
                   proof they are untested. Refusing the zero-test green; this run verifies them for real. \
                   Unknown: %s{describeAll unknownToIndex}"
 
-        let allChangesUncovered = noCoveringTest && List.isEmpty unknownToIndex
+        let allChangesUncovered =
+            if noCoveringTest && List.isEmpty unknownToIndex then
+                UncoveredChanges.AllUncovered(List.sort symbols)
+            else
+                UncoveredChanges.No
 
         // Remember the seeds ONLY when this selection actually has tests to run.
         // The question the report has to answer is "what was the last change that
@@ -4778,11 +4811,12 @@ let internal createWithLaunchDeadline
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
           PendingForceRunProjects = Set.empty
-          ChangedSymbolsAllUncovered = false
+          ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
           QueuedCommandRuns = []
           OutstandingFailures = []
-          LastCoverage = RunCoverage.none }
+          LastCoverage = RunCoverage.none
+          LastZeroSelection = ZeroSelection.NotAZero }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -4990,7 +5024,8 @@ let internal createWithLaunchDeadline
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
-                      WouldHaveRun = wouldHaveRun }
+                      WouldHaveRun = wouldHaveRun
+                      ZeroSelection = ZeroSelection.NotAZero }
 
                 // The skip gate counts symbol-affected classes only. A pure
                 // dependency-fanout (force-run projects, zero symbol classes) must
@@ -5027,7 +5062,7 @@ let internal createWithLaunchDeadline
                 //      NO pending symbols leaves the flag false, so the baseline runs.
                 let baselineEquivalent = nothingOwed () && hasCachedResults
 
-                let nothingToVerify = inputs.ChangedSymbolsAllUncovered
+                let nothingToVerify = UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
 
                 if
                     totalClasses = 0
@@ -5079,7 +5114,11 @@ let internal createWithLaunchDeadline
                                 Selection = Map.empty
                                 // Executed nothing, so it neither covers nor projects
                                 // anything (AUTOMATION-259).
-                                WouldHaveRun = None }
+                                WouldHaveRun = None
+                                ZeroSelection =
+                                    (match inputs.ChangedSymbolsAllUncovered with
+                                     | UncoveredChanges.AllUncovered symbols -> ZeroSelection.ChangesUncovered symbols
+                                     | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
                         )
                 else
                     if totalClasses = 0 then
@@ -5156,7 +5195,8 @@ let internal createWithLaunchDeadline
                       CoveringProjectsBySymbol = Map.empty
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
-                      WouldHaveRun = None }
+                      WouldHaveRun = None
+                      ZeroSelection = ZeroSelection.NotAZero }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -5201,7 +5241,8 @@ let internal createWithLaunchDeadline
               // so there is no `check` reading to project (AUTOMATION-259). This is the
               // ESCALATING `confirm`'s path, and it already carries an EXECUTED
               // impact-scoped reading taken before the escalation.
-              WouldHaveRun = None }
+              WouldHaveRun = None
+              ZeroSelection = ZeroSelection.NotAZero }
 
         async {
             let mutable emittedStart: TestRunStarted option = None
@@ -5438,6 +5479,8 @@ let internal createWithLaunchDeadline
                                            seedCount = seedCount |}
                                     )
                             | ScopeNone total ->
+                                let zero = state.LastZeroSelection
+
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
@@ -5445,7 +5488,14 @@ let internal createWithLaunchDeadline
                                            totalProjects = total
                                            runId = runId
                                            seeds = seeds
-                                           seedCount = seedCount |}
+                                           seedCount = seedCount
+                                           noTestsReason =
+                                            (match ZeroSelection.token zero with
+                                             | Some token -> box token
+                                             | None -> null)
+                                           uncoveredSymbols =
+                                            (ZeroSelection.symbols zero |> List.truncate 8 |> List.toArray)
+                                           uncoveredSymbolCount = List.length (ZeroSelection.symbols zero) |}
                                     )
                     }
 
@@ -6363,6 +6413,7 @@ let internal createWithLaunchDeadline
                         { state with
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
+                            LastZeroSelection = launch.ZeroSelection
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.

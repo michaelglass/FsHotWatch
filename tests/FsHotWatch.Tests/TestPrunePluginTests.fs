@@ -30,7 +30,8 @@ let private emptyLaunch: TestRunLaunch =
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
       Selection = Map.empty
-      WouldHaveRun = None }
+      WouldHaveRun = None
+      ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
@@ -39,7 +40,8 @@ let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
-      WouldHaveRun = None }
+      WouldHaveRun = None
+      ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran only `classes` in each named project — an impact-filtered
 /// selection. Projects NOT named were skipped entirely.
@@ -51,7 +53,8 @@ let private filteredLaunch (selection: (string * string list) list) : TestRunLau
         selection
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
         |> Map.ofList
-      WouldHaveRun = None }
+      WouldHaveRun = None
+      ZeroSelection = ZeroSelection.NotAZero }
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))
@@ -10195,7 +10198,7 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
-          Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun }
+          Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun FsHotWatch.Cli.IpcParsing.NoTestsReason.Unstated }
 
     let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation noTestsRan

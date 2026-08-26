@@ -299,8 +299,27 @@ let ``parseTaggedStatus ignores legacy verdict fields on a completed payload`` (
 let ``TestScope.describe names every scope`` () =
     test <@ (TestScope.describe (FullSuite 6)).Contains "full suite" @>
     test <@ (TestScope.describe (ImpactFiltered(2, 6))).Contains "impact-filtered" @>
-    test <@ TestScope.describe NoTestsRun = "no tests ran" @>
+    test <@ TestScope.describe (NoTestsRun NoTestsReason.Unstated) = "no tests ran (the daemon did not say why)" @>
     test <@ (TestScope.describe ScopeUnknown).Contains "unknown" @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-111 none scope preserves why no tests ran`` () =
+    let scopeOf suffix =
+        parseTestRunReport
+            $"""{{"runId":null,"scope":"none","ranProjects":0,"totalProjects":0{suffix},"projects":[]}}"""
+        |> fun report -> report.Scope
+
+    let alreadyVerified = scopeOf ",\"noTestsReason\":\"already-verified\""
+
+    let changesUncovered =
+        scopeOf
+            ",\"noTestsReason\":\"changes-uncovered\",\"uncoveredSymbols\":[\"Jobs.definitions\"],\"uncoveredSymbolCount\":4"
+
+    let unstated = scopeOf ""
+
+    test <@ alreadyVerified = NoTestsRun NoTestsReason.AlreadyVerified @>
+    test <@ changesUncovered = NoTestsRun(NoTestsReason.ChangesUncovered([ "Jobs.definitions" ], 4)) @>
+    test <@ unstated = (NoTestsRun NoTestsReason.Unstated) @>
 
 [<Fact(Timeout = 10000)>]
 let ``parseTaggedOutcome parses timedOut with its reason`` () =
