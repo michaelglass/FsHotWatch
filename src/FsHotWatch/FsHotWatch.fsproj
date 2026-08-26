@@ -77,10 +77,12 @@
     <Compile Include="Discovery.fs" />
     <Compile Include="Ctrf.fs" />
     <Compile Include="RunLog.fs" />
+    <Compile Include="VerdictInputs.fs" />
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
+    <Compile Include="OutputCopyFreshness.fs" />
     <Compile Include="DepsFreshness.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
