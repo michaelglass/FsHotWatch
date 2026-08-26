@@ -656,6 +656,27 @@ module AgentHints =
         // fodder, filed under the verdict pointer), while "no tests ran" is a FACT about
         // what this run verified — the single most actionable line the output has when it
         // is true, and therefore something a human must meet before any pointer.
+        let zeroSelectionLines =
+            match v.Scope with
+            | NoTestsRun(NoTestsReason.ChangesUncovered(symbols, total)) ->
+                let listed = String.concat ", " symbols
+                let more = total - List.length symbols
+                let suffix = if more > 0 then $" (and {more} more)" else ""
+
+                [ $"    ZERO     ⚠ NOTHING COVERS THIS CHANGE — %d{total} changed symbol(s) have no covering test."
+                  "             This run verified nothing about them and completed green anyway. The index cannot see"
+                  "             reflection, DI, or generated code, so this is a NON-ANSWER, not a pass."
+                  $"             uncovered: %s{listed}%s{suffix}" ]
+            | NoTestsRun NoTestsReason.AlreadyVerified ->
+                [ "             this tree is test-equivalent to the last green run — nothing needed re-verifying;"
+                  "             this is a legitimate zero rather than a missed selection" ]
+            | NoTestsRun NoTestsReason.Unstated ->
+                [ "             the daemon did not say WHICH kind of zero this is, so it may be read as neither"
+                  "             `nothing needed re-verifying` nor `nothing covers this change`" ]
+            | NoTestsRun(NoTestsReason.UnknownReason token) ->
+                [ $"             the daemon called this zero '%s{token}', which this build does not understand" ]
+            | _ -> []
+
         let suitePathLines, noSuiteFactLines =
             match v.Suites, v.RunId with
             | [], None ->
@@ -815,7 +836,7 @@ module AgentHints =
             | Verdict.Check, ImpactFiltered(ran, total) ->
                 [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — for a MERGE verdict use \
                      `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
-            | Verdict.Check, (NoTestsRun | ScopeUnknown | ScopeUnreadable _) ->
+            | Verdict.Check, (NoTestsRun _ | ScopeUnknown | ScopeUnreadable _) ->
                 [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — for a MERGE \
                      verdict use `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
             | Verdict.Check, FullSuite _
@@ -852,6 +873,7 @@ module AgentHints =
         @ causeHeader
         @ causeLines
         @ noSuiteFactLines
+        @ zeroSelectionLines
         @ [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
             $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against \
                the tree on disk; exit 4 = stale, do not reuse)" ]

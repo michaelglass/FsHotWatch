@@ -41,6 +41,34 @@ type DiagnosticsResponse =
       Statuses: Map<string, ParsedPluginStatus>
       Coverage: Coverage }
 
+[<RequireQualifiedAccess>]
+type NoTestsReason =
+    | AlreadyVerified
+    | ChangesUncovered of symbols: string list * total: int
+    | Unstated
+    | UnknownReason of token: string
+
+module NoTestsReason =
+    let describe (reason: NoTestsReason) =
+        match reason with
+        | NoTestsReason.AlreadyVerified ->
+            "no tests ran — this tree is test-equivalent to the last green run (nothing needed re-verifying)"
+        | NoTestsReason.ChangesUncovered(symbols, total) ->
+            let more = total - List.length symbols
+            let suffix = if more > 0 then $" (and %d{more} more)" else ""
+            let listed = String.concat ", " symbols
+            $"no tests ran — %d{total} changed symbol(s) have NO covering test in the index: %s{listed}%s{suffix}"
+        | NoTestsReason.Unstated -> "no tests ran (the daemon did not say why)"
+        | NoTestsReason.UnknownReason token ->
+            $"no tests ran (reason '%s{token}', which this build does not understand)"
+
+    let ofToken token symbols total =
+        match token with
+        | None -> NoTestsReason.Unstated
+        | Some "already-verified" -> NoTestsReason.AlreadyVerified
+        | Some "changes-uncovered" -> NoTestsReason.ChangesUncovered(symbols, max total (List.length symbols))
+        | Some token -> NoTestsReason.UnknownReason token
+
 /// What the last completed test run actually COVERED.
 ///
 /// Impact filtering is a latency optimization for the inner dev loop. A merge decision is
@@ -62,7 +90,7 @@ type TestScope =
     /// A subset ran: some project was filtered to selected classes, or did not run.
     | ImpactFiltered of ranProjects: int * totalProjects: int
     /// No test run has completed, or the run executed no tests at all.
-    | NoTestsRun
+    | NoTestsRun of reason: NoTestsReason
     /// THERE IS NO SCOPE TO REPORT, and we established that positively: the daemon /
     /// host has no `test-scope` command at all (no test projects are configured, so no
     /// run will ever produce a scope), or it answered that a run is still IN FLIGHT
@@ -96,7 +124,7 @@ module TestScope =
         match scope with
         | FullSuite n -> $"full suite (%d{n}/%d{n} projects, unfiltered)"
         | ImpactFiltered(ran, total) -> $"impact-filtered (%d{ran}/%d{total} projects)"
-        | NoTestsRun -> "no tests ran"
+        | NoTestsRun reason -> NoTestsReason.describe reason
         | ScopeUnknown -> "unknown (the daemon did not report a test scope)"
         | ScopeUnreadable reason -> $"UNREADABLE — the test scope could not be read (%s{reason})"
 
@@ -115,7 +143,7 @@ module TestScope =
         match scope with
         | FullSuite _ -> true
         | ImpactFiltered _
-        | NoTestsRun
+        | NoTestsRun _
         | ScopeUnknown
         | ScopeUnreadable _ -> false
 
@@ -130,7 +158,7 @@ module TestScope =
         | ScopeUnreadable _ -> true
         | FullSuite _
         | ImpactFiltered _
-        | NoTestsRun
+        | NoTestsRun _
         | ScopeUnknown -> false
 
 /// The test-prune plugin commands `confirm` speaks.
@@ -484,11 +512,26 @@ let parseTestRunReport (json: string) : TestRunReport =
                 | _ -> None
             | _ -> None
 
+        let noTestsReason () =
+            let symbols =
+                match root.TryGetProperty("uncoveredSymbols") with
+                | true, value when value.ValueKind = JsonValueKind.Array ->
+                    value.EnumerateArray()
+                    |> Seq.choose (fun item ->
+                        if item.ValueKind = JsonValueKind.String then Some(item.GetString()) else None)
+                    |> Seq.toList
+                | _ -> []
+
+            NoTestsReason.ofToken
+                (tryGetStringProp root "noTestsReason")
+                symbols
+                (readInt "uncoveredSymbolCount" |> Option.defaultValue (List.length symbols))
+
         let scope =
             match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
             | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
             | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
-            | Some "none", _, _ -> NoTestsRun
+            | Some "none", _, _ -> NoTestsRun(noTestsReason ())
             | Some "running", _, _ -> ScopeUnknown
             | _ -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"
 
@@ -648,7 +691,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                 match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
                 | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
                 | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
-                | Some "none", _, _ -> NoTestsRun
+                | Some "none", _, _ -> NoTestsRun NoTestsReason.Unstated
                 | _ -> ScopeUnreadable "the daemon reported no scope for the selection `check` would have used"
 
             let runId =
