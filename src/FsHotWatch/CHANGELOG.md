@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **AUTOMATION-165: `TreeHash.Algorithm` is `fshw-tree-sha256-v3` — the hashed set now covers
+  what DECIDES a check, not just its source.** Up to v2 the set was the `src/`+`tests/` walk
+  plus `.fshw.json`; everything outside those roots that changes an answer — the coverage
+  floors, the analyzer rules, `Directory.Build.props` — contributed nothing, so weakening a
+  check left a green earned under the stronger one still reporting `Applies`.
+- New module `FsHotWatch.VerdictInputs`, which owns the derivation rule (*a file belongs in
+  the tree hash iff changing it can change what a check concludes*) and both halves of its
+  application: `toolKnownInputs` (`.fshw.json` plus the root-level toolchain/dependency
+  files) and the repo's own `verdictInputs.hashed` / `verdictInputs.notInputs` declarations,
+  each entry carrying a required, reviewable reason. A declaration that resolves to no file
+  contributes a sentinel entry rather than zero — see `VerdictInputs.AbsentDeclaration`.
+- `TreeHash.Tree` gains `DeclaredCount` and `AbsentDeclarationCount`; `TreeHash.Walked` gains
+  `AbsentDeclarations` and `DeclaredCount`. Both are additive record fields, so a consumer
+  CONSTRUCTING either type must supply them.
+- `DepsFreshness`'s dependency-file name list is now sourced from
+  `VerdictInputs.DependencyFileNames` rather than restated — "is the restore stale?" and "can
+  this file change what a check concludes?" are two questions with one answer.
+
 ## 0.10.0-alpha.18 - 2026-08-25
 
 - **BREAKING (API)** AUTOMATION-454: `KillOutcome` gains a fourth case, `KillTimedOut of budget: TimeSpan`

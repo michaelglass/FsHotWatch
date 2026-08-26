@@ -964,6 +964,40 @@ let internal validateTestScope (repoRoot: string) (config: DaemonConfiguration) 
                 ConfigError(SolutionScope.describeFindings (SolutionScope.solutionNameFor repoRoot t.Solution) findings)
             )
 
+/// AUTOMATION-165. `verdictInputs` decides WHICH FILES the verdict is
+/// content-addressed by, so a declaration this build cannot honour AS WRITTEN is a
+/// hard failure. The alternative is the defect that filed the ticket: a repo that
+/// believes it is gated on its coverage floors and its analyzer rules, is not, and is
+/// told nothing.
+///
+/// `notInputs` is validated but never filters: it is a STATED DECISION that a file
+/// cannot change an answer, reviewable in the config. A declaration that could REMOVE
+/// files from the hash would be a supported way to weaken the gate silently, which is
+/// the wrong half of this ticket to build.
+let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
+    let declaration = VerdictInputs.parse json
+
+    match declaration.Errors with
+    | [] -> ()
+    | errors -> raise (ConfigError("verdictInputs — " + String.concat "; " errors))
+
+    // A declared path that matches nothing is NOT fatal: an analyzer assembly a repo
+    // declares does not exist until the first build, and refusing to start would wedge
+    // exactly the command that creates it. It is still said out loud, and it still moves
+    // the tree hash (`VerdictInputs.AbsentDeclaration`), so no verdict can quietly apply
+    // as though the file had been hashed.
+    let resolved = VerdictInputs.resolve repoRoot declaration
+
+    for path in resolved.Absent do
+        Logging.warn
+            "config"
+            $"verdictInputs.hashed declares '%s{path}' but nothing on disk matches it — it is hashed as ABSENT (the tree hash moves when it appears), and until then this repo is NOT gating on that file"
+
+    if not (List.isEmpty declaration.Hashed) then
+        Logging.info
+            "config"
+            $"verdictInputs: %d{List.length declaration.Hashed} declared, %d{List.length resolved.Files} file(s) folded into the tree hash, %d{List.length resolved.Absent} absent"
+
 /// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
@@ -983,6 +1017,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
 
         try
             let config = parseConfig json defaults
+            validateVerdictInputs repoRoot json
             validateTestScope repoRoot config
             Logging.info "config" "Loaded .fshw.json"
             config

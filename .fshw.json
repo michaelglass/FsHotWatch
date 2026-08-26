@@ -5,6 +5,40 @@
   },
   "format": true,
   "lint": false,
+  "verdictInputs": {
+    "hashed": [
+      {
+        "path": "analyzers/FsHotWatch.Rules",
+        "why": "AUTOMATION-165. THE HOUSE RULES THEMSELVES, and they live outside src/+tests/ so no walk of the discovery roots reaches them. Break FSHW-CLAIM-001 or delete a rule and, before this was declared, a green earned while the rule held still reported Applies. The directory is declared rather than a glob so the .fsproj is covered too: the compile list decides which rules are in the assembly at all."
+      },
+      {
+        "path": "coverage-ratchet-FsHotWatch.json",
+        "why": "AUTOMATION-165. The per-file coverage floors. Lower one and a verdict earned under the higher floor must stop applying; hashing it is the only thing that makes that true."
+      },
+      {
+        "path": "coverage.settings",
+        "why": "AUTOMATION-165. The coverage collector's include/exclude filters. Widen an exclusion and files stop being measured at all, which moves every floor beneath it without touching the floors file."
+      },
+      {
+        "path": "fsharplint.json",
+        "why": "AUTOMATION-165. The lint rules the lint plugin enforces. Disabling one changes what the check concludes about an unchanged tree."
+      },
+      {
+        "path": "tools/fsharplint-shim",
+        "why": "AUTOMATION-165. The restore-only project that materializes the FSharpLint analyzer the check loads. Move its pin and a different set of findings is produced from the same source."
+      }
+    ],
+    "notInputs": [
+      {
+        "path": "CHANGELOG.md",
+        "reason": "AUTOMATION-165. Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
+      },
+      {
+        "path": "semantic-tagger.json",
+        "reason": "AUTOMATION-165. Configures the RELEASE tagger, which runs after a verdict is earned and never contributes to one. Changing it changes what gets published, not what the check concludes."
+      }
+    ]
+  },
   "analyzers": {
     "paths": [
       "tools/fsharplint-shim/bin/Debug/net10.0/",

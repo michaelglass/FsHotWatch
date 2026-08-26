@@ -77,6 +77,7 @@
     <Compile Include="Discovery.fs" />
     <Compile Include="Ctrf.fs" />
     <Compile Include="RunLog.fs" />
+    <Compile Include="VerdictInputs.fs" />
     <Compile Include="TreeHash.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="PluginHost.fs" />

@@ -132,7 +132,9 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Tree =
         { Hash = treeHash
           FileCount = fileCount
-          SkippedCount = 0 } }
+          SkippedCount = 0
+          DeclaredCount = 0
+          AbsentDeclarationCount = 0 } }
 
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
 let private serializeSpec (s: Spec) : string = Verdict.serialize (build s)
@@ -3685,3 +3687,576 @@ let ``the sample's BASIS round-trips, and a verdict that predates the field read
             | Some pre -> test <@ pre.Basis = Verdict.SampleBasis.Executed @>
             | None -> failwith "a legacy sample must still read back"
         | other -> failwithf "a legacy verdict must read, got %A" other)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-165 — the tree hash covers what DECIDES the check, not just the source
+//
+// Every test below is paired. The POSITIVE half pins the defect: under the v2 hash
+// (walk of `src`/`tests`, plus `.fshw.json`) each of these edits left a prior green
+// still reporting `Applies`, so reverting the fix fails these by NAME rather than by
+// some vague behavioural drift. The NEGATIVE half pins the opposite failure: a hash
+// that moves on every edit anywhere would pass all the positive tests and be just as
+// useless, because nothing would ever apply.
+// ---------------------------------------------------------------------------
+
+/// A repo that DECLARES what decides its checks, the way a consuming repo does:
+/// the coverage floors and the analyzer rules, each with a reviewable `why`, plus
+/// one file it deliberately states is NOT an input.
+let private declaringRepo (root: string) =
+    makeRepo root
+
+    Directory.CreateDirectory(Path.Combine(root, "analyzers", "Rules")) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(root, "analyzers", "Rules", "ConventionAnalyzers.fs"),
+        "module Rules\nlet ``FSHW-CLAIM-001`` = 1\n"
+    )
+
+    File.WriteAllText(Path.Combine(root, "coverage-ratchet.json"), """{"src/Lib/Lib.fs": 80.0}""")
+    File.WriteAllText(Path.Combine(root, "README.md"), "# prose\n")
+
+    File.WriteAllText(
+        FsHwPaths.configFile root,
+        """
+{
+  "verdictInputs": {
+    "hashed": [
+      { "path": "coverage-ratchet.json",
+        "why": "lower a floor and a verdict earned under the higher one must stop applying" },
+      { "path": "analyzers/**/*.fs",
+        "why": "these ARE the house rules the analyze plugin enforces" }
+    ],
+    "notInputs": [
+      { "path": "README.md", "reason": "prose about the repo; no check reads it" }
+    ]
+  }
+}
+"""
+    )
+
+/// Earn a green over the tree as it stands, and CHECK that it applies. Every test
+/// below needs that control: "stale after the edit" is also what a verdict that
+/// never applied at all would report.
+let private earnGreenOver (root: string) =
+    let before = TreeHash.compute root []
+    writeSpec root (greenVerdict before.Hash before.FileCount)
+
+    match Verdict.report root [] with
+    | Verdict.Report.Applies _ -> before
+    | other -> failwith $"the verdict must apply to the tree it was earned on, got %A{other}"
+
+let private expectStale (root: string) (what: string) =
+    match Verdict.report root [] with
+    | Verdict.Report.Stale(v, _) ->
+        // Still a GREEN on disk. That is the whole danger: nothing about the file
+        // says it should not be reused; only `applicability` does.
+        test <@ v.Outcome = Verdict.Green @>
+    | other -> failwith $"%s{what} must make the verdict stale, got %A{other}"
+
+[<Fact>]
+let ``lowering a coverage floor makes the verdict STALE — a green earned under the HIGHER floor never certifies the lower one``
+    ()
+    =
+    // THE defect AUTOMATION-165 was filed on, in its cheapest form. Measured in the
+    // consuming repo before this fix: floor lowered, `fshw verdict` still exit 0,
+    // `applies: true`. The verdict answered a question about a tree that had changed
+    // underneath it.
+    withTempDir "a165-floor" (fun root ->
+        declaringRepo root
+        earnGreenOver root |> ignore
+
+        File.WriteAllText(Path.Combine(root, "coverage-ratchet.json"), """{"src/Lib/Lib.fs": 40.0}""")
+        expectStale root "a lowered coverage floor")
+
+[<Fact>]
+let ``editing the analyzer RULES makes the verdict stale — the rules are an input, not scenery`` () =
+    // `analyzers/` is outside the discovery roots, so under v2 the house rules were
+    // unhashed: break FSHW-CLAIM-001 and the green that was earned while it held
+    // still reported `Applies`.
+    withTempDir "a165-rules" (fun root ->
+        declaringRepo root
+        earnGreenOver root |> ignore
+
+        File.WriteAllText(
+            Path.Combine(root, "analyzers", "Rules", "ConventionAnalyzers.fs"),
+            "module Rules\n// rule deleted\n"
+        )
+
+        expectStale root "an edited analyzer rule")
+
+[<Fact>]
+let ``an UNDECLARED, non-deciding file leaves the verdict APPLYING — the hash is derived, not merely churning`` () =
+    // THE NEGATIVE CONTROL for every test above. A tree hash that moved on any edit
+    // anywhere would satisfy all of them and be worthless: no verdict would ever be
+    // reusable, and `confirm`'s fast path — the one thing allowed to carry a green
+    // across a process boundary — would never hit.
+    withTempDir "a165-negative" (fun root ->
+        declaringRepo root
+        earnGreenOver root |> ignore
+
+        // A file the repo explicitly declared is NOT an input...
+        File.WriteAllText(Path.Combine(root, "README.md"), "# prose, rewritten\n")
+        // ...and one it never mentioned at all. Neither can change what a check concludes.
+        File.WriteAllText(Path.Combine(root, "NOTES.md"), "scratch\n")
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ v.Outcome = Verdict.Green @>
+        | other -> failwith $"editing prose must NOT invalidate a verdict, got %A{other}")
+
+[<Fact>]
+let ``a declared input that matches NOTHING is an ENTRY in the hash, never a silent zero`` () =
+    // The way a fix like this rots: someone renames the file, or fat-fingers the
+    // declaration, and the tool goes back to hashing exactly what it hashed before
+    // while the config still reads as protection. A declaration that resolves to no
+    // file contributes a SENTINEL, so the tree with a broken declaration cannot hash
+    // like the tree without one, and the hash moves again when the file appears.
+    withTempDir "a165-absent" (fun root ->
+        makeRepo root
+
+        let declare (block: string) =
+            File.WriteAllText(FsHwPaths.configFile root, block)
+            TreeHash.compute root []
+
+        // The hash of the FILES ALONE — every entry `compute` would produce if an
+        // unresolved declaration contributed nothing. Reconstructed from the public
+        // recipe rather than compared against another config on disk: changing the
+        // config changes its own bytes, so "two configs hash differently" would be
+        // true whether or not the sentinel exists, and would prove nothing.
+        let filesOnlyHash () =
+            let walked = TreeHash.files root []
+            test <@ walked.Skipped |> List.isEmpty @>
+
+            walked.Files
+            |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs)
+            |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+            |> TreeHash.hashEntries
+
+        declare """{"format": true}""" |> ignore
+        // CONTROL: with nothing declared, the tree IS its files — no sentinels, so the
+        // reconstruction is exact. Without this the assertion below could be measuring
+        // a reconstruction that never matches anything.
+        test <@ filesOnlyHash () = (TreeHash.compute root []).Hash @>
+
+        let declared =
+            declare
+                """{"format": true,
+                     "verdictInputs": {"hashed": [
+                       {"path": "probe-baseline.json", "why": "the census a finding is measured against"}]}}"""
+
+        test <@ declared.AbsentDeclarationCount = 1 @>
+        test <@ declared.DeclaredCount = 0 @>
+        // The declaration is IN the hash even though the file is not on disk: the tree
+        // no longer hashes to its files alone. A silently-skipped declaration would
+        // land back on that reconstruction exactly.
+        test <@ filesOnlyHash () <> declared.Hash @>
+
+        File.WriteAllText(Path.Combine(root, "probe-baseline.json"), """{"keys": []}""")
+        let present = TreeHash.compute root []
+
+        test <@ present.AbsentDeclarationCount = 0 @>
+        test <@ present.DeclaredCount = 1 @>
+        test <@ present.Hash <> declared.Hash @>
+        // The sentinel is GONE once the file resolves — the tree is its files again.
+        test <@ filesOnlyHash () = present.Hash @>
+
+        // POSITIVE CONTROL that the file is genuinely hashed rather than merely counted:
+        // its CONTENT moves the hash.
+        File.WriteAllText(Path.Combine(root, "probe-baseline.json"), """{"keys": ["probe"]}""")
+        test <@ (TreeHash.compute root []).Hash <> present.Hash @>)
+
+[<Fact>]
+let ``Directory.Build.props moves the tree hash with NOTHING declared — the tool knows its own toolchain inputs`` () =
+    // A repo that declares nothing must still be gated on the files that decide what
+    // the compiler does at all. `TreatWarningsAsErrors` is the sharp case: flip it off
+    // and every warning-as-error the green was earned under stops being one.
+    withTempDir "a165-toolknown" (fun root ->
+        makeRepo root
+        let props = Path.Combine(root, "Directory.Build.props")
+
+        File.WriteAllText(
+            props,
+            "<Project><PropertyGroup><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup></Project>"
+        )
+
+        let before = earnGreenOver root
+        test <@ (TreeHash.compute root []).DeclaredCount = 0 @>
+
+        File.WriteAllText(
+            props,
+            "<Project><PropertyGroup><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup></Project>"
+        )
+
+        expectStale root "flipping TreatWarningsAsErrors off"
+
+        // NEGATIVE CONTROL: a root-level file that decides nothing must not move it.
+        File.WriteAllText(
+            props,
+            "<Project><PropertyGroup><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup></Project>"
+        )
+
+        test <@ (TreeHash.compute root []).Hash = before.Hash @>
+        File.WriteAllText(Path.Combine(root, "CONTRIBUTING.md"), "be nice\n")
+        test <@ (TreeHash.compute root []).Hash = before.Hash @>)
+
+[<Fact>]
+let ``a DECLARED path under bin slash is hashed — an explicit declaration outranks the build-output filter`` () =
+    // Measured in the consuming repo: append a NUL byte to the analyzer DLL that IS
+    // the analyzer, and the verdict still reported green for that tree. The walk will
+    // never offer a file under `bin/` — that heuristic is about what to go LOOKING at
+    // — so the only way to reach it is an explicit declaration, and a declaration the
+    // generated-path filter could veto would be a declaration that cannot be honoured.
+    withTempDir "a165-bin" (fun root ->
+        makeRepo root
+        let binDir = Path.Combine(root, "analyzers", "Rules", "bin", "Debug")
+        Directory.CreateDirectory binDir |> ignore
+        File.WriteAllBytes(Path.Combine(binDir, "Rules.dll"), [| 1uy; 2uy; 3uy |])
+        File.WriteAllBytes(Path.Combine(binDir, "Unrelated.dll"), [| 9uy |])
+
+        File.WriteAllText(
+            FsHwPaths.configFile root,
+            """{"verdictInputs": {"hashed": [
+                 {"path": "analyzers/Rules/bin/Debug/Rules.dll",
+                  "why": "the assembly the analyze plugin actually loads"}]}}"""
+        )
+
+        let before = TreeHash.compute root []
+        test <@ before.DeclaredCount = 1 @>
+        test <@ before.AbsentDeclarationCount = 0 @>
+
+        File.WriteAllBytes(Path.Combine(binDir, "Rules.dll"), [| 1uy; 2uy; 3uy; 0uy |])
+        test <@ (TreeHash.compute root []).Hash <> before.Hash @>
+
+        // NEGATIVE CONTROL: the UNDECLARED sibling in the same build directory stays
+        // out. Declaring one file under `bin/` must not drag the whole of `bin/` in,
+        // or every rebuild would invalidate the verdict it had just earned.
+        File.WriteAllBytes(Path.Combine(binDir, "Rules.dll"), [| 1uy; 2uy; 3uy |])
+        test <@ (TreeHash.compute root []).Hash = before.Hash @>
+        File.WriteAllBytes(Path.Combine(binDir, "Unrelated.dll"), [| 9uy; 9uy |])
+        test <@ (TreeHash.compute root []).Hash = before.Hash @>)
+
+[<Fact>]
+let ``a declared DIRECTORY may POINT AT build output but never SWEEPS into it`` () =
+    // The asymmetry is deliberate. `analyzers/Rules` means the project, not the
+    // project plus every artifact of every configuration ever built there — a
+    // directory declaration that swept `bin/` in would churn the tree hash on every
+    // rebuild and invalidate the verdict the run had just earned. Pointing AT the
+    // output directory is a different, explicit statement, and it resolves.
+    withTempDir "a165-dir-vs-bin" (fun root ->
+        makeRepo root
+        let projDir = Path.Combine(root, "analyzers", "Rules")
+        let binDir = Path.Combine(projDir, "bin", "Debug")
+        Directory.CreateDirectory binDir |> ignore
+        File.WriteAllText(Path.Combine(projDir, "Rules.fs"), "module Rules")
+        File.WriteAllBytes(Path.Combine(binDir, "Rules.dll"), [| 1uy |])
+
+        let declare (block: string) =
+            File.WriteAllText(FsHwPaths.configFile root, block)
+            TreeHash.compute root []
+
+        let swept =
+            declare
+                """{"verdictInputs": {"hashed": [
+                     {"path": "analyzers/Rules", "why": "the rules project"}]}}"""
+
+        // The source, and NOT the assembly beside it.
+        test <@ swept.DeclaredCount = 1 @>
+
+        let pointed =
+            declare
+                """{"verdictInputs": {"hashed": [
+                     {"path": "analyzers/Rules/bin/Debug", "why": "the assemblies the plugin loads"}]}}"""
+
+        test <@ pointed.DeclaredCount = 1 @>
+        test <@ pointed.AbsentDeclarationCount = 0 @>
+
+        // ...and it is the ASSEMBLY that is hashed, not the source: touching the DLL
+        // moves this hash, which is what distinguishes "pointed at bin" from a second
+        // spelling of the source declaration above.
+        File.WriteAllBytes(Path.Combine(binDir, "Rules.dll"), [| 1uy; 1uy |])
+        test <@ (TreeHash.compute root []).Hash <> pointed.Hash @>
+
+        // A glob that would have to DESCEND into build output matches nothing — and
+        // says so, rather than being quietly narrow.
+        let descending =
+            declare
+                """{"verdictInputs": {"hashed": [
+                     {"path": "analyzers/**/*.dll", "why": "every rules assembly"}]}}"""
+
+        test <@ descending.DeclaredCount = 0 @>
+        test <@ descending.AbsentDeclarationCount = 1 @>)
+
+[<Fact>]
+let ``a notInput records a DECISION and removes nothing from the hash — the config cannot weaken the gate`` () =
+    // `notInputs` exists so "not hashed" can be a stated, reviewable decision rather
+    // than an omission nobody noticed. It must not become a supported way to shrink
+    // the hashed set: a config key that could delete a source file from the tree hash
+    // would be a one-line, config-only route to exactly the fail-open this ticket is
+    // about, with a `reason` field to make it look considered.
+    withTempDir "a165-notinput" (fun root ->
+        makeRepo root
+
+        File.WriteAllText(
+            FsHwPaths.configFile root,
+            """{"verdictInputs": {"notInputs": [
+                 {"path": "src/Lib/Lib.fs", "reason": "a lie, and it must not be honoured"}]}}"""
+        )
+
+        earnGreenOver root |> ignore
+        File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet answer = 43\n")
+        expectStale root "editing a source file a notInput tried to excuse")
+
+[<Fact>]
+let ``the tree hash is stable across repeated computation WITH declarations — globs do not reorder`` () =
+    // A glob is expanded by a directory walk, and a hash whose input order came from
+    // the filesystem would differ run to run on the same tree — a verdict that never
+    // applies, reported as a tree that never holds still.
+    withTempDir "a165-stable" (fun root ->
+        declaringRepo root
+        let a = TreeHash.compute root []
+        let b = TreeHash.compute root []
+        test <@ a.Hash = b.Hash @>
+        test <@ a.DeclaredCount = b.DeclaredCount @>
+        // The glob matched the rules file and the literal matched the ratchet file: a
+        // count of 0 here would make every assertion above vacuous.
+        test <@ a.DeclaredCount = 2 @>
+        test <@ a.AbsentDeclarationCount = 0 @>)
+
+// --- The declaration itself: refused loudly, never half-understood ---
+
+[<Fact>]
+let ``a well-formed verdictInputs declaration parses with NO errors — the control for every rejection below`` () =
+    let d =
+        VerdictInputs.parse
+            """{"verdictInputs": {
+                 "hashed": [{"path": "coverage-counts.json", "why": "the floors"}],
+                 "notInputs": [{"path": "CHANGELOG.md", "reason": "prose about already-gated work"}]}}"""
+
+    test <@ d.Errors |> List.isEmpty @>
+    test <@ d.Hashed |> List.map (fun h -> h.Path) = [ "coverage-counts.json" ] @>
+    test <@ d.NotInputs |> List.map (fun n -> n.Path) = [ "CHANGELOG.md" ] @>
+
+[<Fact>]
+let ``a repo that declares nothing parses to EMPTY, not to an error — declaring nothing is a valid state`` () =
+    test <@ (VerdictInputs.parse """{"format": true}""").Errors |> List.isEmpty @>
+    test <@ (VerdictInputs.parse """{"format": true}""").Hashed |> List.isEmpty @>
+    // Text that is not JSON at all is the CONFIG LOADER's complaint to make; inventing
+    // a second one about the same broken file only buries the real one.
+    test <@ (VerdictInputs.parse "{not json").Errors |> List.isEmpty @>
+
+[<Theory>]
+[<InlineData("""{"verdictInputs": {"hashed": [{"path": "x.json"}]}}""", "why")>]
+[<InlineData("""{"verdictInputs": {"notInputs": [{"path": "x.json"}]}}""", "reason")>]
+[<InlineData("""{"verdictInputs": {"hashed": [{"path": "x.json", "why": "  "}]}}""", "why")>]
+let ``a declaration with no stated reason is refused — one nobody can review is one nobody will notice going wrong``
+    (json: string)
+    (expected: string)
+    =
+    let errors = (VerdictInputs.parse json).Errors
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains expected @>
+
+[<Fact>]
+let ``a path declared as BOTH an input and a not-an-input is refused — it cannot be both`` () =
+    let errors =
+        (VerdictInputs.parse
+            """{"verdictInputs": {
+                 "hashed": [{"path": "floors.json", "why": "the floors"}],
+                 "notInputs": [{"path": "floors.json", "reason": "not really"}]}}""")
+            .Errors
+
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains "BOTH" @>
+
+[<Theory>]
+[<InlineData("""{"verdictInputs": {"hashed": [{"path": "../elsewhere/x.json", "why": "escapes"}]}}""")>]
+[<InlineData("""{"verdictInputs": {"hashed": [{"path": "/etc/passwd", "why": "rooted"}]}}""")>]
+let ``a declared path outside the repo is refused — a verdict input must be part of the tree being addressed``
+    (json: string)
+    =
+    let errors = (VerdictInputs.parse json).Errors
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains "inside the repo" @>
+
+[<Fact>]
+let ``the same path declared twice is refused — one path, one stated reason`` () =
+    let errors =
+        (VerdictInputs.parse
+            """{"verdictInputs": {"hashed": [
+                 {"path": "floors.json", "why": "first reason"},
+                 {"path": "floors.json", "why": "second, contradictory reason"}]}}""")
+            .Errors
+
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains "declared 2 times" @>
+
+[<Fact>]
+let ``verdictInputs that is not an object is refused rather than read as an empty declaration`` () =
+    let errors = (VerdictInputs.parse """{"verdictInputs": ["coverage.json"]}""").Errors
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains "must be an object" @>
+
+// --- The hashing scheme names itself, and a verdict from another one is refused ---
+
+[<Fact>]
+let ``the tree-hash algorithm is v3 — the recipe changed, so the name must have`` () =
+    // The field exists so a consumer can tell a hash it understands from one it does
+    // not. A change to WHAT IS HASHED that left the name alone would make two
+    // incomparable strings look comparable, which is worse than no field at all.
+    test <@ TreeHash.Algorithm = "fshw-tree-sha256-v3" @>
+
+[<Fact>]
+let ``a verdict from an OLDER hashing scheme is inapplicable by ALGORITHM — not puzzled over as a stale tree`` () =
+    // The sharp case, and the reason this check is not merely cosmetic: the treeHash
+    // strings are made to MATCH. Under the old `applicability` — which recorded
+    // `treeHashAlgorithm` and never read it — this verdict reported `Applies`, and a
+    // green earned over a tree that did not include the coverage floors or the
+    // analyzer rules would have been promoted to a claim about a tree that does.
+    withTempDir "a165-algorithm" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        let node =
+            System.Text.Json.Nodes.JsonNode.Parse(serializeSpec (greenVerdict tree.Hash tree.FileCount))
+
+        node.["treeHashAlgorithm"] <- System.Text.Json.Nodes.JsonValue.Create "fshw-tree-sha256-v2"
+        Directory.CreateDirectory(Path.GetDirectoryName(Verdict.path root)) |> ignore
+        File.WriteAllText(Verdict.path root, node.ToJsonString() + "\n")
+
+        match Verdict.report root [] with
+        | Verdict.Report.Stale(_, reason) ->
+            test <@ reason.Contains "DIFFERENT scheme" @>
+            test <@ reason.Contains "fshw-tree-sha256-v2" @>
+            test <@ reason.Contains TreeHash.Algorithm @>
+        | other -> failwith $"a v2 verdict must not apply to a v3 hasher, got %A{other}"
+
+        // POSITIVE CONTROL: the SAME file with the algorithm left alone applies. Without
+        // it, this test would also pass against a build that refused every verdict.
+        node.["treeHashAlgorithm"] <- System.Text.Json.Nodes.JsonValue.Create TreeHash.Algorithm
+        File.WriteAllText(Verdict.path root, node.ToJsonString() + "\n")
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies _ -> ()
+        | other -> failwith $"the same verdict under the CURRENT algorithm must apply, got %A{other}")
+
+[<Fact>]
+let ``the verdict RECORDS how many declared inputs it hashed — an ignored declaration is otherwise invisible`` () =
+    // The failure this closes is the one that filed the ticket: a consuming repo
+    // declared 29 inputs against a tool that read none of them, and nothing anywhere
+    // said so. A count in the artifact is the only place a repo can check that its
+    // declaration is being honoured rather than merely written down.
+    withTempDir "a165-recorded" (fun root ->
+        declaringRepo root
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Tree = tree }
+
+        let json = File.ReadAllText(Verdict.path root)
+        use doc = JsonDocument.Parse json
+        test <@ doc.RootElement.GetProperty("treeDeclaredCount").GetInt32() = 2 @>
+        test <@ doc.RootElement.GetProperty("treeAbsentDeclarationCount").GetInt32() = 0 @>
+        test <@ doc.RootElement.GetProperty("treeHashAlgorithm").GetString() = TreeHash.Algorithm @>)
+
+[<Theory>]
+[<InlineData("""{"verdictInputs": {"hashed": "coverage.json"}}""", "must be an array")>]
+[<InlineData("""{"verdictInputs": {"hashed": ["coverage.json"]}}""", "not an object")>]
+[<InlineData("""{"verdictInputs": {"hashed": [{"why": "no path given"}]}}""", "no non-empty 'path'")>]
+let ``a verdictInputs block shaped wrong is refused rather than read as declaring nothing``
+    (json: string)
+    (expected: string)
+    =
+    // The shape that matters most: a declaration fshw half-understands must not
+    // degrade to "declares nothing", because that is byte-for-byte the behaviour
+    // this whole feature exists to replace.
+    let errors = (VerdictInputs.parse json).Errors
+    test <@ errors.Length = 1 @>
+    test <@ errors.Head.Contains expected @>
+
+[<Fact>]
+let ``a config whose top level is not an object declares nothing — that complaint belongs to the config loader`` () =
+    // `.fshw.json` is itself a hashed input, and `loadConfig` already refuses a file
+    // it cannot parse. A second complaint here about the same broken file would only
+    // make the real one harder to find.
+    test <@ (VerdictInputs.parse "[1, 2, 3]").Errors |> List.isEmpty @>
+    test <@ (VerdictInputs.parse "[1, 2, 3]").Hashed |> List.isEmpty @>
+
+[<Fact>]
+let ``a root-level glob resolves from the repo root — the walk starts at the shallowest literal prefix`` () =
+    // `*.json` has no literal prefix at all, so the walk root is the repo itself. The
+    // arm exists because grouping every glob under its own prefix would otherwise walk
+    // nothing for this one and report it ABSENT.
+    withTempDir "a165-rootglob" (fun root ->
+        makeRepo root
+        File.WriteAllText(Path.Combine(root, "floors.json"), """{"a": 1}""")
+        File.WriteAllText(Path.Combine(root, "baseline.json"), """{"b": 2}""")
+
+        File.WriteAllText(
+            FsHwPaths.configFile root,
+            """{"verdictInputs": {"hashed": [{"path": "*.json", "why": "every root baseline"}]}}"""
+        )
+
+        let tree = TreeHash.compute root []
+        test <@ tree.AbsentDeclarationCount = 0 @>
+        // Both root baselines — and NOT `.fshw.json`, which the tool already hashes and
+        // which is deduplicated rather than counted twice.
+        test <@ tree.DeclaredCount = 2 @>
+
+        File.WriteAllText(Path.Combine(root, "floors.json"), """{"a": 0}""")
+        test <@ (TreeHash.compute root []).Hash <> tree.Hash @>)
+
+[<Fact>]
+let ``an UNREADABLE .fshw.json declares nothing — and the hash still fails closed on it`` () =
+    // The config cannot be read, so its declarations cannot be honoured. That is not
+    // laundered into "declares nothing is fine": `.fshw.json` is itself a hashed input,
+    // so `ContentHash` marks it unhashable and the tree stops matching any prior
+    // verdict. The refusal lives in one place rather than two.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "a165-unreadable-config" (fun root ->
+            makeRepo root
+            let config = FsHwPaths.configFile root
+
+            File.WriteAllText(config, """{"verdictInputs": {"hashed": [{"path": "src", "why": "everything"}]}}""")
+
+            let readable = TreeHash.compute root []
+            test <@ (VerdictInputs.read root).Hashed.Length = 1 @>
+
+            File.SetUnixFileMode(config, UnixFileMode.None)
+
+            try
+                test <@ (VerdictInputs.read root).Hashed |> List.isEmpty @>
+                test <@ (TreeHash.compute root []).Hash <> readable.Hash @>
+            finally
+                File.SetUnixFileMode(config, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact>]
+let ``a repo root that cannot be listed contributes no tool-known inputs rather than throwing`` () =
+    // Hashing a tree must not become a new way to crash. A root we cannot enumerate
+    // still fails CLOSED elsewhere — the discovery walk reports the hole, and `.fshw.json`
+    // hashes unreadable — so the honest answer here is an empty list, not an exception
+    // that takes the whole verdict down.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "a165-blind-root" (fun root ->
+            File.WriteAllText(Path.Combine(root, "global.json"), """{"sdk": {"version": "10.0.0"}}""")
+            test <@ (VerdictInputs.toolKnownInputs root).Length = 1 @>
+
+            File.SetUnixFileMode(root, UnixFileMode.None)
+
+            try
+                test <@ VerdictInputs.toolKnownInputs root |> List.isEmpty @>
+            finally
+                File.SetUnixFileMode(
+                    root,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
+[<Fact>]
+let ``globWalkPrefix names the shallowest directory a glob must be walked from`` () =
+    // The walk root, not the pattern: `analyzers/**/*.fs` cannot be answered without
+    // walking `analyzers`, and walking the whole repo for it would be the difference
+    // between one directory and a hundred thousand files on every `fshw verdict`.
+    test <@ VerdictInputs.globWalkPrefix "analyzers/**/*.fs" = "analyzers" @>
+    test <@ VerdictInputs.globWalkPrefix "a/b/*.fs" = "a/b" @>
+    test <@ VerdictInputs.globWalkPrefix "a/*/c.fs" = "a" @>
+    test <@ VerdictInputs.globWalkPrefix "*.json" = "" @>
