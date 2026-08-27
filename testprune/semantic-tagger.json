@@ -15,6 +15,16 @@
       "name": "TestPrune.Analyzers",
       "fsproj": "src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
       "tagPrefix": "analyzers-v"
+    },
+    {
+      "name": "TestPrune.Sql",
+      "fsproj": "src/TestPrune.Sql/TestPrune.Sql.fsproj",
+      "tagPrefix": "sql-v"
+    },
+    {
+      "name": "TestPrune.SqlHydra",
+      "fsproj": "src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj",
+      "tagPrefix": "sqlhydra-v"
     }
   ]
 }

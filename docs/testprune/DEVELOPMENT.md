@@ -66,6 +66,15 @@ CI uses reusable GitHub workflows from the same repo.
 
 ## Package Publishing
 
-TestPrune.Core and TestPrune.Falco are NuGet packages with separate release tags:
+Packable projects use separate semantic release tags unless noted:
 - `core-v*` — TestPrune.Core + CLI
 - `falco-v*` — TestPrune.Falco
+- `analyzers-v*` — TestPrune.Analyzers
+- `sql-v*` — TestPrune.Sql
+- `sqlhydra-v*` — TestPrune.SqlHydra (release only after its referenced TestPrune.Sql version is available from NuGet)
+
+Use `mise run release`, which invokes the semantic tagger once per package in
+dependency order and waits for each package to become restorable: Core, Sql,
+Falco, SqlHydra, then Analyzers. Never replace it with an unscoped
+`fssemantictagger release`; independent tag workflows cannot enforce cross-tag
+NuGet dependency ordering.

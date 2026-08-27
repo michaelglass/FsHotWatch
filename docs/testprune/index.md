@@ -200,6 +200,8 @@ don't mark a composition root.**
 | [`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core) | The library — use this in your build system or editor |
 | `TestPrune.Attributes` | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]`, `[<CompositionRoot>]`. **Not published** — the attributes are matched by name, so [declare them yourself](#you-declare-the-attributes-yourself) |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
+| [`TestPrune.Sql`](https://www.nuget.org/packages/TestPrune.Sql) | Manual SQL read/write declarations and schema-aware shared-state coupling |
+| [`TestPrune.SqlHydra`](https://www.nuget.org/packages/TestPrune.SqlHydra) | Automatic table-level coupling for typed SqlHydra queries |
 | [`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers) | Opt-in F# analyzer that flags anonymous records (invisible to impact analysis) |
 | `TestPrune` | CLI tool (reference implementation) |
 

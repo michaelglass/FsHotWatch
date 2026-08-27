@@ -145,6 +145,8 @@ description = "Create NuGet packages"
 run = """
 dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Sql/TestPrune.Sql.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
 """
 depends = ["build"]
@@ -169,8 +171,17 @@ run = "dotnet run --project benchmarks/TestPrune.Benchmarks -c Release"
 depends = ["build"]
 
 [tasks.release]
-description = "Tag a release based on API changes"
-run = "dotnet tool run fssemantictagger release"
+description = "Release packages in dependency order, waiting for each published dependency"
+# Each scoped invocation waits for its package to become restorable before the next
+# begins. Do not collapse this to one unscoped call: Sql depends on Core, SqlHydra
+# depends on both, and tag-triggered workflow runs cannot depend on one another.
+run = """
+dotnet tool run fssemantictagger release --only TestPrune.Core
+dotnet tool run fssemantictagger release --only TestPrune.Sql
+dotnet tool run fssemantictagger release --only TestPrune.Falco
+dotnet tool run fssemantictagger release --only TestPrune.SqlHydra
+dotnet tool run fssemantictagger release --only TestPrune.Analyzers
+"""
 depends = ["ci"]
 
 [tasks.release-dry-run]
@@ -179,6 +190,12 @@ run = "dotnet tool run fssemantictagger release --dry-run"
 depends = ["build"]
 
 [tasks.release-alpha]
-description = "Tag an alpha pre-release"
-run = "dotnet tool run fssemantictagger alpha"
+description = "Release alpha packages in dependency order"
+run = """
+dotnet tool run fssemantictagger alpha --only TestPrune.Core
+dotnet tool run fssemantictagger alpha --only TestPrune.Sql
+dotnet tool run fssemantictagger alpha --only TestPrune.Falco
+dotnet tool run fssemantictagger alpha --only TestPrune.SqlHydra
+dotnet tool run fssemantictagger alpha --only TestPrune.Analyzers
+"""
 depends = ["build"]

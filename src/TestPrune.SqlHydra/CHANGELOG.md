@@ -1,6 +1,8 @@
 # Changelog — TestPrune.SqlHydra
 
 ## [Unreleased]
+- feat: initial release of automatic table-level read/write attribution for
+  SqlHydra query graphs.
 - fix: derive tables from the generated table value's `Calls` edge instead of
   broad `UsesType` edges. Real SqlHydra graphs also carry type-use edges to the
   schema module and generated enums; the old heuristic interpreted those as
