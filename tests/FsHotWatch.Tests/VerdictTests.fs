@@ -1469,6 +1469,60 @@ let private publishConfirm
 // =============================================================================
 
 [<Fact>]
+let ``a terminal infrastructure failure is published incomplete with its exact reason`` () =
+    withTempDir "verdict-terminal-incomplete" (fun root ->
+        let reason =
+            "PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of 18 discovered project(s). Read LoadProject FAILED."
+
+        let exitCode =
+            IpcOutput.publishTerminalIncomplete
+                root
+                []
+                CheckVerdict.InnerLoop
+                reason
+                (IpcOutput.SettledTree.capture root [])
+
+        test <@ exitCode = 2 @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v.ExitCode = 2 @>
+
+            match v.Outcome with
+            | Verdict.Incomplete persisted -> test <@ persisted = reason @>
+            | other -> failwithf "expected the exact infrastructure reason in an incomplete verdict, got %A" other
+        | other -> failwithf "expected a published verdict, got %A" other)
+
+[<Fact>]
+let ``a moved tree is not assigned an earlier terminal infrastructure failure`` () =
+    withTempDir "verdict-terminal-moved" (fun root ->
+        let src = Path.Combine(root, "src")
+        Directory.CreateDirectory(src) |> ignore
+        let tracked = Path.Combine(src, "Tracked.fs")
+        File.WriteAllText(tracked, "module Tracked\nlet value = 1")
+        let settled = IpcOutput.SettledTree.capture root []
+        File.WriteAllText(tracked, "module Tracked\nlet value = 2")
+
+        let exitCode =
+            IpcOutput.publishTerminalIncomplete
+                root
+                []
+                CheckVerdict.InnerLoop
+                "PROJECT LOADING FAILED: belongs to the earlier tree"
+                settled
+
+        test <@ exitCode = 2 @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            match v.Outcome with
+            | Verdict.Incomplete persisted ->
+                test <@ persisted.Contains("working tree changed") @>
+                test <@ not (persisted.Contains("PROJECT LOADING FAILED")) @>
+            | other -> failwithf "expected moved-tree incomplete, got %A" other
+        | other -> failwithf "expected a published verdict, got %A" other)
+
+[<Fact>]
 let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute a second one`` () =
     // The defect: `publishVerdict` downgrades to `incomplete`/2 when the tree moves
     // during a check, and the caller then re-derived the code from the ORIGINAL

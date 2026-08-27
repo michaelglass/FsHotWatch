@@ -1147,3 +1147,71 @@ let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderi
     test <@ exitCode = 0 @>
     test <@ v.ExitCode = 0 @>
     test <@ v.Outcome = Verdict.Green @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``daemon check and confirm overwrite green on discovery failure before diagnostics or convergence``
+    (confirmation: bool)
+    =
+    TestHelpers.withTempDir "ipcoutput-290-discovery" (fun repoRoot ->
+        let reason =
+            "PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of 18 discovered project(s). Read LoadProject FAILED."
+
+        let mode =
+            if confirmation then
+                CheckVerdict.Confirmation
+            else
+                CheckVerdict.InnerLoop
+
+        publishVerdict
+            repoRoot
+            []
+            mode
+            false
+            (TestRunReport.ofScopeOnly (FullSuite 1))
+            Verdict.NoReading
+            Map.empty
+            []
+            (SettledTree.capture repoRoot [])
+            CheckVerdict.CheckOutcome.Clean
+        |> ignore
+
+        let mutable diagnosticsReads = 0
+        let mutable forcedRuns = 0
+        let mutable rescans = 0
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                mode
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "complete: 0 files checked")
+                (fun () -> raise (System.InvalidOperationException reason))
+                (fun () -> "{}")
+                (fun () ->
+                    diagnosticsReads <- diagnosticsReads + 1
+                    """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                (fun () -> TestRunReport.ofScopeOnly (ImpactFiltered(1, 3)))
+                (fun () -> IpcParsing.ReachUnavailable "must not be read")
+                (fun () -> forcedRuns <- forcedRuns + 1)
+                (fun () ->
+                    rescans <- rescans + 1
+                    "complete: 0 files checked")
+
+        test <@ exitCode = 2 @>
+        test <@ diagnosticsReads = 0 @>
+        test <@ forcedRuns = 0 @>
+        test <@ rescans = 0 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v ->
+            test <@ v.ExitCode = 2 @>
+
+            match v.Outcome with
+            | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT LOADING FAILED") @>
+            | other -> failwithf "expected incomplete discovery verdict, got %A" other
+        | other -> failwithf "expected a published discovery verdict, got %A" other)

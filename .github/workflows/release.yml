@@ -56,6 +56,14 @@ jobs:
       package-name: FsHotWatch.Cli
       tag-prefix: cli-v
       fsproj-path: src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
+      # The reusable workflow has already restored at this point. Build the CLI
+      # from that exact assets file, guard its deps manifest, then make the
+      # workflow's Release build reuse the restore and its pack reuse the build.
+      pre-build-cmd: >-
+        dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
+        -c Release --no-restore -p:ReleaseBuild=true &&
+        dotnet fsi scripts/check-msbuild-deps.fsx
+      no-build-pack: true
     permissions:
       contents: write
 
