@@ -133,7 +133,8 @@ type internal PollingSnapshot =
       Holes: Set<string> }
 
 /// Assets live under obj, but bin can never contain a restore graph input.
-let internal pollingAssetsExcludedDirs = SafeWalk.ToolingExcludedDirs |> Set.add "bin"
+let internal pollingAssetsExcludedDirs =
+    SafeWalk.ToolingExcludedDirs |> Set.add "bin"
 
 [<NoComparison; NoEquality>]
 type internal PollTimer =
@@ -164,11 +165,16 @@ let internal takePollingSnapshotWith
         // One source walk prunes every generated subtree. A second narrow walk
         // admits obj solely for project.assets.json while still pruning bin.
         walk SafeWalk.SourceExcludedDirs "*" root |> collect isRelevantFile
-        walk pollingAssetsExcludedDirs "project.assets.json" root |> collect isProjectAssetsJson
+
+        walk pollingAssetsExcludedDirs "project.assets.json" root
+        |> collect isProjectAssetsJson
 
     for extra in extraPatterns do
-        let accept path = FilePattern.matches extra path && not (PathFilter.isGeneratedPath path)
-        walk SafeWalk.SourceExcludedDirs (FilePattern.toString extra) repoRoot |> collect accept
+        let accept path =
+            FilePattern.matches extra path && not (PathFilter.isGeneratedPath path)
+
+        walk SafeWalk.SourceExcludedDirs (FilePattern.toString extra) repoRoot
+        |> collect accept
 
     let solutions, solutionHoles = topLevelSolutions repoRoot
     files.AddRange(solutions)
@@ -217,8 +223,7 @@ type internal PollingFileWatcher
                 Set.empty
             with
             | :? IOException
-            | :? UnauthorizedAccessException ->
-                [], Set.singleton rootPath
+            | :? UnauthorizedAccessException -> [], Set.singleton rootPath
 
         takePollingSnapshotWith SafeWalk.walk topLevelSolutions repoRoot roots extraPatterns
 
@@ -240,7 +245,10 @@ type internal PollingFileWatcher
             |> Map.toSeq
             |> Seq.choose (fun (path, hash) ->
                 match Map.tryFind path previous with
-                | Some prior when ContentHash.isReadable hash && String.Equals(prior, hash, StringComparison.Ordinal) ->
+                | Some prior when
+                    ContentHash.isReadable hash
+                    && String.Equals(prior, hash, StringComparison.Ordinal)
+                    ->
                     None
                 | _ -> Some path)
             |> Set.ofSeq
@@ -248,7 +256,11 @@ type internal PollingFileWatcher
         let deleted =
             previous
             |> Map.toSeq
-            |> Seq.choose (fun (path, _) -> if Map.containsKey path current.Files then None else Some path)
+            |> Seq.choose (fun (path, _) ->
+                if Map.containsKey path current.Files then
+                    None
+                else
+                    Some path)
             |> Set.ofSeq
 
         previous <- current.Files
@@ -283,7 +295,8 @@ type internal PollingFileWatcher
     do
         if startAutomatically then
             let defaultTimerFactory onTick =
-                let systemTimer = new Timer(TimerCallback(fun _ -> onTick ()), null, Timeout.Infinite, Timeout.Infinite)
+                let systemTimer =
+                    new Timer(TimerCallback(fun _ -> onTick ()), null, Timeout.Infinite, Timeout.Infinite)
 
                 { Arm = fun dueMs -> systemTimer.Change(dueMs, Timeout.Infinite) |> ignore
                   Dispose = systemTimer.Dispose }
@@ -317,8 +330,7 @@ type internal PollingFileWatcher
 
 /// Functions for creating file watchers.
 module FileWatcher =
-    type internal NativeStreamFactory =
-        string list -> (string -> unit) -> (string -> unit) -> float -> IDisposable
+    type internal NativeStreamFactory = string list -> (string -> unit) -> (string -> unit) -> float -> IDisposable
 
     type internal SystemWatcherSpec =
         { Directory: string
