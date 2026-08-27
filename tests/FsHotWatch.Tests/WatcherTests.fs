@@ -293,7 +293,10 @@ let ``polling fallback reports unreadable files and holes conservatively every p
           Holes = Set.singleton "/repo/src/hidden" }
 
     let changes = ResizeArray<FileChangeKind>()
-    use watcher = new PollingFileWatcher("/repo", changes.Add, [], false, Some(fun () -> snapshot), None)
+
+    use watcher =
+        new PollingFileWatcher("/repo", changes.Add, [], false, Some(fun () -> snapshot), None)
+
     watcher.Poll()
     watcher.Poll()
 
@@ -315,10 +318,14 @@ let ``polling fallback skips overlapping polls and emits nothing after disposal`
 
         ({ Files = Map.empty
            UnreadableFiles = Set.empty
-           Holes = Set.empty }: PollingSnapshot)
+           Holes = Set.empty }
+        : PollingSnapshot)
 
     let changes = ResizeArray<FileChangeKind>()
-    let watcher = new PollingFileWatcher("/repo", changes.Add, [], false, Some snapshot, None)
+
+    let watcher =
+        new PollingFileWatcher("/repo", changes.Add, [], false, Some snapshot, None)
+
     let first = System.Threading.Tasks.Task.Run(fun () -> watcher.Poll())
     test <@ entered.Wait(2000) @>
     watcher.Poll()
@@ -347,10 +354,30 @@ let ``polling snapshot uses one source walk plus one assets walk per root and on
 
     test <@ calls.Count = 5 @>
     test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*", "/repo/src") @>
-    test <@ calls |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/src") @>
-    test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*", "/repo/tests") @>
-    test <@ calls |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/tests") @>
-    test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*.ratchet.json", "/repo") @>
+
+    test
+        <@
+            calls
+            |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/src")
+        @>
+
+    test
+        <@
+            calls
+            |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*", "/repo/tests")
+        @>
+
+    test
+        <@
+            calls
+            |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/tests")
+        @>
+
+    test
+        <@
+            calls
+            |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*.ratchet.json", "/repo")
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``automatic polling rearms after snapshot failure and stops rearming after disposal`` () =
@@ -374,9 +401,12 @@ let ``automatic polling rearms after snapshot failure and stops rearming after d
 
         ({ Files = Map.empty
            UnreadableFiles = Set.empty
-           Holes = Set.empty }: PollingSnapshot)
+           Holes = Set.empty }
+        : PollingSnapshot)
 
-    let watcher = new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+    let watcher =
+        new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+
     test <@ arms |> Seq.toList = [ 1000 ] @>
     callback ()
     test <@ snapshots = 2 @>
@@ -410,12 +440,18 @@ let ``automatic polling disposal waits for active callback then prevents later c
 
         ({ Files = Map.empty
            UnreadableFiles = Set.empty
-           Holes = Set.empty }: PollingSnapshot)
+           Holes = Set.empty }
+        : PollingSnapshot)
 
-    let watcher = new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+    let watcher =
+        new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+
     let active = System.Threading.Tasks.Task.Run(callback)
     test <@ entered.Wait(2000) @>
-    let disposing = System.Threading.Tasks.Task.Run(fun () -> (watcher :> IDisposable).Dispose())
+
+    let disposing =
+        System.Threading.Tasks.Task.Run(fun () -> (watcher :> IDisposable).Dispose())
+
     test <@ not (disposing.Wait(100)) @>
     release.Set()
     active.GetAwaiter().GetResult()
@@ -434,12 +470,15 @@ let ``macOS native start failure selects one polling watcher`` () =
 
         let system _handle _spec =
             systemCreations <- systemCreations + 1
-            { new IDisposable with member _.Dispose() = () }
+
+            { new IDisposable with
+                member _.Dispose() = () }
 
         let polling _repo _onChange _extras =
             new PollingFileWatcher(tmpDir, ignore, [], false, None, None) :> IDisposable
 
-        use watcher = FileWatcher.createWithFactories tmpDir ignore [] 0.05 failNative system polling
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 failNative system polling
 
         test <@ systemCreations = 0 @>
         test <@ watcher.Disposables.Length = 1 @>
