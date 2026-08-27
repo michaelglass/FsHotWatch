@@ -327,13 +327,16 @@ let ``parseCheckReach reads a recorded projection, run id and scope included`` (
         parseCheckReach
             """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
                 "ranProjects":2,"totalProjects":6,"reach":"reached-a-failure",
-                "failingSuites":["Lib.Tests"],"reason":null}"""
+                "failingSuites":["Lib.Tests"],"reason":null,
+                "conditionalFailureRecall":{"measured":true,"reached":3,"total":4,"threshold":1.0,
+                           "acceptable":false,"reason":null}}"""
 
     match reading with
     | ReachRecorded r ->
         test <@ r.RunId = Some(Guid.Parse "5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e") @>
         test <@ r.Scope = ImpactFiltered(2, 6) @>
         test <@ r.Reach = ReachedAFailure [ "Lib.Tests" ] @>
+        test <@ r.Recall = FailureRecallMeasured(3, 4, 1.0, false) @>
     | other -> failwithf "a well-formed reply must parse, got %A" other
 
 [<Fact(Timeout = 10000)>]

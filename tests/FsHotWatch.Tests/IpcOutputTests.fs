@@ -770,7 +770,8 @@ let private offering (reach: IpcParsing.CheckReach) (scope: TestScope) () : IpcP
     IpcParsing.ReachRecorded
         { RunId = Some driveRunId
           Scope = scope
-          Reach = reach }
+          Reach = reach
+          Recall = IpcParsing.FailureRecallNotMeasurable "test fixture" }
 
 let private offersNothing () : IpcParsing.CheckReachReading =
     IpcParsing.ReachUnavailable "this drive offers no projection"
