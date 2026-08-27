@@ -11,6 +11,13 @@ aggressively and parallelize across projects.
 dotnet add package TestPrune.Core
 ```
 
+Version 8 introduces schema 12. Consumers that share a TestPrune SQLite
+database must upgrade every process opening that file in lockstep; the first v8
+open rebuilds older indexes so project-attributed runtime coverage starts from a
+uniform graph. A producer may then call `ingestRuntimeCoverage` with the test
+project and full/partial run scope. Missing or stale baseline policy belongs to
+the runner, using `GetRuntimeCoverageAvailability` to widen safely.
+
 All the snippets below are drawn from how the CLI itself wires the
 library (see `src/TestPrune/Orchestration.fs`). FSharp.Compiler.Service
 type-checking is not instant, so plan on caching.

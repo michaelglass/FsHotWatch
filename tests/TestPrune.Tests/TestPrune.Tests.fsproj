@@ -49,6 +49,7 @@
     <Compile Include="ParseDiagnosticSeverityTests.fs" />
     <Compile Include="DatabaseTests.fs" />
     <Compile Include="CoverageTests.fs" />
+    <Compile Include="CoreReleaseSemanticsTests.fs" />
     <Compile Include="DiffParserTests.fs" />
     <Compile Include="SymbolDiffTests.fs" />
     <Compile Include="ImpactAnalysisTests.fs" />

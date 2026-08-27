@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.0.0 - 2026-08-27
+
 - feat!: preserve project-attributed runtime coverage and union it with static
   impact selection. A complete project run replaces that project's
   file map; an impact-filtered run may add positive evidence but cannot erase the
