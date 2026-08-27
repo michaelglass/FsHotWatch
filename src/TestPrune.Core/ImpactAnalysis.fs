@@ -205,7 +205,14 @@ let selectTests
             let fileSeedNames = fileSeeds |> List.map fst |> List.distinct
             let seedNames = (hashChangedNames @ fileSeedNames) |> List.distinct
 
-            let affectedTests = queryAffectedTests seedNames
+            let staticallyAffectedTests = queryAffectedTests seedNames
+
+            let runtimeProjects = store.GetRuntimeCoverageProjects changedFiles
+            let runtimeAffectedTests = store.GetTestMethodsInProjects runtimeProjects
+
+            let affectedTests =
+                staticallyAffectedTests @ runtimeAffectedTests
+                |> List.distinctBy _.SymbolFullName
 
             // Pick the single reason reported with every TestSelectedEvent this batch.
             // Hash changes take precedence when present (preserves the pre-file-dep
@@ -227,4 +234,10 @@ let selectTests
                 affectedTests
                 |> List.map (fun testMethod -> TestSelectedEvent(testMethod.SymbolFullName, reason))
 
-            RunSubset affectedTests, symbolEvents @ testEvents
+            let runtimeEvents =
+                [ for project in runtimeProjects do
+                      for changedFile in changedFiles do
+                          if store.GetRuntimeCoverageProjects([ changedFile ]) |> List.contains project then
+                              yield ProjectSelectedByRuntimeCoverageEvent(project, changedFile) ]
+
+            RunSubset affectedTests, symbolEvents @ testEvents @ runtimeEvents

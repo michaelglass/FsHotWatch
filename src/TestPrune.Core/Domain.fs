@@ -96,6 +96,14 @@ type ChangeKind =
     | Added
     | Removed
 
+/// Whether a configured test project has a usable complete runtime-coverage
+/// baseline. Missing and stale are distinct diagnostics even though both must
+/// conservatively widen selection.
+type RuntimeCoverageAvailability =
+    | Current
+    | Missing
+    | Stale of observedAt: System.DateTimeOffset
+
 type SelectionReason =
     | SymbolChanged of symbolName: string * change: ChangeKind
     | MultipleChanges of symbolNames: string list
@@ -129,6 +137,7 @@ type AnalysisEvent =
     | ProjectIndexedEvent of project: string * fileCount: int
     | SymbolChangeDetectedEvent of file: string * symbolName: string * change: ChangeKind
     | TestSelectedEvent of testMethod: string * reason: SelectionReason
+    | ProjectSelectedByRuntimeCoverageEvent of testProject: string * changedFile: string
     | DiffParsedEvent of changedFiles: string list
     | IndexStartedEvent of projectCount: int
     | IndexCompletedEvent of totalSymbols: int * totalDeps: int * totalTests: int

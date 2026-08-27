@@ -32,6 +32,12 @@ type CoverageIngestSummary = { Ingested: int; Skipped: int }
 /// Named for the same reason as `CoverageIngestSummary` — see TP001.
 type FileCoverageSummary = { Covered: int; Total: int }
 
+/// Whether a report describes every test in its project or only an impact-selected
+/// subset. Only a full report may replace prior runtime evidence.
+type CoverageRunScope =
+    | Full
+    | Partial
+
 let private xn (s: string) = XName.Get s
 
 let private attrValue (name: string) (el: XElement) =
@@ -103,6 +109,43 @@ let ingestCobertura (db: Database) (repoRoot: string option) (xml: string) : Cov
 
     { Ingested = ingested
       Skipped = skipped }
+
+/// Preserve which test project executed each source file. Runtime attribution is
+/// intentionally file/project-granular: merged Cobertura cannot identify a test
+/// method, but it can safely widen selection to the covering project.
+let ingestRuntimeCoverage
+    (db: Database)
+    (repoRoot: string option)
+    (testProject: string)
+    (scope: CoverageRunScope)
+    (runId: string)
+    (xml: string)
+    : int =
+    // Revoke a full run's prior evidence BEFORE parsing the replacement. This is
+    // intentionally a separate committed transaction: malformed XML, process
+    // termination, or a later marker-write failure must leave the project
+    // durably unavailable rather than preserving a stale usable baseline.
+    match scope with
+    | Full -> db.InvalidateRuntimeCoverage(testProject)
+    | Partial -> ()
+
+    let coveredFiles =
+        parseCobertura xml
+        |> List.choose (fun (file, _, hits) ->
+            if hits > 0 then
+                Some(normalizeFilename repoRoot file)
+            else
+                None)
+        |> List.distinct
+
+    // The caller owns run trust: Full means it has a successful, complete
+    // project receipt. Such a run may honestly cover zero production files, in
+    // which case replacing with [] and advancing the watermark is required.
+    match scope with
+    | Full -> db.ReplaceRuntimeCoverage(testProject, runId, coveredFiles)
+    | Partial -> db.MergeRuntimeCoverage(testProject, coveredFiles)
+
+    coveredFiles.Length
 
 /// Emit a minimal, well-formed Cobertura document from the CURRENT coverage state
 /// in `db`. One `<package>`/`<class>` per covered file; each `<line>`'s number is

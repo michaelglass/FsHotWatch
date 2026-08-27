@@ -71,6 +71,18 @@ let private schema =
         PRIMARY KEY (symbol_id, line_offset, kind)
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_coverage (
+        test_project TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        PRIMARY KEY (test_project, source_file)
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_coverage_baselines (
+        test_project TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        observed_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
@@ -79,6 +91,7 @@ let private schema =
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
     CREATE INDEX IF NOT EXISTS idx_coverage_by_symbol ON coverage_points (symbol_id);
+    CREATE INDEX IF NOT EXISTS idx_runtime_coverage_by_file ON runtime_coverage (source_file);
     """
 
 let private symbolKindToString (kind: SymbolKind) =
@@ -228,6 +241,10 @@ let private openConnection (dbPath: string) =
 ///          files may otherwise remain cache hits forever, leaving the new graph edges
 ///          absent even though the executable understands them. Rebuilding guarantees
 ///          that every indexed file was analyzed under the same literal-edge semantics.
+/// v12    — project-attributed runtime coverage. `coverage_points` deliberately merges
+///          every report into a run-independent high-water mark and therefore cannot
+///          answer which test project executed a file. The two runtime-coverage tables
+///          retain that provenance plus the last complete baseline run per project.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -242,7 +259,7 @@ let private openConnection (dbPath: string) =
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
 /// the newer open path.
 [<Literal>]
-let SchemaVersion = 11
+let SchemaVersion = 12
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -1363,6 +1380,218 @@ type Database(dbPath: string) =
 
         txn.Commit()
         (ingested, skipped)
+
+    /// Durably revoke one test project's runtime evidence before a new complete
+    /// receipt is parsed. Deleting both the positive map and its availability
+    /// watermark in one transaction makes a crash or parse failure conservative:
+    /// reopening the DB cannot resurrect stale evidence as current.
+    member _.InvalidateRuntimeCoverage(testProject: string) : unit =
+        use conn = openConnection dbPath
+        use txn = conn.BeginTransaction()
+
+        use coverageCmd = conn.CreateCommand()
+        coverageCmd.Transaction <- txn
+        coverageCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
+        coverageCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+        coverageCmd.ExecuteNonQuery() |> ignore
+
+        use baselineCmd = conn.CreateCommand()
+        baselineCmd.Transaction <- txn
+        baselineCmd.CommandText <- "DELETE FROM runtime_coverage_baselines WHERE test_project = @project"
+        baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+        baselineCmd.ExecuteNonQuery() |> ignore
+
+        txn.Commit()
+
+    /// Replace one test project's runtime file map with a complete, successful
+    /// coverage baseline. Absence is meaningful only for a full run, so replacement
+    /// and its baseline watermark commit in one transaction.
+    member _.ReplaceRuntimeCoverage(testProject: string, runId: string, sourceFiles: string seq) : unit =
+        use conn = openConnection dbPath
+        use txn = conn.BeginTransaction()
+
+        use deleteCmd = conn.CreateCommand()
+        deleteCmd.Transaction <- txn
+        deleteCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
+        deleteCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+        deleteCmd.ExecuteNonQuery() |> ignore
+
+        use insertCmd = conn.CreateCommand()
+        insertCmd.Transaction <- txn
+
+        insertCmd.CommandText <-
+            "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
+
+        let projectParameter = insertCmd.Parameters.Add("@project", SqliteType.Text)
+        let fileParameter = insertCmd.Parameters.Add("@file", SqliteType.Text)
+
+        for sourceFile in sourceFiles |> Seq.distinct do
+            projectParameter.Value <- testProject
+            fileParameter.Value <- sourceFile
+            insertCmd.ExecuteNonQuery() |> ignore
+
+        use baselineCmd = conn.CreateCommand()
+        baselineCmd.Transaction <- txn
+
+        baselineCmd.CommandText <-
+            """
+            INSERT INTO runtime_coverage_baselines (test_project, run_id, observed_at)
+            VALUES (@project, @run, @observedAt)
+            ON CONFLICT(test_project) DO UPDATE SET
+                run_id = excluded.run_id,
+                observed_at = excluded.observed_at
+            """
+
+        baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+        baselineCmd.Parameters.AddWithValue("@run", runId) |> ignore
+
+        baselineCmd.Parameters.AddWithValue("@observedAt", DateTimeOffset.UtcNow.ToString("O"))
+        |> ignore
+
+        baselineCmd.ExecuteNonQuery() |> ignore
+        txn.Commit()
+
+    /// Add positive runtime observations from an impact-filtered run. A partial run
+    /// cannot prove a file is no longer covered, so it never deletes rows or advances
+    /// the complete-baseline watermark.
+    member _.MergeRuntimeCoverage(testProject: string, sourceFiles: string seq) : unit =
+        use conn = openConnection dbPath
+        use txn = conn.BeginTransaction()
+        use cmd = conn.CreateCommand()
+        cmd.Transaction <- txn
+
+        cmd.CommandText <- "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
+
+        let projectParameter = cmd.Parameters.Add("@project", SqliteType.Text)
+        let fileParameter = cmd.Parameters.Add("@file", SqliteType.Text)
+
+        for sourceFile in sourceFiles |> Seq.distinct do
+            projectParameter.Value <- testProject
+            fileParameter.Value <- sourceFile
+            cmd.ExecuteNonQuery() |> ignore
+
+        txn.Commit()
+
+    /// Test projects with positive runtime observations for any changed file.
+    member _.GetRuntimeCoverageProjects(sourceFiles: string list) : string list =
+        if sourceFiles.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            let placeholders = buildPlaceholders sourceFiles
+
+            cmd.CommandText <-
+                $"SELECT DISTINCT test_project FROM runtime_coverage WHERE source_file IN (%s{placeholders}) ORDER BY test_project"
+
+            bindPlaceholders cmd sourceFiles
+            use reader = cmd.ExecuteReader()
+            readAll reader (fun row -> row.GetString(0))
+
+    /// Exact file/project runtime edges for the requested files. Runners use
+    /// this shape to retain per-file verification debt and attribution rather
+    /// than cross-producting every selected project onto every changed symbol.
+    member _.GetRuntimeCoverageAttributions(sourceFiles: string list) : (string * string) list =
+        if sourceFiles.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            let placeholders = buildPlaceholders sourceFiles
+
+            cmd.CommandText <-
+                $"SELECT source_file, test_project FROM runtime_coverage WHERE source_file IN (%s{placeholders}) ORDER BY source_file, test_project"
+
+            bindPlaceholders cmd sourceFiles
+            use reader = cmd.ExecuteReader()
+            readAll reader (fun row -> row.GetString(0), row.GetString(1))
+
+    /// Every indexed test method belonging to one of the named projects. Runtime
+    /// Cobertura is project-granular, so the safe selection is the whole project.
+    member _.GetTestMethodsInProjects(testProjects: string list) : TestMethodInfo list =
+        if testProjects.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            let placeholders = buildPlaceholders testProjects
+
+            cmd.CommandText <-
+                $"""
+                SELECT s.full_name, tm.test_project, tm.test_class, tm.test_method
+                FROM test_methods tm
+                JOIN symbols s ON s.id = tm.symbol_id
+                WHERE tm.test_project IN (%s{placeholders})
+                ORDER BY tm.test_project, tm.test_class, tm.test_method
+                """
+
+            bindPlaceholders cmd testProjects
+            use reader = cmd.ExecuteReader()
+
+            readAll reader (fun row ->
+                { SymbolFullName = row.GetString(0)
+                  TestProject = row.GetString(1)
+                  TestClass = row.GetString(2)
+                  TestMethod = row.GetString(3) })
+
+    /// Complete runtime-coverage baseline watermarks, ordered for deterministic
+    /// diagnostics and tests.
+    member _.GetRuntimeCoverageBaselines() : (string * string) list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <- "SELECT test_project, run_id FROM runtime_coverage_baselines ORDER BY test_project"
+
+        use reader = cmd.ExecuteReader()
+        readAll reader (fun row -> row.GetString(0), row.GetString(1))
+
+    /// Expected projects whose last complete coverage baseline is absent or older
+    /// than the caller's freshness boundary. Callers widen those projects rather
+    /// than interpreting unavailable evidence as proof that no runtime edge exists.
+    member this.GetUnavailableRuntimeCoverageProjects
+        (expectedProjects: string list, staleBefore: DateTimeOffset)
+        : string list =
+        this.GetRuntimeCoverageAvailability(expectedProjects, staleBefore)
+        |> List.choose (fun (project, availability) ->
+            match availability with
+            | Domain.Current -> None
+            | Domain.Missing
+            | Domain.Stale _ -> Some project)
+
+    /// Availability of every expected project, retaining missing-vs-stale so the
+    /// caller can explain why it widened selection.
+    member _.GetRuntimeCoverageAvailability
+        (expectedProjects: string list, staleBefore: DateTimeOffset)
+        : (string * Domain.RuntimeCoverageAvailability) list =
+        if expectedProjects.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            let placeholders = buildPlaceholders expectedProjects
+
+            cmd.CommandText <-
+                $"""
+                SELECT test_project, observed_at
+                FROM runtime_coverage_baselines
+                WHERE test_project IN (%s{placeholders})
+                """
+
+            bindPlaceholders cmd expectedProjects
+            use reader = cmd.ExecuteReader()
+
+            let observedByProject =
+                readAll reader (fun row -> row.GetString(0), DateTimeOffset.Parse(row.GetString(1)))
+                |> Map.ofList
+
+            expectedProjects
+            |> List.distinct
+            |> List.map (fun project ->
+                match Map.tryFind project observedByProject with
+                | None -> project, Domain.Missing
+                | Some observedAt when observedAt < staleBefore -> project, Domain.Stale observedAt
+                | Some _ -> project, Domain.Current)
+            |> List.sortBy fst
 
     /// Get all stored line-coverage points for a source file as `(absoluteLine, hits)`.
     /// The absolute line is DERIVED from each symbol's CURRENT `line_start`, so a symbol

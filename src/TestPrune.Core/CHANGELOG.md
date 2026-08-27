@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat!: preserve project-attributed runtime coverage and union it with static
+  impact selection. A complete project run replaces that project's
+  file map; an impact-filtered run may add positive evidence but cannot erase the
+  last complete baseline. Missing and stale baselines are reported as distinct typed
+  states so a runner can widen the affected project instead of silently narrowing.
+
+- feat!: **`SchemaVersion` 11 -> 12.** The runtime coverage map and its complete-run
+  watermarks retain the test-project identity that the existing merged
+  `coverage_points` high-water mark intentionally discards.
+
 - feat: add `DiffParser.parseChangedPaths`, the lossless counterpart to
   `parseChangedFiles`. It returns every path in a Git/Jujutsu diff,
   including both sides of a rename and non-F# files, decodes Git C-quoted path names,

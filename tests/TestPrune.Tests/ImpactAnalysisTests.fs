@@ -6,6 +6,7 @@ open TestPrune.AstAnalyzer
 open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.InMemoryStore
+open TestPrune.Ports
 open TestPrune.Tests.TestHelpers
 
 module ``Changed symbol with dependent test`` =
@@ -83,6 +84,77 @@ module ``Changed symbol with no dependent tests`` =
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
         | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}"
+
+module ``Runtime-only coupling`` =
+
+    [<Fact>]
+    let ``a changed file selects the project that executed it without an AST edge`` () =
+        withDb (fun db ->
+            let runtimeOnly =
+                { FullName = "RuntimeOnly.dispatchTarget"
+                  Kind = Function
+                  SourceFile = "src/RuntimeOnly.fs"
+                  LineStart = 1
+                  LineEnd = 5
+                  ContentHash = "before"
+                  IsExtern = false }
+
+            let runtimeTest =
+                { FullName = "RuntimeTests.viaReflection"
+                  Kind = Function
+                  SourceFile = "tests/RuntimeTests.fs"
+                  LineStart = 1
+                  LineEnd = 5
+                  ContentHash = "test"
+                  IsExtern = false }
+
+            let siblingTest =
+                { FullName = "SiblingTests.unrelated"
+                  Kind = Function
+                  SourceFile = "tests/SiblingTests.fs"
+                  LineStart = 1
+                  LineEnd = 5
+                  ContentHash = "test"
+                  IsExtern = false }
+
+            db.RebuildProjects(
+                [ AnalysisResult.Create(
+                      [ runtimeOnly; runtimeTest; siblingTest ],
+                      [],
+                      [ { SymbolFullName = runtimeTest.FullName
+                          TestProject = "RuntimeTests"
+                          TestClass = "RuntimeTests"
+                          TestMethod = "viaReflection" }
+                        { SymbolFullName = siblingTest.FullName
+                          TestProject = "SiblingTests"
+                          TestClass = "SiblingTests"
+                          TestMethod = "unrelated" } ]
+                  ) ]
+            )
+
+            db.ReplaceRuntimeCoverage("RuntimeTests", "full-1", [ runtimeOnly.SourceFile ])
+
+            let current =
+                Map.ofList
+                    [ runtimeOnly.SourceFile,
+                      [ { runtimeOnly with
+                            ContentHash = "after" } ] ]
+
+            let selection, events =
+                selectTests (toSymbolStore db) [ runtimeOnly.SourceFile ] current
+
+            match selection with
+            | RunSubset tests ->
+                test <@ tests |> List.map _.SymbolFullName = [ runtimeTest.FullName ] @>
+
+                test
+                    <@
+                        events
+                        |> List.contains (
+                            ProjectSelectedByRuntimeCoverageEvent("RuntimeTests", runtimeOnly.SourceFile)
+                        )
+                    @>
+            | RunAll reason -> failwith $"Expected runtime-covered subset, got %s{SelectionReason.describe reason}")
 
 module ``Multiple changed symbols`` =
 

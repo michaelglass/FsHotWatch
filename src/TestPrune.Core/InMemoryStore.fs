@@ -166,6 +166,13 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
                 // restated, so the shipped selector and the one the soundness harness
                 // grades cannot drift apart.
                 Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
+      GetRuntimeCoverageProjects = fun _ -> []
+      GetTestMethodsInProjects =
+        fun projects ->
+            let projects = Set.ofList projects
+
+            allTests
+            |> List.filter (fun testMethod -> Set.contains testMethod.TestProject projects)
       GetAllSymbols = fun () -> allSymbols
       GetAllSymbolNames = fun () -> allSymbolNames
       GetReachableSymbols =

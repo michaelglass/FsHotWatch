@@ -13,6 +13,8 @@ type SymbolStore =
       GetFileKey: string -> string option
       GetProjectKey: string -> string option
       QueryAffectedTests: string list -> TestMethodInfo list
+      GetRuntimeCoverageProjects: string list -> string list
+      GetTestMethodsInProjects: string list -> TestMethodInfo list
       GetAllSymbols: unit -> SymbolInfo list
       GetAllSymbolNames: unit -> Set<string>
       GetReachableSymbols: string list -> Set<string>
@@ -42,6 +44,8 @@ let toSymbolStore (db: Database) : SymbolStore =
       GetFileKey = db.GetFileKey
       GetProjectKey = db.GetProjectKey
       QueryAffectedTests = db.QueryAffectedTests
+      GetRuntimeCoverageProjects = db.GetRuntimeCoverageProjects
+      GetTestMethodsInProjects = db.GetTestMethodsInProjects
       GetAllSymbols = db.GetAllSymbols
       GetAllSymbolNames = fun () -> db.GetAllSymbolNames()
       GetReachableSymbols = db.GetReachableSymbols

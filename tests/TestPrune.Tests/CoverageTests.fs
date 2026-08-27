@@ -5,6 +5,7 @@ open Swensen.Unquote
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Domain
 open TestPrune.Coverage
 open TestPrune.Tests.TestHelpers
 
@@ -155,6 +156,130 @@ module ``Cobertura ingest`` =
 
             test <@ summary.Ingested = 2 @>
             test <@ db.GetFileCoverage "Foo.fs" = [ (12, 4) ] @>)
+
+module ``Runtime coverage keeps test-project provenance`` =
+
+    let private cobertura (classes: (string * (int * int) list) list) =
+        let lineXml (n, h) =
+            sprintf "<line number=\"%d\" hits=\"%d\" />" n h
+
+        let classXml (file, lines) =
+            let body = lines |> List.map lineXml |> String.concat ""
+            sprintf "<class filename=\"%s\" name=\"%s\"><lines>%s</lines></class>" file file body
+
+        let body = classes |> List.map classXml |> String.concat ""
+
+        sprintf
+            "<?xml version=\"1.0\"?><coverage><packages><package name=\"p\"><classes>%s</classes></package></packages></coverage>"
+            body
+
+    [<Fact>]
+    let ``full project baseline records only files with a runtime hit`` () =
+        withDb (fun db ->
+            let xml =
+                cobertura [ "src/RuntimeOnly.fs", [ 10, 1 ]; "src/NeverExecuted.fs", [ 4, 0 ] ]
+
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" xml |> ignore
+
+            test <@ db.GetRuntimeCoverageProjects([ "src/RuntimeOnly.fs" ]) = [ "RuntimeTests" ] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/NeverExecuted.fs" ]) = [] @>)
+
+    [<Fact>]
+    let ``new full baseline replaces the project's prior runtime map`` () =
+        withDb (fun db ->
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" (cobertura [ "src/Old.fs", [ 1, 1 ] ])
+            |> ignore
+
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-2" (cobertura [ "src/New.fs", [ 1, 1 ] ])
+            |> ignore
+
+            test <@ db.GetRuntimeCoverageProjects([ "src/Old.fs" ]) = [] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/New.fs" ]) = [ "RuntimeTests" ] @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ ("RuntimeTests", "run-2") ] @>)
+
+    [<Fact>]
+    let ``partial coverage adds evidence without erasing the full baseline`` () =
+        withDb (fun db ->
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" (cobertura [ "src/Baseline.fs", [ 1, 1 ] ])
+            |> ignore
+
+            ingestRuntimeCoverage db None "RuntimeTests" Partial "run-2" (cobertura [ "src/Partial.fs", [ 1, 1 ] ])
+            |> ignore
+
+            test <@ db.GetRuntimeCoverageProjects([ "src/Baseline.fs" ]) = [ "RuntimeTests" ] @>
+            let attributions = db.GetRuntimeCoverageAttributions([ "src/Baseline.fs" ])
+            test <@ attributions = [ ("src/Baseline.fs", "RuntimeTests") ] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/Partial.fs" ]) = [ "RuntimeTests" ] @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ ("RuntimeTests", "run-1") ] @>)
+
+    [<Fact>]
+    let ``trustworthy empty full report clears the project map and advances its baseline`` () =
+        withDb (fun db ->
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" (cobertura [ "src/Baseline.fs", [ 1, 1 ] ])
+            |> ignore
+
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-2" "<coverage><packages /></coverage>"
+            |> ignore
+
+            test <@ db.GetRuntimeCoverageProjects([ "src/Baseline.fs" ]) = [] @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ ("RuntimeTests", "run-2") ] @>)
+
+    [<Fact>]
+    let ``missing or stale project baseline is unavailable and current evidence is not`` () =
+        withDb (fun db ->
+            let beforeIngest = System.DateTimeOffset.UtcNow
+
+            let missing =
+                db.GetUnavailableRuntimeCoverageProjects([ "RuntimeTests" ], beforeIngest)
+
+            test <@ missing = [ "RuntimeTests" ] @>
+
+            test
+                <@ db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], beforeIngest) = [ ("RuntimeTests", Missing) ] @>
+
+            ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" (cobertura [ "src/Runtime.fs", [ 1, 1 ] ])
+            |> ignore
+
+            test <@ db.GetUnavailableRuntimeCoverageProjects([ "RuntimeTests" ], beforeIngest) = [] @>
+
+            let afterIngest = System.DateTimeOffset.UtcNow.AddSeconds(1.0)
+
+            let stale =
+                db.GetUnavailableRuntimeCoverageProjects([ "RuntimeTests" ], afterIngest)
+
+            test <@ stale = [ "RuntimeTests" ] @>
+
+            match db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], afterIngest) with
+            | [ "RuntimeTests", Stale observedAt ] -> test <@ observedAt < afterIngest @>
+            | actual -> failwith $"Expected stale RuntimeTests evidence, got %A{actual}")
+
+    [<Fact>]
+    let ``malformed full report durably invalidates a prior runtime baseline`` () =
+        withDbPath (fun path db ->
+            let staleBefore = System.DateTimeOffset.UtcNow.AddMinutes(-1.0)
+
+            ingestRuntimeCoverage db None "RuntimeTests" Full "prior-green" (cobertura [ "src/Prior.fs", [ 1, 1 ] ])
+            |> ignore
+
+            test <@ db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ "RuntimeTests", Current ] @>
+
+            Assert.ThrowsAny<exn>(fun () ->
+                ingestRuntimeCoverage db None "RuntimeTests" Full "malformed" "<coverage><not-closed>"
+                |> ignore)
+            |> ignore
+
+            test <@ db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ "RuntimeTests", Missing ] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+
+            let reopened = Database.create path
+
+            test
+                <@
+                    reopened.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ "RuntimeTests",
+                                                                                                 Missing ]
+                @>
+
+            test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>)
 
 module ``Cobertura emit`` =
 

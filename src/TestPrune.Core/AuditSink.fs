@@ -50,6 +50,8 @@ let private serializeEvent (event: AnalysisEvent) : string * string =
 
         "SymbolChangeDetected", $"%s{file}|%s{name}|%s{kind}"
     | TestSelectedEvent(testMethod, reason) -> "TestSelected", $"%s{testMethod}|%s{SelectionReason.describe reason}"
+    | ProjectSelectedByRuntimeCoverageEvent(project, changedFile) ->
+        "ProjectSelectedByRuntimeCoverage", $"%s{project}|%s{changedFile}"
     | DiffParsedEvent files -> "DiffParsed", (files |> String.concat "|")
     | IndexStartedEvent count -> "IndexStarted", $"%d{count}"
     | IndexCompletedEvent(symbols, deps, tests) -> "IndexCompleted", $"%d{symbols}|%d{deps}|%d{tests}"
