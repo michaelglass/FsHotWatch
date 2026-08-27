@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- docs(test): prepare the blocked FsHotWatch CLI pin upgrade without changing the
+  declared toolchain. The contract test keeps the released manifest pin explicit,
+  and the runbook requires the macOS watcher fallback to ship before TestPrune bumps
+  the pin and runs its full gate.
+
 ## 8.0.0 - 2026-08-27
 
 - feat!: runtime-only behaviour coupling can now select the whole test project that

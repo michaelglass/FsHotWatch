@@ -68,6 +68,7 @@
     <Compile Include="SqlCouplingTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
     <Compile Include="ReleaseEnrollmentTests.fs" />
+    <Compile Include="ToolchainPinTests.fs" />
     <Compile Include="AnonymousRecordAnalyzerTests.fs" />
     <!-- impact-selection soundness harness. -->
     <Compile Include="SoundnessHarnessTests.fs" />

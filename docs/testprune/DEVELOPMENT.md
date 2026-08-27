@@ -64,6 +64,10 @@ Uses NuGet tools from michaelglass/MichaelsWackyFsPackageTools:
 
 CI uses reusable GitHub workflows from the same repo.
 
+The FsHotWatch CLI pin is a release boundary, not a local-development override. See
+`docs/runbooks/fshotwatch-pin-upgrade.md` before changing it: publish the required CLI
+fix first, pin that exact released version second, and only then run the full gate.
+
 ## Package Publishing
 
 Packable projects use separate semantic release tags unless noted:
