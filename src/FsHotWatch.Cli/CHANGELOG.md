@@ -6,6 +6,11 @@
   truncates the attribute while selecting tests, with its required
   Microsoft.Data.Sqlite 10.0.11 floor.
 
+- AUTOMATION-581: IPC recovery now distinguishes a proven corrupt/oversized
+  StreamJsonRpc frame from a genuine CLI `OutOfMemoryException`. Only the former
+  restarts and retries the daemon; a client OOM preserves the healthy daemon and
+  reports the client memory failure and remedy precisely.
+
 - AUTOMATION-290: daemon-backed `check`/`confirm` and `--run-once` now fail fast
   when MSBuild loads zero of the discovered projects. Both paths overwrite any
   prior green with an exit-2 `incomplete` verdict carrying the exact loader

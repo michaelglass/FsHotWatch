@@ -54,10 +54,12 @@ type private SequencedWorkspaceLoader(resultsByAttempt: Types.ProjectOptions lis
     member _.Resume(index: int) = resume[index].Set()
 
     member private _.Load() =
-        let index = Threading.Interlocked.Increment(&attempt)
-
-        if index >= resultsByAttempt.Length then
-            failwithf "unexpected workspace-loader attempt %d" index
+        // Repeat the terminal outcome for later attempts. A daemon's real watcher may
+        // legitimately queue another discovery (for example when restore materializes
+        // project.assets.json); tests using this loader care about the transition from
+        // the first outcome to the later stable outcome, not an exact call count.
+        let requested = Threading.Interlocked.Increment(&attempt)
+        let index = min requested (resultsByAttempt.Length - 1)
 
         entered[index].Set()
         resume[index].Wait()
@@ -1235,8 +1237,15 @@ let ``verdict admission restarts when discovery begins after the host wait start
 
         loader.Resume(0)
 
+        // This test drives both discovery attempts explicitly. Keep the real macOS
+        // watcher from racing a third project-change discovery into that sequence;
+        // watcher behaviour has its own integration coverage.
+        let daemonOptions =
+            { Daemon.DaemonOptions.defaults with
+                FsEventsLatencySeconds = 60.0 }
+
         use daemon =
-            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> [])
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir daemonOptions loader (fun _ -> [])
 
         daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
 

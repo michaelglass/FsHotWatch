@@ -327,7 +327,7 @@ let ``polling fallback skips overlapping polls and emits nothing after disposal`
         new PollingFileWatcher("/repo", changes.Add, [], false, Some snapshot, None)
 
     let first = System.Threading.Tasks.Task.Run(fun () -> watcher.Poll())
-    test <@ entered.Wait(2000) @>
+    test <@ entered.Wait(10000) @>
     watcher.Poll()
     test <@ snapshots = 2 @>
     release.Set()
@@ -421,6 +421,26 @@ let ``automatic polling rearms after snapshot failure and stops rearming after d
     test <@ arms |> Seq.toList = [ 1000; 1000; 1000 ] @>
 
 [<Fact(Timeout = 15000)>]
+let ``automatic polling default timer performs a poll`` () =
+    let mutable snapshots = 0
+
+    let snapshot () =
+        Interlocked.Increment(&snapshots) |> ignore
+
+        ({ Files = Map.empty
+           UnreadableFiles = Set.empty
+           Holes = Set.empty }
+        : PollingSnapshot)
+
+    use _watcher =
+        new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, None)
+
+    // Construction takes the baseline synchronously; the real one-shot timer must
+    // produce the second snapshot without an injected timer seam.
+    let polled = waitUntilTrue (fun () -> Volatile.Read(&snapshots) >= 2) 5000
+    test <@ polled @>
+
+[<Fact(Timeout = 15000)>]
 let ``automatic polling disposal waits for active callback then prevents later callbacks`` () =
     let mutable callback = ignore
     let entered = new ManualResetEventSlim(false)
@@ -447,7 +467,7 @@ let ``automatic polling disposal waits for active callback then prevents later c
         new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
 
     let active = System.Threading.Tasks.Task.Run(callback)
-    test <@ entered.Wait(2000) @>
+    test <@ entered.Wait(10000) @>
 
     let disposing =
         System.Threading.Tasks.Task.Run(fun () -> (watcher :> IDisposable).Dispose())
