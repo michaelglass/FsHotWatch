@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: add `DiffParser.parseChangedPaths`, the lossless counterpart to
+  `parseChangedFiles`. It returns every path in a Git/Jujutsu diff,
+  including both sides of a rename and non-F# files, decodes Git C-quoted path names,
+  and removes duplicates without changing their first-seen order. The existing
+  `parseChangedFiles` API retains its code-only, rename-destination contract and now
+  shares the same quoted-path decoder.
+
 ## 7.0.1 - 2026-08-18
 
 - fix!: **a computation-expression custom operation is indexed under the member it

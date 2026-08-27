@@ -470,7 +470,7 @@ let analyzeChanges
     match getDiff () with
     | Error msg -> Error msg
     | Ok diffText ->
-        let changedFiles = parseChangedFiles diffText
+        let changedFiles = parseChangedPaths diffText
 
         auditSink.Post(timestamp (DiffParsedEvent changedFiles))
 

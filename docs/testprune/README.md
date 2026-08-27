@@ -109,7 +109,9 @@ type DbIntegrationTests() = ...
 
 Glob dialect: `**` crosses path segments, `*` stays within one, `?` is
 a single non-`/` char. Paths are repo-relative and case-sensitive. The
-attributes are metadata — no runtime behavior.
+attributes are metadata — no runtime behavior. `run` and `status` match them against
+every path in the diff, including both the old and new name of a renamed file; Git's
+C-quoted path names are decoded before matching.
 
 ### You declare the attributes yourself
 

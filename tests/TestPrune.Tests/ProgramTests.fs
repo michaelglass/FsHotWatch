@@ -293,6 +293,80 @@ module ``analyzeChanges`` =
             if Directory.Exists(tmp) then
                 Directory.Delete(tmp, true)
 
+    let private analyzeDeclaredDependency attributeName pattern oldPath newPath =
+        let dependentSymbol =
+            { FullName = "Tests.dependent"
+              Kind = Function
+              SourceFile = "tests/Tests.fs"
+              LineStart = 1
+              LineEnd = 3
+              ContentHash = "v1"
+              IsExtern = false }
+
+        let graph =
+            { AnalysisResult.Create(
+                  [ dependentSymbol ],
+                  [],
+                  [ { SymbolFullName = dependentSymbol.FullName
+                      TestProject = "Tests"
+                      TestClass = "Tests"
+                      TestMethod = "dependent" } ]
+              ) with
+                Attributes =
+                    [ { SymbolFullName = dependentSymbol.FullName
+                        AttributeName = attributeName
+                        ArgsJson = $"""["%s{pattern}"]""" } ] }
+
+        let store = TestPrune.InMemoryStore.fromAnalysisResults [ graph ]
+
+        let diff =
+            $"diff --git a/%s{oldPath} b/%s{newPath}\n"
+            + $"--- a/%s{oldPath}\n"
+            + $"+++ b/%s{newPath}\n"
+
+        let fakeDiff: DiffProvider = fun () -> Ok diff
+        analyzeChanges fakeDiff "" store (makeChecker ()) (createNoopSink ())
+
+    [<Fact>]
+    let ``renamed declared file selects its dependent test from the old path`` () =
+        let result =
+            analyzeDeclaredDependency
+                "DependsOnFileAttribute"
+                "tests/snapshots/old.snap.json"
+                "tests/snapshots/old.snap.json"
+                "tests/snapshots/new.snap.json"
+
+        match result with
+        | Ok(RunSubset [ selected ], changedPaths) ->
+            test <@ selected.TestMethod = "dependent" @>
+
+            test <@ changedPaths = [ "tests/snapshots/old.snap.json"; "tests/snapshots/new.snap.json" ] @>
+        | other -> failwith $"expected the declared-file test, got %A{other}"
+
+    [<Fact>]
+    let ``renamed declared file selects its dependent test from the new path`` () =
+        let result =
+            analyzeDeclaredDependency
+                "DependsOnFileAttribute"
+                "tests/snapshots/new.snap.json"
+                "tests/snapshots/old.snap.json"
+                "tests/snapshots/new.snap.json"
+
+        match result with
+        | Ok(RunSubset [ selected ], _) -> test <@ selected.TestMethod = "dependent" @>
+        | other -> failwith $"expected the declared-file test, got %A{other}"
+
+    [<Theory>]
+    [<InlineData("migrations/*.sql", "migrations/001-add-user.sql")>]
+    [<InlineData("tests/fixtures/**/*.yaml", "tests/fixtures/deep/nested/case.yaml")>]
+    let ``declared glob selects its dependent test through orchestration`` (pattern: string) (changedPath: string) =
+        let result =
+            analyzeDeclaredDependency "DependsOnGlobAttribute" pattern changedPath changedPath
+
+        match result with
+        | Ok(RunSubset [ selected ], _) -> test <@ selected.TestMethod = "dependent" @>
+        | other -> failwith $"expected the declared-glob test, got %A{other}"
+
     [<Fact>]
     let ``parse failure on changed file triggers RunAll with AnalysisFailedFallback`` () =
         let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())

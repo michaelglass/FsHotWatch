@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `run` and `status` now carry every changed path into impact selection instead
+  of discarding non-F# paths at the diff-parser boundary.
+  `[<DependsOnFile>]` and `[<DependsOnGlob>]` therefore work end to end for snapshots,
+  migrations, fixtures, and other declared inputs. Renames check both the old and new
+  path, and Git C-quoted names are decoded before matching.
+
 ## 7.0.1 - 2026-08-18
 
 - feat!: **Your `.test-prune.db` is rebuilt on first run again (SchemaVersion 9→10).** Nothing to do — the first `test-prune index` after upgrading is a
