@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat(AUTOMATION-315): preserve the producing test project and consumer-ratchet
+  intent on raw coverage inputs. Coverage configuration can now collect for
+  TestPrune impact analysis without opting a project into the consumer ratchet
+  via `{ "enabled": false, "collectForImpact": true }`. Until TestPrune.Core
+  exposes project-filtered coverage points, only ratchet-eligible raw reports
+  enter the legacy consumer snapshot while every report retains project identity
+  in the runtime impact map. A missing or older-than-seven-days complete baseline
+  widens to every test in that configured project and logs a typed reason; partial
+  runs may add positive evidence but never erase the last complete baseline.
+
 ## 0.13.0-alpha.24 - 2026-08-29
 
 - Fix: satisfy analyzer in A67 quarantine regression

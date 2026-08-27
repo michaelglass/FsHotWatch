@@ -15,6 +15,7 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.AstAnalyzer
+open TestPrune.Coverage
 open TestPrune.Database
 open TestPrune.Extensions
 open TestPrune.SymbolDiff
@@ -27,6 +28,7 @@ open FsHotWatch.Tests.TestHelpers
 let private emptyLaunch: TestRunLaunch =
     { Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
+      RuntimeProjectsByFile = Map.empty
       Selection = Map.empty
       WouldHaveRun = None }
 
@@ -35,6 +37,7 @@ let private emptyLaunch: TestRunLaunch =
 let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
+      RuntimeProjectsByFile = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
       WouldHaveRun = None }
 
@@ -43,6 +46,7 @@ let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
 let private filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
     { Symbols = Set.empty
       CoveringProjectsBySymbol = Map.empty
+      RuntimeProjectsByFile = Map.empty
       Selection =
         selection
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
@@ -218,6 +222,117 @@ let ``changed-files tracks files after emit with valid relative path`` () =
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-315 a clean FileChecked with zero symbols still records runtime file debt`` () =
+    withTempDir "tp-runtime-zero-symbol" (fun tmpDir ->
+        let host = PluginHost.create sharedChecker.Value tmpDir
+
+        let handler =
+            create (Path.Combine(tmpDir, "test.db")) tmpDir None None None None None []
+
+        host.RegisterHandler(handler)
+
+        let sourceFile = Path.Combine(tmpDir, "src", "RuntimeOnly.fs")
+        let projectFile = Path.Combine(tmpDir, "RuntimeProject.fsproj")
+        Directory.CreateDirectory(Path.GetDirectoryName sourceFile) |> ignore
+        let source = "namespace RuntimeOnly\n"
+        File.WriteAllText(sourceFile, source)
+
+        let checker = sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        let projectOptions =
+            getScriptOptions checker sourceFile source
+            |> Async.RunSynchronously
+            |> fun options ->
+                { options with
+                    ProjectFileName = projectFile
+                    SourceFiles = [| sourceFile |] }
+
+        pipeline.RegisterProject(sourceFile, projectOptions)
+
+        let checkResult =
+            pipeline.CheckFile(AbsFilePath.create sourceFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        emitFileAndQuiesce host checkResult
+
+        let changed = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+        test <@ changed = Some "[\"src/RuntimeOnly.fs\"]" @>)
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-315 a zero-symbol FileChecked forces its runtime-covered project in full`` () =
+    withTempDir "tp-runtime-zero-symbol-run" (fun tmpDir ->
+        let sentinel = Path.Combine(tmpDir, "runtime-project-ran")
+        let runner = Path.Combine(tmpDir, "runtime-project-runner.sh")
+        File.WriteAllText(runner, $"#!/bin/sh\nset -eu\ntouch \"%s{sentinel}\"\n")
+
+        let config =
+            { Project = "RuntimeProject"
+              Command = "sh"
+              Args = runner
+              Group = "default"
+              Environment = []
+              FilterTemplate = Some "--ignored-filter {classes}"
+              ClassJoin = " "
+              TimeoutSec = Some 10
+              ReportVerificationFormat = Disabled }
+
+        let coveragePaths _ =
+            Some
+                { Baseline = Path.Combine(tmpDir, BaselineName)
+                  Partial = Path.Combine(tmpDir, PartialName)
+                  Cobertura = Path.Combine(tmpDir, CoberturaName)
+                  IncludeInRatchet = false
+                  ArgsTemplate = "--coverage-output {output}" }
+
+        let dbPath = Path.Combine(tmpDir, "test.db")
+        let db = Database.create dbPath
+        db.ReplaceRuntimeCoverage("RuntimeProject", "baseline", [ "src/RuntimeOnly.fs" ])
+
+        let host = PluginHost.create sharedChecker.Value tmpDir
+
+        let handler =
+            create dbPath tmpDir (Some [ config ]) None None None (Some coveragePaths) []
+
+        host.RegisterHandler(handler)
+
+        // Establish the session baseline, then observe only the run caused by
+        // the zero-symbol changed file.
+        emitBuildAndWaitTerminal host
+        File.Delete sentinel
+
+        let sourceFile = Path.Combine(tmpDir, "src", "RuntimeOnly.fs")
+        let projectFile = Path.Combine(tmpDir, "RuntimeProject.fsproj")
+        Directory.CreateDirectory(Path.GetDirectoryName sourceFile) |> ignore
+        let source = "namespace RuntimeOnly\n"
+        File.WriteAllText(sourceFile, source)
+
+        let checker = sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        let projectOptions =
+            getScriptOptions checker sourceFile source
+            |> Async.RunSynchronously
+            |> fun options ->
+                { options with
+                    ProjectFileName = projectFile
+                    SourceFiles = [| sourceFile |] }
+
+        pipeline.RegisterProject(sourceFile, projectOptions)
+
+        let checkResult =
+            pipeline.CheckFile(AbsFilePath.create sourceFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        emitFileAndQuiesce host checkResult
+
+        emitBatchAndQuiesce host [ sourceFile ]
+        emitBuildAndWaitTerminal host
+        test <@ File.Exists sentinel @>)
 
 [<Fact(Timeout = 15000)>]
 let ``duplicate file checks do not duplicate in changed-files list`` () =
@@ -3238,6 +3353,7 @@ let ``buildCoverageArgs picks baseline on full run and partial on filtered run``
         { Baseline = "/tmp/cov/baseline.cobertura.xml"
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
+          IncludeInRatchet = true
           ArgsTemplate = defaultCoverageArgsTemplate }
 
     let full = buildCoverageArgs paths false
@@ -3257,6 +3373,7 @@ let ``default template uses an MTP-accepted output format`` () =
         { Baseline = "/tmp/cov/baseline.cobertura.xml"
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
+          IncludeInRatchet = true
           ArgsTemplate = defaultCoverageArgsTemplate }
 
     let args = buildCoverageArgs paths false
@@ -3278,6 +3395,7 @@ let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`
         { Baseline = "/tmp/cov/B.xml"
           Partial = "/tmp/cov/P.xml"
           Cobertura = "/tmp/cov/C.xml"
+          IncludeInRatchet = true
           ArgsTemplate = "--custom-collector --out \"{output}\" --extra" }
 
     let full = buildCoverageArgs paths false
@@ -3293,11 +3411,20 @@ let ``buildCoverageArgs treats a template missing {output} as invalid`` () =
         { Baseline = "/tmp/cov/B.xml"
           Partial = "/tmp/cov/P.xml"
           Cobertura = "/tmp/cov/C.xml"
+          IncludeInRatchet = true
           ArgsTemplate = "--broken-template-no-placeholder" }
 
     let ex = Assert.ThrowsAny(fun () -> buildCoverageArgs paths false |> ignore)
 
     test <@ ex.Message.Contains("{output}") @>
+
+[<Fact>]
+let ``AUTOMATION-315 collected coverage retains test-project identity and ratchet intent`` () =
+    let input = coverageInput "RuntimeOnlyTests" false "/tmp/cov/runtime-only.xml"
+
+    test <@ input.Project = "RuntimeOnlyTests" @>
+    test <@ input.RawPath = "/tmp/cov/runtime-only.xml" @>
+    test <@ input.IncludeInRatchet = false @>
 
 /// Build a minimal cobertura document with a single package/class/two-line shape.
 let private mkCobertura (pkg: string) (file: string) (lines: (int * int) list) : string =
@@ -3330,6 +3457,177 @@ let private seedSymbolDb (dbPath: string) (sourceFile: string) (lineStart: int) 
     db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
     db
 
+[<Fact>]
+let ``AUTOMATION-315 runtime selector widens missing and stale configured projects with typed reasons`` () =
+    withTempDir "runtime-widening" (fun dir ->
+        let db = Database.create (Path.Combine(dir, "test.db"))
+
+        let testMethods =
+            [ "CurrentTests"; "MissingTests"; "StaleTests"; "UnconfiguredTests" ]
+            |> List.map (fun project ->
+                { SymbolFullName = $"%s{project}.Tests.runs"
+                  TestProject = project
+                  TestClass = $"%s{project}.Tests"
+                  TestMethod = "runs" })
+
+        let testSymbols =
+            testMethods
+            |> List.map (fun method ->
+                { FullName = method.SymbolFullName
+                  Kind = SymbolKind.Value
+                  SourceFile = $"tests/%s{method.TestProject}.fs"
+                  LineStart = 1
+                  LineEnd = 1
+                  ContentHash = "h"
+                  IsExtern = false })
+
+        let runtimeTarget =
+            { FullName = "RuntimeDispatch.target"
+              Kind = SymbolKind.Value
+              SourceFile = "src/Foo.fs"
+              LineStart = 1
+              LineEnd = 3
+              ContentHash = "target"
+              IsExtern = false }
+
+        // Deliberately no dependency edge from any test to runtimeTarget: this
+        // is the tracer's static miss. Only project-attributed runtime coverage
+        // can select CurrentTests for the changed file.
+        db.RebuildProjects([ AnalysisResult.Create(runtimeTarget :: testSymbols, [], testMethods) ])
+        test <@ db.QueryAffectedTests([ runtimeTarget.FullName ]) = [] @>
+        db.ReplaceRuntimeCoverage("CurrentTests", "current", [ "src/Foo.fs" ])
+        db.ReplaceRuntimeCoverage("StaleTests", "old", [ "src/Other.fs" ])
+        db.ReplaceRuntimeCoverage("UnconfiguredTests", "other", [ "src/Foo.fs" ])
+
+        let selection =
+            selectByRuntimeCoverage
+                db
+                [ "CurrentTests"; "MissingTests"; "StaleTests" ]
+                [ "src/Foo.fs" ]
+                (DateTimeOffset.UtcNow.Subtract RuntimeCoverageMaxAge)
+
+        test <@ selection.ProjectsByFile.["src/Foo.fs"] = set [ "CurrentTests"; "MissingTests" ] @>
+
+        test
+            <@
+                selection.Widenings
+                |> List.exists (function
+                    | "MissingTests", MissingBaseline -> true
+                    | _ -> false)
+            @>
+
+        let staleSelection =
+            selectByRuntimeCoverage db [ "StaleTests" ] [ "src/Foo.fs" ] (DateTimeOffset.UtcNow.AddSeconds 1.0)
+
+        test
+            <@
+                staleSelection.Widenings
+                |> List.exists (function
+                    | "StaleTests", StaleBaseline _ -> true
+                    | _ -> false)
+            @>)
+
+[<Fact>]
+let ``AUTOMATION-315 runtime file obligations survive restart without cross-producting projects`` () =
+    withTempDir "runtime-obligations" (fun dir ->
+        let first =
+            mergeRuntimeCoverageObligations
+                Map.empty
+                (Map.ofList [ "src/A.fs", set [ "ATests" ]; "src/B.fs", set [ "BTests" ] ])
+
+        saveRuntimeCoverageObligations dir first
+
+        let loaded = loadRuntimeCoverageObligations dir
+        test <@ loaded = Ok first @>
+
+        let merged =
+            mergeRuntimeCoverageObligations
+                first
+                (Map.ofList [ "src/A.fs", set [ "AIntegration" ]; "src/C.fs", set [ "CTests" ] ])
+
+        test <@ merged.["src/A.fs"] = Map.ofList [ "ATests", 1L; "AIntegration", 1L ] @>
+        test <@ merged.["src/B.fs"] = Map.ofList [ "BTests", 1L ] @>
+        test <@ merged.["src/C.fs"] = Map.ofList [ "CTests", 1L ] @>)
+
+[<Fact>]
+let ``AUTOMATION-315 a repeated pair arriving mid-run survives the older green generation`` () =
+    let launched =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/A.fs", set [ "Project" ] ])
+
+    let arrivedMidRun =
+        mergeRuntimeCoverageObligations launched (Map.ofList [ "src/A.fs", set [ "Project" ] ])
+
+    let remaining =
+        retireRuntimeCoverageObligations arrivedMidRun launched (fun _ -> true)
+
+    test <@ remaining.["src/A.fs"].["Project"] = 2L @>
+
+[<Fact>]
+let ``AUTOMATION-315 restart drops obligations for projects no longer configured for collection`` () =
+    let obligations =
+        mergeRuntimeCoverageObligations
+            Map.empty
+            (Map.ofList [ "src/A.fs", set [ "StillConfigured"; "RemovedProject" ] ])
+
+    let pruned = pruneRuntimeCoverageObligations (set [ "StillConfigured" ]) obligations
+    test <@ pruned.["src/A.fs"] = Map.ofList [ "StillConfigured", 1L ] @>
+
+[<Fact>]
+let ``AUTOMATION-315 interrupted obligation persistence restarts as unknown debt`` () =
+    withTempDir "runtime-obligation-recovery" (fun dir ->
+        let marker = runtimeCoverageRecoveryPath dir
+        Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+        File.WriteAllText(marker, "write started")
+
+        match loadRuntimeCoverageObligations dir with
+        | Error reason -> test <@ reason.Contains "did not complete" @>
+        | Ok _ -> Assert.Fail "a surviving recovery marker must never load as an empty debt")
+
+[<Fact>]
+let ``AUTOMATION-315 a ledger write failure leaves recovery armed before restart`` () =
+    let mutable markerWritten = false
+    let mutable markerCleared = false
+
+    let result =
+        persistRuntimeCoverageObligationsWith
+            (fun () -> markerWritten <- true)
+            (fun () -> raise (IOException "disk refused obligation write"))
+            (fun () -> markerCleared <- true)
+
+    test <@ markerWritten @>
+    test <@ not markerCleared @>
+
+    match result with
+    | Error ex -> test <@ ex.Message.Contains "disk refused" @>
+    | Ok() -> Assert.Fail "a failed ledger write must not clear its recovery marker"
+
+[<Fact>]
+let ``AUTOMATION-315 a recovery marker failure does not accept an undurable obligation transition`` () =
+    let before =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/Old.fs", set [ "Tests" ] ])
+
+    let mutable saved = None
+    let mutable markerCleared = false
+
+    let result =
+        persistRuntimeCoverageTransitionWith
+            (fun () -> raise (IOException "disk refused recovery marker"))
+            (fun obligations -> saved <- Some obligations)
+            (fun () -> markerCleared <- true)
+            before
+            (fun current ->
+                mergeRuntimeCoverageObligations current (Map.ofList [ "src/New.fs", set [ "Integration" ] ]))
+
+    test <@ saved.IsNone @>
+    test <@ not markerCleared @>
+
+    match result with
+    | Error(current, ex) ->
+        test <@ current = before @>
+        test <@ not (current.ContainsKey "src/New.fs") @>
+        test <@ ex.Message.Contains "recovery marker" @>
+    | Ok _ -> Assert.Fail "an obligation transition cannot be accepted before its recovery marker is durable"
+
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared
 // cobertura file.
@@ -3346,7 +3644,8 @@ let ``ingestAndEmitCoverage ingests covered lines and emits the single shared co
         let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
         File.WriteAllText(rawPath, mkCobertura "Foo.dll" absFile [ (10, 3); (11, 1); (12, 0) ])
 
-        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+        ingestAndEmitCoverage db repoRoot "run-1" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+        |> ignore
 
         test <@ File.Exists sharedOut @>
         let xml = File.ReadAllText sharedOut
@@ -3354,6 +3653,160 @@ let ``ingestAndEmitCoverage ingests covered lines and emits the single shared co
         test <@ xml.Contains("number=\"10\"") @>
         test <@ xml.Contains("number=\"11\"") @>
         test <@ xml.Contains("hits=\"3\"") @>)
+
+[<Fact>]
+let ``AUTOMATION-315 collect-only coverage stays project-attributed and out of ratchet output`` () =
+    withTempDir "cov-impact-only" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let ratchetRaw = Path.Combine(dir, "ratchet.xml")
+        let impactRaw = Path.Combine(dir, "impact-only.xml")
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        Directory.CreateDirectory(Path.GetDirectoryName(sharedOut)) |> ignore
+
+        File.WriteAllText(ratchetRaw, mkCobertura "RatchetTests" absFile [ (10, 1) ])
+        File.WriteAllText(impactRaw, mkCobertura "RuntimeTests" absFile [ (11, 9) ])
+
+        ingestAndEmitCoverage
+            db
+            repoRoot
+            "run-1"
+            (Some sharedOut)
+            [ coverageInput "RatchetTests" true ratchetRaw
+              coverageInput "RuntimeTests" false impactRaw ]
+        |> ignore
+
+        let emitted = File.ReadAllText(sharedOut)
+        test <@ emitted.Contains("number=\"10\"") @>
+        test <@ not (emitted.Contains("number=\"11\"")) @>
+
+        test <@ db.GetRuntimeCoverageProjects([ "src/Foo.fs" ]) = [ "RatchetTests"; "RuntimeTests" ] @>)
+
+[<Fact>]
+let ``AUTOMATION-315 coverage receipt removes stale artifact and accepts only a newly written successful result`` () =
+    withTempDir "cov-fresh-receipt" (fun dir ->
+        let rawPath = Path.Combine(dir, BaselineName)
+        File.WriteAllText(rawPath, "stale")
+
+        let launch = prepareCoverageArtifact "RuntimeTests" true false rawPath
+        test <@ not (File.Exists rawPath) @>
+        test <@ coverageInputFromReceipt true launch = None @>
+
+        File.WriteAllText(rawPath, "fresh")
+
+        match coverageInputFromReceipt true launch with
+        | Some input ->
+            test <@ input.Project = "RuntimeTests" @>
+            test <@ input.RawPath = rawPath @>
+            test <@ input.Scope = CoverageRunScope.Full @>
+        | None -> Assert.Fail "a successful run that replaced its raw artifact must yield a receipt")
+
+[<Fact>]
+let ``AUTOMATION-315 an unreadable old artifact becoming readable is not a new-run receipt`` () =
+    let launch =
+        { Project = "RuntimeTests"
+          IncludeInRatchet = false
+          RawPath = "/tmp/runtime.xml"
+          Scope = CoverageRunScope.Full
+          Before = CoverageArtifactState.Unreadable "access denied"
+          DeletionProven = false }
+
+    let after =
+        CoverageArtifactState.Fingerprinted
+            { Length = 42L
+              LastWriteUtc = DateTime.UnixEpoch
+              Sha256 = "ABC" }
+
+    test <@ coverageInputFromObservedState true launch after = None @>
+
+[<Fact>]
+let ``AUTOMATION-315 failed or filtered launches cannot replace a complete runtime baseline`` () =
+    withTempDir "cov-receipt-scope" (fun dir ->
+        let fullPath = Path.Combine(dir, BaselineName)
+        let fullLaunch = prepareCoverageArtifact "RuntimeTests" true false fullPath
+        File.WriteAllText(fullPath, "fresh-full")
+        test <@ coverageInputFromReceipt false fullLaunch = None @>
+
+        let partialPath = Path.Combine(dir, PartialName)
+        let partialLaunch = prepareCoverageArtifact "RuntimeTests" true true partialPath
+        File.WriteAllText(partialPath, "fresh-partial")
+
+        match coverageInputFromReceipt true partialLaunch with
+        | Some input -> test <@ input.Scope = CoverageRunScope.Partial @>
+        | None -> Assert.Fail "a successful filtered run must yield a partial receipt")
+
+[<Fact>]
+let ``AUTOMATION-315 malformed full receipt invalidates prior runtime evidence and denies green`` () =
+    withTempDir "cov-malformed-full" (fun dir ->
+        let dbPath = Path.Combine(dir, "test.db")
+        let db = Database.create dbPath
+        let staleBefore = DateTimeOffset.UtcNow.AddMinutes(-1.0)
+        db.ReplaceRuntimeCoverage("RuntimeTests", "prior-green", [ "src/Prior.fs" ])
+
+        let priorAvailability =
+            db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore)
+
+        test <@ priorAvailability = [ ("RuntimeTests", TestPrune.Domain.Current) ] @>
+
+        let malformed = Path.Combine(dir, BaselineName)
+        File.WriteAllText(malformed, "<coverage><not-closed>")
+
+        let outcome =
+            ingestAndEmitCoverage
+                db
+                dir
+                "new-run"
+                None
+                [ { coverageInput "RuntimeTests" false malformed with
+                      Scope = CoverageRunScope.Full } ]
+
+        let failures = coverageIngestFailures outcome
+        test <@ failures |> List.map _.Project = [ "RuntimeTests" ] @>
+
+        let invalidatedAvailability =
+            db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore)
+
+        test <@ invalidatedAvailability = [ ("RuntimeTests", TestPrune.Domain.Missing) ] @>
+        test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+
+        let markerDirectory = Path.Combine(dir, "recovery-marker-is-a-directory")
+        Directory.CreateDirectory markerDirectory |> ignore
+
+        Assert.ThrowsAny<exn>(fun () ->
+            armRuntimeCoverageUnknownDebt ignore markerDirectory (List.exactlyOne failures))
+        |> ignore
+
+        // Marker persistence is an additional live-process signal. The database
+        // invalidation is already committed and survives independently when that
+        // write fails or the process restarts immediately afterward.
+        let availabilityAfterMarkerFailure =
+            db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore)
+
+        test <@ availabilityAfterMarkerFailure = [ ("RuntimeTests", TestPrune.Domain.Missing) ] @>
+
+        let reopened = Database.create dbPath
+
+        let reopenedAvailability =
+            reopened.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore)
+
+        test <@ reopenedAvailability = [ ("RuntimeTests", TestPrune.Domain.Missing) ] @>
+
+        test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+
+        let marker = runtimeCoverageRecoveryPath dir
+        let mutable unknownDebt = false
+
+        armRuntimeCoverageUnknownDebt (fun () -> unknownDebt <- true) marker (List.exactlyOne failures)
+
+        test <@ unknownDebt @>
+        test <@ File.Exists marker @>
+
+        let results =
+            Map.ofList [ "RuntimeTests", TestsPassed("", false, TimeSpan.FromSeconds 1.0) ]
+            |> applyCoverageIngestFailures failures
+
+        test <@ results.["RuntimeTests"] |> TestResult.isErrored @>)
 
 [<Fact>]
 let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an existing emitted cobertura`` () =
@@ -3371,13 +3824,15 @@ let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an exis
         let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
         File.WriteAllText(rawPath, "<?xml version=\"1.0\"?><coverage><packages /></coverage>")
 
-        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+        ingestAndEmitCoverage db repoRoot "run-1" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+        |> ignore
 
         // The empty raw still counts as an input on disk, so the DB is emitted — but
         // nothing was ingested, so no symbol coverage may have been recorded. The run
         // must never LOWER an existing good emission.
         let summary = TestPrune.Coverage.fileCoverageSummary db "src/Foo.fs"
-        test <@ summary.Covered = 0 @>)
+        test <@ summary.Covered = 0 @>
+        test <@ File.ReadAllText sharedOut = priorGood @>)
 
 [<Fact>]
 let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura untouched`` () =
@@ -3394,7 +3849,8 @@ let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura unto
         // A raw path that does not exist on disk — filtered out, no emit.
         let missingRaw = Path.Combine(dir, "coverage.baseline.cobertura.xml")
 
-        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ missingRaw ]
+        ingestAndEmitCoverage db repoRoot "run-1" (Some sharedOut) [ coverageInput "Tests" true missingRaw ]
+        |> ignore
 
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
@@ -3423,7 +3879,8 @@ let ``ingestAndEmitCoverage does NOT clobber prior coverage when the symbol grap
         let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
         File.WriteAllText(rawPath, mkCobertura "Intelligence.dll" absFile [ (10, 3); (11, 3); (12, 1) ])
 
-        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+        ingestAndEmitCoverage db repoRoot "run-1" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+        |> ignore
 
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
@@ -3439,7 +3896,8 @@ let ``ingestAndEmitCoverage emits when the symbol graph maps the bulk of lines (
         let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
         File.WriteAllText(rawPath, mkCobertura "Intelligence.dll" absFile [ (10, 3); (11, 1); (12, 0) ])
 
-        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+        ingestAndEmitCoverage db repoRoot "run-1" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+        |> ignore
 
         test <@ File.Exists sharedOut @>
         let xml = File.ReadAllText sharedOut
@@ -10249,14 +10707,15 @@ let ``the would-have-run selection drops the FULL-SUITE widening and keeps every
     // the sample is worthless.
     let symbolAffected = Map.ofList [ "Alpha.Tests", [ "Alpha.OneTests" ] ]
 
-    let selection = wouldHaveRunSelection a259Projects symbolAffected Set.empty false
+    let selection =
+        wouldHaveRunSelection a259Projects symbolAffected Set.empty Set.empty false
 
     test <@ selection = Map.ofList [ "Alpha.Tests", ProjectClasses(Set.ofList [ "Alpha.OneTests" ]) ] @>
 
     // The coarse fallback for unanalysable files (AUTOMATION-113) fires in the inner loop
     // too, so it SURVIVES the projection — as a whole-project run, which is what it is.
     let withCoarse =
-        wouldHaveRunSelection a259Projects symbolAffected (Set.ofList [ "Beta.Tests" ]) false
+        wouldHaveRunSelection a259Projects symbolAffected (Set.ofList [ "Beta.Tests" ]) Set.empty false
 
     test <@ Map.tryFind "Beta.Tests" withCoarse = Some ProjectInFull @>
     test <@ Map.tryFind "Alpha.Tests" withCoarse = Some(ProjectClasses(Set.ofList [ "Alpha.OneTests" ])) @>
@@ -10265,10 +10724,31 @@ let ``the would-have-run selection drops the FULL-SUITE widening and keeps every
     // An UNREADABLE pending-verification ledger (AUTOMATION-150) widens `check` to the
     // whole suite as well, and must therefore widen the projection.
     let withUnreadableLedger =
-        wouldHaveRunSelection a259Projects symbolAffected Set.empty true
+        wouldHaveRunSelection a259Projects symbolAffected Set.empty Set.empty true
 
     test <@ withUnreadableLedger |> Map.forall (fun _ sel -> sel = ProjectInFull) @>
     test <@ withUnreadableLedger.Count = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``the would-have-run selection retains a runtime-only project's reach`` () =
+    // There is deliberately no AST-selected class for Beta. Runtime coverage is
+    // the only reason check would launch it, and it must launch the whole project.
+    // Dropping this input makes the same-tree confirm comparison falsely report
+    // Beta's red as a selector miss.
+    let selection =
+        wouldHaveRunSelection
+            a259Projects
+            (Map.ofList [ "Alpha.Tests", [ "Alpha.OneTests" ] ])
+            Set.empty
+            (Set.ofList [ "Beta.Tests" ])
+            false
+
+    test <@ Map.tryFind "Beta.Tests" selection = Some ProjectInFull @>
+
+    let reach =
+        CheckReach.classify (Some selection) [ a259Failure "Beta.Tests" (Some "Beta.RuntimeOnlyTests") ]
+
+    test <@ reach = ReachedAFailure [ "Beta.Tests" ] @>
 
 [<Fact(Timeout = 15000)>]
 let ``scopeOfSelection describes what check would have covered, and never rounds up`` () =

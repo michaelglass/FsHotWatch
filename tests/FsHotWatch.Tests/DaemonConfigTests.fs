@@ -931,6 +931,27 @@ let ``parseConfig test project with coverage false`` () =
     let config = parseConfig json defaults
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Coverage = false @>
+    test <@ p.CollectCoverage = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-315 coverage can collect for impact without joining the ratchet`` () =
+    let json =
+        """{
+        "tests": {
+            "projects": [{
+                "project": "RuntimeOnlyTests",
+                "coverage": {
+                    "enabled": false,
+                    "collectForImpact": true
+                }
+            }]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.CollectCoverage = true @>
+    test <@ p.Coverage = false @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig test project without coverage defaults to true`` () =
@@ -946,6 +967,7 @@ let ``parseConfig test project without coverage defaults to true`` () =
     let config = parseConfig json defaults
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Coverage = true @>
+    test <@ p.CollectCoverage = true @>
     test <@ p.CoverageArgsTemplate = None @>
 
 [<Fact(Timeout = 15000)>]

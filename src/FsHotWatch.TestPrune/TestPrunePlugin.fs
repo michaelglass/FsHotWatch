@@ -3,6 +3,7 @@ module FsHotWatch.TestPrune.TestPrunePlugin
 open System
 open System.Diagnostics
 open System.IO
+open System.Security.Cryptography
 open System.Text.Json
 open System.Threading
 open FSharp.Compiler.Diagnostics
@@ -17,6 +18,7 @@ open FsHotWatch.StringHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
+open TestPrune.Domain
 open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
@@ -111,8 +113,123 @@ type CoveragePaths =
         /// for every project by DaemonConfig (the DB unions coverage across them),
         /// so the daemon writes one run-wide artifact, not one per project.
         Cobertura: string
+        /// Whether this project's measurements are eligible for the consumer
+        /// coverage ratchet. Impact collection is independent: a project may
+        /// populate TestPrune while remaining outside the consumer's gate.
+        IncludeInRatchet: bool
         ArgsTemplate: string
     }
+
+/// One raw coverage artifact produced by one test project. Keeping the project
+/// beside the path prevents the collection boundary from erasing provenance
+/// before TestPrune gains a project-aware coverage ingest API.
+type CoverageInput =
+    { Project: string
+      RawPath: string
+      IncludeInRatchet: bool
+      Scope: CoverageRunScope }
+
+let coverageInput (project: string) (includeInRatchet: bool) (rawPath: string) : CoverageInput =
+    { Project = project
+      RawPath = rawPath
+      IncludeInRatchet = includeInRatchet
+      Scope =
+        if Path.GetFileName(rawPath) = PartialName then
+            CoverageRunScope.Partial
+        else
+            CoverageRunScope.Full }
+
+type CoverageArtifactFingerprint =
+    { Length: int64
+      LastWriteUtc: DateTime
+      Sha256: string }
+
+type CoverageArtifactState =
+    | Missing
+    | Fingerprinted of CoverageArtifactFingerprint
+    | Unreadable of reason: string
+
+type CoverageArtifactLaunch =
+    { Project: string
+      IncludeInRatchet: bool
+      RawPath: string
+      Scope: CoverageRunScope
+      Before: CoverageArtifactState
+      DeletionProven: bool }
+
+let private coverageArtifactState (path: string) : CoverageArtifactState =
+    try
+        File.GetAttributes path |> ignore
+        use stream = File.OpenRead path
+
+        Fingerprinted
+            { Length = stream.Length
+              LastWriteUtc = File.GetLastWriteTimeUtc path
+              Sha256 = Convert.ToHexString(SHA256.HashData stream) }
+    with
+    | :? FileNotFoundException
+    | :? DirectoryNotFoundException -> Missing
+    | :? IOException as ex -> Unreadable ex.Message
+    | :? UnauthorizedAccessException as ex -> Unreadable ex.Message
+
+/// Remove the prior runner artifact before launch. If removal is refused, retain
+/// a content fingerprint so a stable stale file can never masquerade as this run's
+/// receipt merely because it still exists afterward.
+let internal prepareCoverageArtifact
+    (project: string)
+    (includeInRatchet: bool)
+    (wasFiltered: bool)
+    (rawPath: string)
+    : CoverageArtifactLaunch =
+    let before = coverageArtifactState rawPath
+
+    try
+        File.Delete rawPath
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> ()
+
+    let afterDelete = coverageArtifactState rawPath
+
+    { Project = project
+      IncludeInRatchet = includeInRatchet
+      RawPath = rawPath
+      Scope =
+        if wasFiltered then
+            CoverageRunScope.Partial
+        else
+            CoverageRunScope.Full
+      Before = before
+      DeletionProven = afterDelete = Missing }
+
+let internal coverageInputFromObservedState
+    (verifiedGreen: bool)
+    (launch: CoverageArtifactLaunch)
+    (after: CoverageArtifactState)
+    : CoverageInput option =
+    let isNewArtifact =
+        match launch.Before, after with
+        | _, Missing
+        | _, Unreadable _ -> false
+        | Unreadable _, Fingerprinted _ -> launch.DeletionProven
+        | Missing, Fingerprinted _ -> true
+        | Fingerprinted before, Fingerprinted after -> launch.DeletionProven || before <> after
+
+    if verifiedGreen && isNewArtifact then
+        Some
+            { Project = launch.Project
+              RawPath = launch.RawPath
+              IncludeInRatchet = launch.IncludeInRatchet
+              Scope = launch.Scope }
+    else
+        None
+
+/// Turn a launch into an ingest receipt only when the runner finished green and
+/// wrote a new artifact. Full receipts are therefore trustworthy replacement
+/// baselines; failed, aborted, timed-out and stable-artifact launches contribute
+/// no runtime evidence.
+let internal coverageInputFromReceipt (verifiedGreen: bool) (launch: CoverageArtifactLaunch) : CoverageInput option =
+    coverageInputFromObservedState verifiedGreen launch (coverageArtifactState launch.RawPath)
 
 /// Default coverage args template for Microsoft Testing Platform hosts
 /// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
@@ -155,28 +272,90 @@ let internal symbolGraphLooksIncomplete (ingested: int) (skipped: int) : bool =
 /// (symbol-relative, max-merged across all test projects), then emit the FULL
 /// DB ONCE to a single shared cobertura file that downstream gating reads.
 ///
-/// `inputs` is the list of `(rawCoberturaPath, sharedCoberturaOutputPath)`
-/// tuples collected from each project that ran with coverage; the output path
-/// is identical for every project (DaemonConfig points every project at one
-/// shared file), so emitting once at the end is the single source of truth.
+/// `inputs` retains the producing test project and whether that project belongs
+/// to the consumer ratchet. TestPrune.Core 7.0.1 still stores coverage without
+/// project identity; keeping it here makes the lossy compatibility boundary
+/// explicit until Core offers project-aware ingest and emission.
 ///
 /// Invariants:
 /// - An empty / aborted raw cobertura parses to zero rows → ingests nothing →
 ///   cannot clobber the DB or the emitted file.
 /// - If NO raw inputs exist on disk, the shared cobertura is NOT written, so a
 ///   prior good emission is never overwritten with nothing.
+type CoverageIngestFailure = { Project: string; Reason: string }
+
+type CoverageIngestOutcome =
+    { Failures: CoverageIngestFailure list }
+
+let internal coverageIngestFailures outcome = outcome.Failures
+
+let internal applyCoverageIngestFailures
+    (failures: CoverageIngestFailure list)
+    (results: Map<string, TestResult>)
+    : Map<string, TestResult> =
+    failures
+    |> List.fold
+        (fun current failure ->
+            Map.add
+                failure.Project
+                (TestsErrored $"runtime coverage receipt could not be ingested: %s{failure.Reason}")
+                current)
+        results
+
+let internal armRuntimeCoverageUnknownDebt
+    (setUnknown: unit -> unit)
+    (recoveryPath: string)
+    (failure: CoverageIngestFailure)
+    =
+    let message = $"%s{failure.Project}: %s{failure.Reason}"
+    FsHwPaths.atomicWriteAllText recoveryPath message
+    setUnknown ()
+
 let internal ingestAndEmitCoverage
     (db: Database)
     (repoRoot: string)
+    (runId: string)
     (coverageOutput: string option)
-    (rawPaths: string list)
-    : unit =
-    try
-        let existing = rawPaths |> List.filter File.Exists
+    (inputs: CoverageInput list)
+    : CoverageIngestOutcome =
+    let existing = inputs |> List.filter (fun input -> File.Exists input.RawPath)
 
-        let results =
-            existing
-            |> List.map (fun rawPath -> File.ReadAllText rawPath |> ingestCobertura db (Some repoRoot))
+    let accepted, failures =
+        (([], []), existing)
+        ||> List.fold (fun (accepted, failures) input ->
+            try
+                let xml = File.ReadAllText input.RawPath
+
+                // Runtime selection needs every configured project's provenance,
+                // including projects excluded from the consumer ratchet.
+                ingestRuntimeCoverage db (Some repoRoot) input.Project input.Scope runId xml
+                |> ignore
+
+                let ratchetResult =
+                    if input.IncludeInRatchet then
+                        Some(ingestCobertura db (Some repoRoot) xml)
+                    else
+                        None
+
+                (input, ratchetResult) :: accepted, failures
+            with ex ->
+                let failure =
+                    { Project = input.Project
+                      Reason = $"%s{ex.GetType().Name}: %s{ex.Message}" }
+
+                Logging.error
+                    "test-prune"
+                    $"runtime coverage post-processing failed for %s{input.Project}: %s{failure.Reason}"
+
+                accepted, failure :: failures)
+
+    let ratchetInputs =
+        accepted
+        |> List.choose (fun (input, result) -> result |> Option.map (fun r -> input, r))
+
+    let results = ratchetInputs |> List.map snd
+
+    try
 
         let totalIngested = results |> List.sumBy (fun r -> r.Ingested)
         let totalSkipped = results |> List.sumBy (fun r -> r.Skipped)
@@ -185,9 +364,10 @@ let internal ingestAndEmitCoverage
         // cobertura that DROPS every not-yet-indexed file's coverage, clobbering a prior good
         // emission and failing the ratchet. Skip — the DB persists and max-merges, so a later
         // warm run emits in full.
-        match existing, coverageOutput with
+        match ratchetInputs, coverageOutput with
         | [], _
         | _, None -> ()
+        | _, Some _ when totalIngested + totalSkipped = 0 -> ()
         | _, Some _ when symbolGraphLooksIncomplete totalIngested totalSkipped ->
             Logging.warn
                 "test-prune"
@@ -200,7 +380,9 @@ let internal ingestAndEmitCoverage
 
             File.WriteAllText(out, emitCobertura db)
     with ex ->
-        Logging.error "test-prune" $"coverage post-processing failed: %s{ex.Message}"
+        Logging.error "test-prune" $"coverage emission failed: %s{ex.Message}"
+
+    { Failures = List.rev failures }
 
 /// How fshw obtains the structured pass/fail report a test verdict is derived
 /// from. The report (CTRF) — not the process exit code — is authoritative, but
@@ -385,6 +567,189 @@ type TestConfig =
         ReportVerificationFormat: ReportVerificationFormat
     }
 
+/// Why runtime evidence could not safely exclude a configured project.
+type RuntimeCoverageWideningReason =
+    | MissingBaseline
+    | StaleBaseline of observedAt: DateTimeOffset
+
+type RuntimeCoverageSelection =
+    { ProjectsByFile: Map<string, Set<string>>
+      Widenings: (string * RuntimeCoverageWideningReason) list }
+
+[<CLIMutable>]
+type RuntimeCoverageObligationProjectDto = { Project: string; Generation: int64 }
+
+[<CLIMutable>]
+type RuntimeCoverageObligationDto =
+    { SourceFile: string
+      Projects: RuntimeCoverageObligationProjectDto array }
+
+type RuntimeCoverageObligations = Map<string, Map<string, int64>>
+
+let internal runtimeCoverageObligationsPath repoRoot =
+    Path.Combine(FsHwPaths.root repoRoot, "test-prune", "runtime-coverage-obligations.json")
+
+let internal runtimeCoverageRecoveryPath repoRoot =
+    Path.Combine(FsHwPaths.root repoRoot, "test-prune", "runtime-coverage-obligations.recovery")
+
+let internal loadRuntimeCoverageObligations repoRoot : Result<RuntimeCoverageObligations, string> =
+    let path = runtimeCoverageObligationsPath repoRoot
+
+    if File.Exists(runtimeCoverageRecoveryPath repoRoot) then
+        Error "a prior runtime obligation write did not complete; the debt is unknown"
+    elif not (File.Exists path) then
+        Ok Map.empty
+    else
+        try
+            let rows =
+                JsonSerializer.Deserialize<RuntimeCoverageObligationDto array>(File.ReadAllText path)
+
+            if isNull rows then
+                Error "the runtime coverage obligation ledger is JSON null"
+            else
+                rows
+                |> Array.map (fun row ->
+                    row.SourceFile,
+                    (row.Projects
+                     |> Array.map (fun project -> project.Project, project.Generation)
+                     |> Map.ofArray))
+                |> Map.ofArray
+                |> Ok
+        with ex ->
+            Error $"%s{ex.GetType().Name}: %s{ex.Message}"
+
+let internal saveRuntimeCoverageObligations repoRoot (obligations: RuntimeCoverageObligations) =
+    let rows =
+        obligations
+        |> Map.toArray
+        |> Array.map (fun (file, projects) ->
+            { SourceFile = file
+              Projects =
+                projects
+                |> Map.toArray
+                |> Array.sortBy fst
+                |> Array.map (fun (project, generation) ->
+                    { Project = project
+                      Generation = generation }) })
+
+    FsHwPaths.atomicWriteAllText (runtimeCoverageObligationsPath repoRoot) (JsonSerializer.Serialize rows)
+
+let internal persistRuntimeCoverageObligationsWith
+    (writeRecoveryMarker: unit -> unit)
+    (save: unit -> unit)
+    (clearRecoveryMarker: unit -> unit)
+    : Result<unit, exn> =
+    try
+        writeRecoveryMarker ()
+        save ()
+        clearRecoveryMarker ()
+        Ok()
+    with ex ->
+        Error ex
+
+let internal persistRuntimeCoverageTransitionWith
+    (writeRecoveryMarker: unit -> unit)
+    (save: RuntimeCoverageObligations -> unit)
+    (clearRecoveryMarker: unit -> unit)
+    (current: RuntimeCoverageObligations)
+    (transition: RuntimeCoverageObligations -> RuntimeCoverageObligations)
+    : Result<RuntimeCoverageObligations, RuntimeCoverageObligations * exn> =
+    try
+        // The recovery signal must be durable before the transition is even
+        // computed, let alone accepted in memory. If phase one fails, restart
+        // may only know the prior ledger, so the prior state is the only state
+        // this daemon is allowed to retain.
+        writeRecoveryMarker ()
+        let next = transition current
+        save next
+        clearRecoveryMarker ()
+        Ok next
+    with ex ->
+        Error(current, ex)
+
+let internal mergeRuntimeCoverageObligations
+    (existing: RuntimeCoverageObligations)
+    (incoming: Map<string, Set<string>>)
+    =
+    (existing, incoming)
+    ||> Map.fold (fun acc file projects ->
+        let prior = Map.tryFind file acc |> Option.defaultValue Map.empty
+
+        let next =
+            (prior, projects)
+            ||> Set.fold (fun obligations project ->
+                let generation = Map.tryFind project obligations |> Option.defaultValue 0L
+                Map.add project (generation + 1L) obligations)
+
+        Map.add file next acc)
+
+let internal retireRuntimeCoverageObligations
+    (current: RuntimeCoverageObligations)
+    (launched: RuntimeCoverageObligations)
+    (projectPassed: string -> bool)
+    =
+    (current, launched)
+    ||> Map.fold (fun obligations file launchedProjects ->
+        match Map.tryFind file obligations with
+        | None -> obligations
+        | Some currentProjects ->
+            let remaining =
+                (currentProjects, launchedProjects)
+                ||> Map.fold (fun projects project launchedGeneration ->
+                    match Map.tryFind project projects with
+                    | Some currentGeneration when currentGeneration = launchedGeneration && projectPassed project ->
+                        Map.remove project projects
+                    | _ -> projects)
+
+            if Map.isEmpty remaining then
+                Map.remove file obligations
+            else
+                Map.add file remaining obligations)
+
+let internal pruneRuntimeCoverageObligations (allowedProjects: Set<string>) (obligations: RuntimeCoverageObligations) =
+    obligations
+    |> Map.map (fun _ projects -> projects |> Map.filter (fun project _ -> Set.contains project allowedProjects))
+    |> Map.filter (fun _ projects -> not (Map.isEmpty projects))
+
+/// A complete runtime baseline remains useful across ordinary incremental runs,
+/// but not indefinitely. Missing or older evidence widens to the whole project.
+let internal RuntimeCoverageMaxAge = TimeSpan.FromDays 7.0
+
+let internal selectByRuntimeCoverage
+    (db: Database)
+    (expectedProjects: string list)
+    (changedFiles: string list)
+    (staleBefore: DateTimeOffset)
+    : RuntimeCoverageSelection =
+    let widenings =
+        db.GetRuntimeCoverageAvailability(expectedProjects, staleBefore)
+        |> List.choose (fun (project, availability) ->
+            match availability with
+            | RuntimeCoverageAvailability.Current -> None
+            | RuntimeCoverageAvailability.Missing -> Some(project, MissingBaseline)
+            | RuntimeCoverageAvailability.Stale observedAt -> Some(project, StaleBaseline observedAt))
+
+    let expectedProjectSet = Set.ofList expectedProjects
+    let widenedProjects = widenings |> List.map fst |> Set.ofList
+
+    let currentByFile =
+        db.GetRuntimeCoverageAttributions(changedFiles)
+        |> List.filter (fun (_, project) -> Set.contains project expectedProjectSet)
+        |> List.groupBy fst
+        |> List.map (fun (file, edges) -> file, edges |> List.map snd |> Set.ofList)
+        |> Map.ofList
+
+    let projectsByFile =
+        changedFiles
+        |> List.distinct
+        |> List.map (fun file ->
+            let current = Map.tryFind file currentByFile |> Option.defaultValue Set.empty
+            file, Set.union current widenedProjects)
+        |> Map.ofList
+
+    { ProjectsByFile = projectsByFile
+      Widenings = widenings }
+
 type AffectedTestsState =
     | NotYetAnalyzed
     | Analyzed of TestMethodInfo list
@@ -531,6 +896,10 @@ type TestRunInputs =
         /// Prior reds captured at launch. They are quarantined into this run's
         /// selection even when the current graph reaches different tests.
         OutstandingFailures: OutstandingFailure list
+        /// Source files whose symbols changed in this launch snapshot. Runtime
+        /// project attribution is file-granular, so it consumes this alongside
+        /// the symbol-precise AST selection.
+        ChangedFiles: string list
     }
 
 module TestRunInputs =
@@ -540,7 +909,8 @@ module TestRunInputs =
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles
-          OutstandingFailures = state.OutstandingFailures }
+          OutstandingFailures = state.OutstandingFailures
+          ChangedFiles = state.ChangedFiles }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -569,6 +939,10 @@ type TestRunLaunch =
     {
         Symbols: Set<string>
         CoveringProjectsBySymbol: Map<string, Set<string>>
+        /// Durable file-granular runtime obligations launched independently of
+        /// the symbol queue. Each project runs unfiltered; only those exact file
+        /// obligations may be retired by its green result.
+        RuntimeProjectsByFile: RuntimeCoverageObligations
         Selection: Map<string, ProjectSelection>
         /// AUTOMATION-259. The selection this run would have been launched against had
         /// `confirm` not widened the scope to full — i.e. what `check` would have run over
@@ -1256,13 +1630,16 @@ let internal wouldHaveRunSelection
     (configs: TestConfig list)
     (symbolAffectedByProject: Map<string, string list>)
     (coarseWidened: Set<string>)
+    (runtimeCoverageProjects: Set<string>)
     (ledgerUnreadable: bool)
     : Map<string, ProjectSelection> =
+    let impactWidened = Set.union coarseWidened runtimeCoverageProjects
+
     let checkForceRunProjects =
         if ledgerUnreadable then
-            Set.union coarseWidened (fullSuiteProjects configs)
+            Set.union impactWidened (fullSuiteProjects configs)
         else
-            coarseWidened
+            impactWidened
 
     checkForceRunProjects
     |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
@@ -2219,6 +2596,7 @@ let private executeTests
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
+    (coverageIngestFailed: CoverageIngestFailure -> unit)
     (afterRun: (TestResults -> unit) option)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
@@ -2302,13 +2680,13 @@ let private executeTests
         let accumulatorLock = obj ()
 
         // Raw-cobertura ingest inputs collected across the parallel per-project
-        // runs. Each entry is (rawCoberturaPathThisProjectWrote,
-        // sharedCoberturaOutputPath). Ingest+emit runs SERIALLY after
+        // runs. Each entry retains the producing project and ratchet intent.
+        // Ingest+emit runs SERIALLY after
         // Async.Parallel completes so concurrent group completions never race on
         // the DB write or the single shared output file.
-        let mutable coverageRawPaths: string list = []
-        // Every project's CoveragePaths.Cobertura is the same run-wide shared path;
-        // captured once so the DB is emitted to a single file after the run.
+        let mutable coverageInputs: CoverageInput list = []
+        // Every ratchet project's CoveragePaths.Cobertura is the same run-wide
+        // shared path; collect-only projects must not create a consumer artifact.
         let mutable coverageOutput: string option = None
         let coverageRawPathsLock = obj ()
 
@@ -2469,9 +2847,20 @@ let private executeTests
                             let projectCoveragePaths =
                                 coveragePaths |> Option.bind (fun fn -> fn config.Project)
 
-                            match projectCoveragePaths with
-                            | Some paths -> extraArgs.Add(buildCoverageArgs paths wasFiltered)
-                            | None -> ()
+                            let projectCoverageLaunch =
+                                projectCoveragePaths
+                                |> Option.map (fun paths ->
+                                    let rawPath = if wasFiltered then paths.Partial else paths.Baseline
+
+                                    let launch =
+                                        prepareCoverageArtifact
+                                            config.Project
+                                            paths.IncludeInRatchet
+                                            wasFiltered
+                                            rawPath
+
+                                    extraArgs.Add(buildCoverageArgs paths wasFiltered)
+                                    launch)
 
                             // xUnit.v3's runner supports `--report-ctrf`, which fshw
                             // reads back as the AUTHORITATIVE pass/fail verdict (and for
@@ -2763,13 +3152,17 @@ let private executeTests
                             // shared-file write would race). A run that never executed
                             // (apphost missing) contributes NO input, so a partial file
                             // cannot lower coverage.
-                            match projectCoveragePaths with
-                            | Some paths when not apphostMissing ->
-                                let rawPath = if wasFiltered then paths.Partial else paths.Baseline
-
+                            match
+                                projectCoverageLaunch
+                                |> Option.bind (coverageInputFromReceipt (TestResult.verifiedGreen result))
+                            with
+                            | Some input ->
                                 lock coverageRawPathsLock (fun () ->
-                                    coverageRawPaths <- rawPath :: coverageRawPaths
-                                    coverageOutput <- Some paths.Cobertura)
+                                    coverageInputs <- input :: coverageInputs
+
+                                    match projectCoveragePaths with
+                                    | Some paths when input.IncludeInRatchet -> coverageOutput <- Some paths.Cobertura
+                                    | _ -> ())
                             | _ -> ()
 
                             // Per-test flakiness tracking: reuse the report content
@@ -2832,10 +3225,19 @@ let private executeTests
         // symbol-relative) and emit the FULL DB ONCE to the single shared
         // cobertura file. Done here, outside Async.Parallel, so there is no
         // DB-write contention and no file-write race on the shared output.
-        let collectedRawPaths, sharedOutput =
-            lock coverageRawPathsLock (fun () -> List.rev coverageRawPaths, coverageOutput)
+        let collectedInputs, sharedOutput =
+            lock coverageRawPathsLock (fun () -> List.rev coverageInputs, coverageOutput)
 
-        ingestAndEmitCoverage db repoRoot sharedOutput collectedRawPaths
+        let coverageOutcome =
+            ingestAndEmitCoverage db repoRoot (runId.ToString("N")) sharedOutput collectedInputs
+
+        let coverageFailures = coverageIngestFailures coverageOutcome
+
+        if not coverageFailures.IsEmpty then
+            for failure in coverageFailures do
+                coverageIngestFailed failure
+
+            lock accumulatorLock (fun () -> cumulative <- applyCoverageIngestFailures coverageFailures cumulative)
 
         // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
         // with every project's records — not one per project, and not racing itself
@@ -3323,6 +3725,54 @@ let create
     /// Cleared only by a full-suite run that passed EVERY runnable project.
     let mutable ledgerRecoveryOutstandingRef = ledgerUnreadableReason.IsSome
 
+    let loadedRuntimeObligations = loadRuntimeCoverageObligations repoRoot
+
+    let mutable runtimeObligationsRef =
+        match loadedRuntimeObligations with
+        | Ok obligations -> obligations
+        | Error reason ->
+            ledgerRecoveryOutstandingRef <- true
+
+            Logging.warn
+                "test-prune"
+                $"the runtime coverage obligation ledger could not be read: %s{reason}. Widening to the full suite until a verified full run recovers the unknown debt."
+
+            Map.empty
+
+    let persistRuntimeObligations transition =
+        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
+            match
+                persistRuntimeCoverageTransitionWith
+                    (fun () ->
+                        FsHwPaths.atomicWriteAllText
+                            (runtimeCoverageRecoveryPath repoRoot)
+                            "runtime obligation write in progress")
+                    (saveRuntimeCoverageObligations repoRoot)
+                    (fun () -> File.Delete(runtimeCoverageRecoveryPath repoRoot))
+                    runtimeObligationsRef
+                    transition
+            with
+            | Ok obligations -> runtimeObligationsRef <- obligations
+            | Error(_, ex) ->
+                Volatile.Write(&ledgerRecoveryOutstandingRef, true)
+
+                Logging.warn
+                    "test-prune"
+                    $"failed to durably transition runtime coverage obligations: %s{ex.Message}; the transition was not accepted and every run widens to the full suite"
+
+    let coverageIngestFailed failure =
+        try
+            armRuntimeCoverageUnknownDebt
+                (fun () -> Volatile.Write(&ledgerRecoveryOutstandingRef, true))
+                (runtimeCoverageRecoveryPath repoRoot)
+                failure
+        with ex ->
+            Volatile.Write(&ledgerRecoveryOutstandingRef, true)
+
+            Logging.error
+                "test-prune"
+                $"failed to durably record unknown runtime coverage debt for %s{failure.Project}: %s{ex.Message}"
+
     /// AUTOMATION-275 — how many CONSECUTIVE flush cycles each currently-queued symbol
     /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
     /// (see `isPoisonSuspect`).
@@ -3349,6 +3799,7 @@ let create
     /// — an empty queue we could not read is not an empty queue (AUTOMATION-150).
     let nothingOwed () =
         Set.isEmpty pendingQueueRef
+        && Map.isEmpty runtimeObligationsRef
         && not (Volatile.Read(&ledgerRecoveryOutstandingRef))
 
     /// What a drain is FOR, in words. An unreadable ledger owes a debt whose size
@@ -3471,6 +3922,32 @@ let create
         | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
         | None -> Set.empty
 
+    let expectedRuntimeCoverageProjects =
+        match testConfigs, coveragePaths with
+        | Some configs, Some pathsForProject ->
+            configs
+            |> List.choose (fun config ->
+                if pathsForProject config.Project |> Option.isSome then
+                    Some config.Project
+                else
+                    None)
+        | _ -> []
+
+    let allowedRuntimeProjects = Set.ofList expectedRuntimeCoverageProjects
+
+    let prunedRuntimeObligations =
+        pruneRuntimeCoverageObligations allowedRuntimeProjects runtimeObligationsRef
+
+    if prunedRuntimeObligations <> runtimeObligationsRef then
+        persistRuntimeObligations (fun _ -> prunedRuntimeObligations)
+
+    let runtimeCoverageSelection changedFiles =
+        selectByRuntimeCoverage
+            db
+            expectedRuntimeCoverageProjects
+            changedFiles
+            (DateTimeOffset.UtcNow - RuntimeCoverageMaxAge)
+
     /// Tests covering `symbol` that this daemon can actually run. Empty ⇒ nothing
     /// runnable can ever verify it. When analysis-only (no test configs at all), the
     /// runnable filter is not applied — that mode produces no test verdict, so the old
@@ -3554,6 +4031,20 @@ let create
         let symbols =
             Set.union pendingQueueRef (Set.ofList flushedState.ChangedSymbols) |> Set.toList
 
+        let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
+
+        if not (Map.isEmpty runtimeSelection.ProjectsByFile) then
+            persistRuntimeObligations (fun current ->
+                mergeRuntimeCoverageObligations current runtimeSelection.ProjectsByFile)
+
+            for KeyValue(file, projects) in runtimeSelection.ProjectsByFile do
+                if not (Set.isEmpty projects) then
+                    let projectNames = projects |> Set.toList |> String.concat ", "
+
+                    Logging.info
+                        "test-prune"
+                        $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
+
         let affectedTests =
             if symbols.IsEmpty then
                 []
@@ -3571,6 +4062,18 @@ let create
                             ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
 
                 let affected = queryRunnable symbols
+
+                for project, reason in runtimeSelection.Widenings do
+                    match reason with
+                    | MissingBaseline ->
+                        Logging.warn
+                            "test-prune"
+                            $"runtime coverage: project '%s{project}' has no complete baseline; widening to every test in that configured project"
+                    | StaleBaseline observedAt ->
+                        Logging.warn
+                            "test-prune"
+                            $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
+
                 let sortedSeeds = List.sort symbols
 
                 // Count the INPUT explicitly, not just the output. `symbols` is the
@@ -3921,8 +4424,14 @@ let create
             // diagnostics (AUTOMATION-125).
             let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
 
+            let launchedRuntimeObligations = runtimeObligationsRef
+
+            let runtimeForceProjects =
+                launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
+
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
+                let widened = Set.union widened runtimeForceProjects
 
                 if scopeIsFullSuite || ledgerUnreadable then
                     Set.union widened (fullSuiteProjects configs)
@@ -4052,12 +4561,14 @@ let create
                             configs
                             quarantinedAffectedByProject
                             (coarseFallbackProjects configs unanalyzablePaths fanoutProjects)
+                            runtimeForceProjects
                             ledgerUnreadable
                         |> Some
 
                 let launch =
                     { Symbols = launchedSymbols
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
+                      RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
                       WouldHaveRun = wouldHaveRun }
 
@@ -4188,6 +4699,7 @@ let create
                             repoRoot
                             beforeRun
                             coveragePaths
+                            coverageIngestFailed
                             afterRun
                             configs
                             affectedByProject
@@ -4220,6 +4732,7 @@ let create
                 let launch =
                     { Symbols = launchedSymbols
                       CoveringProjectsBySymbol = Map.empty
+                      RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
                       WouldHaveRun = None }
 
@@ -4260,6 +4773,7 @@ let create
         let commandLaunch: TestRunLaunch =
             { Symbols = Set.empty
               CoveringProjectsBySymbol = Map.empty
+              RuntimeProjectsByFile = Map.empty
               Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
               // A FORCE run has no impact selection behind it — nothing was widened past,
               // so there is no `check` reading to project (AUTOMATION-259). This is the
@@ -4284,6 +4798,7 @@ let create
                             repoRoot
                             beforeRun
                             coveragePaths
+                            coverageIngestFailed
                             afterRun
                             configs
                             Map.empty
@@ -4971,7 +5486,9 @@ let create
                             // Comment-only changes produce the same symbol hashes, so they
                             // should not trigger extension-based tests (e.g. Falco routes).
                             let newChangedFiles =
-                                if not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath) then
+                                let runtimeRelevantChange = not changedNames.IsEmpty || fileAnalysis.Symbols.IsEmpty
+
+                                if runtimeRelevantChange && not (state.ChangedFiles |> List.contains relPath) then
                                     relPath :: state.ChangedFiles
                                 else
                                     state.ChangedFiles
@@ -5491,6 +6008,18 @@ let create
 
                         commitPending committedSymbols
 
+                    if not aborted && not (Map.isEmpty launch.RuntimeProjectsByFile) then
+                        for KeyValue(file, launchedProjects) in launch.RuntimeProjectsByFile do
+                            let passed = launchedProjects |> Map.keys |> Seq.filter projectPassed |> Set.ofSeq
+
+                            if not (Set.isEmpty passed) then
+                                let projectNames = passed |> Set.toList |> String.concat ", "
+
+                                Logging.info "test-prune" $"runtime coverage verified %s{file} by %s{projectNames}"
+
+                        persistRuntimeObligations (fun current ->
+                            retireRuntimeCoverageObligations current launch.RuntimeProjectsByFile projectPassed)
+
                     // AUTOMATION-150 — discharge an UNREADABLE ledger's debt.
                     //
                     // The debt is owed in FULL, because its membership is unknown: the only
@@ -5524,6 +6053,7 @@ let create
                     then
                         Volatile.Write(&ledgerRecoveryOutstandingRef, false)
                         persistQueue " after recovering an unreadable ledger"
+                        persistRuntimeObligations (fun _ -> Map.empty)
 
                         Logging.info
                             "test-prune"

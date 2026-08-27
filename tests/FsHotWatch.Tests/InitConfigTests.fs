@@ -298,6 +298,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             Environment = []
                             FilterTemplate = None
                             ClassJoin = " "
+                            CollectCoverage = true
                             Coverage = true
                             CoverageArgsTemplate = None
                             TimeoutSec = None
