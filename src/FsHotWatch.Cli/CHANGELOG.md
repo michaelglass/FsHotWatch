@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat(AUTOMATION-315): `tests.projects[].coverage` now accepts independent
+  `enabled` and `collectForImpact` booleans. This lets integration projects feed
+  project-attributed runtime impact selection without joining the consumer
+  coverage ratchet. Missing or seven-day-stale complete baselines widen to the
+  whole configured project and name the reason.
+
 ## 0.14.0-alpha.31 - 2026-08-29
 
 - Fix: satisfy analyzer in A67 quarantine regression
