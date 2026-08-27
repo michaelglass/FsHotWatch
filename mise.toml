@@ -149,8 +149,27 @@ description = "Check if docs/ is in sync with READMEs"
 run = "dotnet tool run syncdocs check"
 
 [tasks.release]
-description = "Tag a release based on API changes"
-run = "dotnet tool run fssemantictagger release"
+description = "Release dependency packages before the CLI that bundles them"
+# FsHotWatch.Cli has a ProjectReference to core and every plugin below. The tagger's
+# NuGet poll is best-effort (its documented timeout still exits 0), so each scoped
+# dependency level is followed by fail-closed exact-version restore barriers. The CLI tag
+# therefore cannot race publication of the dependency versions its nuspec names. An
+# unchanged lane probes its already-published current version. Keep the CLI last, and
+# do not collapse this to one unscoped invocation: tag workflows are independent.
+run = """
+dotnet tool run fssemantictagger release --only FsHotWatch
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch src/FsHotWatch/FsHotWatch.fsproj
+dotnet tool run fssemantictagger release --only FsHotWatch.TestPrune,FsHotWatch.Analyzers,FsHotWatch.Lint,FsHotWatch.Fantomas,FsHotWatch.Build,FsHotWatch.FileCommand,FsHotWatch.Coverage
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.TestPrune src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Analyzers src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Lint src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Fantomas src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Build src/FsHotWatch.Build/FsHotWatch.Build.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.FileCommand src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Coverage src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj
+dotnet tool run fssemantictagger release --only FsHotWatch.Cli
+dotnet fsi scripts/wait-for-nuget.fsx -- FsHotWatch.Cli src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
+"""
 # `check-msbuild-deps` on the RELEASE path, not just the `ci` one (AUTOMATION-290).
 # The first attempt at this guard hung it off `ci` alone, and `ci` is a task a human
 # runs — so the one moment it existed to protect, cutting a tag, never invoked it. mise
@@ -162,6 +181,8 @@ depends = ["restore", "check-msbuild-deps"]
 [tasks.release-dry-run]
 description = "Preview a release without mutating (no tag, no publish)"
 run = "dotnet tool run fssemantictagger release --dry-run"
+# Deliberately one unscoped preview: it reports the exact complete set of versions the
+# ordered release above will emit without introducing publication waits or mutations.
 # Same dependency as `release`: a dry run that skips a gate the real run applies is a
 # preview of a different release.
 depends = ["restore", "check-msbuild-deps"]
