@@ -352,42 +352,60 @@ let rec unwrapIpcException (ex: exn) : exn =
     | :? AggregateException as agg when agg.InnerException <> null -> unwrapIpcException agg.InnerException
     | _ -> ex
 
-/// The corrupted-pipe fault family. StreamJsonRpc reads a Content-Length header then
-/// allocates a buffer of that size; garbage framing (commonly two daemons sharing the
-/// same pipe, or a leaky daemon emitting malformed frames) makes the length nonsensical
-/// and surfaces as either `OutOfMemoryException` (the buffer alloc — misleading, the
-/// machine isn't out of memory) or `OverflowException` (Content-Length overflowing Int32
-/// arithmetic — observed in production, fshw 0.10.0-stresstest4, on a daemon at ~7.8 GB
-/// RSS). Both lie about themselves; both are cured by a forced daemon restart, which
-/// `runIpcWithSelfHeal` performs automatically.
-let isCorruptedPipeFault (inner: exn) : bool =
+/// The recovery-relevant cause of a failed IPC call. In particular, an OOM is not
+/// itself evidence of bad framing: the CLI process can genuinely exhaust its heap.
+[<RequireQualifiedAccess>]
+type IpcFault =
+    | CorruptedFrame of exn
+    | ClientOutOfMemory of OutOfMemoryException
+    | TimedOut of TimeoutException
+    | Other of exn
+
+/// StreamJsonRpc's header-delimited reader is the evidence that distinguishes an
+/// absurd Content-Length allocation from an unrelated allocation failure in this
+/// process. Kept as a pure seam because Exception.StackTrace cannot be constructed
+/// portably in a unit test.
+let internal classifyIpcFaultAt (stackTrace: string option) (inner: exn) : IpcFault =
     match inner with
-    | :? OutOfMemoryException
-    | :? OverflowException -> true
-    | _ -> false
+    | :? OutOfMemoryException as oom ->
+        let aroseInFrameReader =
+            stackTrace
+            |> Option.exists (fun trace -> trace.Contains("HeaderDelimitedMessageHandler", StringComparison.Ordinal))
+
+        if aroseInFrameReader then
+            IpcFault.CorruptedFrame inner
+        else
+            IpcFault.ClientOutOfMemory oom
+    // This was observed in HeaderDelimitedMessageHandler's length arithmetic. Unlike
+    // OOM, an arithmetic overflow is not a credible process-wide memory-pressure signal.
+    | :? OverflowException -> IpcFault.CorruptedFrame inner
+    | :? TimeoutException as timeout -> IpcFault.TimedOut timeout
+    | _ -> IpcFault.Other inner
+
+let classifyIpcFault (inner: exn) : IpcFault =
+    classifyIpcFaultAt (inner.StackTrace |> Option.ofObj) inner
 
 /// Map an unwrapped IPC exception to a user-actionable hint, or None if the
 /// exception type isn't one we have a known recovery story for. Pure so it can
 /// be unit-tested without round-tripping through a real pipe.
 ///
-/// The corrupted-pipe family only reaches this hint AFTER `runIpcWithSelfHeal`
-/// already tried the automatic restart-and-retry — so the hint describes what
-/// was attempted and where to look next, never a manual ritual.
+/// A corrupted-frame fault only reaches its hint AFTER `runIpcWithSelfHeal`
+/// already tried the automatic restart-and-retry. A client OOM deliberately
+/// takes the no-restart path and says so.
 let ipcErrorHint (inner: exn) : string option =
-    match inner with
-    | :? OutOfMemoryException ->
+    match classifyIpcFault inner with
+    | IpcFault.CorruptedFrame _ ->
         Some
-            "The IPC pipe returned a corrupted message — usually caused by another \
-             daemon writing to the same pipe. fshw already restarted the daemon and \
-             retried; since it recurred, check `logs/daemon.log` for a second daemon \
-             or a crash loop."
-    | :? OverflowException ->
+            "The IPC pipe returned a corrupted or oversized frame. fshw already restarted \
+             the daemon and retried; since it recurred, check `logs/daemon.log` for a \
+             second daemon, a crash loop, or runaway memory growth."
+    | IpcFault.ClientOutOfMemory _ ->
         Some
-            "The IPC pipe returned a corrupted or oversized message — usually a stale/leaky \
-             daemon. fshw already restarted the daemon and retried; since it recurred, \
-             check `logs/daemon.log` for runaway memory growth."
-    | :? TimeoutException -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
-    | _ -> None
+            "The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
+             restarted because this failure carries no evidence of a corrupted frame; \
+             inspect the client process memory limit and reduce concurrent work."
+    | IpcFault.TimedOut _ -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
+    | IpcFault.Other _ -> None
 
 /// Render a failed IPC call to stderr: the unwrapped daemon-connection error plus
 /// its recovery hint (if any). Shared by every IPC entry point so the message and
@@ -414,7 +432,8 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
     with ex ->
         let inner = unwrapIpcException ex
 
-        if isCorruptedPipeFault inner then
+        match classifyIpcFault inner with
+        | IpcFault.CorruptedFrame _ ->
             eprintfn
                 "⚠ the daemon returned a corrupted IPC reply (%s) — restarting the daemon and retrying..."
                 (inner.GetType().Name)
@@ -426,8 +445,9 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
                     onFailure retryEx
             else
                 onFailure ex
-        else
-            onFailure ex
+        | IpcFault.ClientOutOfMemory _
+        | IpcFault.TimedOut _
+        | IpcFault.Other _ -> onFailure ex
 
 /// Wrap an IPC call with connection error handling and corrupted-pipe
 /// self-healing (`forceRestart` is the executeCommand-scoped restart).
