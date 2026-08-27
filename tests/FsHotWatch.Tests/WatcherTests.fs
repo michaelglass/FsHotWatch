@@ -198,6 +198,296 @@ let ``hasContentChanged returns true on IOException`` () =
 
 // === FileWatcher.create non-macOS code path ===
 
+// The polling backend exists specifically for the macOS failure path, but its
+// contract is deterministic and does not depend on an OS event stream.  If it
+// regresses to metadata stamps, the same-length rewrite below is missed.
+[<Fact(Timeout = 15000)>]
+let ``polling fallback baselines silently then detects create content change and delete`` () =
+    withTempDir "watcher-poll-diff" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let existing = Path.Combine(srcDir, "Existing.fs")
+        File.WriteAllText(existing, "let value = 1")
+
+        let changes = ResizeArray<FileChangeKind>()
+        use watcher = new PollingFileWatcher(tmpDir, changes.Add, [], false, None, None)
+
+        test <@ changes.Count = 0 @>
+
+        let created = Path.Combine(srcDir, "Created.fs")
+        File.WriteAllText(created, "let created = 1")
+        watcher.Poll()
+        test <@ changes |> Seq.contains (SourceChanged [ created ]) @>
+
+        changes.Clear()
+        let originalTimestamp = File.GetLastWriteTimeUtc(existing)
+        File.WriteAllText(existing, "let value = 2")
+        File.SetLastWriteTimeUtc(existing, originalTimestamp)
+        watcher.Poll()
+        test <@ changes |> Seq.contains (SourceChanged [ existing ]) @>
+
+        changes.Clear()
+        watcher.Poll()
+        test <@ changes.Count = 0 @>
+
+        changes.Clear()
+        File.Delete(existing)
+        watcher.Poll()
+        test <@ changes |> Seq.contains (SourceChanged [ existing ]) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``polling fallback covers top-level solutions and extra patterns across repo`` () =
+    withTempDir "watcher-poll-scope" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "config", "nested")
+        Directory.CreateDirectory(nested) |> ignore
+        let changes = ResizeArray<FileChangeKind>()
+
+        use watcher =
+            new PollingFileWatcher(tmpDir, changes.Add, [ FilePattern.parse "*.ratchet.json" ], false, None, None)
+
+        let solution = Path.Combine(tmpDir, "Repo.slnx")
+        let extra = Path.Combine(nested, "coverage.ratchet.json")
+        File.WriteAllText(solution, "<Solution />")
+        File.WriteAllText(extra, "{}")
+        watcher.Poll()
+
+        test <@ changes |> Seq.contains SolutionChanged @>
+        test <@ changes |> Seq.contains (SourceChanged [ extra ]) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``polling fallback includes assets but excludes generated and out-of-root source`` () =
+    withTempDir "watcher-poll-builtins" (fun tmpDir ->
+        let src = Path.Combine(tmpDir, "src")
+        let obj = Path.Combine(src, "App", "obj")
+        let bin = Path.Combine(src, "App", "bin")
+        Directory.CreateDirectory(obj) |> ignore
+        Directory.CreateDirectory(bin) |> ignore
+        let changes = ResizeArray<FileChangeKind>()
+        use watcher = new PollingFileWatcher(tmpDir, changes.Add, [], false, None, None)
+
+        let source = Path.Combine(src, "App.fs")
+        let assets = Path.Combine(obj, "project.assets.json")
+        let generated = Path.Combine(obj, "Generated.fs")
+        let buildOutput = Path.Combine(bin, "Output.fs")
+        let outside = Path.Combine(tmpDir, "Outside.fs")
+        File.WriteAllText(source, "let source = 1")
+        File.WriteAllText(assets, "{}")
+        File.WriteAllText(generated, "let generated = 1")
+        File.WriteAllText(buildOutput, "let output = 1")
+        File.WriteAllText(outside, "let outside = 1")
+        watcher.Poll()
+
+        test <@ changes |> Seq.contains (SourceChanged [ source ]) @>
+        test <@ changes |> Seq.contains (ProjectChanged [ assets ]) @>
+        test <@ not (changes |> Seq.contains (SourceChanged [ generated ])) @>
+        test <@ not (changes |> Seq.contains (SourceChanged [ buildOutput ])) @>
+        test <@ not (changes |> Seq.contains (SourceChanged [ outside ])) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``polling fallback reports unreadable files and holes conservatively every poll`` () =
+    let unreadable = "/repo/src/Unreadable.fs"
+
+    let snapshot: PollingSnapshot =
+        { Files = Map.ofList [ unreadable, FsHotWatch.ContentHash.UnhashableContent ]
+          UnreadableFiles = Set.singleton unreadable
+          Holes = Set.singleton "/repo/src/hidden" }
+
+    let changes = ResizeArray<FileChangeKind>()
+    use watcher = new PollingFileWatcher("/repo", changes.Add, [], false, Some(fun () -> snapshot), None)
+    watcher.Poll()
+    watcher.Poll()
+
+    test <@ changes |> Seq.filter ((=) (SourceChanged [ unreadable ])) |> Seq.length = 2 @>
+    test <@ changes |> Seq.filter ((=) SolutionChanged) |> Seq.length = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``polling fallback skips overlapping polls and emits nothing after disposal`` () =
+    let entered = new ManualResetEventSlim(false)
+    let release = new ManualResetEventSlim(false)
+    let mutable snapshots = 0
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        if snapshots = 2 then
+            entered.Set()
+            release.Wait()
+
+        ({ Files = Map.empty
+           UnreadableFiles = Set.empty
+           Holes = Set.empty }: PollingSnapshot)
+
+    let changes = ResizeArray<FileChangeKind>()
+    let watcher = new PollingFileWatcher("/repo", changes.Add, [], false, Some snapshot, None)
+    let first = System.Threading.Tasks.Task.Run(fun () -> watcher.Poll())
+    test <@ entered.Wait(2000) @>
+    watcher.Poll()
+    test <@ snapshots = 2 @>
+    release.Set()
+    first.GetAwaiter().GetResult()
+    (watcher :> IDisposable).Dispose()
+    watcher.Poll()
+    test <@ snapshots = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``polling snapshot uses one source walk plus one assets walk per root and one per extra`` () =
+    let calls = ResizeArray<Set<string> * string * string>()
+
+    let walk excluded pattern root : FsHotWatch.SafeWalk.WalkResult =
+        calls.Add(excluded, pattern, root)
+        { Files = []; Skipped = [] }
+
+    takePollingSnapshotWith
+        walk
+        (fun _ -> [], Set.empty)
+        "/repo"
+        [ "/repo/src"; "/repo/tests" ]
+        [ FilePattern.parse "*.ratchet.json" ]
+    |> ignore
+
+    test <@ calls.Count = 5 @>
+    test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*", "/repo/src") @>
+    test <@ calls |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/src") @>
+    test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*", "/repo/tests") @>
+    test <@ calls |> Seq.contains (pollingAssetsExcludedDirs, "project.assets.json", "/repo/tests") @>
+    test <@ calls |> Seq.contains (FsHotWatch.SafeWalk.SourceExcludedDirs, "*.ratchet.json", "/repo") @>
+
+[<Fact(Timeout = 15000)>]
+let ``automatic polling rearms after snapshot failure and stops rearming after disposal`` () =
+    let mutable callback = ignore
+    let arms = ResizeArray<int>()
+    let mutable timerDisposed = false
+
+    let timerFactory onTick =
+        callback <- onTick
+
+        { Arm = arms.Add
+          Dispose = fun () -> timerDisposed <- true }
+
+    let mutable snapshots = 0
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        if snapshots = 2 then
+            raise (IOException("transient snapshot failure"))
+
+        ({ Files = Map.empty
+           UnreadableFiles = Set.empty
+           Holes = Set.empty }: PollingSnapshot)
+
+    let watcher = new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+    test <@ arms |> Seq.toList = [ 1000 ] @>
+    callback ()
+    test <@ snapshots = 2 @>
+    test <@ arms |> Seq.toList = [ 1000; 1000 ] @>
+    callback ()
+    test <@ snapshots = 3 @>
+    test <@ arms |> Seq.toList = [ 1000; 1000; 1000 ] @>
+    (watcher :> IDisposable).Dispose()
+    callback ()
+    test <@ timerDisposed @>
+    test <@ snapshots = 3 @>
+    test <@ arms |> Seq.toList = [ 1000; 1000; 1000 ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``automatic polling disposal waits for active callback then prevents later callbacks`` () =
+    let mutable callback = ignore
+    let entered = new ManualResetEventSlim(false)
+    let release = new ManualResetEventSlim(false)
+    let mutable snapshots = 0
+
+    let timerFactory onTick =
+        callback <- onTick
+        { Arm = ignore; Dispose = ignore }
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        if snapshots = 2 then
+            entered.Set()
+            release.Wait()
+
+        ({ Files = Map.empty
+           UnreadableFiles = Set.empty
+           Holes = Set.empty }: PollingSnapshot)
+
+    let watcher = new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
+    let active = System.Threading.Tasks.Task.Run(callback)
+    test <@ entered.Wait(2000) @>
+    let disposing = System.Threading.Tasks.Task.Run(fun () -> (watcher :> IDisposable).Dispose())
+    test <@ not (disposing.Wait(100)) @>
+    release.Set()
+    active.GetAwaiter().GetResult()
+    disposing.GetAwaiter().GetResult()
+    callback ()
+    test <@ snapshots = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``macOS native start failure selects one polling watcher`` () =
+    withTempDir "watcher-native-failure" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable systemCreations = 0
+
+        let failNative _directories _onFile _onCoalesced _latency : IDisposable =
+            raise (FsHotWatch.MacFsEvents.StartFailedException())
+
+        let system _handle _spec =
+            systemCreations <- systemCreations + 1
+            { new IDisposable with member _.Dispose() = () }
+
+        let polling _repo _onChange _extras =
+            new PollingFileWatcher(tmpDir, ignore, [], false, None, None) :> IDisposable
+
+        use watcher = FileWatcher.createWithFactories tmpDir ignore [] 0.05 failNative system polling
+
+        test <@ systemCreations = 0 @>
+        test <@ watcher.Disposables.Length = 1 @>
+        test <@ watcher.Disposables.Head :? PollingFileWatcher @>)
+
+[<Fact(Timeout = 15000)>]
+let ``macOS setup creates native first and rolls every partial watcher back`` () =
+    withTempDir "watcher-transaction" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let order = ResizeArray<string>()
+        let disposed = ResizeArray<string>()
+
+        let tracked name =
+            { new IDisposable with
+                member _.Dispose() = disposed.Add(name) }
+
+        let native _dirs _onFile _onCoalesced _latency =
+            order.Add("native")
+            tracked "native"
+
+        let mutable systemCount = 0
+
+        let system _handle _spec =
+            systemCount <- systemCount + 1
+            order.Add($"system-%d{systemCount}")
+
+            if systemCount = 2 then
+                failwith "second system watcher failed"
+
+            tracked $"system-%d{systemCount}"
+
+        let polling _repo _onChange _extras = tracked "polling"
+
+        use watcher =
+            FileWatcher.createWithFactories
+                tmpDir
+                ignore
+                [ FilePattern.parse "*.ratchet.json" ]
+                0.05
+                native
+                system
+                polling
+
+        test <@ order |> Seq.toList = [ "native"; "system-1"; "system-2" ] @>
+        test <@ disposed |> Seq.contains "native" @>
+        test <@ disposed |> Seq.contains "system-1" @>
+        test <@ watcher.Disposables.Length = 1 @>)
+
 [<Fact(Timeout = 30000)>]
 let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
     withTempDir "watcher-fsw" (fun tmpDir ->
