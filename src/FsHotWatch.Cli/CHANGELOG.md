@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: bundle TestPrune.Falco 3.1.3 so `>]` inside an attribute string no longer
+  truncates the attribute while selecting tests, with its required
+  Microsoft.Data.Sqlite 10.0.11 floor.
+
 - AUTOMATION-290: daemon-backed `check`/`confirm` and `--run-once` now fail fast
   when MSBuild loads zero of the discovered projects. Both paths overwrite any
   prior green with an exit-2 `incomplete` verdict carrying the exact loader
