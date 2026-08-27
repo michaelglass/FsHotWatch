@@ -119,6 +119,9 @@ type TestProjectConfig =
         Environment: (string * string) list
         FilterTemplate: string option
         ClassJoin: string
+        /// Collect runner coverage for TestPrune impact attribution.
+        CollectCoverage: bool
+        /// Include this project's contribution in the consumer coverage ratchet.
         Coverage: bool
         CoverageArgsTemplate: string option
         TimeoutSec: int option
@@ -519,26 +522,32 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v -> v.GetString()
                             | _ -> " "
 
-                        // `coverage` may be bool (enable/disable, default template)
-                        // or an object `{ "enabled": bool, "argsTemplate": string }`
-                        // for per-project overrides.
-                        let coverage, coverageArgsTemplate =
+                        // `coverage` may be bool (collect + enforce together) or an
+                        // object. `collectForImpact` decouples TestPrune collection
+                        // from consumer-ratchet participation (`enabled`).
+                        let collectCoverage, coverage, coverageArgsTemplate =
                             match p.TryGetProperty("coverage") with
-                            | true, v when v.ValueKind = JsonValueKind.False -> false, None
-                            | true, v when v.ValueKind = JsonValueKind.True -> true, None
+                            | true, v when v.ValueKind = JsonValueKind.False -> false, false, None
+                            | true, v when v.ValueKind = JsonValueKind.True -> true, true, None
                             | true, v when v.ValueKind = JsonValueKind.Object ->
                                 let enabled =
                                     match v.TryGetProperty("enabled") with
                                     | true, e when e.ValueKind = JsonValueKind.False -> false
                                     | _ -> true
 
+                                let collectForImpact =
+                                    match v.TryGetProperty("collectForImpact") with
+                                    | true, e when e.ValueKind = JsonValueKind.True -> true
+                                    | true, e when e.ValueKind = JsonValueKind.False -> false
+                                    | _ -> enabled
+
                                 let tmpl =
                                     match v.TryGetProperty("argsTemplate") with
                                     | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
                                     | _ -> None
 
-                                enabled, tmpl
-                            | _ -> true, None
+                                collectForImpact, enabled, tmpl
+                            | _ -> true, true, None
 
                         let timeoutSec =
                             match p.TryGetProperty("timeoutSec") with
@@ -574,6 +583,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           Environment = env
                           FilterTemplate = filterTemplate
                           ClassJoin = classJoin
+                          CollectCoverage = collectCoverage
                           Coverage = coverage
                           CoverageArgsTemplate = coverageArgsTemplate
                           TimeoutSec = timeoutSec
@@ -1520,9 +1530,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // and performs the merge step; this function only exposes the three paths per project.
         let projectsByName = t.Projects |> List.map (fun p -> p.Project, p) |> Map.ofList
 
-        let coverageExcludedProjects =
+        let coverageCollectionExcludedProjects =
             t.Projects
-            |> List.filter (fun p -> not p.Coverage)
+            |> List.filter (fun p -> not p.CollectCoverage)
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
@@ -1530,13 +1540,14 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // so external coverage tools (e.g. coverageratchet invoked via a
         // fileCommands afterTests entry) can read the cobertura output. The
         // output directory is configurable via `tests.coverageDir` (default
-        // `"coverage"`). Per-project opt-out is honored via `coverageExcludedProjects`.
+        // `"coverage"`). Per-project collection opt-out is honored separately
+        // from consumer-ratchet participation.
         // The ArgsTemplate is per-project (defaults to the MTP-cobertura template),
         // so alternate test runners can swap in their own coverage invocation
         // without patching the plugin.
         let coveragePaths =
             Some(fun (project: string) ->
-                if coverageExcludedProjects.Contains(project) then
+                if coverageCollectionExcludedProjects.Contains(project) then
                     None
                 else
                     let outputDir = Path.Combine(repoRoot, t.CoverageDir, project)
@@ -1565,6 +1576,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                                     FsHotWatch.TestPrune.TestPrunePlugin.CoberturaName
                                 )
                             )
+                          IncludeInRatchet = projectsByName.[project].Coverage
                           ArgsTemplate = argsTemplate })
 
         // Extension factories — invoked by the plugin with its own DB, so the

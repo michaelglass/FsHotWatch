@@ -146,6 +146,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Environment = []
               FilterTemplate = None
               ClassJoin = " "
+              CollectCoverage = cov
               Coverage = cov
               CoverageArgsTemplate = None
               TimeoutSec = None

@@ -110,7 +110,12 @@ In `.fshw.json`:
 | `projects[].environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `projects[].filterTemplate` | `string` | -- | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `projects[].classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
-| `projects[].coverage` | `bool` or `object` | `true` | Emit coverage for this project. `false` disables it; an object `{ "enabled": bool, "argsTemplate": string }` overrides the coverage args. |
+| `projects[].coverage` | `bool` or `object` | `true` | Collect and gate coverage for this project. `false` disables both. An object accepts `enabled` (consumer-ratchet participation), `collectForImpact` (TestPrune collection), and `argsTemplate`; `{ "enabled": false, "collectForImpact": true }` collects runtime evidence without opting the project into the consumer ratchet. |
+
+Runtime evidence is fail-safe: a configured collection project with no complete
+baseline, or one older than seven days, is selected in full with an explicit
+missing/stale diagnostic. Filtered runs only add evidence and cannot erase the
+last complete project baseline.
 | `projects[].timeoutSec` | `int` | -- | Per-project test timeout in seconds. Falls back to the top-level `tests.timeoutSec`. |
 | `coverageDir` | `string` | `"coverage"` | Directory (under the repo root) where per-project coverage artifacts are written. |
 

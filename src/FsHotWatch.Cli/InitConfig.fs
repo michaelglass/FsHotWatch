@@ -74,6 +74,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       Environment = []
                       FilterTemplate = Some "--filter-class {classes}"
                       ClassJoin = " "
+                      CollectCoverage = true
                       Coverage = true
                       CoverageArgsTemplate = None
                       TimeoutSec = None
