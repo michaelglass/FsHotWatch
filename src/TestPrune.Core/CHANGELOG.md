@@ -9,6 +9,19 @@
   `parseChangedFiles` API retains its code-only, rename-destination contract and now
   shares the same quoted-path decoder.
 
+- feat: **add project-attributed, freshness-aware runtime coverage selection primitives
+  (phase 1).** `CoverageImpact` validates per-test-project Cobertura
+  snapshots, unions every runtime-covered changed file with AST project attribution,
+  and fails open with typed diagnostic reasons when a snapshot is missing, expired,
+  from the wrong trailing baseline, future-dated, malformed, incomplete, or contains
+  an invalid/outside-repository path. Snapshot construction is opaque and canonicalizes
+  paths symmetrically without changing the existing raw coverage high-water store.
+
+  This release note covers the Core domain API only. Snapshot persistence/discovery,
+  live selector integration, gate output, Integration coverage collection, and the
+  cross-repository release/pin chain remain follow-up work; TestPrune does not consume
+  this signal yet.
+
 ## 7.0.1 - 2026-08-18
 
 - fix!: **a computation-expression custom operation is indexed under the member it
