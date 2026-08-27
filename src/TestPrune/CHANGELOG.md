@@ -8,6 +8,15 @@
   migrations, fixtures, and other declared inputs. Renames check both the old and new
   path, and Git C-quoted names are decoded before matching.
 
+- feat!: **message changes can now re-select tests that assert the old prose without
+  referencing its producer (first slice).** The index records decoded,
+  non-interpolated string-literal bridges for prose-shaped messages. This intentionally
+  widens impact selection where the symbol graph previously had no path.
+
+- feat!: **the first `test-prune index` after upgrading rebuilds `.test-prune.db`
+  (`SchemaVersion` 10 -> 11).** The rebuild is automatic and ensures cached files gain
+  the new literal-coupling edges.
+
 ## 7.0.1 - 2026-08-18
 
 - feat!: **Your `.test-prune.db` is rebuilt on first run again (SchemaVersion 9→10).** Nothing to do — the first `test-prune index` after upgrading is a

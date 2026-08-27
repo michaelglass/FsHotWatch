@@ -54,6 +54,17 @@ let ExternSourceFile = "_extern"
 [<Literal>]
 let SyntheticCollectionPrefix = "TestPrune.__Collection__."
 
+/// Prefix for the synthetic join node used when a test and a production symbol contain
+/// the same prose-shaped string literal. The literal itself is never persisted.
+[<Literal>]
+let internal SyntheticLiteralPrefix = "TestPrune.__Literal__."
+
+[<Literal>]
+let private MinSharedLiteralLength = 24
+
+[<Literal>]
+let private MinSharedLiteralWords = 4
+
 // xUnit marker names matched by DisplayName (which strips the namespace).
 [<Literal>]
 let private IClassFixtureName = "IClassFixture"
@@ -74,6 +85,8 @@ type DependencyKind =
     | PatternMatches
     | References
     | SharedState
+    /// A test asserts prose produced by another symbol without naming that symbol.
+    | SharedLiteral
 
 /// A directed dependency from one symbol to another, with its kind.
 type Dependency =
@@ -94,7 +107,11 @@ let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
     symbols
     |> List.map (fun s ->
         { s with
-            SourceFile = System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
+            SourceFile =
+                if s.SourceFile = ExternSourceFile then
+                    ExternSourceFile
+                else
+                    System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
 
 /// Counters for how many symbols/edges the analysis dropped, for diagnosing
 /// missing dependency edges.
@@ -781,6 +798,62 @@ let private hashSourceLines (lines: string array) (startLine: int) (endLine: int
 
     System.Convert.ToHexStringLower(bytes)
 
+let private isSharedLiteral (text: string) =
+    text.Length >= MinSharedLiteralLength
+    && text.Split([| ' '; '\t'; '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries).Length
+       >= MinSharedLiteralWords
+
+let private sharedLiteralNodeName (text: string) =
+    let bytes =
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))
+
+    SyntheticLiteralPrefix + System.Convert.ToHexStringLower(bytes)
+
+/// Collect decoded ordinary string constants from the parsed tree.
+///
+/// This deliberately reads `SynConst.String`: FCS has already decoded escapes and all
+/// supported ordinary/verbatim/triple-quoted spellings to their runtime value, so two
+/// source spellings of the same message share one node. Interpolated strings are a
+/// different AST case and are skipped as a whole; their static fragments are not values
+/// that a test can assert independently of the fills.
+let private collectSharedLiterals (tree: ParsedInput) : (string * range) list =
+    let found = ResizeArray<string * range>()
+
+    let rec walk (value: obj) =
+        if not (isNull value) then
+            match value with
+            | :? string -> ()
+            | :? SynExpr as expression ->
+                match expression with
+                | SynExpr.Const(SynConst.String(text = text), expressionRange) when isSharedLiteral text ->
+                    found.Add(text, expressionRange)
+                | SynExpr.InterpolatedString _ -> ()
+                | _ -> walkUnionFields expression
+            | :? System.Collections.IEnumerable as values ->
+                for item in values do
+                    walk item
+            | _ ->
+                let valueType = value.GetType()
+
+                if Microsoft.FSharp.Reflection.FSharpType.IsUnion valueType then
+                    walkUnionFields value
+                elif Microsoft.FSharp.Reflection.FSharpType.IsRecord valueType then
+                    for field in Microsoft.FSharp.Reflection.FSharpValue.GetRecordFields value do
+                        walk field
+                elif Microsoft.FSharp.Reflection.FSharpType.IsTuple valueType then
+                    for field in Microsoft.FSharp.Reflection.FSharpValue.GetTupleFields value do
+                        walk field
+
+    and walkUnionFields (value: obj) =
+        let _, fields =
+            Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(value, value.GetType())
+
+        for field in fields do
+            walk field
+
+    walk tree
+    found |> Seq.distinct |> Seq.toList
+
 /// The parse diagnostics that actually make an AST unusable: Error severity, and
 /// nothing else.
 ///
@@ -1381,10 +1454,57 @@ let private extractResults
 
                 syms, edges
 
-            // Merge fixture edges + collection synth edges with the primary dependency list.
+            // A test and the production symbol that emits the same message normally name
+            // none of each other. Join them through a synthetic node: test -> literal ->
+            // producer in the dependency graph, which the existing reverse selection walk
+            // follows from a changed producer back to the test.
+            let literalSynthSymbols, literalSynthEdges =
+                let testSymbolNames = testMethods |> List.map _.SymbolFullName |> Set.ofList
+                let trackedSymbolNames = symbols |> List.map _.FullName |> Set.ofList
+                let mutable nodes = Map.empty
+                let mutable edges = []
+
+                for text, literalRange in collectSharedLiterals parseResults.ParseTree do
+                    match findEnclosing literalRange with
+                    | Some enclosing when trackedSymbolNames.Contains enclosing.FullName ->
+                        let nodeName = sharedLiteralNodeName text
+
+                        nodes <-
+                            nodes
+                            |> Map.add
+                                nodeName
+                                { FullName = nodeName
+                                  Kind = ExternRef
+                                  SourceFile = ExternSourceFile
+                                  LineStart = 0
+                                  LineEnd = 0
+                                  ContentHash = ""
+                                  IsExtern = true }
+
+                        let edge =
+                            if testSymbolNames.Contains enclosing.FullName then
+                                { FromSymbol = enclosing.FullName
+                                  ToSymbol = nodeName
+                                  Kind = SharedLiteral
+                                  Source = "core" }
+                            else
+                                { FromSymbol = nodeName
+                                  ToSymbol = enclosing.FullName
+                                  Kind = SharedLiteral
+                                  Source = "core" }
+
+                        edges <- edge :: edges
+                    | _ -> ()
+
+                nodes |> Map.values |> List.ofSeq, edges |> List.distinct
+
+            // Merge fixture edges, collection synth edges and literal bridge edges with
+            // the primary dependency list.
             // Downstream consumers (DB INSERT OR IGNORE, InMemoryStore's Map.ofList) dedupe.
-            let dependencies = dependencies @ fixtureEdges @ collectionSynthEdges
-            let symbols = symbols @ collectionSynthSymbols
+            let dependencies =
+                dependencies @ fixtureEdges @ collectionSynthEdges @ literalSynthEdges
+
+            let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
 
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need

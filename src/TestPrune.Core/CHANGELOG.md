@@ -9,6 +9,33 @@
   `parseChangedFiles` API retains its code-only, rename-destination contract and now
   shares the same quoted-path decoder.
 
+- feat!: **bridge prose-coupled tests to the production symbols whose messages they
+  assert (first slice).** Symbol references cannot represent a test that
+  receives a log line, response body, rendered label, or CLI verdict and compares it to
+  the same literal without naming its producer. TestPrune now gives qualifying prose
+  literals a hashed synthetic node, with `test -> literal -> producer` edges of the new
+  public `DependencyKind.SharedLiteral` kind. The ordinary reverse walk therefore
+  selects the test when the producer changes, without joining tests to other tests or
+  producers to other producers.
+
+  Extraction comes from decoded FCS `SynConst.String` nodes, not a source-text scanner:
+  escape-equivalent spellings join the same node, comments never enter the input, and
+  interpolated strings are deliberately excluded. Only prose-shaped values (at least 24
+  characters and four words) participate, avoiding identifier-shaped hubs such as fixture
+  email addresses and token names. Literal text is hashed and never stored in the index.
+
+  Incremental consumers that rebuild before querying capture the old side of a message
+  edit with `Database.GetPriorSharedLiteralSeeds`, then include those bounded seeds in
+  their ordinary pending-verification lifecycle. This preserves the test's edge to the
+  old prose without leaving a stale producer edge in the current graph.
+
+- feat!: **`SchemaVersion` 10 -> 11.** Existing files could otherwise remain cache hits
+  and never acquire their literal edges. The automatic rebuild makes the graph uniform.
+
+- fix: preserve the `_extern` source sentinel while normalizing symbol paths. Synthetic
+  literal nodes depend on that ownership boundary so re-indexing one producer cannot
+  orphan another file's shared node.
+
 ## 7.0.1 - 2026-08-18
 
 - fix!: **a computation-expression custom operation is indexed under the member it

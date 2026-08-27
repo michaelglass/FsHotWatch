@@ -43,6 +43,7 @@
     <Compile Include="DomainTests.fs" />
     <Compile Include="FcsTests.fs" />
     <Compile Include="AstAnalyzerTests.fs" />
+    <Compile Include="LiteralCouplingTests.fs" />
     <Compile Include="BindingFormAuditTests.fs" />
     <Compile Include="UnqualifiedNameAuditTests.fs" />
     <Compile Include="ParseDiagnosticSeverityTests.fs" />

@@ -113,6 +113,7 @@ let private depKindToString =
     | PatternMatches -> "pattern_matches"
     | References -> "references"
     | SharedState -> "shared_state"
+    | SharedLiteral -> "shared_literal"
 
 let private stringToDepKind (warned: HashSet<string>) =
     function
@@ -121,6 +122,7 @@ let private stringToDepKind (warned: HashSet<string>) =
     | "pattern_matches" -> PatternMatches
     | "references" -> References
     | "shared_state" -> SharedState
+    | "shared_literal" -> SharedLiteral
     | unknown ->
         if warned.Add($"DependencyKind:%s{unknown}") then
             eprintfn $"Warning: unknown DependencyKind '%s{unknown}' in database, defaulting to References"
@@ -222,6 +224,10 @@ let private openConnection (dbPath: string) =
 ///          row's `source_file` is never in a re-indexed set, so orphan cleanup cannot
 ///          collect it and the junk would outlive the fix in place. The recreate is what
 ///          removes it.
+/// v11    — `SharedLiteral` dependency edges and their synthetic literal nodes. Existing
+///          files may otherwise remain cache hits forever, leaving the new graph edges
+///          absent even though the executable understands them. Rebuilding guarantees
+///          that every indexed file was analyzed under the same literal-edge semantics.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -236,7 +242,7 @@ let private openConnection (dbPath: string) =
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
 /// the newer open path.
 [<Literal>]
-let SchemaVersion = 10
+let SchemaVersion = 11
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -347,6 +353,44 @@ type Database(dbPath: string) =
     /// never store anything it cannot re-derive.
     member _.OpenConnection() : SqliteConnection = openConnection dbPath
 
+    /// Capture the literal nodes that point at changed production symbols in the
+    /// currently persisted graph. Call this before replacing those symbols with a
+    /// fresh analysis, then include the returned names in the subsequent impact query.
+    ///
+    /// A message edit removes the producer's OLD literal edge during rebuild, while an
+    /// unchanged test still points at that old literal. Seeding the old node carries
+    /// precisely that pre-change evidence across the rebuild without retaining a stale
+    /// producer edge in the graph. The seed is caller-owned and therefore lasts only as
+    /// long as the caller's ordinary pending-verification lifecycle.
+    member _.GetPriorSharedLiteralSeeds(changedSymbolNames: string list) : string list =
+        if changedSymbolNames.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            let placeholders = buildPlaceholders changedSymbolNames
+
+            cmd.CommandText <-
+                $"""
+                SELECT DISTINCT literal.full_name
+                FROM dependencies dependency
+                JOIN symbols literal ON literal.id = dependency.from_symbol_id
+                JOIN symbols producer ON producer.id = dependency.to_symbol_id
+                WHERE dependency.dep_kind = 'shared_literal'
+                  AND producer.full_name IN (%s{placeholders})
+                ORDER BY literal.full_name
+                """
+
+            bindPlaceholders cmd changedSymbolNames
+
+            use reader = cmd.ExecuteReader()
+            let seeds = ResizeArray<string>()
+
+            while reader.Read() do
+                seeds.Add(reader.GetString(0))
+
+            List.ofSeq seeds
+
     /// Clear and re-insert symbols, dependencies, and test methods.
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
     /// When called with a subset of projects, dependency edges to symbols in other projects will
@@ -390,6 +434,19 @@ type Database(dbPath: string) =
 
                     bindPlaceholders delCmd sourceFiles
                     delCmd.ExecuteNonQuery() |> ignore
+
+                // The production half of a literal bridge is synthetic-node -> producer,
+                // so its owning file is on the TO side. Clear precisely those edges before
+                // replacing the file's analysis; the ordinary outgoing-edge sweep above
+                // cannot see them because the synthetic node belongs to `_extern`.
+                use delSharedLiteralCmd = conn.CreateCommand()
+                delSharedLiteralCmd.Transaction <- txn
+
+                delSharedLiteralCmd.CommandText <-
+                    $"DELETE FROM dependencies WHERE dep_kind = 'shared_literal' AND to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))"
+
+                bindPlaceholders delSharedLiteralCmd sourceFiles
+                delSharedLiteralCmd.ExecuteNonQuery() |> ignore
 
             let now = DateTime.UtcNow.ToString("o")
 
@@ -576,6 +633,29 @@ type Database(dbPath: string) =
                     pDepKind.Value <- depKindToString dep.Kind
                     pSource.Value <- dep.Source
                     depCmd.ExecuteNonQuery() |> ignore
+
+            // A literal node is shared by every test/producer that contains its decoded
+            // value, so no one file owns its row. Collect it only after every fresh edge
+            // has been inserted, and only when neither side of any edge still mentions it.
+            // Prefix + is_extern keeps this sweep away from ordinary extern placeholders.
+            use delUnusedLiteralNodes = conn.CreateCommand()
+            delUnusedLiteralNodes.Transaction <- txn
+
+            delUnusedLiteralNodes.CommandText <-
+                """
+                DELETE FROM symbols
+                WHERE is_extern = 1
+                  AND substr(full_name, 1, length(@literalPrefix)) = @literalPrefix
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dependencies
+                      WHERE from_symbol_id = symbols.id OR to_symbol_id = symbols.id
+                  )
+                """
+
+            delUnusedLiteralNodes.Parameters.AddWithValue("@literalPrefix", SyntheticLiteralPrefix)
+            |> ignore
+
+            delUnusedLiteralNodes.ExecuteNonQuery() |> ignore
 
             use tmCmd = conn.CreateCommand()
             tmCmd.Transaction <- txn
