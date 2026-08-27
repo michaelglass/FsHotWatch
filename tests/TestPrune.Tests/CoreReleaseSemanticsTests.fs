@@ -21,12 +21,14 @@ let private read root path =
     File.ReadAllText(Path.Combine(root, path))
 
 [<Fact>]
-let ``Core 8 schema release keeps library CLI tag and workflow enrolled together`` () =
+let ``Core 8 schema release is tagger-ready with library and CLI enrolled together`` () =
     let root = repoRoot ()
     let coreProject = read root "src/TestPrune.Core/TestPrune.Core.fsproj"
     let cliProject = read root "src/TestPrune/TestPrune.fsproj"
-    test <@ coreProject.Contains("<Version>8.0.0</Version>") @>
-    test <@ cliProject.Contains("<Version>8.0.0</Version>") @>
+    test <@ coreProject.Contains("<Version>7.0.1</Version>") @>
+    test <@ cliProject.Contains("<Version>7.0.1</Version>") @>
+    test <@ not (coreProject.Contains("<Version>8.0.0</Version>")) @>
+    test <@ not (cliProject.Contains("<Version>8.0.0</Version>")) @>
 
     use tagger = JsonDocument.Parse(read root "semantic-tagger.json")
 
@@ -48,6 +50,10 @@ let ``Core 8 schema release keeps library CLI tag and workflow enrolled together
     test <@ workflow.Contains("- 'core-v*'") @>
     test <@ workflow.Contains("extra-fsproj-paths: 'src/TestPrune/TestPrune.fsproj'") @>
 
-    let changelog = read root "src/TestPrune.Core/CHANGELOG.md"
-    test <@ changelog.Contains("## 8.0.0 - 2026-08-27") @>
-    test <@ changelog.Contains("SchemaVersion` 11 -> 12") @>
+    let coreChangelog = read root "src/TestPrune.Core/CHANGELOG.md"
+    let cliChangelog = read root "src/TestPrune/CHANGELOG.md"
+    test <@ not (coreChangelog.Contains("## 8.0.0")) @>
+    test <@ not (cliChangelog.Contains("## 8.0.0")) @>
+    test <@ coreChangelog.Contains("## Unreleased\n\n- feat!:") @>
+    test <@ coreChangelog.Contains("SchemaVersion` 11 -> 12") @>
+    test <@ cliChangelog.Contains("SchemaVersion` 11 -> 12") @>
