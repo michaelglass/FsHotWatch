@@ -1710,8 +1710,8 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
 
 [<Fact(Timeout = 15000)>]
 let ``a corrupted IPC reply restarts the daemon and retries the command automatically`` () =
-    // A corrupted pipe surfaces as OutOfMemoryException, and used to hand the operator a
-    // `fshw stop` + `fshw start` ritual. The tool performs it now.
+    // Corrupt frame-length arithmetic surfaces as OverflowException, and used to hand the
+    // operator a `fshw stop` + `fshw start` ritual. The tool performs it now.
     withTempDir "cli-heal-corrupt" (fun tmpDir ->
         stageStateDir tmpDir
         FsHotWatch.DaemonIdentity.recordCurrent tmpDir
@@ -1727,9 +1727,9 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                             calls <- calls + 1
 
                             if calls = 1 then
-                                // A garbage Content-Length header makes StreamJsonRpc try to
-                                // allocate a nonsensical buffer and throw OOM.
-                                raise (OutOfMemoryException("Insufficient memory"))
+                                // A garbage Content-Length header can overflow StreamJsonRpc's
+                                // framing arithmetic before it can accept the reply.
+                                raise (OverflowException("Arithmetic operation resulted in an overflow."))
 
                             d.Served.Add d.Generation
                             return """{"count": 0, "files": {}, "unchecked": 0}"""
@@ -1835,7 +1835,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
         test <@ not (File.Exists(FsHotWatch.PluginWedge.breadcrumbPath tmpDir)) @>)
 
 [<Fact(Timeout = 15000)>]
-let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
+let ``runIpcWithSelfHeal retries ONLY proven corrupted frames, once`` () =
     // Every other fault goes straight through: self-healing on, say, a timeout would restart
     // healthy daemons and torch their warm caches.
     let mutable restarts = 0
@@ -1858,18 +1858,20 @@ let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
 
         result, calls
 
-    // Corrupted pipe, healed on the retry.
-    test <@ heal 1 (fun () -> OutOfMemoryException("boom") :> exn) = (0, 2) @>
-    test <@ restarts = 1 @>
-
+    // Overflow is the framing arithmetic failure observed in production: heal once.
     test <@ heal 1 (fun () -> OverflowException("boom") :> exn) = (0, 2) @>
     test <@ restarts = 1 @>
 
     // Corrupted pipe that RECURS: retried exactly once, then reported honestly.
-    test <@ heal 2 (fun () -> OutOfMemoryException("boom") :> exn) = (99, 2) @>
+    test <@ heal 2 (fun () -> OverflowException("boom") :> exn) = (99, 2) @>
     test <@ restarts = 1 @>
 
-    // Not the corrupted-pipe family: no restart, straight to the failure path.
+    // A bare OOM has no frame-reader evidence: it is the client's own allocation
+    // failure, so restarting the healthy daemon would only destroy its warm cache.
+    test <@ heal 1 (fun () -> OutOfMemoryException("client heap exhausted") :> exn) = (99, 1) @>
+    test <@ restarts = 0 @>
+
+    // Other faults also go straight to the failure path.
     test <@ heal 1 (fun () -> TimeoutException("busy") :> exn) = (99, 1) @>
     test <@ restarts = 0 @>
 
