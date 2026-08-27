@@ -688,16 +688,28 @@ let ``unwrapIpcException stops at multi-inner AggregateException`` () =
     let unwrapped = unwrapIpcException agg
     test <@ obj.ReferenceEquals(unwrapped, a) @>
 
-// --- ipcErrorHint: classify exceptions to user-actionable hints ---
+// --- IPC failures: typed classification and user-actionable hints ---
 
 [<Fact(Timeout = 15000)>]
-let ``ipcErrorHint maps OutOfMemoryException to pipe-corruption hint`` () =
-    // StreamJsonRpc allocates a buffer of Content-Length size; a corrupted header
-    // (e.g. two daemons sharing the same pipe) trips OOM on the buffer alloc.
+let ``OOM in StreamJsonRpc frame reader is classified as a corrupted frame`` () =
     let ex = OutOfMemoryException("Insufficient memory") :> exn
-    let hint = ipcErrorHint ex
+
+    match classifyIpcFaultAt (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex with
+    | IpcFault.CorruptedFrame actual -> test <@ obj.ReferenceEquals(actual, ex) @>
+    | actual -> failwithf "expected CorruptedFrame, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``OOM without frame-reader evidence is a genuine client OOM`` () =
+    let oom = OutOfMemoryException("Insufficient memory")
+
+    match classifyIpcFaultAt None oom with
+    | IpcFault.ClientOutOfMemory actual -> test <@ obj.ReferenceEquals(actual, oom) @>
+    | actual -> failwithf "expected ClientOutOfMemory, got %A" actual
+
+    let hint = ipcErrorHint oom
     test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("corrupted") @>
+    test <@ hint.Value.Contains("CLI ran out of memory") @>
+    test <@ hint.Value.Contains("was not restarted") @>
 
 [<Fact(Timeout = 15000)>]
 let ``ipcErrorHint maps OverflowException to pipe-corruption hint`` () =
@@ -707,7 +719,7 @@ let ``ipcErrorHint maps OverflowException to pipe-corruption hint`` () =
     let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
     let hint = ipcErrorHint ex
     test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("corrupted") @>
+    test <@ hint.Value.Contains("corrupted or oversized frame") @>
 
 [<Fact(Timeout = 15000)>]
 let ``ipcErrorHint maps TimeoutException to busy-or-hung hint`` () =
