@@ -559,6 +559,10 @@ type CheckReach =
     /// invents an AGREEMENT — the one reading this record must never manufacture.
     | ReachUnknown of reason: string
 
+type FailureRecall =
+    | FailureRecallMeasured of reached: int * total: int * threshold: float * acceptable: bool
+    | FailureRecallNotMeasurable of reason: string
+
 /// The `check-reach` reply, parsed.
 type CheckReachReport =
     {
@@ -571,6 +575,7 @@ type CheckReachReport =
         /// describe.
         Scope: TestScope
         Reach: CheckReach
+        Recall: FailureRecall
     }
 
 /// Whether there is a projection to read at all. Absence is a VALUE — a daemon with no
@@ -653,10 +658,58 @@ let parseCheckReach (json: string) : CheckReachReading =
                     | true, g -> Some g
                     | _ -> None)
 
+            let recall =
+                match root.TryGetProperty("conditionalFailureRecall") with
+                | true, value when value.ValueKind = JsonValueKind.Object ->
+                    let measured =
+                        match value.TryGetProperty("measured") with
+                        | true, flag when flag.ValueKind = JsonValueKind.True -> true
+                        | _ -> false
+
+                    let nestedInt (name: string) =
+                        match value.TryGetProperty(name) with
+                        | true, number when number.ValueKind = JsonValueKind.Number ->
+                            match number.TryGetInt32() with
+                            | true, parsed -> Some parsed
+                            | _ -> None
+                        | _ -> None
+
+                    if measured then
+                        match
+                            nestedInt "reached",
+                            nestedInt "total",
+                            value.TryGetProperty("threshold"),
+                            value.TryGetProperty("acceptable")
+                        with
+                        | Some reached, Some total, (true, threshold), (true, acceptable) when
+                            total > 0
+                            && reached >= 0
+                            && reached <= total
+                            && threshold.ValueKind = JsonValueKind.Number
+                            && (acceptable.ValueKind = JsonValueKind.False
+                                || acceptable.ValueKind = JsonValueKind.True)
+                            ->
+                            let thresholdValue = threshold.GetDouble()
+                            let acceptableValue = acceptable.GetBoolean()
+
+                            if thresholdValue = 1.0 && acceptableValue = (reached = total) then
+                                FailureRecallMeasured(reached, total, thresholdValue, acceptableValue)
+                            else
+                                FailureRecallNotMeasurable
+                                    "the daemon's recall threshold or acceptance flag is inconsistent"
+                        | _ -> FailureRecallNotMeasurable "the daemon's measured recall fields are invalid"
+                    else
+                        FailureRecallNotMeasurable(
+                            tryGetStringProp value "reason"
+                            |> Option.defaultValue "the daemon did not produce a measurable recall denominator"
+                        )
+                | _ -> FailureRecallNotMeasurable "the daemon predates measured failure recall"
+
             ReachRecorded
                 { RunId = runId
                   Scope = scope
-                  Reach = reach }
+                  Reach = reach
+                  Recall = recall }
     with ex ->
         ReachUnavailable $"the daemon's `%s{CheckReachCommand}` reply could not be parsed: %s{ex.Message}"
 

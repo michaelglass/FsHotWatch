@@ -8855,6 +8855,76 @@ let ``AUTOMATION-225: a report's PASSED classes are the receipt a raw-filter run
         @>
 
 [<Fact(Timeout = 10000)>]
+let ``AUTOMATION-67 recall denominator requires every CTRF failed row promised by the summary`` () =
+    let complete =
+        ctrfReport
+            [ "Acme.Tests.OneTests.first failure", "failed"
+              "Acme.Tests.TwoTests.second failure", "failed" ]
+
+    test
+        <@
+            failedTestsOfReport complete = Some
+                [ "Acme.Tests.OneTests", "first failure"
+                  "Acme.Tests.TwoTests", "second failure" ]
+        @>
+
+    let omittedRow =
+        """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0},
+             "tests":[{"name":"Acme.Tests.OneTests.first failure","status":"failed","duration":1}]}}"""
+
+    test <@ failedTestsOfReport omittedRow = None @>
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-67 completion publishes real CTRF recall through check-reach IPC`` () =
+    withTempDir "a67-recall-ipc" (fun repoRoot ->
+        let project = "Acme.Tests"
+        let reachedClass = "Acme.Tests.ReachedTests"
+        let missedClass = "Acme.Tests.MissedTests"
+
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config project ]) None None None None []
+
+        let report =
+            ctrfReport [ $"%s{reachedClass}.fails", "failed"; $"%s{missedClass}.also fails", "failed" ]
+
+        let launch =
+            { fullSuiteLaunch [ project ] with
+                WouldHaveRun = Some(Map.ofList [ project, ProjectClasses(Set.ofList [ reachedClass ]) ]) }
+
+        let completion =
+            testsFinishedEventWithReports
+                repoRoot
+                [ project, report ]
+                [ project,
+                  TestsFailed(
+                      $"failed %s{reachedClass}.fails (1ms)\nfailed %s{missedClass}.also fails (1ms)",
+                      false,
+                      TimeSpan.FromMilliseconds 2.0
+                  ) ]
+                launch
+
+        let pluginCtx, _, _ = makeTestPruneRecordingCtx ()
+
+        let state =
+            handler.Update pluginCtx handler.Init completion |> Async.RunSynchronously
+
+        let command = handler.Commands |> List.find (fst >> (=) "check-reach") |> snd
+
+        let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+            { RepoRoot = repoRoot
+              Log = ignore
+              Post = ignore
+              IsRunning = fun _ -> false
+              ProjectGraph = pluginCtx.ProjectGraph }
+
+        let json = command commandCtx state [||] |> Async.RunSynchronously
+
+        match FsHotWatch.Cli.IpcParsing.parseCheckReach json with
+        | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
+            test <@ reading.Recall = FsHotWatch.Cli.IpcParsing.FailureRecallMeasured(1, 2, 1.0, false) @>
+        | other -> Assert.Fail($"the completed run must publish a measured recall sample, got %A{other}"))
+
+[<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: a class that RAN AND FAILED is claimed by nothing, not even its own passes`` () =
     // Per-class judgement on that class's own evidence: a class with a failure is not
     // vindicated by its siblings' greens, and the sibling IS vindicated by its own.
@@ -9124,7 +9194,7 @@ let ``OutstandingFailure.quarantine promotes an unknown-scope prior red to the w
             [ redIn "ProjA" (Some "PriorRedTests"); redIn "ProjA" None ]
             affected
 
-    test <@ quarantined.["ProjA"] = [] @>
+    test <@ List.isEmpty quarantined.["ProjA"] @>
     test <@ quarantined.["ProjB"] = [ "OtherTests" ] @>
 
 [<Fact(Timeout = 10000)>]
@@ -10279,3 +10349,35 @@ let ``CheckReach.classify decides reach per failure, and refuses what it cannot 
     match CheckReach.classify None [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests") ] with
     | ReachUnknown reason -> test <@ reason.Contains "no retained impact selection" @>
     | other -> failwithf "a run with no retained selection must be UNKNOWN, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-67 failure recall is an exact numerator over full-run failures and never vacuous`` () =
+    let selection =
+        Map.ofList
+            [ "Alpha.Tests", ProjectClasses(Set.ofList [ "Alpha.OneTests" ])
+              "Beta.Tests", ProjectClasses(Set.ofList [ "Beta.OtherTests" ]) ]
+
+    let failures =
+        [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests")
+          a259Failure "Beta.Tests" (Some "Beta.MissedTests") ]
+
+    test <@ CheckReach.measure (Some selection) failures = RecallMeasured(1, 2, 1.0, false) @>
+
+    let interventionSelection =
+        Map.ofList
+            [ "Alpha.Tests", ProjectClasses(Set.ofList [ "Alpha.OneTests" ])
+              "Beta.Tests", ProjectClasses(Set.ofList [ "Beta.MissedTests" ]) ]
+
+    test <@ CheckReach.measure (Some interventionSelection) failures = RecallMeasured(2, 2, 1.0, true) @>
+
+    match CheckReach.measure (Some selection) [] with
+    | RecallNotMeasurable reason -> test <@ reason.Contains("denominator is zero") @>
+    | measured -> Assert.Fail($"a zero-denominator sample cannot claim recall, got %A{measured}")
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-67 failure recall requires every observed failure to be decidable`` () =
+    let inFull = Map.ofList [ "Alpha.Tests", ProjectInFull ]
+
+    match CheckReach.measure (Some inFull) [ a259Failure "Alpha.Tests" None ] with
+    | RecallNotMeasurable reason -> test <@ reason.Contains("exact failing-test denominator") @>
+    | measured -> Assert.Fail($"an undecidable failure cannot enter a recall denominator, got %A{measured}")

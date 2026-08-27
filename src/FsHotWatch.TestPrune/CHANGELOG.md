@@ -12,6 +12,17 @@
   extraction avoids reflection-driven allocation, and cyclic, pathologically
   deep, or high-fanout graphs fail closed.
 
+- AUTOMATION-67: `check-reach` now reports an exact `conditionalFailureRecall` numerator and denominator
+  for failures observed by the full `confirm` run and reached by the retained selection
+  that `check` would have used. The correctness threshold is 100%: one observed failure
+  outside the selection is a stale-green route. A green full run has a zero denominator
+  and is explicitly `measured: false`, never reported as 100%; undecidable failures and
+  runs without retained selection are likewise not measurements. This is conditional
+  failure recall, not a claim about behaviorally relevant passing tests.
+  The denominator comes from current-run CTRF failed rows only when they reconcile
+  exactly to each report summary's failed count; incomplete console/report evidence is
+  `measured: false`. Both projected and escalated-confirm comparisons persist it.
+
 - AUTOMATION-67: prior red tests are quarantined into the next ordinary impact run;
   class-scoped reds are added to the generated filter and unknown-scope reds promote
   their project to a full run. Retiring a filtered red now requires the exact failing

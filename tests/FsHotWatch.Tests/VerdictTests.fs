@@ -1452,7 +1452,7 @@ let private publishConfirm
         false
         (TestRunReport.ofScopeOnly finalScope)
         (match impactScoped with
-         | Some reading -> Verdict.ExecutedReading reading
+         | Some reading -> Verdict.ExecutedReading(reading, ReachUnavailable "test fixture")
          | None -> Verdict.NoReading)
         Map.empty
         []
@@ -1692,15 +1692,18 @@ let ``every comparison round-trips through the verdict JSON`` () =
                     { Scope = ImpactFiltered(5, 6)
                       Outcome = Verdict.Red
                       FailingSuites = [ "Lib.Tests"; "Api.Tests" ]
-                      Basis = Verdict.SampleBasis.Executed } }
+                      Basis = Verdict.SampleBasis.Executed }
+              FailureRecall = None }
 
         let cases =
-            [ withRun Verdict.Divergence.Agreed
+            [ { withRun Verdict.Divergence.Agreed with
+                  FailureRecall = Some(FailureRecallMeasured(3, 4, 1.0, false)) }
               withRun Verdict.Divergence.CheckMissedFailures
               withRun Verdict.Divergence.CheckOnlyFailures
               withRun (Verdict.Divergence.Incomparable "the escalated full-suite run reached no verdict")
               { Divergence = Verdict.Divergence.NoImpactScopedRun
-                ImpactScoped = None }
+                ImpactScoped = None
+                FailureRecall = None }
               Verdict.CheckComparison.notRecorded ]
 
         for comparison in cases do
@@ -1779,7 +1782,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                 { spec with
                     Comparison =
                         { Divergence = Verdict.Divergence.Agreed
-                          ImpactScoped = None } }
+                          ImpactScoped = None
+                          FailureRecall = None } }
         @>
 
     // ...and the mirror: records a reading under a classification that says there was none.
@@ -1789,7 +1793,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                 { spec with
                     Comparison =
                         { Divergence = Verdict.Divergence.NoImpactScopedRun
-                          ImpactScoped = reading } }
+                          ImpactScoped = reading
+                          FailureRecall = None } }
         @>
 
     // `check` never escalates (`CheckVerdict.confirmNeedsFullRun` is false in `InnerLoop`),
@@ -1802,7 +1807,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                     Scope = ImpactFiltered(5, 6)
                     Comparison =
                         { Divergence = Verdict.Divergence.Agreed
-                          ImpactScoped = reading } }
+                          ImpactScoped = reading
+                          FailureRecall = None } }
         @>
 
     // CONTROLS. Without these, a `create` that had started refusing every comparison would
@@ -1813,7 +1819,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                 { spec with
                     Comparison =
                         { Divergence = Verdict.Divergence.Agreed
-                          ImpactScoped = reading } })
+                          ImpactScoped = reading
+                          FailureRecall = None } })
                 .Divergence = Verdict.Divergence.Agreed
         @>
 
@@ -1823,7 +1830,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                 { spec with
                     Comparison =
                         { Divergence = Verdict.Divergence.NoImpactScopedRun
-                          ImpactScoped = None } })
+                          ImpactScoped = None
+                          FailureRecall = None } })
                 .Divergence = Verdict.Divergence.NoImpactScopedRun
         @>
 
@@ -1836,7 +1844,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
                 { spec with
                     Comparison =
                         { Divergence = Verdict.Divergence.Incomparable "no full-suite result"
-                          ImpactScoped = impactScoped } }
+                          ImpactScoped = impactScoped
+                          FailureRecall = None } }
 
         test <@ v.ImpactScopedRun = impactScoped @>
 
@@ -3323,7 +3332,8 @@ let private comparisonWith (d: Verdict.Divergence) : Verdict.CheckComparison =
             { Scope = ImpactFiltered(5, 6)
               Outcome = Verdict.Green
               FailingSuites = []
-              Basis = Verdict.SampleBasis.Executed } }
+              Basis = Verdict.SampleBasis.Executed }
+      FailureRecall = None }
 
 [<Fact>]
 let ``AUTOMATION-111: a recall miss is named as a SELECTION BUG in the verdict output`` () =
@@ -3340,6 +3350,40 @@ let ``AUTOMATION-111: a recall miss is named as a SELECTION BUG in the verdict o
     test <@ text.Contains "RECALL" @>
     // …and it must say what to do about it, which is NOT "fix the test".
     test <@ text.Contains "fix the selector" @>
+
+[<Fact>]
+let ``AUTOMATION-67: verdict output reports the persisted conditional recall fraction and threshold`` () =
+    let comparison =
+        { comparisonWith Verdict.Divergence.CheckMissedFailures with
+            FailureRecall = Some(FailureRecallMeasured(3, 4, 1.0, false)) }
+
+    let text =
+        hintsFor
+            { greenVerdict "t" 1 with
+                Outcome = Verdict.Red
+                Comparison = comparison }
+        |> String.concat "\n"
+
+    test <@ text.Contains "conditional failing-test recall 3/4 (75.0%)" @>
+    test <@ text.Contains "threshold 100%" @>
+    test <@ text.Contains "BELOW THRESHOLD" @>
+
+[<Fact>]
+let ``AUTOMATION-67: zero-denominator recall is rendered as not measurable, never perfect`` () =
+    let comparison =
+        { comparisonWith Verdict.Divergence.Agreed with
+            FailureRecall =
+                Some(FailureRecallNotMeasurable "the full run observed no failures, so the recall denominator is zero") }
+
+    let text =
+        hintsFor
+            { greenVerdict "t" 0 with
+                Comparison = comparison }
+        |> String.concat "\n"
+
+    test <@ text.Contains "conditional failing-test recall not measurable" @>
+    test <@ text.Contains "denominator is zero" @>
+    test <@ not (text.Contains "100.0%") @>
 
 [<Fact>]
 let ``AUTOMATION-111: the recall alarm is the FIRST thing in the block`` () =
@@ -3367,7 +3411,8 @@ let ``AUTOMATION-111: no recall alarm when the two readings agreed`` () =
         [ comparisonWith Verdict.Divergence.Agreed
           comparisonWith Verdict.Divergence.CheckOnlyFailures
           { Divergence = Verdict.Divergence.NoImpactScopedRun
-            ImpactScoped = None }
+            ImpactScoped = None
+            FailureRecall = None }
           Verdict.CheckComparison.notRecorded ]
 
     for c in comparisons do
@@ -3508,7 +3553,8 @@ let private reachOf (reach: CheckReach) : CheckReachReading =
     ReachRecorded
         { RunId = Some projectionRunId
           Scope = ImpactFiltered(2, 6)
-          Reach = reach }
+          Reach = reach
+          Recall = FailureRecallNotMeasurable "test fixture" }
 
 /// The projection, then the classification the verdict would record for it.
 let private classify
@@ -3518,6 +3564,112 @@ let private classify
     (causes: Verdict.RedCause list)
     : Verdict.CheckComparison =
     Verdict.comparisonOf (Verdict.ProjectedThrough reading) gradedRun earned statuses causes
+
+[<Fact>]
+let ``AUTOMATION-67 projected confirm evidence carries conditional recall into the verdict comparison`` () =
+    let reading =
+        ReachRecorded
+            { RunId = Some projectionRunId
+              Scope = ImpactFiltered(2, 6)
+              Reach = ReachedAFailure [ "Lib.Tests" ]
+              Recall = FailureRecallMeasured(3, 4, 1.0, false) }
+
+    let comparison = classify reading Verdict.Red Map.empty []
+    test <@ comparison.FailureRecall = Some(FailureRecallMeasured(3, 4, 1.0, false)) @>
+
+[<Fact>]
+let ``AUTOMATION-67 escalated confirm evidence also carries full-run conditional recall`` () =
+    let executed: Verdict.ImpactScopedRun =
+        { Scope = ImpactFiltered(2, 6)
+          Outcome = Verdict.Green
+          FailingSuites = []
+          Basis = Verdict.SampleBasis.Executed }
+
+    let comparison =
+        Verdict.comparisonOf
+            (Verdict.ExecutedReading(
+                executed,
+                ReachRecorded
+                    { RunId = Some projectionRunId
+                      Scope = ImpactFiltered(2, 6)
+                      Reach = ReachedAFailure [ "Lib.Tests" ]
+                      Recall = FailureRecallMeasured(4, 4, 1.0, true) }
+            ))
+            gradedRun
+            Verdict.Red
+            Map.empty
+            []
+
+    test <@ comparison.FailureRecall = Some(FailureRecallMeasured(4, 4, 1.0, true)) @>
+
+[<Fact>]
+let ``AUTOMATION-67 projected recall from another run is not measurable`` () =
+    let reading =
+        ReachRecorded
+            { RunId = Some(Guid.Parse("33333333-3333-3333-3333-333333333333"))
+              Scope = ImpactFiltered(2, 6)
+              Reach = ReachedAFailure [ "Lib.Tests" ]
+              Recall = FailureRecallMeasured(4, 4, 1.0, true) }
+
+    let comparison = classify reading Verdict.Red Map.empty []
+
+    match comparison.FailureRecall with
+    | Some(FailureRecallNotMeasurable reason) -> test <@ reason.Contains "graded run" @>
+    | other -> failwithf "expected a run-bound not-measurable recall, got %A" other
+
+[<Fact>]
+let ``AUTOMATION-67 executed recall without the graded run id is not measurable`` () =
+    let executed: Verdict.ImpactScopedRun =
+        { Scope = ImpactFiltered(2, 6)
+          Outcome = Verdict.Green
+          FailingSuites = []
+          Basis = Verdict.SampleBasis.Executed }
+
+    let comparison =
+        Verdict.comparisonOf
+            (Verdict.ExecutedReading(
+                executed,
+                ReachRecorded
+                    { RunId = None
+                      Scope = ImpactFiltered(2, 6)
+                      Reach = ReachedAFailure [ "Lib.Tests" ]
+                      Recall = FailureRecallMeasured(4, 4, 1.0, true) }
+            ))
+            gradedRun
+            Verdict.Red
+            Map.empty
+            []
+
+    match comparison.FailureRecall with
+    | Some(FailureRecallNotMeasurable reason) -> test <@ reason.Contains "graded run" @>
+    | other -> failwithf "expected a run-bound not-measurable recall, got %A" other
+
+[<Fact>]
+let ``AUTOMATION-67 run-bound recall survives comparison creation and the verdict wire`` () =
+    withTempDir "recall-run-binding" (fun root ->
+        makeRepo root
+
+        let comparison =
+            classify
+                (ReachRecorded
+                    { RunId = Some projectionRunId
+                      Scope = ImpactFiltered(2, 6)
+                      Reach = ReachedAFailure [ "Lib.Tests" ]
+                      Recall = FailureRecallMeasured(4, 4, 1.0, true) })
+                Verdict.Red
+                Map.empty
+                []
+
+        writeSpec
+            root
+            { greenVerdict "sha256:recall-wire" 2 with
+                RunId = Some projectionRunId
+                Comparison = comparison }
+
+        match Verdict.read root with
+        | Verdict.Reading.Found verdict ->
+            test <@ verdict.Comparison.FailureRecall = Some(FailureRecallMeasured(4, 4, 1.0, true)) @>
+        | other -> failwithf "expected a readable verdict, got %A" other)
 
 let private aboutThisTree (source: string) : Verdict.RedCause =
     { Source = source
@@ -3636,13 +3788,15 @@ let ``every way of not being able to decide lands somewhere that is NOT agreemen
           ReachRecorded
               { RunId = Some otherRun
                 Scope = ImpactFiltered(2, 6)
-                Reach = NoFailuresToReach },
+                Reach = NoFailuresToReach
+                Recall = FailureRecallNotMeasurable "test fixture" },
           Verdict.Green
           "the projection names no run",
           ReachRecorded
               { RunId = None
                 Scope = ImpactFiltered(2, 6)
-                Reach = NoFailuresToReach },
+                Reach = NoFailuresToReach
+                Recall = FailureRecallNotMeasurable "test fixture" },
           Verdict.Green
           "the escalated run reached no verdict", reachOf NoFailuresToReach, Verdict.Incomplete "the tree moved"
           "the run says failures exist and green at once", reachOf ReachedNoFailure, Verdict.Green ]
@@ -3710,7 +3864,8 @@ let ``the sample's BASIS round-trips, and a verdict that predates the field read
                                   FailingSuites = []
                                   Basis = basis }
                                 : Verdict.ImpactScopedRun
-                            ) } }
+                            )
+                          FailureRecall = None } }
 
             match Verdict.read root with
             | Verdict.Reading.Found v ->

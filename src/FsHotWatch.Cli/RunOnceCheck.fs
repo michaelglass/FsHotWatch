@@ -418,7 +418,7 @@ let runOnceAndVerdictWith
         // the selection retained at the widening; a `check` offers nothing.
         let checkScoped =
             match impactScoped, checkMode with
-            | Some reading, _ -> Verdict.ExecutedReading reading
+            | Some reading, _ -> Verdict.ExecutedReading(reading, readCheckReach daemon.Host)
             | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(readCheckReach daemon.Host)
             | None, CheckVerdict.InnerLoop -> Verdict.NoReading
 

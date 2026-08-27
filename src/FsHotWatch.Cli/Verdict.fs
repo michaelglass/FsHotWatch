@@ -727,13 +727,15 @@ module Divergence =
 /// refuses the two pairs that are self-contradictory (see `divergenceAgreesWithRecord`).
 type CheckComparison =
     { Divergence: Divergence
-      ImpactScoped: ImpactScopedRun option }
+      ImpactScoped: ImpactScopedRun option
+      FailureRecall: FailureRecall option }
 
 module CheckComparison =
     /// What a `check` records, and what a verdict written before AUTOMATION-259 reads as.
     let notRecorded: CheckComparison =
         { Divergence = Divergence.NotRecorded
-          ImpactScoped = None }
+          ImpactScoped = None
+          FailureRecall = None }
 
     /// The one thing the two runs can be compared ON: did it find failures? `Incomplete` is
     /// neither a yes nor a no — it is the ABSENCE of an answer, and folding it into "found
@@ -789,7 +791,8 @@ module CheckComparison =
                         $"the impact-scoped run reached no verdict of its own (%s{whyNoAnswer pre.Outcome})"
 
         { Divergence = divergence
-          ImpactScoped = impactScoped }
+          ImpactScoped = impactScoped
+          FailureRecall = None }
 
 /// The identity of the fshw that produced a verdict — `DaemonIdentity.BinaryIdentity`
 /// reused, not a fourth identity type.
@@ -961,6 +964,9 @@ type Verdict =
 
     /// What the impact-scoped run concluded, when there was one.
     member this.ImpactScopedRun = this.comparison.ImpactScoped
+
+    /// Conditional recall among exact failing tests observed by the full confirm run.
+    member this.ConditionalFailureRecall = this.comparison.FailureRecall
 
     /// AUTOMATION-303. The failing ledger diagnostics behind a red exit code — including
     /// the ones no plugin owns (`fcs`). Empty on a green.
@@ -1235,6 +1241,25 @@ let private divergenceJson (d: Divergence) : obj =
 /// EARNED, and two same-named fields one nesting apart is how a reader lifts the wrong one.
 let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) (c: CheckComparison) : obj =
     {| divergence = divergenceJson c.Divergence
+       conditionalFailureRecall =
+        (match c.FailureRecall with
+         | Some(FailureRecallMeasured(reached, total, threshold, acceptable)) ->
+             box
+                 {| measured = true
+                    reached = reached
+                    total = total
+                    threshold = threshold
+                    acceptable = box acceptable
+                    reason = null |}
+         | Some(FailureRecallNotMeasurable reason) ->
+             box
+                 {| measured = false
+                    reached = 0
+                    total = 0
+                    threshold = 1.0
+                    acceptable = null
+                    reason = box reason |}
+         | None -> null)
        impactScopedRun =
         (match c.ImpactScoped with
          | Some r ->
@@ -1464,11 +1489,51 @@ let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
 let private parseCheckComparison (root: JsonElement) : CheckComparison =
     match tryProp root "checkComparison" with
     | Some el when el.ValueKind = JsonValueKind.Object ->
+        let failureRecall =
+            match tryProp el "conditionalFailureRecall" with
+            | Some recall when recall.ValueKind = JsonValueKind.Object ->
+                let measured =
+                    tryProp recall "measured"
+                    |> Option.exists (fun value -> value.ValueKind = JsonValueKind.True)
+
+                if measured then
+                    match
+                        tryInt recall "reached",
+                        tryInt recall "total",
+                        tryProp recall "threshold",
+                        tryProp recall "acceptable"
+                    with
+                    | Some reached, Some total, Some threshold, Some acceptable when
+                        total > 0
+                        && reached >= 0
+                        && reached <= total
+                        && threshold.ValueKind = JsonValueKind.Number
+                        && (acceptable.ValueKind = JsonValueKind.True
+                            || acceptable.ValueKind = JsonValueKind.False)
+                        ->
+                        let thresholdValue = threshold.GetDouble()
+                        let acceptableValue = acceptable.GetBoolean()
+
+                        if thresholdValue = 1.0 && acceptableValue = (reached = total) then
+                            Some(FailureRecallMeasured(reached, total, thresholdValue, acceptableValue))
+                        else
+                            Some(FailureRecallNotMeasurable "recorded recall is internally inconsistent")
+                    | _ -> Some(FailureRecallNotMeasurable "recorded recall fields are invalid")
+                else
+                    Some(
+                        FailureRecallNotMeasurable(
+                            tryString recall "reason"
+                            |> Option.defaultValue "no measurable recall denominator"
+                        )
+                    )
+            | _ -> None
+
         { Divergence =
             tryProp el "divergence"
             |> Option.map parseDivergence
             |> Option.defaultValue (Divergence.Incomparable "the recorded comparison has no classification")
-          ImpactScoped = tryProp el "impactScopedRun" |> Option.bind parseImpactScopedRun }
+          ImpactScoped = tryProp el "impactScopedRun" |> Option.bind parseImpactScopedRun
+          FailureRecall = failureRecall }
     | _ -> CheckComparison.notRecorded
 
 /// A plugin outcome token this build does not recognize is NOT dropped and NOT
@@ -2149,7 +2214,7 @@ let projectedImpactScopedRun
 type CheckScopedEvidence =
     /// `confirm` escalated: the impact-scoped run it threw away was EXECUTED and graded
     /// in-process, before the forced full suite.
-    | ExecutedReading of ImpactScopedRun
+    | ExecutedReading of ImpactScopedRun * CheckReachReading
     /// `confirm` did not escalate — the run its own scan provoked was already unfiltered.
     /// The reading is PROJECTED from that run through the retained impact selection.
     | ProjectedThrough of CheckReachReading
@@ -2169,8 +2234,25 @@ let comparisonOf
     (statuses: Map<string, ParsedPluginStatus>)
     (causes: RedCause list)
     : CheckComparison =
+    let boundRecall reading =
+        match reading, runReport.RunId with
+        | ReachRecorded report, Some gradedRunId when report.RunId = Some gradedRunId -> report.Recall
+        | ReachRecorded report, Some gradedRunId ->
+            FailureRecallNotMeasurable(
+                $"check-reach recall names run %A{report.RunId}, but the graded run is %O{gradedRunId}"
+            )
+        | ReachRecorded _, None ->
+            FailureRecallNotMeasurable "the graded run has no run id, so check-reach recall cannot be bound to it"
+        | ReachUnavailable reason, _ -> FailureRecallNotMeasurable reason
+
     match evidence with
-    | ExecutedReading r -> CheckComparison.ofRun (Some r) earned
+    | ExecutedReading(r, reading) ->
+        { CheckComparison.ofRun (Some r) earned with
+            FailureRecall = Some(boundRecall reading) }
     | ProjectedThrough reading ->
-        CheckComparison.ofRun (Some(projectedImpactScopedRun reading runReport earned statuses causes)) earned
+        let comparison =
+            CheckComparison.ofRun (Some(projectedImpactScopedRun reading runReport earned statuses causes)) earned
+
+        { comparison with
+            FailureRecall = Some(boundRecall reading) }
     | NoReading -> CheckComparison.ofRun None earned

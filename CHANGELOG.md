@@ -4,6 +4,14 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+`check-reach` and the persisted verdict's `checkComparison.conditionalFailureRecall` now
+include measured failure recall for full-suite `confirm` evidence:
+`reached / total` observed failing tests, with a correctness threshold of 100%. Zero
+failures is recorded as not measurable rather than vacuous 100%, and the field is
+explicitly limited to observed failures—not general relevance recall. (AUTOMATION-67)
+The measurement is accepted only when the `check-reach` receipt names the exact run
+graded by the verdict; missing or mismatched run identity is recorded as not measurable.
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —

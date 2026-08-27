@@ -277,6 +277,14 @@ type CheckReach =
     /// direction manufactures an agreement that was never compared.
     | ReachUnknown of reason: string
 
+/// Exact recall among failures observed by one full `confirm` run. This is deliberately
+/// not called general test-selection recall: passing tests provide no oracle for whether
+/// they were behaviorally relevant. The correctness threshold is 100% because one
+/// observed full-suite failure outside `check`'s retained selection is a stale green.
+type FailureRecall =
+    | RecallMeasured of reached: int * total: int * threshold: float * acceptable: bool
+    | RecallNotMeasurable of reason: string
+
 /// What a completed run may VINDICATE in one project — the honest reach of the
 /// evidence it produced. Absent from `RunCoverage` ⇒ this run says nothing at all
 /// about the project (it was skipped, it never ran, or it ran under a filter whose
@@ -576,6 +584,8 @@ type TestRunLaunch =
     }
 
 module CheckReach =
+    let private recallThreshold = 1.0
+
     /// The wire token. Total.
     let token (r: CheckReach) : string =
         match r with
@@ -597,6 +607,48 @@ module CheckReach =
             match failure.Class with
             | Some cls -> Some(Set.contains cls classes)
             | None -> None
+
+    /// Measure the retained selection against every distinct failure the full run
+    /// observed. Zero failures is no sample, not perfect recall. One undecidable
+    /// project-level failure makes the denominator unknown, so the whole measurement
+    /// is refused rather than silently shrinking the denominator.
+    let measure
+        (wouldHaveRun: Map<string, ProjectSelection> option)
+        (failures: OutstandingFailure list)
+        : FailureRecall =
+        match wouldHaveRun with
+        | None -> RecallNotMeasurable "this run carries no retained impact selection"
+        | Some _ when List.isEmpty failures ->
+            RecallNotMeasurable "the full run observed no failures, so the recall denominator is zero"
+        | Some selection ->
+            let distinctFailures =
+                failures
+                |> List.distinctBy (fun failure -> failure.Project, failure.Class, failure.Method)
+
+            match
+                distinctFailures
+                |> List.tryFind (fun failure -> Option.isNone failure.Class || Option.isNone failure.Method)
+            with
+            | Some failure ->
+                RecallNotMeasurable
+                    $"the %s{failure.Project} failure names no exact test class and method, so an exact failing-test denominator cannot be formed"
+            | None ->
+                let decisions =
+                    distinctFailures |> List.map (fun failure -> failure, reaches selection failure)
+
+                match decisions |> List.tryFind (fun (_, decision) -> Option.isNone decision) with
+                | Some(failure, _) ->
+                    RecallNotMeasurable
+                        $"the %s{failure.Project} failure cannot be projected through the retained selection"
+                | None ->
+                    let total = List.length decisions
+
+                    let reached =
+                        decisions
+                        |> List.sumBy (fun (_, decision) -> if decision = Some true then 1 else 0)
+
+                    let recall = float reached / float total
+                    RecallMeasured(reached, total, recallThreshold, recall >= recallThreshold)
 
     /// Classify one completed run against the selection `check` would have used.
     ///
@@ -1946,6 +1998,69 @@ let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set
         | Some tests when not (Set.isEmpty tests) -> Some(report.Project, tests)
         | _ -> None)
     |> Map.ofList
+
+/// Exact failed rows from a COMPLETE CTRF report. The summary's failed count is the
+/// denominator authority; if the per-test array omits even one failure, this refuses
+/// the sample rather than shrinking recall's denominator to the rows that happened to
+/// parse.
+let internal failedTestsOfReport (json: string) : (string * string) list option =
+    match Ctrf.trySummary json with
+    | None -> None
+    | Some summary ->
+        let records = Flakiness.parseCtrfTests json
+
+        let failed =
+            records |> List.filter (fun record -> record.Outcome = Flakiness.Failed)
+
+        if records.Length <> summary.Total || failed.Length <> summary.Failed then
+            None
+        else
+            failed |> List.map (fun record -> splitTestName record.Name) |> Some
+
+let internal failedTestsOfRun
+    (repoRoot: string)
+    (runId: Guid)
+    (results: TestResults)
+    : Result<OutstandingFailure list, string> =
+    let reports =
+        Ctrf.reportsForRun repoRoot runId
+        |> List.map (fun report -> report.Project, report)
+        |> Map.ofList
+
+    results.Results
+    |> Map.toList
+    |> List.filter (fun (_, result) ->
+        match result with
+        | TestsFailed _
+        | TestsTimedOut _ -> true
+        | _ -> false)
+    |> List.fold
+        (fun state (project, result) ->
+            state
+            |> Result.bind (fun accumulated ->
+                if TestResult.isTimedOut result then
+                    Error $"%s{project} timed out, so no complete failing-test denominator exists"
+                else
+                    match Map.tryFind project reports with
+                    | None -> Error $"%s{project} failed but wrote no current-run CTRF report"
+                    | Some report ->
+                        try
+                            match File.ReadAllText(report.Path) |> failedTestsOfReport with
+                            | None -> Error $"%s{project}'s CTRF failed rows do not reconcile to its summary"
+                            | Some identities ->
+                                identities
+                                |> List.map (fun (className, methodName) ->
+                                    { Project = project
+                                      Class = Some className
+                                      Method = Some methodName
+                                      File = report.Path
+                                      Entry = ErrorLedger.ErrorEntry.error "observed full-run failure" })
+                                |> List.append accumulated
+                                |> Ok
+                        with
+                        | :? IOException
+                        | :? UnauthorizedAccessException -> Error $"%s{project}'s CTRF report could not be read"))
+        (Ok [])
 
 /// The reds a completed run FOUND, as outstanding failures (AUTOMATION-125). Pure:
 /// the same run always yields the same set, so the ledger projection is a function
@@ -3333,7 +3448,7 @@ let create
     ///
     /// `None` until a run completes: nothing has been projected, and the CLI must read
     /// that as "no sample", never as "they agreed".
-    let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach) option =
+    let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option =
         None
 
     /// The test projects this daemon can actually RUN — i.e. the ones in
@@ -4415,7 +4530,7 @@ let create
                                        reason =
                                         "no test run has completed in this session, so there is no result to project" |}
                                 )
-                        | Some(runId, wouldHaveRun, reach) ->
+                        | Some(runId, wouldHaveRun, reach, recall) ->
                             let projects = allConfigs |> List.map (fun c -> c.Project)
 
                             let scope, ranProjects, totalProjects =
@@ -4443,6 +4558,17 @@ let create
                                 | ReachedNoFailure
                                 | NoFailuresToReach -> null
 
+                            let (recallMeasured,
+                                 recallReached,
+                                 recallTotal,
+                                 recallThreshold,
+                                 recallAcceptable,
+                                 recallReason) =
+                                match recall with
+                                | RecallMeasured(reached, total, threshold, acceptable) ->
+                                    true, reached, total, threshold, box acceptable, null
+                                | RecallNotMeasurable why -> false, 0, 0, 1.0, null, box why
+
                             return
                                 JsonSerializer.Serialize(
                                     {| recorded = true
@@ -4452,7 +4578,14 @@ let create
                                        totalProjects = totalProjects
                                        reach = CheckReach.token reach
                                        failingSuites = failingSuites
-                                       reason = reason |}
+                                       reason = reason
+                                       conditionalFailureRecall =
+                                        {| measured = recallMeasured
+                                           reached = recallReached
+                                           total = recallTotal
+                                           threshold = recallThreshold
+                                           acceptable = recallAcceptable
+                                           reason = recallReason |} |}
                                 )
                     }
 
@@ -5225,6 +5358,11 @@ let create
 
                     let foundFailures = failuresOf state.TestClassFiles testResults
 
+                    let conditionalFailureRecall =
+                        match failedTestsOfRun repoRoot completed.RunId testResults with
+                        | Ok exactFailures -> CheckReach.measure launch.WouldHaveRun exactFailures
+                        | Error reason -> RecallNotMeasurable reason
+
                     // AUTOMATION-259. Classified HERE, against THIS run's failures and the
                     // selection retained at its launch, and written before the branch
                     // explosion below so no return path can drop it. Nothing extra runs
@@ -5234,7 +5372,8 @@ let create
                         Some(
                             completed.RunId,
                             launch.WouldHaveRun,
-                            CheckReach.classify launch.WouldHaveRun foundFailures
+                            CheckReach.classify launch.WouldHaveRun foundFailures,
+                            conditionalFailureRecall
                         )
                     )
 

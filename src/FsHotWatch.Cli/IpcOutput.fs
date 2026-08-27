@@ -1108,7 +1108,7 @@ let pollAndRender
         // never compares, so there is nothing to ask the daemon for.
         let checkScoped =
             match impactScoped.Value, checkMode with
-            | Some reading, _ -> Verdict.ExecutedReading reading
+            | Some reading, _ -> Verdict.ExecutedReading(reading, getCheckReach ())
             | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(getCheckReach ())
             | None, CheckVerdict.InnerLoop -> Verdict.NoReading
 
@@ -1171,7 +1171,11 @@ let pollAndRender
                 // exactly the "the escalated run never completed" sample; without one
                 // there is nothing to offer, and the verdict says so.
                 (match impactScoped.Value with
-                 | Some reading -> Verdict.ExecutedReading reading
+                 | Some reading ->
+                     Verdict.ExecutedReading(
+                         reading,
+                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
+                     )
                  | None -> Verdict.NoReading)
                 finalStatuses.Value
                 finalCauses.Value
@@ -1196,7 +1200,11 @@ let pollAndRender
                 // exactly the "the escalated run never completed" sample; without one
                 // there is nothing to offer, and the verdict says so.
                 (match impactScoped.Value with
-                 | Some reading -> Verdict.ExecutedReading reading
+                 | Some reading ->
+                     Verdict.ExecutedReading(
+                         reading,
+                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
+                     )
                  | None -> Verdict.NoReading)
                 finalStatuses.Value
                 finalCauses.Value

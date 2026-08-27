@@ -702,6 +702,17 @@ module AgentHints =
             | Verdict.Divergence.Incomparable _
             | Verdict.Divergence.NotRecorded -> []
 
+        let conditionalFailureRecallLines =
+            match v.ConditionalFailureRecall with
+            | Some(IpcParsing.FailureRecallMeasured(reached, total, threshold, acceptable)) ->
+                let percent = 100.0 * float reached / float total
+                let disposition = if acceptable then "acceptable" else "BELOW THRESHOLD"
+
+                [ $"    RECALL   conditional failing-test recall %d{reached}/%d{total} (%0.1f{percent}%%); threshold %0.0f{threshold * 100.0}%% — %s{disposition}" ]
+            | Some(IpcParsing.FailureRecallNotMeasurable reason) ->
+                [ $"    RECALL   conditional failing-test recall not measurable — %s{reason}" ]
+            | None -> []
+
         // A run can be RED with every test project at `failed: 0` — the failure living in
         // `analyzers`, `format` or `build` instead. Printing only suites then shows a wall
         // of passing counts on a failing run, which reads as "the red is not mine".
@@ -837,6 +848,7 @@ module AgentHints =
         // the TOOL, not about this change, and a reader who meets it after a wall of test
         // causes has already started debugging the wrong thing.
         recallMissLines
+        @ conditionalFailureRecallLines
         @ causeHeader
         @ causeLines
         @ noSuiteFactLines
