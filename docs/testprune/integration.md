@@ -240,6 +240,46 @@ type ExampleExtension() =
 an extension for Falco web apps that maps URL routes to integration
 tests.
 
+### SqlHydra table coupling
+
+`TestPrune.SqlHydra.SqlHydraExtension` derives table-level shared-state edges
+from an indexed SqlHydra query graph. Construct it with the fully qualified
+generated-module prefix and register it with the host that runs extensions:
+
+```fsharp
+open TestPrune.Extensions
+open TestPrune.SqlHydra
+
+let extension: ITestPruneExtension =
+    SqlHydraExtension("MyApp.Database.Generated") :> ITestPruneExtension
+```
+
+Registration is explicit: referencing the assembly does not make the extension
+run. The host must call `AnalyzeEdges` after core symbols and dependencies have
+been indexed, then persist the returned edges with the core graph.
+The prefix must be a dot-separated qualified name with no empty segments;
+invalid input throws during extension construction rather than silently
+disabling SQL attribution.
+
+The extension recognizes a table only from a core `Calls` edge to a non-extern
+generated value whose name has exactly this shape:
+`<prefix>.<schema>.<table>`. This is the signal produced for SqlHydra's generated
+`let articles = table<articles>` value. Broad `UsesType` edges are deliberately
+ignored: real FCS graphs also emit them for the generated schema module and enum
+types, so treating them as tables couples unrelated queries through bogus
+resources such as `public` or `article_status`.
+
+The shared-state key retains both schema and table (`public.articles`), so equal
+table names in different schemas remain independent. Manual `TestPrune.Sql`
+facts intended to couple with generated facts must use that same
+schema-qualified table text. `select`, `selectTask`, and `selectAsync` calls
+owned by `SqlHydra.Query`'s select builders are reads; the corresponding
+SqlHydra insert, update, and delete builder calls are writes. A same-named call
+from another library is ignored. Attribution is table-level. A symbol that
+performs several access kinds or touches several tables produces their
+conservative product; that can select extra tests, but cannot discard a genuine
+reader/writer edge.
+
 ### Extension-owned storage
 
 Most extensions derive their facts from the symbol graph and need no

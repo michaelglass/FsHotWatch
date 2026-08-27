@@ -69,8 +69,22 @@ module ``Table reference parsing`` =
 
 module ``SqlHydraExtension graph analysis`` =
 
+    [<Theory>]
+    [<InlineData(null)>]
+    [<InlineData("")>]
+    [<InlineData(" ")>]
+    [<InlineData(".Generated")>]
+    [<InlineData("Generated.")>]
+    [<InlineData("Generated..Database")>]
+    [<InlineData(" Generated")>]
+    let ``invalid generated module prefix is rejected instead of disabling attribution`` (prefix: string) =
+        let store = InMemoryStore.fromAnalysisResults []
+
+        raises<System.ArgumentException>
+            <@ (SqlHydraExtension(prefix) :> ITestPruneExtension).AnalyzeEdges store [] "" @>
+
     [<Fact>]
-    let ``detects read when function calls selectTask and uses SqlHydra table type`` () =
+    let ``detects read when function calls selectTask and generated table value`` () =
         let result =
             AnalysisResult.Create(
                 [ { FullName = "Queries.getArticles"
@@ -88,7 +102,7 @@ module ``SqlHydraExtension graph analysis`` =
                     ContentHash = ""
                     IsExtern = true }
                   { FullName = "Generated.public.articles"
-                    Kind = Type
+                    Kind = Value
                     SourceFile = "src/DbTypes.fs"
                     LineStart = 1
                     LineEnd = 5
@@ -100,7 +114,7 @@ module ``SqlHydraExtension graph analysis`` =
                     Source = "core" }
                   { FromSymbol = "Queries.getArticles"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType
+                    Kind = Calls
                     Source = "core" } ],
                 []
             )
@@ -108,11 +122,11 @@ module ``SqlHydraExtension graph analysis`` =
         let store = InMemoryStore.fromAnalysisResults [ result ]
         let facts = SqlHydraExtension.extractFacts "Generated" store
         test <@ facts.Length = 1 @>
-        test <@ facts[0].Table = "articles" @>
+        test <@ facts[0].Table = "public.articles" @>
         test <@ facts[0].Access = Read @>
 
     [<Fact>]
-    let ``detects write when function calls insertTask and uses SqlHydra table type`` () =
+    let ``detects write when function calls insertTask and generated table value`` () =
         let result =
             AnalysisResult.Create(
                 [ { FullName = "Commands.createArticle"
@@ -130,7 +144,7 @@ module ``SqlHydraExtension graph analysis`` =
                     ContentHash = ""
                     IsExtern = true }
                   { FullName = "Generated.public.articles"
-                    Kind = Type
+                    Kind = Value
                     SourceFile = "src/DbTypes.fs"
                     LineStart = 1
                     LineEnd = 5
@@ -142,7 +156,7 @@ module ``SqlHydraExtension graph analysis`` =
                     Source = "core" }
                   { FromSymbol = "Commands.createArticle"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType
+                    Kind = Calls
                     Source = "core" } ],
                 []
             )
@@ -150,7 +164,7 @@ module ``SqlHydraExtension graph analysis`` =
         let store = InMemoryStore.fromAnalysisResults [ result ]
         let facts = SqlHydraExtension.extractFacts "Generated" store
         test <@ facts.Length = 1 @>
-        test <@ facts[0].Table = "articles" @>
+        test <@ facts[0].Table = "public.articles" @>
         test <@ facts[0].Access = Write @>
 
     [<Fact>]
@@ -186,7 +200,7 @@ module ``SqlHydraExtension graph analysis`` =
                     ContentHash = ""
                     IsExtern = true }
                   { FullName = "Generated.public.articles"
-                    Kind = Type
+                    Kind = Value
                     SourceFile = "src/DbTypes.fs"
                     LineStart = 1
                     LineEnd = 5
@@ -198,7 +212,7 @@ module ``SqlHydraExtension graph analysis`` =
                     Source = "core" }
                   { FromSymbol = "Queries.getArticles"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType
+                    Kind = Calls
                     Source = "core" }
                   { FromSymbol = "Commands.createArticle"
                     ToSymbol = "SqlHydra.Query.insertTask"
@@ -206,7 +220,7 @@ module ``SqlHydraExtension graph analysis`` =
                     Source = "core" }
                   { FromSymbol = "Commands.createArticle"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType
+                    Kind = Calls
                     Source = "core" } ],
                 []
             )
@@ -276,7 +290,7 @@ let private dsl (fullName: string) : SymbolInfo =
 
 let private table (fullName: string) : SymbolInfo =
     { FullName = fullName
-      Kind = Type
+      Kind = Value
       SourceFile = "src/DbTypes.fs"
       LineStart = 1
       LineEnd = 5
@@ -297,9 +311,101 @@ let private usesType (source: string) (dest: string) : Dependency =
 
 module ``SqlHydra edge scoping`` =
 
+    [<Fact>]
+    let ``unrelated DSL-shaped call does not classify a generated table access`` () =
+        let result =
+            AnalysisResult.Create(
+                [ fn "Queries.touchArticle" "src/Queries.fs"
+                  dsl "Other.Query.updateTask"
+                  table "Generated.public.articles" ],
+                [ calls "Queries.touchArticle" "Other.Query.updateTask"
+                  calls "Queries.touchArticle" "Generated.public.articles" ],
+                []
+            )
+
+        let store = InMemoryStore.fromAnalysisResults [ result ]
+        test <@ SqlHydraExtension.extractFacts "Generated" store |> List.isEmpty @>
+
+    [<Fact>]
+    let ``real generated graph accepts only a called table value`` () =
+        let result =
+            AnalysisResult.Create(
+                [ fn "Queries.getArticles" "src/Queries.fs"
+                  dsl "SqlHydra.Query.SelectBuilders.selectTask"
+                  { FullName = "Generated.public"
+                    Kind = Module
+                    SourceFile = "src/DbTypes.fs"
+                    LineStart = 1
+                    LineEnd = 500
+                    ContentHash = "schema"
+                    IsExtern = false }
+                  { FullName = "Generated.public.article_status"
+                    Kind = Type
+                    SourceFile = "src/DbTypes.fs"
+                    LineStart = 10
+                    LineEnd = 15
+                    ContentHash = "enum"
+                    IsExtern = false }
+                  { FullName = "Generated.public.articles"
+                    Kind = Value
+                    SourceFile = "src/DbTypes.fs"
+                    LineStart = 100
+                    LineEnd = 100
+                    ContentHash = "table-value"
+                    IsExtern = false } ],
+                [ calls "Queries.getArticles" "SqlHydra.Query.SelectBuilders.selectTask"
+                  // Real FCS graphs carry broad type-use edges to the schema module and
+                  // enums as well as the table record. They are not database resources.
+                  usesType "Queries.getArticles" "Generated.public"
+                  usesType "Queries.getArticles" "Generated.public.article_status"
+                  usesType "Queries.getArticles" "Generated.public.articles"
+                  // The generated `let articles = table<articles>` value is the precise
+                  // table signal: query expressions call that value.
+                  calls "Queries.getArticles" "Generated.public.articles" ],
+                []
+            )
+
+        let store = InMemoryStore.fromAnalysisResults [ result ]
+        let facts = SqlHydraExtension.extractFacts "Generated" store
+
+        test <@ facts |> List.map (fun fact -> fact.Table, fact.Access) = [ "public.articles", Read ] @>
+
+    [<Fact>]
+    let ``prefix must be a namespace boundary and table shape must be exact`` () =
+        let result =
+            AnalysisResult.Create(
+                [ fn "Queries.getArticles" "src/Queries.fs"
+                  dsl "SqlHydra.Query.selectTask"
+                  { FullName = "GeneratedElse.public.articles"
+                    Kind = Value
+                    SourceFile = "src/OtherDbTypes.fs"
+                    LineStart = 1
+                    LineEnd = 1
+                    ContentHash = "lookalike-prefix"
+                    IsExtern = false }
+                  { FullName = "Generated.public.articles.columns"
+                    Kind = Value
+                    SourceFile = "src/DbTypes.fs"
+                    LineStart = 1
+                    LineEnd = 1
+                    ContentHash = "lookalike-shape"
+                    IsExtern = false } ],
+                [ calls "Queries.getArticles" "SqlHydra.Query.selectTask"
+                  calls "Queries.getArticles" "GeneratedElse.public.articles"
+                  calls "Queries.getArticles" "Generated.public.articles.columns"
+                  // Keep type-use edges in the fixture so the historical broad
+                  // `Contains(prefix)` implementation demonstrably accepts both.
+                  usesType "Queries.getArticles" "GeneratedElse.public.articles"
+                  usesType "Queries.getArticles" "Generated.public.articles.columns" ],
+                []
+            )
+
+        let store = InMemoryStore.fromAnalysisResults [ result ]
+        test <@ SqlHydraExtension.extractFacts "Generated" store |> List.isEmpty @>
+
     /// The FalcoRoute cross-product bug is NOT present here.
     /// `extractFacts` filters each symbol's dependencies to `d.FromSymbol = sym.FullName`,
-    /// and the AST attributes a `Calls`/`UsesType` edge to the *enclosing function*, not to
+    /// and the AST attributes every `Calls` edge to the *enclosing function*, not to
     /// the file. So two queries sharing one source file stay independent: a change to
     /// `getArticles` cannot pull tests that only touch `briefs`. This test pins that —
     /// it fails the moment anyone re-scopes the dependency lookup to the file.
@@ -314,9 +420,9 @@ module ``SqlHydra edge scoping`` =
                   table "Generated.public.articles"
                   table "Generated.public.briefs" ],
                 [ calls "Queries.getArticles" "SqlHydra.Query.selectTask"
-                  usesType "Queries.getArticles" "Generated.public.articles"
+                  calls "Queries.getArticles" "Generated.public.articles"
                   calls "Queries.createBrief" "SqlHydra.Query.insertTask"
-                  usesType "Queries.createBrief" "Generated.public.briefs" ],
+                  calls "Queries.createBrief" "Generated.public.briefs" ],
                 []
             )
 
@@ -331,8 +437,8 @@ module ``SqlHydra edge scoping`` =
         test
             <@
                 triples = set
-                    [ "Queries.getArticles", "articles", Read
-                      "Queries.createBrief", "briefs", Write ]
+                    [ "Queries.getArticles", "public.articles", Read
+                      "Queries.createBrief", "public.briefs", Write ]
             @>
 
     /// A symbol that BOTH reads and writes must keep both accesses. Keeping only the first
@@ -352,9 +458,9 @@ module ``SqlHydra edge scoping`` =
                   // `List.tryHead` classified this write-performing symbol as read-only.
                   calls "Repo.upsertArticle" "SqlHydra.Query.selectTask"
                   calls "Repo.upsertArticle" "SqlHydra.Query.insertTask"
-                  usesType "Repo.upsertArticle" "Generated.public.articles"
+                  calls "Repo.upsertArticle" "Generated.public.articles"
                   calls "Queries.listArticles" "SqlHydra.Query.selectTask"
-                  usesType "Queries.listArticles" "Generated.public.articles" ],
+                  calls "Queries.listArticles" "Generated.public.articles" ],
                 []
             )
 
@@ -387,14 +493,14 @@ module ``SqlHydra edge scoping`` =
                   dsl "SqlHydra.Query.selectTask"
                   table "Generated.public.articles" ],
                 [ calls "Queries.getArticles" "SqlHydra.Query.selectTask"
-                  usesType "Queries.getArticles" "Generated.public.articles" ],
+                  calls "Queries.getArticles" "Generated.public.articles" ],
                 []
             )
 
         let store = InMemoryStore.fromAnalysisResults [ result ]
         let facts = SqlHydraExtension.extractFacts "Generated" store
 
-        test <@ facts |> List.map (fun f -> f.Table, f.Access) = [ "articles", Read ] @>
+        test <@ facts |> List.map (fun f -> f.Table, f.Access) = [ "public.articles", Read ] @>
 
     /// A join reads several tables through ONE select: every table gets the read, and no
     /// spurious write appears.
@@ -407,8 +513,8 @@ module ``SqlHydra edge scoping`` =
                   table "Generated.public.articles"
                   table "Generated.public.briefs" ],
                 [ calls "Queries.articlesWithBriefs" "SqlHydra.Query.selectTask"
-                  usesType "Queries.articlesWithBriefs" "Generated.public.articles"
-                  usesType "Queries.articlesWithBriefs" "Generated.public.briefs" ],
+                  calls "Queries.articlesWithBriefs" "Generated.public.articles"
+                  calls "Queries.articlesWithBriefs" "Generated.public.briefs" ],
                 []
             )
 
@@ -416,9 +522,58 @@ module ``SqlHydra edge scoping`` =
         let facts = SqlHydraExtension.extractFacts "Generated" store
 
         let pairs = facts |> List.map (fun f -> f.Table, f.Access) |> Set.ofList
-        test <@ pairs = set [ "articles", Read; "briefs", Read ] @>
+        test <@ pairs = set [ "public.articles", Read; "public.briefs", Read ] @>
 
 module ``SqlHydra under-selection`` =
+
+    [<Fact>]
+    let ``writer intervention selects reader test in the same schema only`` () =
+        withDb (fun db ->
+            let symbols =
+                [ fn "Tests.testPublicArticles" "tests/DatabaseTests.fs"
+                  fn "Tests.testAuditArticles" "tests/DatabaseTests.fs"
+                  fn "Queries.listPublicArticles" "src/ArticleQueries.fs"
+                  fn "Queries.listAuditArticles" "src/AuditQueries.fs"
+                  fn "Commands.createPublicArticle" "src/ArticleQueries.fs"
+                  dsl "SqlHydra.Query.selectTask"
+                  dsl "SqlHydra.Query.insertTask"
+                  table "Intelligence.Database.Generated.public.articles"
+                  table "Intelligence.Database.Generated.audit.articles" ]
+
+            let coreDeps =
+                [ calls "Tests.testPublicArticles" "Queries.listPublicArticles"
+                  calls "Tests.testAuditArticles" "Queries.listAuditArticles"
+                  calls "Queries.listPublicArticles" "SqlHydra.Query.selectTask"
+                  calls "Queries.listPublicArticles" "Intelligence.Database.Generated.public.articles"
+                  calls "Queries.listAuditArticles" "SqlHydra.Query.selectTask"
+                  calls "Queries.listAuditArticles" "Intelligence.Database.Generated.audit.articles"
+                  calls "Commands.createPublicArticle" "SqlHydra.Query.insertTask"
+                  calls "Commands.createPublicArticle" "Intelligence.Database.Generated.public.articles" ]
+
+            let testMethods =
+                [ { SymbolFullName = "Tests.testPublicArticles"
+                    TestProject = "Intelligence.Tests.Database"
+                    TestClass = "Database.ArticleQueriesTests"
+                    TestMethod = "testPublicArticles" }
+                  { SymbolFullName = "Tests.testAuditArticles"
+                    TestProject = "Intelligence.Tests.Database"
+                    TestClass = "Database.AuditQueriesTests"
+                    TestMethod = "testAuditArticles" } ]
+
+            let store =
+                InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, coreDeps, testMethods) ]
+
+            let sqlEdges =
+                (SqlHydraExtension("Intelligence.Database.Generated") :> ITestPruneExtension).AnalyzeEdges store [] ""
+
+            let edgePairs = sqlEdges |> List.map (fun edge -> edge.FromSymbol, edge.ToSymbol)
+
+            test <@ edgePairs = [ "Queries.listPublicArticles", "Commands.createPublicArticle" ] @>
+
+            db.RebuildProjects([ AnalysisResult.Create(symbols, coreDeps @ sqlEdges, testMethods) ])
+
+            let affected = db.QueryAffectedTests([ "Commands.createPublicArticle" ])
+            test <@ affected |> List.map (fun test -> test.TestMethod) = [ "testPublicArticles" ] @>)
 
     /// NO UNDER-SELECTION, end-to-end through the core's recursive reverse-walk:
     /// `testListsArticles` calls `Queries.listArticles`, which reads `articles`;
@@ -443,10 +598,10 @@ module ``SqlHydra under-selection`` =
             let coreDeps =
                 [ calls "Tests.testListsArticles" "Queries.listArticles"
                   calls "Queries.listArticles" "SqlHydra.Query.selectTask"
-                  usesType "Queries.listArticles" "Generated.public.articles"
+                  calls "Queries.listArticles" "Generated.public.articles"
                   calls "Repo.upsertArticle" "SqlHydra.Query.selectTask"
                   calls "Repo.upsertArticle" "SqlHydra.Query.insertTask"
-                  usesType "Repo.upsertArticle" "Generated.public.articles" ]
+                  calls "Repo.upsertArticle" "Generated.public.articles" ]
 
             let testMethods =
                 [ { SymbolFullName = "Tests.testListsArticles"
