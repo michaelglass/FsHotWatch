@@ -12,6 +12,100 @@ open FsHotWatch.FcsDiagnosticFilter
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
+open Ionide.ProjInfo
+
+type private BlockingWorkspaceLoader(results: Types.ProjectOptions list) =
+    let entered = new Threading.ManualResetEventSlim(false)
+    let resume = new Threading.ManualResetEventSlim(false)
+    let notifications = Event<Types.WorkspaceProjectState>()
+
+    member _.Entered = entered
+    member _.Resume() = resume.Set()
+
+    member private _.Load() =
+        entered.Set()
+        resume.Wait()
+        results :> seq<_>
+
+    interface IWorkspaceLoader with
+        member this.LoadProjects(_projectPaths) = this.Load()
+        member this.LoadProjects(_projectPaths, _customProperties, _binaryLog) = this.Load()
+        member this.LoadSln(_solutionPath) = this.Load()
+        member this.LoadSln(_solutionPath, _customProperties, _binaryLog) = this.Load()
+
+        [<CLIEvent>]
+        member _.Notifications = notifications.Publish
+
+type private SequencedWorkspaceLoader(resultsByAttempt: Types.ProjectOptions list list) =
+    let entered =
+        resultsByAttempt
+        |> List.map (fun _ -> new Threading.ManualResetEventSlim(false))
+        |> List.toArray
+
+    let resume =
+        resultsByAttempt
+        |> List.map (fun _ -> new Threading.ManualResetEventSlim(false))
+        |> List.toArray
+
+    let notifications = Event<Types.WorkspaceProjectState>()
+    let mutable attempt = -1
+
+    member _.Entered(index: int) = entered[index]
+    member _.Resume(index: int) = resume[index].Set()
+
+    member private _.Load() =
+        let index = Threading.Interlocked.Increment(&attempt)
+
+        if index >= resultsByAttempt.Length then
+            failwithf "unexpected workspace-loader attempt %d" index
+
+        entered[index].Set()
+        resume[index].Wait()
+        resultsByAttempt[index] :> seq<_>
+
+    interface IWorkspaceLoader with
+        member this.LoadProjects(_projectPaths) = this.Load()
+        member this.LoadProjects(_projectPaths, _customProperties, _binaryLog) = this.Load()
+        member this.LoadSln(_solutionPath) = this.Load()
+        member this.LoadSln(_solutionPath, _customProperties, _binaryLog) = this.Load()
+
+        [<CLIEvent>]
+        member _.Notifications = notifications.Publish
+
+let private minimalLoadedProject (projectPath: string) : Types.ProjectOptions =
+    { ProjectId = None
+      ProjectFileName = projectPath
+      TargetFramework = "net10.0"
+      SourceFiles = []
+      OtherOptions = []
+      ReferencedProjects = []
+      PackageReferences = []
+      LoadTime = DateTime.UtcNow
+      TargetPath = Path.ChangeExtension(projectPath, ".dll")
+      TargetRefPath = None
+      ProjectOutputType = Types.ProjectOutputType.Library
+      ProjectSdkInfo =
+        { IsTestProject = false
+          Configuration = "Debug"
+          IsPackable = false
+          TargetFramework = "net10.0"
+          TargetFrameworkIdentifier = ".NETCoreApp"
+          TargetFrameworkVersion = "v10.0"
+          MSBuildAllProjects = []
+          MSBuildToolsVersion = "Current"
+          ProjectAssetsFile = ""
+          RestoreSuccess = true
+          Configurations = [ "Debug" ]
+          TargetFrameworks = [ "net10.0" ]
+          RunArguments = None
+          RunCommand = None
+          IsPublishable = None }
+      Items = []
+      Properties = []
+      CustomProperties = []
+      AllProperties = Map.empty
+      AllItems = Map.empty
+      Analyzers = [] }
 
 // ============================================================================
 // parseNowarnCodes tests
@@ -937,6 +1031,336 @@ let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
         finally
             System.Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel originalLevel)
+
+[<Fact(Timeout = 15000)>]
+let ``completed discovery keeps loader mapping and registration counts distinct`` () =
+    let coordinator = DiscoveryCoordinator()
+
+    coordinator.Run(fun () ->
+        async {
+            return
+                { Discovered = 1
+                  Loaded = 1
+                  OptionsMapped = 0
+                  Registered = 0 },
+                ()
+        })
+    |> Async.RunSynchronously
+
+    let snapshot = coordinator.Completed |> Option.get
+    test <@ snapshot.Discovered = 1 @>
+    test <@ snapshot.Loaded = 1 @>
+    test <@ snapshot.OptionsMapped = 0 @>
+    test <@ snapshot.Registered = 0 @>
+    test <@ totalDiscoveryFailure snapshot.Discovered snapshot.Loaded = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``discovery coordinator starts without a completed epoch and recovers after work faults`` () =
+    let coordinator = DiscoveryCoordinator()
+    test <@ coordinator.Completed = None @>
+    test <@ coordinator.WaitForCompletion().GetAwaiter().GetResult() = None @>
+
+    let faulting: Async<DiscoverySnapshot * unit> =
+        async { return raise (InvalidOperationException "loader exploded") }
+
+    Assert.Throws<InvalidOperationException>(fun () -> coordinator.Run(fun () -> faulting) |> Async.RunSynchronously)
+    |> ignore
+
+    test <@ coordinator.Completed = None @>
+
+    coordinator.Run(fun () ->
+        async {
+            return
+                { Discovered = 1
+                  Loaded = 1
+                  OptionsMapped = 1
+                  Registered = 1 },
+                ()
+        })
+    |> Async.RunSynchronously
+
+    test <@ coordinator.Completed.IsSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``stable discovery admission includes attempts queued behind the active loader`` () =
+    let coordinator = DiscoveryCoordinator()
+    let firstEntered = new Threading.ManualResetEventSlim(false)
+    let firstResume = new Threading.ManualResetEventSlim(false)
+    let secondEntered = new Threading.ManualResetEventSlim(false)
+    let secondResume = new Threading.ManualResetEventSlim(false)
+
+    let snapshot loaded =
+        { Discovered = 1
+          Loaded = loaded
+          OptionsMapped = loaded
+          Registered = loaded }
+
+    let mutable first: System.Threading.Tasks.Task<unit> option = None
+    let mutable second: System.Threading.Tasks.Task<unit> option = None
+
+    try
+        first <-
+            Async.StartAsTask(
+                coordinator.Run(fun () ->
+                    async {
+                        firstEntered.Set()
+                        firstResume.Wait()
+                        return snapshot 1, ()
+                    })
+            )
+            |> Some
+
+        test <@ firstEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+        second <-
+            Async.StartAsTask(
+                coordinator.Run(fun () ->
+                    async {
+                        secondEntered.Set()
+                        secondResume.Wait()
+                        return snapshot 0, ()
+                    })
+            )
+            |> Some
+
+        test <@ waitUntilTrue (fun () -> coordinator.RequestedGeneration = 2L) 10000 @>
+        let stable = coordinator.WaitForStableAdmission()
+        firstResume.Set()
+        test <@ secondEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+        let premature =
+            System.Threading.Tasks.Task.WhenAny(stable, System.Threading.Tasks.Task.Delay(1000))
+
+        test <@ not (obj.ReferenceEquals(premature.GetAwaiter().GetResult(), stable)) @>
+
+        secondResume.Set()
+        let generation, completed = stable.GetAwaiter().GetResult()
+        test <@ generation = 2L @>
+        test <@ completed |> Option.map (fun value -> value.Loaded) = Some 0 @>
+    finally
+        firstResume.Set()
+        secondResume.Set()
+
+        for running in [ first; second ] |> List.choose id do
+            try
+                running.GetAwaiter().GetResult()
+            with _ ->
+                ()
+
+[<Fact(Timeout = 15000)>]
+let ``discovery failure marker rejects null and unrelated messages`` () =
+    test <@ not (isTotalDiscoveryFailureMessage null) @>
+    test <@ not (isTotalDiscoveryFailureMessage "some other configuration error") @>
+
+[<Fact(Timeout = 30000)>]
+let ``verdict admission waits while the real loader seam is between clear and completion`` () =
+    withTempDir "daemon-discovery-race" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Blocked.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let loader = BlockingWorkspaceLoader([])
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> [])
+
+        let mutable discovery: System.Threading.Tasks.Task<unit> option = None
+        let mutable verdictWait: System.Threading.Tasks.Task option = None
+
+        try
+            discovery <- Async.StartAsTask(daemon.DiscoverAndRegisterProjects()) |> Some
+            test <@ loader.Entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+            // The graph/pipeline have been cleared and the loader has not returned.
+            // This exact window used to be misread as a completed zero-load result.
+            let mutable ordinaryWaitCalled = false
+
+            let runningVerdictWait =
+                waitForVerdictUnlessDiscoveryFailed
+                    daemon.WaitForDiscoveryAdmission
+                    (fun _ ->
+                        ordinaryWaitCalled <- true
+                        System.Threading.Tasks.Task.FromResult(()))
+                    (TimeSpan.FromHours(1.0))
+
+            verdictWait <- Some runningVerdictWait
+            test <@ not runningVerdictWait.IsCompleted @>
+            test <@ not ordinaryWaitCalled @>
+            test <@ daemon.TotalDiscoveryFailure() = None @>
+
+            loader.Resume()
+            discovery.Value.GetAwaiter().GetResult()
+
+            Assert.Throws<System.InvalidOperationException>(fun () -> runningVerdictWait.GetAwaiter().GetResult())
+            |> ignore
+
+            test <@ not ordinaryWaitCalled @>
+
+            let completed = daemon.DiscoverySnapshot() |> Option.get
+            test <@ completed.Discovered = 1 @>
+            test <@ completed.Loaded = 0 @>
+            test <@ completed.OptionsMapped = 0 @>
+            test <@ completed.Registered = 0 @>
+            test <@ daemon.TotalDiscoveryFailure().IsSome @>
+        finally
+            loader.Resume()
+
+            for running in
+                [ discovery |> Option.map (fun task -> task :> System.Threading.Tasks.Task)
+                  verdictWait ]
+                |> List.choose id do
+                try
+                    running.GetAwaiter().GetResult()
+                with _ ->
+                    ())
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``verdict admission restarts when discovery begins after the host wait starts`` (secondAttemptLoads: bool) =
+    withTempDir "daemon-discovery-after-admission" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Blocked.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let secondResult =
+            if secondAttemptLoads then
+                [ minimalLoadedProject projectPath ]
+            else
+                []
+
+        let loader =
+            SequencedWorkspaceLoader([ [ minimalLoadedProject projectPath ]; secondResult ])
+
+        loader.Resume(0)
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> [])
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+
+        let hostWaitEntered = new Threading.ManualResetEventSlim(false)
+
+        let hostWaitCompletion =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        let verdictWait =
+            waitForVerdictUnlessDiscoveryFailed
+                daemon.WaitForDiscoveryAdmission
+                (fun _ ->
+                    hostWaitEntered.Set()
+                    hostWaitCompletion.Task)
+                (TimeSpan.FromHours(1.0))
+
+        let mutable rediscovery: System.Threading.Tasks.Task option = None
+
+        try
+            test <@ hostWaitEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+            let running = Async.StartAsTask(daemon.DiscoverAndRegisterProjects())
+            rediscovery <- Some(running :> System.Threading.Tasks.Task)
+            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
+
+            // The loader began only after verdict admission. Releasing the already-running
+            // host wait must not let the stale terminal host state win the race.
+            hostWaitCompletion.SetResult()
+
+            let premature =
+                System.Threading.Tasks.Task.WhenAny(verdictWait, System.Threading.Tasks.Task.Delay(1000))
+
+            let returnedBeforeDiscovery =
+                obj.ReferenceEquals(premature.GetAwaiter().GetResult(), verdictWait)
+
+            loader.Resume(1)
+            running.GetAwaiter().GetResult()
+
+            test <@ not returnedBeforeDiscovery @>
+
+            if secondAttemptLoads then
+                verdictWait.GetAwaiter().GetResult()
+            else
+                Assert.Throws<System.InvalidOperationException>(fun () -> verdictWait.GetAwaiter().GetResult())
+                |> ignore
+        finally
+            hostWaitCompletion.TrySetResult(()) |> ignore
+            loader.Resume(1)
+
+            rediscovery
+            |> Option.iter (fun running ->
+                try
+                    running.GetAwaiter().GetResult()
+                with _ ->
+                    ())
+
+            try
+                verdictWait.GetAwaiter().GetResult()
+            with _ ->
+                ())
+
+[<Fact(Timeout = 15000)>]
+let ``a loaded project that maps or registers as zero is not a loader failure`` () =
+    withTempDir "daemon-mapping-distinct" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Loaded.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let loader = BlockingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        loader.Resume()
+
+        let daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> []) // Force the later mapping stage to produce nothing.
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        let completed = daemon.DiscoverySnapshot() |> Option.get
+        test <@ completed.Discovered = 1 @>
+        test <@ completed.Loaded = 1 @>
+        test <@ completed.OptionsMapped = 0 @>
+        test <@ completed.Registered = 0 @>
+        test <@ daemon.TotalDiscoveryFailure() = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``verdict wait fails immediately when total discovery failed`` () =
+    let mutable ordinaryWaitCalled = false
+    let reason = "PROJECT LOADING FAILED: loaded 0 of 18"
+
+    let task =
+        waitForVerdictUnlessDiscoveryFailed
+            (fun () ->
+                System.Threading.Tasks.Task.FromResult(
+                    { Generation = 1L
+                      Failure = Some reason }
+                ))
+            (fun _ ->
+                ordinaryWaitCalled <- true
+                System.Threading.Tasks.Task.FromResult(()))
+            (TimeSpan.FromHours(1.0))
+
+    let ex =
+        Assert.Throws<System.InvalidOperationException>(fun () -> task.GetAwaiter().GetResult())
+
+    test <@ ex.Message = reason @>
+    test <@ not ordinaryWaitCalled @>
+
+[<Fact(Timeout = 15000)>]
+let ``verdict wait uses the ordinary host wait when discovery loaded projects`` () =
+    let mutable observedTimeout = TimeSpan.Zero
+    let expected = TimeSpan.FromSeconds(37.0)
+
+    let task =
+        waitForVerdictUnlessDiscoveryFailed
+            (fun () -> System.Threading.Tasks.Task.FromResult({ Generation = 1L; Failure = None }))
+            (fun timeout ->
+                observedTimeout <- timeout
+                System.Threading.Tasks.Task.FromResult(()))
+            expected
+
+    task.GetAwaiter().GetResult()
+
+    test <@ observedTimeout = expected @>
 
 // ============================================================================
 // isTruthyEnv tests

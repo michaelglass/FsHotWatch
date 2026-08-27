@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- AUTOMATION-290: project discovery now atomically records one completed,
+  serialized loader epoch, keeping discovered, Ionide-loaded, FCS-options-mapped,
+  and pipeline-registered counts distinct. `WaitForComplete` waits through an
+  in-progress clear/load window and rechecks the discovery generation after the
+  host settles, so a rediscovery that starts after verdict admission cannot reuse
+  stale terminal plugin state. A completed zero-loaded discovery terminates
+  immediately with the `LoadProject FAILED` diagnosis instead of waiting out the
+  verdict deadline as an empty host.
+
 ## 0.10.0-alpha.19 - 2026-08-26
 
 - **AUTOMATION-165: `TreeHash.Algorithm` is `fshw-tree-sha256-v3` — the hashed set now covers

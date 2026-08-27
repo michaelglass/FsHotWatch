@@ -6,6 +6,59 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.Tests.TestHelpers
 
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-290: the packed CLI uses the exact restore and build checked by the dependency guard`` () =
+    let workflow =
+        File.ReadAllLines(
+            Path.GetFullPath(
+                Path.Combine(System.AppContext.BaseDirectory, "../../../../../.github/workflows/release.yml")
+            )
+        )
+        |> Array.filter (fun line -> not (line.TrimStart().StartsWith("#")))
+
+    let jobStarts =
+        workflow
+        |> Array.indexed
+        |> Array.choose (fun (index, line) ->
+            if
+                line.StartsWith("  ")
+                && not (line.StartsWith("    "))
+                && line.TrimEnd().EndsWith(":")
+            then
+                Some(index, line.Trim().TrimEnd(':'))
+            else
+                None)
+
+    let jobBlock name =
+        let start = jobStarts |> Array.find (snd >> (=) name) |> fst
+
+        let finish =
+            jobStarts
+            |> Array.tryFind (fun (index, _) -> index > start)
+            |> Option.map fst
+            |> Option.defaultValue workflow.Length
+
+        workflow[start .. finish - 1] |> String.concat "\n"
+
+    let releaseCli = jobBlock "release-cli"
+    let publishCli = jobBlock "publish-cli"
+    let build = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
+    let check = "dotnet fsi scripts/check-msbuild-deps.fsx"
+
+    // The reusable workflow restores once, runs this hook, then performs its Release
+    // build with --no-restore and packs with --no-build. The hook's focused build must
+    // therefore use that same assets file; otherwise a floating package can resolve
+    // differently in the job whose artifact is actually published.
+    test <@ releaseCli.Contains("pre-build-cmd:") @>
+    test <@ releaseCli.Contains(build) @>
+    test <@ releaseCli.Contains("-c Release") @>
+    test <@ releaseCli.Contains("--no-restore") @>
+    test <@ releaseCli.Contains("-p:ReleaseBuild=true") @>
+    test <@ releaseCli.Contains(check) @>
+    test <@ releaseCli.Contains("no-build-pack: true") @>
+    test <@ releaseCli.IndexOf(build) < releaseCli.IndexOf(check) @>
+    test <@ publishCli.Contains("needs: release-cli") @>
+
 // ---------------------------------------------------------------------------
 // AUTOMATION-303. THE list of files that decide what is compiled — the input every
 // "did the tree's SHAPE change?" cache key reads.

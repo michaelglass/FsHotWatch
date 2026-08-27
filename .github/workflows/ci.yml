@@ -60,4 +60,17 @@ jobs:
       # is missing, the daemon does NOT silently skip them — `analyzerPathFailures`
       # raises `config error: Analyzer path(s) loaded 0 analyzers` and this step
       # exits 2. An unloaded analyzer and a clean one must never look alike.
-      lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'
+      #
+      # AUTOMATION-290 — `check-msbuild-deps` RUNS HERE, not only in `mise run ci`.
+      # `Microsoft.NET.StringTools` is a TRANSITIVE dependency of the CLI that nothing
+      # in this repo names; an unrelated bump once moved it backwards, MSBuild project
+      # loading threw for EVERY project in the consuming repository, and the CLI was
+      # published and adopted before anyone noticed. The first version of that guard was
+      # a mise `depends` entry, and mise is not what CI runs — so the guard existed and
+      # the publish path never touched it. It is a prefix on this command instead, which
+      # is the string CI actually executes, and `&&` means a downgrade stops the job
+      # before `confirm` is reached. The solution build above supplies the
+      # `FsHotWatch.Cli.deps.json` it reads. This is also what puts the guard on the
+      # PUBLISH path: the tagger requires a green run of this workflow before it will
+      # cut the tag that `release.yml` publishes from.
+      lint-cmd: 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'

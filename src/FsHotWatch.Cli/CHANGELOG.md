@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- AUTOMATION-290: daemon-backed `check`/`confirm` and `--run-once` now fail fast
+  when MSBuild loads zero of the discovered projects. Both paths overwrite any
+  prior green with an exit-2 `incomplete` verdict carrying the exact loader
+  diagnosis; run-once awaits discovery again at every scan, settle, and
+  convergence boundary, while `confirm` does not force tests after discovery has
+  already made a run impossible. The app-local `Microsoft.NET.StringTools`
+  floor is enforced by local CI, package/release tasks, remote CI, and the
+  tag-triggered CLI NuGet release workflow itself. Its guard shares the exact
+  restore and Release build consumed by the no-build pack, so a manually pushed
+  CLI tag cannot bypass the built-manifest guard or publish a differently resolved
+  artifact.
+
 ## 0.14.0-alpha.28 - 2026-08-26
 
 - **AUTOMATION-165: a verdict from a different tree-hashing SCHEME no longer validates.**

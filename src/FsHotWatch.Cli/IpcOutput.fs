@@ -730,7 +730,7 @@ module internal SettledTree =
 ///
 /// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
 /// its exit code. The verdict is an additional surface, never a new way to fail.
-let internal publishVerdict
+let private publishVerdictWithReason
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -753,6 +753,7 @@ let internal publishVerdict
     // publishing and both of a publisher's own snapshots fall on the far side of it.
     (settledTree: SettledTree)
     (outcome: CheckVerdict.CheckOutcome)
+    (terminalIncompleteReason: string option)
     // AUTOMATION-167. RETURNS the exit code it wrote, so the caller cannot compute a
     // second one. The tree-moved downgrade below is decided HERE — it needs the two
     // hashes taken around the write — so a caller re-deriving the code from `outcome`
@@ -765,18 +766,24 @@ let internal publishVerdict
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
         let verdictOutcome, exitCode =
-            match settledTree with
-            | VerifiedTree settled when settled.Hash <> atWrite.Hash ->
+            match terminalIncompleteReason, settledTree with
+            // A terminal infrastructure failure is already the answer. Preserve its
+            // exact diagnosis in the machine-readable verdict instead of rounding it
+            // down to the generic "coverage could not be confirmed" sentence that
+            // sent AUTOMATION-290 away from the project-loader failure.
+            | _, VerifiedTree settled when settled.Hash <> atWrite.Hash ->
                 Verdict.Incomplete
                     "the working tree changed while the verdict was being produced — nothing is claimed about it",
                 CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+            | Some reason, _ ->
+                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
             // A tree that held still — and, on the abort paths, a check that never
             // settled at all. `NeverSettled` cannot be what makes a verdict incomplete:
             // the abort already did, and both callers that reach here hand in an
             // `Incomplete`. Re-deciding it from a comparison with no left-hand side
             // would invent an answer rather than read one.
-            | VerifiedTree _
-            | NeverSettled -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+            | None, VerifiedTree _
+            | None, NeverSettled -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -872,6 +879,56 @@ let internal publishVerdict
     | :? System.UnauthorizedAccessException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
         CheckVerdict.exitCode outcome
+
+/// Publish the ordinary check outcome. This stable wrapper keeps the many normal
+/// terminal paths unable to accidentally invent an infrastructure diagnosis.
+let internal publishVerdict
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (runReport: TestRunReport)
+    (checkScoped: Verdict.CheckScopedEvidence)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (redCauses: Verdict.RedCause list)
+    (settledTree: SettledTree)
+    (outcome: CheckVerdict.CheckOutcome)
+    : int =
+    publishVerdictWithReason
+        repoRoot
+        excludePatterns
+        checkMode
+        noWarnFail
+        runReport
+        checkScoped
+        statuses
+        redCauses
+        settledTree
+        outcome
+        None
+
+/// Publish an infrastructure failure that made the run un-completable before
+/// plugin/test verdict inputs existed. Exit 2, never red, and the exact reason is
+/// retained in `verdict.json` so an older green cannot survive or misdirect.
+let internal publishTerminalIncomplete
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (reason: string)
+    (settledTree: SettledTree)
+    : int =
+    publishVerdictWithReason
+        repoRoot
+        excludePatterns
+        checkMode
+        false
+        (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
+        Verdict.NoReading
+        Map.empty
+        []
+        settledTree
+        (CheckVerdict.CheckOutcome.Incomplete -1)
+        (Some reason)
 
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
@@ -1085,6 +1142,17 @@ let pollAndRender
 
         publishedExitCode
     with
+    | ex when FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message ->
+        // StreamJsonRpc preserves the message but not the concrete ConfigError
+        // type. This is the daemon-backed twin of RunOnceCheck's early terminal:
+        // no convergence, no forced suite, and no stale green left on disk.
+        let reason = ex.Message
+
+        let exitCode =
+            publishTerminalIncomplete repoRoot excludePatterns checkMode reason settledTree.Value
+
+        UI.fail reason
+        exitCode
     | ex when isVerdictWaitTimeout ex ->
         // The daemon's hard verdict deadline fired: a plugin overran the bound and is
         // most likely wedged. The remote message names the plugin and its elapsed time

@@ -281,8 +281,23 @@ let runOnceAndVerdictWith
         // the staleness scan below, all of which run against a live working tree.
         let settledTree = ref IpcOutput.NeverSettled
 
+        let awaitDiscovery () =
+            match daemon.WaitForDiscoveryFailure().GetAwaiter().GetResult() with
+            | Some message ->
+                // Publish BEFORE Program.fs converts ConfigError to exit 2. Otherwise a
+                // prior green remains readable after this failed run and lies about the
+                // current tree — the most dangerous form of the original incident.
+                settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
+
+                IpcOutput.publishTerminalIncomplete repoRoot config.Exclude checkMode message settledTree.Value
+                |> ignore
+
+                raise (ConfigError message)
+            | None -> ()
+
         let scanAndSettle () : Map<string, PluginStatus> =
             let statuses = runScan daemon
+            awaitDiscovery ()
             settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
             statuses
 
@@ -300,6 +315,10 @@ let runOnceAndVerdictWith
         /// The in-process half of "one verdict, two transports" (the daemon's half is
         /// `IpcOutput.checkInputs`). It OBSERVES; it decides nothing.
         let reread () : CheckVerdict.CheckInputs =
+            // A watcher may begin project rediscovery after the preceding scan/settle.
+            // Never grade the transient cleared graph/pipeline as complete: await the
+            // atomic completed discovery outcome at every convergence reading.
+            awaitDiscovery ()
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             finalRun.Value <- readTestRun daemon.Host
 
@@ -343,6 +362,7 @@ let runOnceAndVerdictWith
                     (TestScope.describe preEscalation.Scope)
 
                 forceFullRun daemon
+                awaitDiscovery ()
                 settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
                 // Re-read: the forced run's failures ARE the answer.
                 reread ()

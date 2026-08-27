@@ -151,12 +151,20 @@ run = "dotnet tool run syncdocs check"
 [tasks.release]
 description = "Tag a release based on API changes"
 run = "dotnet tool run fssemantictagger release"
-depends = ["restore"]
+# `check-msbuild-deps` on the RELEASE path, not just the `ci` one (AUTOMATION-290).
+# The first attempt at this guard hung it off `ci` alone, and `ci` is a task a human
+# runs — so the one moment it existed to protect, cutting a tag, never invoked it. mise
+# refuses to run a task whose dependency exited non-zero, which is what makes this a
+# gate rather than a suggestion. It is belt to the remote braces: the tagger requires a
+# green CI run, and CI's own command now runs the same check first (`.github/workflows/ci.yml`).
+depends = ["restore", "check-msbuild-deps"]
 
 [tasks.release-dry-run]
 description = "Preview a release without mutating (no tag, no publish)"
 run = "dotnet tool run fssemantictagger release --dry-run"
-depends = ["restore"]
+# Same dependency as `release`: a dry run that skips a gate the real run applies is a
+# preview of a different release.
+depends = ["restore", "check-msbuild-deps"]
 
 [tasks.compile]
 description = "Compile the solution (dotnet build)"
@@ -172,22 +180,21 @@ description = "Run the full-suite confirm (single pass, no daemon) — the same 
 # This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml. A local `ci` that
 # runs a different command from the real CI is a local `ci` that can go green on work
 # CI will reject — the drift is the bug (AUTOMATION-117).
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
+#
+# The `check-msbuild-deps` prefix is here, in the COMMAND, rather than in `depends`
+# below: `depends` is a mise concept and remote CI does not run mise — it runs this
+# string. Hung off `depends` alone the guard fired only when a human ran `mise run ci`,
+# which is not the path a package reaches NuGet by (AUTOMATION-290).
+run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
 # `sync-docs-check`: the examples are compiled (they are members of FsHotWatch.slnx),
 # and the README/docs code blocks are SOURCED from them via syncdocs `src=` regions.
 # Compiling the example proves the code is real; only this check proves the block a
 # reader actually copies still MATCHES it. Without it the drift guard was a guard
 # nothing ran — an unenforced check and a passing one look alike from the outside,
 # which is the very thing this repo refuses to ship.
-# `check-msbuild-deps`: the app-local MSBuild support assemblies cannot be
-# silently downgraded (AUTOMATION-290). `Microsoft.NET.StringTools` is TRANSITIVE
-# — nothing here names it — so an unrelated bump once moved it backwards, MSBuild
-# project loading threw for every project, and the published CLI registered zero
-# projects in the consuming repo. `failIfNoProjects` makes that state loud in
-# seconds instead of an hour, but only in the consumer, after the bad package
-# shipped. This is the half that stops it shipping. It reads the BUILT deps.json,
-# so it needs `compile` above it.
-depends = ["compile", "lint-project", "coverage-check", "sync-docs-check", "check-msbuild-deps"]
+# `check-msbuild-deps` is NOT listed here — it is in the `run` command above, so
+# that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
+depends = ["compile", "lint-project", "coverage-check", "sync-docs-check"]
 
 [tasks.check-msbuild-deps]
 description = "Verify app-local MSBuild support assemblies are not downgraded (AUTOMATION-290)"
@@ -211,7 +218,12 @@ dotnet pack src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj -c Release -o art
 dotnet pack src/FsHotWatch.Build/FsHotWatch.Build.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj -c Release -o artifacts
 """
-depends = ["restore"]
+# The packages this produces are what `release.yml` pushes to NuGet, so the
+# app-local MSBuild assemblies are checked BEFORE anything is packed
+# (AUTOMATION-290). The check reads a BUILT `FsHotWatch.Cli.deps.json`, and package
+# versions are resolved per project rather than per configuration, so the `compile`
+# output it depends on is evidence about this pack too.
+depends = ["restore", "check-msbuild-deps"]
 
 [tasks.docs]
 description = "Generate API documentation"

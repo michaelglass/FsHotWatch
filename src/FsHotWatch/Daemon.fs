@@ -167,17 +167,212 @@ let internal dumpProjectOptions (logDir: string) (fcsOptions: FSharpProjectOptio
     with ex ->
         Logging.debug "discover" $"Could not dump options for %s{fcsOptions.ProjectFileName}: %s{ex.Message}"
 
+/// AUTOMATION-290 — TOTAL DISCOVERY FAILURE: `.fsproj` files were found on disk
+/// and MSBuild evaluation loaded NONE of them.
+///
+/// WHAT HAPPENED. A transitive downgrade of `Microsoft.NET.StringTools` in a
+/// published CLI made `LoadProject` throw `Method not found: 'Boolean
+/// Microsoft.NET.StringTools.SpanBasedStringBuilder.Equals(System.String,
+/// System.StringComparison)'` for all 18 projects of the consuming repo.
+/// Discovery registered zero projects, so no plugin ever reported, and `confirm`
+/// spent the FULL 60-minute verdict deadline waiting for a quiescence that could
+/// not arrive — then blamed a wedged plugin and reported `coverage could not be
+/// confirmed` with `plugins: []`. Every user-visible message pointed AWAY from
+/// the cause; only `LoadProject FAILED` in the daemon log named it. An hour of
+/// wall clock and a misdirecting reason string were most of the cost.
+///
+/// WHY `RunOnceOutput.failIfNoProjects` CANNOT SEE THIS, and why this is a second
+/// guard rather than a fix to that one. That guard counts `.fsproj` files ON DISK
+/// before any daemon work, and all 18 existed — it is structurally blind to a
+/// load failure. The two ask different questions and both are worth asking: "is
+/// there anything to load?" and "did any of it load?".
+///
+/// `None` for BOTH healthy states, and the first is deliberate: a tree with no
+/// project files at all belongs to `failIfNoProjects` (and is already warned
+/// about at the top of discovery), not here. Reporting it here would name a load
+/// failure that did not happen — the exact sin this guard exists to end.
+let internal totalDiscoveryFailure (fsprojFilesFound: int) (projectsLoaded: int) : string option =
+    if fsprojFilesFound > 0 && projectsLoaded = 0 then
+        Some
+            $"PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of %d{fsprojFilesFound} discovered project(s). \
+              Nothing is registered, so no plugin can report and no test can run. This is NOT a \
+              coverage, quiescence or wedged-plugin problem, whatever a later verdict says. \
+              Read the per-project reason from the `LoadProject FAILED` lines — in \
+              `logs/daemon.log`, or on stderr just above this line under `--run-once`, \
+              which has no daemon. A silently downgraded app-local MSBuild support \
+              assembly is one known cause (AUTOMATION-290)."
+    else
+        None
+
+/// Recognize the terminal across the JSON-RPC exception boundary, which does not
+/// preserve the concrete `ConfigError` type. The prefix is deliberately the same
+/// stable phrase the human/log/verdict surfaces carry.
+let internal isTotalDiscoveryFailureMessage (message: string) : bool =
+    not (isNull message)
+    && message.Contains("PROJECT LOADING FAILED:", StringComparison.Ordinal)
+
+/// The verdict-wait admission decision. Kept separate from the RPC closure so
+/// both branches are deterministic unit-testable: a known total loader failure
+/// must never enter the potentially hour-long host wait.
+type internal DiscoveryAdmission =
+    { Generation: int64
+      Failure: string option }
+
+let internal waitForVerdictUnlessDiscoveryFailed
+    (discoveryAdmission: unit -> Task<DiscoveryAdmission>)
+    (waitForVerdict: TimeSpan -> Task<unit>)
+    (timeout: TimeSpan)
+    : Task<unit> =
+    task {
+        let failIfNeeded admission =
+            match admission.Failure with
+            | Some reason -> raise (InvalidOperationException reason)
+            | None -> ()
+
+        let! admitted = discoveryAdmission ()
+        failIfNeeded admitted
+        let mutable admittedGeneration = admitted.Generation
+        let mutable settled = false
+
+        while not settled do
+            do! waitForVerdict timeout
+            let! afterWait = discoveryAdmission ()
+            failIfNeeded afterWait
+
+            if afterWait.Generation = admittedGeneration then
+                settled <- true
+            else
+                admittedGeneration <- afterWait.Generation
+    }
+
+/// The four distinct facts at the project-discovery boundary. `Loaded` is the
+/// number returned by Ionide/MSBuild into the project graph; `Registered` is the
+/// later FCS pipeline count. Keeping both prevents a registration defect from
+/// being mislabeled as the AUTOMATION-290 loader failure.
+type internal DiscoverySnapshot =
+    { Discovered: int
+      Loaded: int
+      OptionsMapped: int
+      Registered: int }
+
+/// Serializes every clear/load/map/register transaction and publishes only one
+/// immutable, completed outcome. `InProgress` deliberately hides the preceding
+/// outcome: a check arriving while a repair discovery is running must wait for
+/// that attempt, not fail from either transient empty stores or stale failure.
+type internal DiscoveryCoordinator() =
+    let admission = new SemaphoreSlim(1, 1)
+    let stateGate = obj ()
+    let mutable generation = 0L
+    let mutable completed: (int64 * DiscoverySnapshot) option = None
+    let mutable pendingAttempts = 0
+    let mutable quiescence: TaskCompletionSource<unit> option = None
+
+    let waitForStableAdmission () : Task<int64 * DiscoverySnapshot option> =
+        task {
+            let mutable searching = true
+            let mutable stable = 0L, None
+
+            while searching do
+                let observed =
+                    lock stateGate (fun () ->
+                        if pendingAttempts = 0 then
+                            let snapshot = completed |> Option.map snd
+                            Choice1Of2(generation, snapshot)
+                        else
+                            Choice2Of2(quiescence.Value.Task))
+
+                match observed with
+                | Choice1Of2 completed ->
+                    stable <- completed
+                    searching <- false
+                | Choice2Of2 pending ->
+                    let! _ = pending
+                    ()
+
+            return stable
+        }
+
+    member _.Completed =
+        lock stateGate (fun () ->
+            if pendingAttempts = 0 then
+                completed |> Option.map snd
+            else
+                None)
+
+    member _.RequestedGeneration = lock stateGate (fun () -> generation)
+
+    member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
+        task {
+            let! _, completed = waitForStableAdmission ()
+            return completed
+        }
+
+    member _.WaitForStableAdmission() = waitForStableAdmission ()
+
+    member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
+        async {
+            let attempt =
+                lock stateGate (fun () ->
+                    generation <- generation + 1L
+                    pendingAttempts <- pendingAttempts + 1
+
+                    if pendingAttempts = 1 then
+                        quiescence <-
+                            Some(TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously))
+
+                    generation)
+
+            do! admission.WaitAsync() |> Async.AwaitTask
+
+            try
+                try
+                    let! snapshot, result = work ()
+
+                    let completion =
+                        lock stateGate (fun () ->
+                            completed <- Some(attempt, snapshot)
+                            pendingAttempts <- pendingAttempts - 1
+
+                            if pendingAttempts = 0 then
+                                let completion = quiescence
+                                quiescence <- None
+                                completion
+                            else
+                                None)
+
+                    completion |> Option.iter (fun pending -> pending.TrySetResult() |> ignore)
+                    return result
+                with ex ->
+                    let completion =
+                        lock stateGate (fun () ->
+                            pendingAttempts <- pendingAttempts - 1
+
+                            if pendingAttempts = 0 then
+                                completed <- None
+                                let completion = quiescence
+                                quiescence <- None
+                                completion
+                            else
+                                None)
+
+                    completion |> Option.iter (fun pending -> pending.TrySetException(ex) |> ignore)
+                    return raise ex
+            finally
+                admission.Release() |> ignore
+        }
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
 let private discoverAndRegisterProjects
     (repoRoot: string)
     (loader: IWorkspaceLoader)
+    (mapOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
     (excludePatterns: string list)
     (clearCheckCache: bool)
-    =
+    : Async<DiscoverySnapshot> =
     async {
         let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
@@ -230,8 +425,12 @@ let private discoverAndRegisterProjects
         let sw = System.Diagnostics.Stopwatch.StartNew()
         Logging.info "discover" "Loading project options via MSBuild evaluation..."
 
+        let mutable loadedCount = 0
+        let mutable optionsMappedCount = 0
+        let mutable registeredCount = 0
+
         try
-            let loaded =
+            let loaded: Types.ProjectOptions list =
                 match binlogDir with
                 | Some dir ->
                     Logging.info "discover" $"Binlog capture enabled: %s{dir.FullName}"
@@ -239,6 +438,8 @@ let private discoverAndRegisterProjects
                     loader.LoadProjects(fsprojFiles, [], BinaryLogGeneration.Within dir)
                     |> Seq.toList
                 | None -> loader.LoadProjects(fsprojFiles) |> Seq.toList
+
+            loadedCount <- loaded.Length
 
             // Register projects in the graph using Ionide-derived data (not XML parse)
             // so source file lists match what FCS sees (handles globs, conditionals, generated files)
@@ -261,18 +462,30 @@ let private discoverAndRegisterProjects
                     // `<AssemblyName>`, which the filename-based inference cannot.
                     graph.RegisterProjectOutput(absProject, proj.TargetPath)
 
-            let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
+            let fcsOptionsList = mapOptions loaded
+            optionsMappedCount <- fcsOptionsList.Length
             sw.Stop()
 
             Logging.info
                 "discover"
-                $"MSBuild evaluation complete: %d{fcsOptionsList.Length} projects in %.1f{sw.Elapsed.TotalSeconds}s"
+                $"MSBuild evaluation complete: %d{loadedCount} loaded, %d{optionsMappedCount} options mapped in %.1f{sw.Elapsed.TotalSeconds}s"
+
+            // AUTOMATION-290. The line above reports the LOADED count and then the
+            // loop below iterates it — and an empty list iterates zero times, which
+            // is why total discovery failure used to read exactly like a repository
+            // with nothing to do. This is the assertion that tells those two apart,
+            // at ERROR so it is the loudest line in the one file the diagnosis has
+            // to open anyway.
+            match totalDiscoveryFailure fsprojFiles.Length loadedCount with
+            | Some message -> Logging.error "discover" message
+            | None -> ()
 
             for fcsOptions in fcsOptionsList do
                 if not (isExcluded fcsOptions.ProjectFileName) then
                     try
                         let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                         pipeline.RegisterProject(absProject, fcsOptions)
+                        registeredCount <- registeredCount + 1
                         dumpProjectOptions logDir fcsOptions
                         let refCount = countReferences fcsOptions.OtherOptions
 
@@ -286,6 +499,12 @@ let private discoverAndRegisterProjects
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
+
+        return
+            { Discovered = fsprojFiles.Length
+              Loaded = loadedCount
+              OptionsMapped = optionsMappedCount
+              Registered = registeredCount }
     }
 
 /// Map a batch of changed project-tier paths (`.fsproj`, `.props`, or
@@ -360,6 +579,8 @@ let internal resolveAffectedProjects (knownProjects: string list) (changedPaths:
 let private rediscoverAndClearRemoved
     (repoRoot: string)
     (loader: IWorkspaceLoader)
+    (mapOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+    (discovery: DiscoveryCoordinator)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
     (host: PluginHost)
@@ -367,24 +588,28 @@ let private rediscoverAndClearRemoved
     (excludePatterns: string list)
     (clearCheckCache: bool)
     =
-    async {
-        let oldFiles = graph.GetAllFiles() |> Set.ofList
-        do! discoverAndRegisterProjects repoRoot loader graph pipeline excludePatterns clearCheckCache
-        let newFiles = graph.GetAllFiles() |> Set.ofList
-        let removedFiles = Set.difference oldFiles newFiles
+    discovery.Run(fun () ->
+        async {
+            let oldFiles = graph.GetAllFiles() |> Set.ofList
 
-        // AUTOMATION-300: EVERY plugin, not just `fcs`. The phantom finding that
-        // makes a renamed file a permanently red gate is TestPrune's
-        // "symbol analysis failed — Parse errors", and clearing only the FCS
-        // ledger left it standing.
-        for file in removedFiles do
-            host.ClearFileEverywhere(AbsFilePath.value file)
+            let! completed =
+                discoverAndRegisterProjects repoRoot loader mapOptions graph pipeline excludePatterns clearCheckCache
 
-        if not removedFiles.IsEmpty then
-            Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
+            let newFiles = graph.GetAllFiles() |> Set.ofList
+            let removedFiles = Set.difference oldFiles newFiles
 
-        return removedFiles
-    }
+            // AUTOMATION-300: EVERY plugin, not just `fcs`. The phantom finding that
+            // makes a renamed file a permanently red gate is TestPrune's
+            // "symbol analysis failed — Parse errors", and clearing only the FCS
+            // ledger left it standing.
+            for file in removedFiles do
+                host.ClearFileEverywhere(AbsFilePath.value file)
+
+            if not removedFiles.IsEmpty then
+                Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
+
+            return completed, (completed, removedFiles)
+        })
 
 /// Manages TaskCompletionSource instances for signal-based WaitForScan.
 [<NoComparison; NoEquality>]
@@ -569,6 +794,8 @@ type internal BatchContext =
         InvalidateFcsForProjects: (FSharpProjectOptions list -> unit) option
         RepoRoot: string
         Loader: IWorkspaceLoader
+        MapOptions: Types.ProjectOptions list -> FSharpProjectOptions list
+        Discovery: DiscoveryCoordinator
         Graph: ProjectGraph.ProjectGraph
         Pipeline: CheckPipeline
         DaemonCt: CancellationToken ref
@@ -713,6 +940,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
                         ctx.Loader
+                        ctx.MapOptions
+                        ctx.Discovery
                         ctx.Graph
                         ctx.Pipeline
                         ctx.Host
@@ -740,6 +969,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
                         ctx.Loader
+                        ctx.MapOptions
+                        ctx.Discovery
                         ctx.Graph
                         ctx.Pipeline
                         ctx.Host
@@ -1355,6 +1586,8 @@ type Daemon
         graph: ProjectGraph,
         repoRoot: string,
         workspaceLoader: IWorkspaceLoader,
+        mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list,
+        discovery: DiscoveryCoordinator,
         scanAgent: ScanAgent,
         cancellationTokenRef: CancellationToken ref,
         ready: ManualResetEventSlim,
@@ -1419,6 +1652,37 @@ type Daemon
     /// in-process `--run-once` check answer "did we actually check every file?" from
     /// ONE computation that cannot disagree with itself.
     member _.LiveCoverage() : int * int = liveCoverage ()
+
+    /// The last atomically completed project-discovery attempt. `None` means no
+    /// attempt has completed or one is currently between clear and completion.
+    member internal _.DiscoverySnapshot() : DiscoverySnapshot option = discovery.Completed
+
+    /// Only TOTAL loader failure is terminal here. A project that loaded but did
+    /// not register is a distinct later-stage defect and must not be called an
+    /// MSBuild evaluation failure.
+    member internal this.TotalDiscoveryFailure() : string option =
+        this.DiscoverySnapshot()
+        |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded)
+
+    member internal _.WaitForDiscoveryFailure() : Task<string option> =
+        task {
+            let! completed = discovery.WaitForCompletion()
+
+            return
+                completed
+                |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded)
+        }
+
+    member internal _.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
+        task {
+            let! generation, completed = discovery.WaitForStableAdmission()
+
+            return
+                { Generation = generation
+                  Failure =
+                    completed
+                    |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded) }
+        }
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
@@ -1521,7 +1785,20 @@ type Daemon
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
     member _.DiscoverAndRegisterProjects() =
-        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline excludePatterns true
+        discovery.Run(fun () ->
+            async {
+                let! completed =
+                    discoverAndRegisterProjects
+                        repoRoot
+                        workspaceLoader
+                        mapProjectOptions
+                        graph
+                        pipeline
+                        excludePatterns
+                        true
+
+                return completed, ()
+            })
 
     /// Format scan state as a human-readable string. Completeness is read LIVE
     /// from the host's coverage set (registered minus currently-checked) so the
@@ -1614,14 +1891,19 @@ type Daemon
                       // (verdict, timeout, or shutdown cancellation).
                       WaitForAllTerminal =
                         fun timeout ->
-                            task {
-                                System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
+                            waitForVerdictUnlessDiscoveryFailed
+                                this.WaitForDiscoveryAdmission
+                                (fun timeout ->
+                                    task {
+                                        System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
 
-                                try
-                                    return! waitForVerdict host timeout cts.Token
-                                finally
-                                    System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents) |> ignore
-                            }
+                                        try
+                                            return! waitForVerdict host timeout cts.Token
+                                        finally
+                                            System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents)
+                                            |> ignore
+                                    })
+                                timeout
                       RerunPlugin = rerunPlugin
                       GetUncheckedCount = getUncheckedCount }
 
@@ -1852,10 +2134,24 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         let mutable lastFingerprint = state.LastFingerprint
 
         if currentFingerprint <> state.LastFingerprint then
-            let! _ =
-                rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader graph pipeline host "scan" ctx.ExcludePatterns true
+            let! completed, _ =
+                rediscoverAndClearRemoved
+                    ctx.RepoRoot
+                    ctx.Loader
+                    ctx.MapOptions
+                    ctx.Discovery
+                    graph
+                    pipeline
+                    host
+                    "scan"
+                    ctx.ExcludePatterns
+                    true
 
-            lastFingerprint <- currentFingerprint
+            // A total loader failure is retryable even when no .fsproj bytes
+            // changed (for example after repairing an app-local assembly). Do
+            // not memoize the failed fingerprint and suppress the next attempt.
+            if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
+                lastFingerprint <- currentFingerprint
 
         let registeredProjects = pipeline.GetRegisteredProjects()
 
@@ -2071,8 +2367,13 @@ module Daemon =
     let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
         configured |> Option.defaultValue [] |> Set.ofList
 
-    /// Create a daemon with the given checker (internal, for testing).
-    let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
+    let private createWithCore
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (workspaceLoader: IWorkspaceLoader option)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        =
         // This MUST be the first thing that happens (AUTOMATION-147).
         //
         // The process registry is scoped by an `AsyncLocal`, and an AsyncLocal
@@ -2131,8 +2432,15 @@ module Daemon =
                 | _ -> CheckPipeline(checker, activity = fcsSink)
 
             let graph = ProjectGraph()
-            let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
-            let loader = WorkspaceLoader.Create(toolsPath, [])
+
+            let loader =
+                match workspaceLoader with
+                | Some loader -> loader
+                | None ->
+                    let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
+                    WorkspaceLoader.Create(toolsPath, [])
+
+            let discovery = DiscoveryCoordinator()
 
             let daemonCtRef = ref CancellationToken.None
 
@@ -2163,6 +2471,8 @@ module Daemon =
                                 checker.InvalidateConfiguration(opts))
                   RepoRoot = repoRoot
                   Loader = loader
+                  MapOptions = mapProjectOptions
+                  Discovery = discovery
                   Graph = graph
                   Pipeline = pipeline
                   DaemonCt = daemonCtRef
@@ -2305,6 +2615,8 @@ module Daemon =
                 graph,
                 repoRoot,
                 loader,
+                mapProjectOptions,
+                discovery,
                 scanAgentWrapper,
                 daemonCtRef,
                 new ManualResetEventSlim(false),
@@ -2320,6 +2632,20 @@ module Daemon =
         with _ ->
             lifetime.Dispose()
             reraise ()
+
+    /// Create a daemon with the given checker (internal, for testing).
+    let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+
+    /// Deterministic loader/mapping seam for discovery concurrency tests.
+    let internal createWithWorkspaceLoader
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (loader: IWorkspaceLoader)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        =
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

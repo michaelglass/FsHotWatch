@@ -8,7 +8,92 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
+open Ionide.ProjInfo
+
+type private EmptyWorkspaceLoader() =
+    let notifications = Event<Types.WorkspaceProjectState>()
+
+    interface IWorkspaceLoader with
+        member _.LoadProjects(_projectPaths) = Seq.empty
+        member _.LoadProjects(_projectPaths, _customProperties, _binaryLog) = Seq.empty
+        member _.LoadSln(_solutionPath) = Seq.empty
+        member _.LoadSln(_solutionPath, _customProperties, _binaryLog) = Seq.empty
+
+        [<CLIEvent>]
+        member _.Notifications = notifications.Publish
+
+type private ControlledWorkspaceLoader(resultsByAttempt: Types.ProjectOptions list list) =
+    let entered =
+        resultsByAttempt
+        |> List.map (fun _ -> new Threading.ManualResetEventSlim(false))
+        |> List.toArray
+
+    let resume =
+        resultsByAttempt
+        |> List.map (fun _ -> new Threading.ManualResetEventSlim(false))
+        |> List.toArray
+
+    let notifications = Event<Types.WorkspaceProjectState>()
+    let mutable attempt = -1
+
+    member _.Entered(index: int) = entered[index]
+    member _.Resume(index: int) = resume[index].Set()
+
+    member private _.Load() =
+        let index = Threading.Interlocked.Increment(&attempt)
+
+        if index >= resultsByAttempt.Length then
+            failwithf "unexpected workspace-loader attempt %d" index
+
+        entered[index].Set()
+        resume[index].Wait()
+        resultsByAttempt[index] :> seq<_>
+
+    interface IWorkspaceLoader with
+        member this.LoadProjects(_projectPaths) = this.Load()
+        member this.LoadProjects(_projectPaths, _customProperties, _binaryLog) = this.Load()
+        member this.LoadSln(_solutionPath) = this.Load()
+        member this.LoadSln(_solutionPath, _customProperties, _binaryLog) = this.Load()
+
+        [<CLIEvent>]
+        member _.Notifications = notifications.Publish
+
 open FsHotWatch.Tests.TestHelpers
+
+let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions =
+    { ProjectId = None
+      ProjectFileName = projectPath
+      TargetFramework = "net10.0"
+      SourceFiles = []
+      OtherOptions = []
+      ReferencedProjects = []
+      PackageReferences = []
+      LoadTime = DateTime.UtcNow
+      TargetPath = System.IO.Path.ChangeExtension(projectPath, ".dll")
+      TargetRefPath = None
+      ProjectOutputType = Types.ProjectOutputType.Library
+      ProjectSdkInfo =
+        { IsTestProject = false
+          Configuration = "Debug"
+          IsPackable = false
+          TargetFramework = "net10.0"
+          TargetFrameworkIdentifier = ".NETCoreApp"
+          TargetFrameworkVersion = "v10.0"
+          MSBuildAllProjects = []
+          MSBuildToolsVersion = "Current"
+          ProjectAssetsFile = ""
+          RestoreSuccess = true
+          Configurations = [ "Debug" ]
+          TargetFrameworks = [ "net10.0" ]
+          RunArguments = None
+          RunCommand = None
+          IsPublishable = None }
+      Items = []
+      Properties = []
+      CustomProperties = []
+      AllProperties = Map.empty
+      AllItems = Map.empty
+      Analyzers = [] }
 
 
 // --- Staleness warning: detect FileCommand plugin inputs newer than last run ---
@@ -320,6 +405,59 @@ let ``failIfNoProjects returns Some 2 when every fsproj is excluded`` () =
         let result = failIfNoProjects tmpDir [ "src/" ]
         test <@ result = Some 2 @>)
 
+// --- AUTOMATION-290: total discovery failure — files found, none loaded ---
+//
+// The guard `failIfNoProjects` above cannot answer this question and is not
+// meant to: it runs BEFORE any MSBuild evaluation and asks whether there is
+// anything to load. In the incident all 18 project files existed, so it passed,
+// correctly, and every one of them then threw inside `LoadProject`. These pin the
+// distinction it is blind to.
+
+[<Fact(Timeout = 15000)>]
+let ``project files discovered and none loaded is a discovery failure`` () =
+    // The incident, in numbers: 18 .fsproj on disk, 0 out of MSBuild evaluation.
+    test <@ (totalDiscoveryFailure 18 0).IsSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``a repository where every project loaded is not a discovery failure`` () =
+    test <@ totalDiscoveryFailure 18 18 = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``a partial load is not a TOTAL discovery failure`` () =
+    // The separator between this guard and a noisier one. Individual projects fail
+    // to load for ordinary reasons (an unrestored project, a broken .fsproj), and
+    // the daemon already logs each `LoadProject FAILED`. Only the total case is
+    // the state that cannot be told apart from success from the outside, so only
+    // the total case aborts the run.
+    test <@ totalDiscoveryFailure 18 1 = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``a tree with no project files at all is not reported as a load failure`` () =
+    // Zero found is `failIfNoProjects`' case, and discovery already warns on it.
+    // Claiming a load failure here would invent the very thing this ticket is
+    // about: a message pointing away from what actually happened.
+    test <@ totalDiscoveryFailure 0 0 = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``the discovery-failure message names the load failure and the log that carries it`` () =
+    // THE POINT OF THE TICKET, and the reason this is asserted rather than left to
+    // review. What made the incident expensive was not the failure, it was an hour
+    // of wall clock spent on messages that pointed elsewhere: a wedged plugin, a
+    // quiescence timeout, `coverage could not be confirmed`. A reader who sees this
+    // line must be able to stop reading and go straight to the per-project reason.
+    let message =
+        match totalDiscoveryFailure 18 0 with
+        | Some m -> m
+        | None -> failwith "18 project files found and 0 loaded must be reported as a failure"
+
+    // Where the actual reason is, in the words the daemon logs it under.
+    test <@ message.Contains("LoadProject FAILED") @>
+    test <@ message.Contains("logs/daemon.log") @>
+    // The counts, so the sentence stands alone in a log without its neighbours.
+    test <@ message.Contains("0 of 18") @>
+    // And the explicit disavowal of the three red herrings.
+    test <@ message.Contains("NOT a coverage, quiescence or wedged-plugin problem") @>
+
 // --- runOnceAndReport: zero-projects exit code ---
 
 [<Fact(Timeout = 30000)>]
@@ -409,6 +547,208 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         repoRoot
         (noTestProjectsConfig ())
         None
+
+[<Fact(Timeout = 60000)>]
+let ``run-once overwrites a current green before surfacing total discovery failure`` () =
+    withProjectOnlyRepo "runonce-total-discovery-failure" (fun repoRoot ->
+        // Seed the exact dangerous state: a readable green from an earlier run.
+        FsHotWatch.Cli.IpcOutput.publishVerdict
+            repoRoot
+            []
+            FsHotWatch.Cli.CheckVerdict.InnerLoop
+            false
+            (FsHotWatch.Cli.IpcParsing.TestRunReport.ofScopeOnly (FsHotWatch.Cli.IpcParsing.FullSuite 1))
+            FsHotWatch.Cli.Verdict.NoReading
+            Map.empty
+            []
+            (FsHotWatch.Cli.IpcOutput.SettledTree.capture repoRoot [])
+            FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean
+        |> ignore
+
+        let createDaemon (root: string) =
+            Daemon.createWithWorkspaceLoader
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+                (EmptyWorkspaceLoader())
+                (fun _ -> [])
+
+        // The real driver after a scan whose loader returned zero projects. The
+        // separate daemon snapshot test proves this is loader count, not pipeline
+        // registration count.
+        let runScan (daemon: Daemon) =
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            daemon.Host.GetAllStatuses()
+
+        let ex =
+            Assert.Throws<ConfigError>(fun () ->
+                FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                    runScan
+                    (fun _ -> "")
+                    FsHotWatch.Cli.CheckVerdict.InnerLoop
+                    false
+                    createDaemon
+                    repoRoot
+                    (noTestProjectsConfig ())
+                    None
+                |> ignore)
+
+        test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
+
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found v ->
+            test <@ v.ExitCode = 2 @>
+
+            match v.Outcome with
+            | FsHotWatch.Cli.Verdict.Incomplete reason ->
+                test <@ reason.Contains("PROJECT LOADING FAILED") @>
+                test <@ reason.Contains("0 of 1") @>
+            | other -> failwithf "expected incomplete discovery verdict, got %A" other
+        | other -> failwithf "expected discovery failure to replace the seeded green, got %A" other)
+
+[<Fact(Timeout = 60000)>]
+let ``run-once waits for an initial discovery still inside the real loader`` () =
+    withProjectOnlyRepo "runonce-in-progress-discovery" (fun repoRoot ->
+        let loader = ControlledWorkspaceLoader([ [] ])
+        let mutable discoveryTask: System.Threading.Tasks.Task option = None
+        let mutable daemonInstance: Daemon option = None
+
+        let createDaemon (root: string) =
+            let daemon =
+                Daemon.createWithWorkspaceLoader
+                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                    root
+                    Daemon.DaemonOptions.defaults
+                    loader
+                    (fun _ -> [])
+
+            daemonInstance <- Some daemon
+            daemon
+
+        let runScan (daemon: Daemon) =
+            let running = Async.StartAsTask(daemon.DiscoverAndRegisterProjects())
+            discoveryTask <- Some(running :> System.Threading.Tasks.Task)
+
+            if not (loader.Entered(0).Wait(TimeSpan.FromSeconds(10.0))) then
+                failwith "workspace loader did not enter"
+
+            daemon.Host.GetAllStatuses()
+
+        let driver =
+            System.Threading.Tasks.Task.Run(fun () ->
+                FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                    runScan
+                    (fun _ -> "")
+                    FsHotWatch.Cli.CheckVerdict.InnerLoop
+                    false
+                    createDaemon
+                    repoRoot
+                    (noTestProjectsConfig ())
+                    None)
+
+        try
+            test <@ loader.Entered(0).Wait(TimeSpan.FromSeconds(10.0)) @>
+
+            let premature =
+                System.Threading.Tasks.Task.WhenAny(driver, System.Threading.Tasks.Task.Delay(1000))
+
+            test <@ not (obj.ReferenceEquals(premature.GetAwaiter().GetResult(), driver)) @>
+            loader.Resume(0)
+
+            let ex =
+                Assert.Throws<ConfigError>(fun () -> driver.GetAwaiter().GetResult() |> ignore)
+
+            test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
+            discoveryTask |> Option.iter (fun running -> running.GetAwaiter().GetResult())
+        finally
+            loader.Resume(0)
+
+            discoveryTask
+            |> Option.iter (fun running ->
+                try
+                    running.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+                with _ ->
+                    ())
+
+            try
+                driver.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            with _ ->
+                ()
+
+            daemonInstance |> Option.iter (fun daemon -> (daemon :> IDisposable).Dispose()))
+
+[<Fact(Timeout = 60000)>]
+let ``run-once convergence refuses a zero-load rediscovery`` () =
+    withProjectOnlyRepo "runonce-zero-load-rescan" (fun repoRoot ->
+        let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
+        let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
+        System.IO.File.WriteAllText(sourcePath, "module Library")
+
+        let loader =
+            ControlledWorkspaceLoader([ [ minimalWorkspaceProject projectPath ]; [] ])
+
+        loader.Resume(0)
+        let mutable daemonInstance: Daemon option = None
+
+        let createDaemon (root: string) =
+            let daemon =
+                Daemon.createWithWorkspaceLoader
+                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                    root
+                    Daemon.DaemonOptions.defaults
+                    loader
+                    (fun loaded ->
+                        if List.isEmpty loaded then
+                            []
+                        else
+                            [ makeProjectOptions projectPath [ sourcePath ] [] ])
+
+            daemonInstance <- Some daemon
+            daemon
+
+        let runScan (daemon: Daemon) =
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            daemon.Host.GetAllStatuses()
+
+        let driver =
+            System.Threading.Tasks.Task.Run(fun () ->
+                FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                    runScan
+                    (fun _ -> "")
+                    FsHotWatch.Cli.CheckVerdict.InnerLoop
+                    false
+                    createDaemon
+                    repoRoot
+                    (noTestProjectsConfig ())
+                    None)
+
+        try
+            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ not driver.IsCompleted @>
+            loader.Resume(1)
+
+            let ex =
+                Assert.Throws<ConfigError>(fun () -> driver.GetAwaiter().GetResult() |> ignore)
+
+            test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
+
+            match FsHotWatch.Cli.Verdict.read repoRoot with
+            | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+                test <@ verdict.ExitCode = 2 @>
+
+                match verdict.Outcome with
+                | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains("PROJECT LOADING FAILED") @>
+                | other -> failwithf "expected incomplete discovery verdict, got %A" other
+            | other -> failwithf "expected zero-load rescan to publish an incomplete verdict, got %A" other
+        finally
+            loader.Resume(1)
+
+            try
+                driver.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            with _ ->
+                ()
+
+            daemonInstance |> Option.iter (fun daemon -> (daemon :> IDisposable).Dispose()))
 
 [<Fact(Timeout = 60000)>]
 let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial scan without a second scan`` () =
