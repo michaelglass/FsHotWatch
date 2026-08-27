@@ -12,6 +12,18 @@
   extraction avoids reflection-driven allocation, and cyclic, pathologically
   deep, or high-fanout graphs fail closed.
 
+- AUTOMATION-67: prior red tests are quarantined into the next ordinary impact run;
+  class-scoped reds are added to the generated filter and unknown-scope reds promote
+  their project to a full run. Retiring a filtered red now requires the exact failing
+  method to appear as passed in that run's complete CTRF receipt. Fully qualified class
+  identity is preserved across failure output, launch selection, and CTRF evidence — the
+  previous last-two-segments parser made d223 run the contradicting tests successfully
+  while retaining their reds as "not covered".
+
+- AUTOMATION-67: decoded-literal selection seeds captured before TestPrune's destructive
+  graph rebuild are carried through the durable pending-verification lifecycle, so a
+  changed production message reselects an unchanged test that asserts the old prose.
+
 ## 0.13.0-alpha.22 - 2026-08-26
 
 - AUTOMATION-245: `ArtifactFreshness`'s copy rule now goes through core's

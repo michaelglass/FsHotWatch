@@ -79,6 +79,31 @@ All notable changes to FsHotWatch packages are documented here.
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### test-prune: a changed message retains its pre-rebuild literal selection edge
+
+An incremental scan used to discover a changed producer symbol, replace that file's
+graph, and only then ask which tests depended on the change. For ordinary symbol edges
+that order is correct because incoming test edges survive the replacement. A shared
+literal's production edge points the other way (`literal -> producer`), so replacing a
+message removed the only path from the changed producer to a test still asserting the
+old prose. The selector logged one changed symbol, selected zero tests, and dropped the
+symbol as uncovered.
+
+The plugin now captures TestPrune.Core's pre-rebuild literal-node seeds before the
+destructive graph update and carries those nodes through the existing durable
+pending-verification queue. It does not retain stale edges: the rebuilt graph describes
+current source, while the old node remains owed only until its covering tests pass.
+
+Prior red tests are also quarantined into the next ordinary impact run. A named failing
+class is unioned with the graph-selected classes; a timeout, dead host, or otherwise
+unknown class scope promotes the whole project to an unfiltered run. The zero-affected
+shortcut cannot skip this debt, and a daemon restart still establishes its existing
+full-suite baseline before impact filtering resumes. Failure, launch, and CTRF receipts
+now retain the fully qualified class identity; a filtered red retires only when its exact
+failing method appears as passed in that run's complete CTRF receipt, never from a
+sibling method's aggregate class green.
+(AUTOMATION-67)
+
 ### core/cli: the tree hash now covers what DECIDES the check — BREAKING (verdict applicability)
 
 **A verdict is content-addressed to the tree it verified, and that tree was never the

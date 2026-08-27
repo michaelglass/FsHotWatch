@@ -867,13 +867,16 @@ let ``parseFailedTests extracts class and method from xUnit MTP output`` () =
         <@
             parsed
             |> List.exists (fun (cls, meth, _) ->
-                cls = "PluginHostTests" && meth = "plugin receives file change events")
+                cls = "FsHotWatch.Tests.PluginHostTests"
+                && meth = "plugin receives file change events")
         @>
 
     test
         <@
             parsed
-            |> List.exists (fun (cls, meth, _) -> cls = "BuildPluginTests" && meth = "build fires on source change")
+            |> List.exists (fun (cls, meth, _) ->
+                cls = "FsHotWatch.Tests.BuildPluginTests"
+                && meth = "build fires on source change")
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -1572,6 +1575,39 @@ let private selectAfterSeededEdit
 
     affected
 
+/// Drive the same edit through the cohort-complete flush before observing selection.
+/// Literal coupling needs this stronger path: the flush replaces the producer's old
+/// graph before it queries affected tests, which is where pre-rebuild evidence used to
+/// disappear.
+let private selectAfterSeededEditAndFlush
+    (checker: FSharpChecker)
+    (tmpDir: string)
+    (dbPath: string)
+    (projOptions: FSharpProjectOptions)
+    (libFile: string)
+    (libSourceEdited: string)
+    : string =
+    test <@ not (File.Exists(FsHotWatch.TestPrune.FileFreshness.sidecarPath tmpDir)) @>
+
+    let pipeline = CheckPipeline(checker)
+    pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+    let host = PluginHost.create checker tmpDir
+    let handler = create dbPath tmpDir None None None None None []
+    host.RegisterHandler(handler)
+
+    File.WriteAllText(libFile, libSourceEdited)
+
+    match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+    | Some result ->
+        emitFileAndQuiesce host result
+        emitBatchAndQuiesce host [ libFile ]
+    | None -> failwith "edited lib CheckFile failed"
+
+    host.RunCommand("affected-tests", [||])
+    |> Async.RunSynchronously
+    |> Option.defaultValue ""
+
 [<Fact(Timeout = 60000)>]
 let ``seeded DB + absent sidecar: string-literal change re-selects the asserting test (AUTOMATION-67 instance 1)`` () =
     withTempDir "tp-seed-logstring" (fun tmpDir ->
@@ -1600,6 +1636,33 @@ let ``seeded DB + absent sidecar: string-literal change re-selects the asserting
             selectAfterSeededEdit checker tmpDir dbPath projOptions libFile libV2 "auditFailureLogsExpectedMessage"
 
         test <@ affected.Contains("auditFailureLogsExpectedMessage") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``literal bridge survives the rebuild that observes a producer message change`` () =
+    withTempDir "tp-literal-rebuild" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        let checker = sharedChecker.Value
+        let oldMessage = "the audit log write failed and dropped the entry"
+        let newMessage = "the audit outbox write failed and retained the entry"
+
+        // No symbol edge joins these files: the test observes a boundary value and
+        // asserts its old prose without calling or naming the producer.
+        let libV1 = $"module Lib\n\nlet emit () = \"{oldMessage}\"\n"
+
+        let testsSrc =
+            $"module Tests\n\ntype FactAttribute() = inherit System.Attribute()\n\n[<Fact>]\nlet assertsObservedMessage () =\n    let observed = \"{oldMessage}\"\n    assert (observed = \"{oldMessage}\")\n"
+
+        let projOptions =
+            seedImpactDbNoSidecar checker tmpDir dbPath libFile libV1 testsFile testsSrc
+
+        let libV2 = $"module Lib\n\nlet emit () = \"{newMessage}\"\n"
+
+        let affected =
+            selectAfterSeededEditAndFlush checker tmpDir dbPath projOptions libFile libV2
+
+        test <@ affected.Contains("assertsObservedMessage") @>)
 
 [<Fact(Timeout = 60000)>]
 let ``seeded DB + absent sidecar: DU-list length change re-selects the count-asserting test (AUTOMATION-67 instance 2)``
@@ -8677,6 +8740,79 @@ let private testsFinishedEventWithReports
 
     Custom(TestsFinished(started, completed, launch))
 
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-67 d223: a quarantined method passing in the exact CTRF receipt retires its red`` () =
+    withTempDir "a67-d223-reconcile" (fun repoRoot ->
+        let project = "Intelligence.Tests.Integration"
+
+        let className =
+            "Intelligence.Tests.Integration.AuthThrottleAcceptanceTests+AuthThrottleAcceptanceTests"
+
+        let methodName =
+            "NEWS-804 an unthrottled request answers the same for a real address and an unknown one"
+
+        let fullName = $"%s{className}.%s{methodName}"
+
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config project ]) None None None None []
+
+        let failedRun =
+            testsFinishedEvent
+                [ project, TestsFailed($"failed %s{fullName} (496ms)", false, TimeSpan.FromMilliseconds 496.0) ]
+                (fullSuiteLaunch [ project ])
+
+        let passingRun =
+            testsFinishedEventWithReports
+                repoRoot
+                [ project, ctrfReport [ fullName, "passed" ] ]
+                [ project, TestsPassed("passed", true, TimeSpan.FromMilliseconds 496.0) ]
+                (filteredLaunch [ project, [ className ] ])
+
+        let _ctx, statuses, ledger, final = driveRuns handler [ failedRun; passingRun ]
+
+        test <@ List.isEmpty final.OutstandingFailures @>
+        test <@ List.isEmpty (ledgerFilesOf ledger) @>
+
+        match lastStatus statuses with
+        | PluginStatus.Completed _ -> ()
+        | other -> Assert.Fail($"the exact previously failing method passed, so its red must retire; got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-67: a different passing method in the quarantined class cannot erase the red`` () =
+    withTempDir "a67-method-receipt" (fun repoRoot ->
+        let project = "Intelligence.Tests.Integration"
+        let className = "Intelligence.Tests.Integration.UserAuthTests+UserAuthTests"
+        let failedMethod = "POST /api/user/login/request with valid email returns 200"
+        let failedName = $"%s{className}.%s{failedMethod}"
+        let siblingName = $"%s{className}.another method passed"
+
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config project ]) None None None None []
+
+        let failedRun =
+            testsFinishedEvent
+                [ project, TestsFailed($"failed %s{failedName} (178ms)", false, TimeSpan.FromMilliseconds 178.0) ]
+                (fullSuiteLaunch [ project ])
+
+        let siblingOnlyRun =
+            testsFinishedEventWithReports
+                repoRoot
+                [ project, ctrfReport [ siblingName, "passed" ] ]
+                [ project, TestsPassed("passed", true, TimeSpan.FromMilliseconds 20.0) ]
+                (filteredLaunch [ project, [ className ] ])
+
+        let _ctx, statuses, _ledger, final = driveRuns handler [ failedRun; siblingOnlyRun ]
+
+        test
+            <@
+                final.OutstandingFailures
+                |> List.exists (fun red -> red.Method = Some failedMethod)
+            @>
+
+        match lastStatus statuses with
+        | PluginStatus.Failed _ -> ()
+        | other -> Assert.Fail($"a sibling pass did not contradict the failed method and must stay red; got %A{other}"))
+
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: a report's PASSED classes are the receipt a raw-filter run is credited with`` () =
     let report =
@@ -8684,7 +8820,14 @@ let ``AUTOMATION-225: a report's PASSED classes are the receipt a raw-filter run
             [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
               "Acme.Tests.BrowserIntegrationTests.signs in", "passed" ]
 
-    test <@ passedClassesOfReport report = Set.ofList [ "BrowserIntegrationTests" ] @>
+    test <@ passedClassesOfReport report = Set.ofList [ "Acme.Tests.BrowserIntegrationTests" ] @>
+
+    test
+        <@
+            passedTestsOfReport report = Set.ofList
+                [ "Acme.Tests.BrowserIntegrationTests", "loads the dashboard"
+                  "Acme.Tests.BrowserIntegrationTests", "signs in" ]
+        @>
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: a class that RAN AND FAILED is claimed by nothing, not even its own passes`` () =
@@ -8696,7 +8839,7 @@ let ``AUTOMATION-225: a class that RAN AND FAILED is claimed by nothing, not eve
               "Acme.Tests.BrowserIntegrationTests.signs in", "failed"
               "Acme.Tests.SmokeTests.pings", "passed" ]
 
-    test <@ passedClassesOfReport report = Set.ofList [ "SmokeTests" ] @>
+    test <@ passedClassesOfReport report = Set.ofList [ "Acme.Tests.SmokeTests" ] @>
 
     // An `other` status is an individually-ERRORED test â€” not a pass, so not a receipt.
     let errored =
@@ -8721,7 +8864,7 @@ let ``AUTOMATION-225: a class with nothing but skips proves nothing; a skip besi
             [ "Acme.Tests.BrowserIntegrationTests.loads the dashboard", "passed"
               "Acme.Tests.BrowserIntegrationTests.disabled for now", "skipped" ]
 
-    test <@ passedClassesOfReport mixed = Set.ofList [ "BrowserIntegrationTests" ] @>
+    test <@ passedClassesOfReport mixed = Set.ofList [ "Acme.Tests.BrowserIntegrationTests" ] @>
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-225: report evidence that is missing, unparseable or INCOMPLETE claims nothing`` () =
@@ -8823,8 +8966,9 @@ let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran â€
         test
             <@
                 afterFull.OutstandingFailures |> List.map (fun f -> f.Class) |> List.sort = [ Some
-                                                                                                  "BrowserIntegrationTests"
-                                                                                              Some "LedgerTests" ]
+                                                                                                  "Acme.Tests.BrowserIntegrationTests"
+                                                                                              Some
+                                                                                                  "Acme.Tests.LedgerTests" ]
             @>
 
         // A `ProjectInFull` selection plus an opaque filter string, exactly as
@@ -8843,13 +8987,13 @@ let ``AUTOMATION-225: a filtered re-run that PASSES retires the red it re-ran â€
             <@
                 not (
                     afterRerun.OutstandingFailures
-                    |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+                    |> List.exists (fun f -> f.Class = Some "Acme.Tests.BrowserIntegrationTests")
                 )
             @>
 
         // ... and the red the re-run never touched is still standing, in the state AND in
         // the ledger the verdict reads.
-        test <@ afterRerun.OutstandingFailures |> List.map (fun f -> f.Class) = [ Some "LedgerTests" ] @>
+        test <@ afterRerun.OutstandingFailures |> List.map (fun f -> f.Class) = [ Some "Acme.Tests.LedgerTests" ] @>
 
         let ledgerMessages =
             ledger
@@ -8897,7 +9041,7 @@ let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retir
         test
             <@
                 afterNoReport.OutstandingFailures
-                |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+                |> List.exists (fun f -> f.Class = Some "Acme.Tests.BrowserIntegrationTests")
             @>
 
         // An unparseable one.
@@ -8913,7 +9057,7 @@ let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retir
         test
             <@
                 afterGarbage.OutstandingFailures
-                |> List.exists (fun f -> f.Class = Some "BrowserIntegrationTests")
+                |> List.exists (fun f -> f.Class = Some "Acme.Tests.BrowserIntegrationTests")
             @>
     finally
         try
@@ -8926,8 +9070,37 @@ let ``AUTOMATION-225: a filtered re-run whose report is missing or garbage retir
 let private redIn (project: string) (cls: string option) =
     { Project = project
       Class = cls
+      Method = cls |> Option.map (fun _ -> "failed method")
       File = $"<tests/%s{project}>"
       Entry = FsHotWatch.ErrorLedger.ErrorEntry.errorWithDetail $"%s{project} failed" "output" }
+
+[<Fact(Timeout = 10000)>]
+let ``OutstandingFailure.quarantine automatically adds prior red classes to the next impact selection`` () =
+    let affected = Map.ofList [ "ProjA", [ "FreshTests" ]; "ProjB", [ "OtherTests" ] ]
+
+    let quarantined =
+        OutstandingFailure.quarantine
+            (Set.ofList [ "ProjA"; "ProjB"; "ProjC" ])
+            [ redIn "ProjA" (Some "PriorRedTests")
+              redIn "ProjC" (Some "OnlyPriorRedTests") ]
+            affected
+
+    test <@ quarantined.["ProjA"] |> Set.ofList = Set.ofList [ "FreshTests"; "PriorRedTests" ] @>
+    test <@ quarantined.["ProjB"] = [ "OtherTests" ] @>
+    test <@ quarantined.["ProjC"] = [ "OnlyPriorRedTests" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``OutstandingFailure.quarantine promotes an unknown-scope prior red to the whole project`` () =
+    let affected = Map.ofList [ "ProjA", [ "FreshTests" ]; "ProjB", [ "OtherTests" ] ]
+
+    let quarantined =
+        OutstandingFailure.quarantine
+            (Set.ofList [ "ProjA"; "ProjB" ])
+            [ redIn "ProjA" (Some "PriorRedTests"); redIn "ProjA" None ]
+            affected
+
+    test <@ quarantined.["ProjA"] = [] @>
+    test <@ quarantined.["ProjB"] = [ "OtherTests" ] @>
 
 [<Fact(Timeout = 10000)>]
 let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-passed one`` () =
@@ -8937,7 +9110,7 @@ let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-pass
     let coverage: RunCoverage = Map.ofList [ "ProjB", CoveredWholeProject ]
 
     let carried =
-        OutstandingFailure.carry (Set.ofList [ "ProjA"; "ProjB" ]) coverage [] prior
+        OutstandingFailure.carry (Set.ofList [ "ProjA"; "ProjB" ]) coverage Map.empty [] prior
 
     test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
 
@@ -8947,7 +9120,8 @@ let ``OutstandingFailure.carry: a covered project that failed AGAIN keeps exactl
     let coverage: RunCoverage = Map.ofList [ "ProjA", CoveredWholeProject ]
     let found = [ redIn "ProjA" (Some "ProjATests") ]
 
-    let carried = OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage found prior
+    let carried =
+        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage Map.empty found prior
 
     // Superseded by this run's own evidence: one entry, not two. Reds must not accumulate.
     test <@ carried.Length = 1 @>
@@ -8959,7 +9133,7 @@ let ``OutstandingFailure.carry: a red for a project no longer configured is prun
     let prior = [ redIn "Removed" None; redIn "ProjA" None ]
 
     let carried =
-        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) RunCoverage.none [] prior
+        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) RunCoverage.none Map.empty [] prior
 
     test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
 
@@ -9949,6 +10123,7 @@ let private a259Projects =
 let private a259Failure (project: string) (cls: string option) : OutstandingFailure =
     { Project = project
       Class = cls
+      Method = cls |> Option.map (fun _ -> "failed method")
       File = "tests/X.fs"
       Entry = FsHotWatch.ErrorLedger.ErrorEntry.error $"%s{project}: 1 test(s) failed" }
 

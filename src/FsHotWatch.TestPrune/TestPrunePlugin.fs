@@ -346,6 +346,10 @@ type OutstandingFailure =
         /// deferred). A project-level red is only clearable by a run that executed
         /// the project in FULL.
         Class: string option
+        /// Exact failing method from the runner receipt. Filtered reconciliation
+        /// requires this same method to appear as passed in a complete CTRF report;
+        /// a different passing method in the class cannot contradict this red.
+        Method: string option
         /// The ledger key: the class's source file, or the synthetic
         /// `<tests/Project>` bucket when no source file is known.
         File: string
@@ -516,6 +520,9 @@ type TestRunInputs =
         /// Files whose symbol analysis failed: while non-empty, the run widens to
         /// every test project (AUTOMATION-113).
         UnanalyzableFiles: Map<string, UnanalyzableFile>
+        /// Prior reds captured at launch. They are quarantined into this run's
+        /// selection even when the current graph reaches different tests.
+        OutstandingFailures: OutstandingFailure list
     }
 
 module TestRunInputs =
@@ -524,7 +531,8 @@ module TestRunInputs =
         { AffectedTests = state.AffectedTests
           ChangedSymbols = state.ChangedSymbols
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
-          UnanalyzableFiles = state.UnanalyzableFiles }
+          UnanalyzableFiles = state.UnanalyzableFiles
+          OutstandingFailures = state.OutstandingFailures }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -1231,15 +1239,45 @@ let internal scopeOfSelection (projects: string list) (selection: Map<string, Pr
 
 module internal OutstandingFailure =
 
+    /// Prior reds are verification debt, not merely verdict decoration. Add every
+    /// configured red scope to the next ordinary impact selection so a failing test
+    /// cannot disappear just because the next edit reaches a different part of the
+    /// graph. A failure without a class is project-scoped and therefore promotes the
+    /// whole project to an unfiltered run.
+    let quarantine
+        (configured: Set<string>)
+        (failures: OutstandingFailure list)
+        (affectedByProject: Map<string, string list>)
+        : Map<string, string list> =
+        failures
+        |> List.filter (fun failure -> Set.contains failure.Project configured)
+        |> List.groupBy (fun failure -> failure.Project)
+        |> List.fold
+            (fun selected (project, projectFailures) ->
+                if projectFailures |> List.exists (fun failure -> Option.isNone failure.Class) then
+                    Map.add project [] selected
+                else
+                    let quarantinedClasses =
+                        projectFailures |> List.choose (fun failure -> failure.Class)
+
+                    match Map.tryFind project selected with
+                    | Some [] -> selected
+                    | Some affectedClasses ->
+                        Map.add project (affectedClasses @ quarantinedClasses |> List.distinct) selected
+                    | None -> Map.add project (quarantinedClasses |> List.distinct) selected)
+            affectedByProject
+
     /// Identity for de-duplication: the same class failing the same way twice is one
     /// red, not two. (`Entry` is compared by message only — the detail is the full
     /// runner output, which differs by timing/ordering between otherwise identical
     /// failures.)
     let private identity (f: OutstandingFailure) =
-        f.Project, f.Class, f.File, f.Entry.Message
+        f.Project, f.Class, f.Method, f.File, f.Entry.Message
 
     /// The reds a run CARRIES: prior failures it did not cover, and so cannot speak
-    /// for. These are what deny an otherwise-passing run its green verdict.
+    /// for. A filtered class selection covers an exact prior method only when this
+    /// run's complete CTRF receipt contains that method passing; a sibling green is
+    /// not contradictory evidence. These deny an otherwise-passing run its verdict.
     ///
     /// `configured` prunes reds for projects the daemon no longer runs (a project
     /// removed from `tests.projects` could otherwise never be covered again, and its
@@ -1248,13 +1286,24 @@ module internal OutstandingFailure =
     let carriedOver
         (configured: Set<string>)
         (coverage: RunCoverage)
+        (passedTests: Map<string, Set<string * string>>)
         (prior: OutstandingFailure list)
         : OutstandingFailure list =
         let stillConfigured (f: OutstandingFailure) =
             Set.isEmpty configured || Set.contains f.Project configured
 
-        prior
-        |> List.filter (fun f -> stillConfigured f && not (RunCoverage.covers f.Project f.Class coverage))
+        let covered (failure: OutstandingFailure) =
+            match failure.Class, failure.Method, Map.tryFind failure.Project coverage with
+            | _, _, Some CoveredWholeProject -> true
+            | Some cls, Some methodName, Some(CoveredClasses classes) ->
+                Set.contains cls classes
+                && (passedTests
+                    |> Map.tryFind failure.Project
+                    |> Option.exists (Set.contains (cls, methodName)))
+            | _, None, _ -> RunCoverage.covers failure.Project failure.Class coverage
+            | _ -> false
+
+        prior |> List.filter (fun f -> stillConfigured f && not (covered f))
 
     /// The outstanding set after a run: what it carried, plus what it found. A red the
     /// run COVERED is not carried — if it failed again, `found` re-adds it from THIS
@@ -1264,10 +1313,12 @@ module internal OutstandingFailure =
     let carry
         (configured: Set<string>)
         (coverage: RunCoverage)
+        (passedTests: Map<string, Set<string * string>>)
         (found: OutstandingFailure list)
         (prior: OutstandingFailure list)
         : OutstandingFailure list =
-        carriedOver configured coverage prior @ found |> List.distinctBy identity
+        carriedOver configured coverage passedTests prior @ found
+        |> List.distinctBy identity
 
     /// Human-readable "what is still red that this run did not look at", for the
     /// status verdict. Names the projects, not every class — the ledger has the detail.
@@ -1740,7 +1791,10 @@ let internal looksLikeApphostMissing (output: string) : bool =
         hasStartProcessFailure && not looksLikeRealTestFailure
 
 /// Split a fully-qualified test name into (class, method): the LAST dotted segment is
-/// the method, the one before it the class. A name with no dot is its own class.
+/// the method and the COMPLETE prefix is the class. A name with no dot is its own class.
+/// Keeping the prefix is load-bearing: launch selections use fully qualified class
+/// names, so truncating `A.B.Tests.method` to `Tests` makes a test run and pass while
+/// its retained red remains permanently "not covered" (AUTOMATION-67 / d223).
 ///
 /// ONE derivation, used by BOTH sides of the ledger: the class a red is FILED under
 /// (`parseFailedTests`, off the runner's `failed <name>` console lines) and the class a
@@ -1750,10 +1804,10 @@ let internal looksLikeApphostMissing (output: string) : bool =
 /// heuristic defeats it identically on both sides, and a key that fails to match simply
 /// leaves the red standing.
 let internal splitTestName (name: string) : string * string =
-    let parts = name.Split('.')
+    let separator = name.LastIndexOf('.')
 
-    if parts.Length >= 2 then
-        parts.[parts.Length - 2], parts.[parts.Length - 1]
+    if separator > 0 && separator < name.Length - 1 then
+        name.Substring(0, separator), name.Substring(separator + 1)
     else
         name, name
 
@@ -1801,6 +1855,35 @@ let parseFailedTests (output: string) : (string * string * string) list =
 /// agree with is: a full run whose report contains skips still returns
 /// `CoveredWholeProject` and clears everything. A rule that let a skip block a class
 /// here would be stricter than the whole-project path it is a refinement of.
+let internal passedTestsOfReport (json: string) : Set<string * string> =
+    match Ctrf.trySummary json with
+    | None -> Set.empty
+    | Some summary ->
+        let records = Flakiness.parseCtrfTests json
+
+        if records.IsEmpty || records.Length <> summary.Total then
+            Set.empty
+        else
+            records
+            |> List.groupBy (fun r -> splitTestName r.Name)
+            |> List.choose (fun (testIdentity, forTest) ->
+                let anyPassed = forTest |> List.exists (fun r -> r.Outcome = Flakiness.Passed)
+
+                let anyUnvindicated =
+                    forTest
+                    |> List.exists (fun r ->
+                        match r.Outcome with
+                        | Flakiness.Failed
+                        | Flakiness.Other -> true
+                        | Flakiness.Passed
+                        | Flakiness.Skipped -> false)
+
+                if anyPassed && not anyUnvindicated then
+                    Some testIdentity
+                else
+                    None)
+            |> Set.ofList
+
 let internal passedClassesOfReport (json: string) : Set<string> =
     match Ctrf.trySummary json with
     | None -> Set.empty
@@ -1849,6 +1932,21 @@ let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, S
         | _ -> None)
     |> Map.ofList
 
+let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string * string>> =
+    Ctrf.reportsForRun repoRoot runId
+    |> List.choose (fun report ->
+        let json =
+            try
+                Some(File.ReadAllText report.Path)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+
+        match json |> Option.map passedTestsOfReport with
+        | Some tests when not (Set.isEmpty tests) -> Some(report.Project, tests)
+        | _ -> None)
+    |> Map.ofList
+
 /// The reds a completed run FOUND, as outstanding failures (AUTOMATION-125). Pure:
 /// the same run always yields the same set, so the ledger projection is a function
 /// of the evidence and nothing else.
@@ -1868,6 +1966,7 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
         let projectLevel (entry: ErrorLedger.ErrorEntry) =
             { Project = project
               Class = None
+              Method = None
               File = synthetic project
               Entry = entry }
 
@@ -1882,12 +1981,13 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                 [ projectLevel (ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output) ]
             else
                 parsed
-                |> List.map (fun (className, _methodName, line) ->
+                |> List.map (fun (className, methodName, line) ->
                     let file =
                         classFiles |> Map.tryFind className |> Option.defaultValue (synthetic project)
 
                     { Project = project
                       Class = (if isTimeout then None else Some className)
+                      Method = (if isTimeout then None else Some methodName)
                       File = file
                       Entry = ErrorLedger.ErrorEntry.errorWithDetail line output })
         | TestsDeferred reason ->
@@ -3272,6 +3372,31 @@ let create
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
     let flushAndQueryAffected (state: TestPruneState) =
+        // AUTOMATION-67. Capture OLD literal coupling before `RebuildProjects`
+        // replaces a changed producer's outgoing graph. The unchanged test still
+        // points at that old literal, but after the rebuild the producer does not;
+        // querying only the changed producer would therefore select nothing.
+        //
+        // Queue the literal NODE, not a stale producer edge. It then follows the
+        // ordinary pending-verification lifecycle and disappears after its covering
+        // tests pass, while the rebuilt graph remains an exact description of current
+        // source. This is bounded evidence carried across one destructive boundary,
+        // not permanent false-positive coupling.
+        let preRebuildSymbols =
+            Set.union pendingQueueRef (Set.ofList state.ChangedSymbols) |> Set.toList
+
+        let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
+        enqueuePending priorLiteralSeeds
+
+        let state =
+            { state with
+                ChangedSymbols = (priorLiteralSeeds @ state.ChangedSymbols) |> List.distinct }
+
+        if not priorLiteralSeeds.IsEmpty then
+            Logging.info
+                "test-prune"
+                $"Preserved %d{priorLiteralSeeds.Length} pre-rebuild literal coupling seed(s) for impact selection"
+
         // Persist the pending queue BEFORE flushPendingAnalysis advances the
         // durable analysis snapshot: once the snapshot advances, un-persisted
         // queue entries would no longer be re-detectable after a crash. One
@@ -3756,6 +3881,16 @@ let create
                     |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
                     |> Map.ofList
 
+                // AUTOMATION-67 — a prior red is mandatory verification debt. The
+                // graph for today's edit may not reach yesterday's failing class, but
+                // the next ordinary run must still execute it. Unknown class scope is
+                // conservatively the whole project.
+                let quarantinedAffectedByProject =
+                    OutstandingFailure.quarantine
+                        (fullSuiteProjects configs)
+                        inputs.OutstandingFailures
+                        symbolAffectedByProject
+
                 // UNION the dependency-fanout: each force-run project enters the
                 // map with an EMPTY class list, which `buildFilterArgs` treats as
                 // "no filter → run ALL tests in this project" (a project ABSENT
@@ -3766,7 +3901,7 @@ let create
                 // fanout hit promotes a partially-selected project to full.
                 let affectedByProject =
                     forceRunProjects
-                    |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
+                    |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
 
                 /// AUTOMATION-125 — the run's SCOPE, in the same shape `executeTests`
                 /// will actually honour, captured on the launch so the completion
@@ -3800,7 +3935,7 @@ let create
                     else
                         wouldHaveRunSelection
                             configs
-                            symbolAffectedByProject
+                            quarantinedAffectedByProject
                             (coarseFallbackProjects configs unanalyzablePaths fanoutProjects)
                             ledgerUnreadable
                         |> Some
@@ -3815,7 +3950,10 @@ let create
                 // dependency-fanout (force-run projects, zero symbol classes) must
                 // NOT be counted as "0 affected" and skipped — so the gate below
                 // also checks `forceRunProjects` is empty.
-                let totalClasses = symbolAffectedByProject |> Map.values |> Seq.sumBy List.length
+                let totalClasses =
+                    quarantinedAffectedByProject |> Map.values |> Seq.sumBy List.length
+
+                let hasQuarantinedFailures = not (List.isEmpty inputs.OutstandingFailures)
 
                 // Two independent routes to the degenerate zero-affected skip. Both
                 // terminate as a clean green via the same lifecycle, differing from
@@ -3848,6 +3986,7 @@ let create
                 if
                     totalClasses = 0
                     && Set.isEmpty forceRunProjects
+                    && not hasQuarantinedFailures
                     && (baselineEquivalent || nothingToVerify)
                 then
                     if nothingToVerify then
@@ -5082,6 +5221,7 @@ let create
                             completed.Results
                             (passedClassesOfRun repoRoot completed.RunId)
 
+                    let passedTests = passedTestsOfRun repoRoot completed.RunId
 
                     let foundFailures = failuresOf state.TestClassFiles testResults
 
@@ -5099,10 +5239,15 @@ let create
                     )
 
                     let carriedFailures =
-                        OutstandingFailure.carriedOver runnableProjects coverage state.OutstandingFailures
+                        OutstandingFailure.carriedOver runnableProjects coverage passedTests state.OutstandingFailures
 
                     let outstandingFailures =
-                        OutstandingFailure.carry runnableProjects coverage foundFailures state.OutstandingFailures
+                        OutstandingFailure.carry
+                            runnableProjects
+                            coverage
+                            passedTests
+                            foundFailures
+                            state.OutstandingFailures
 
                     if not carriedFailures.IsEmpty then
                         Logging.info
