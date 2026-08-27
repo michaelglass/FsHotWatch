@@ -158,6 +158,92 @@ module ``isMustScanEvent pure tests`` =
 
 // Force sequential execution — FSEvents startup latency (4-10s for cold dirs) causes
 // spurious failures when multiple streams compete for fseventsd resources in parallel.
+module ``native cleanup lifecycle tests`` =
+
+    let private startedThread (body: unit -> unit) =
+        let thread = Thread(ThreadStart(body))
+        thread.IsBackground <- true
+        thread.Start()
+        thread
+
+    [<Fact(Timeout = 15000)>]
+    let ``failed start invalidates and joins before release without calling stop`` () =
+        let order = ResizeArray<string>()
+        let stopLoop = new ManualResetEventSlim(false)
+        let thread = startedThread stopLoop.Wait
+
+        let cleanup =
+            NativeCleanupCoordinator(
+                (fun () -> order.Add("stop")),
+                (fun () -> order.Add("invalidate")),
+                (fun () ->
+                    order.Add("stop-loop")
+                    stopLoop.Set()),
+                (fun () -> thread),
+                (fun () -> order.Add("release"))
+            )
+
+        cleanup.Cleanup()
+
+        test <@ not thread.IsAlive @>
+        test <@ order |> Seq.toList = [ "invalidate"; "stop-loop"; "release" ] @>
+
+    [<Fact(Timeout = 15000)>]
+    let ``concurrent successful cleanup stops and releases exactly once`` () =
+        let mutable stops = 0
+        let mutable invalidates = 0
+        let mutable releases = 0
+        let stopLoop = new ManualResetEventSlim(false)
+        let thread = startedThread stopLoop.Wait
+
+        let cleanup =
+            NativeCleanupCoordinator(
+                (fun () -> Interlocked.Increment(&stops) |> ignore),
+                (fun () -> Interlocked.Increment(&invalidates) |> ignore),
+                stopLoop.Set,
+                (fun () -> thread),
+                (fun () -> Interlocked.Increment(&releases) |> ignore)
+            )
+
+        cleanup.MarkStarted()
+
+        [| for _ in 1..8 -> System.Threading.Tasks.Task.Run(cleanup.Cleanup) |]
+        |> System.Threading.Tasks.Task.WhenAll
+        |> fun task -> task.GetAwaiter().GetResult()
+
+        test <@ stops = 1 @>
+        test <@ invalidates = 1 @>
+        test <@ releases = 1 @>
+
+    [<Fact(Timeout = 15000)>]
+    let ``cleanup requested on run-loop thread releases only after that loop exits`` () =
+        let order = ResizeArray<string>()
+        let mutable cleanup = Unchecked.defaultof<NativeCleanupCoordinator>
+        let mutable releasedBeforeExit = false
+
+        let thread =
+            new Thread(
+                ThreadStart(fun () ->
+                    cleanup.Cleanup()
+                    releasedBeforeExit <- order |> Seq.contains "release"
+                    cleanup.RunLoopExited())
+            )
+
+        cleanup <-
+            NativeCleanupCoordinator(
+                (fun () -> order.Add("stop")),
+                (fun () -> order.Add("invalidate")),
+                (fun () -> order.Add("stop-loop")),
+                (fun () -> thread),
+                (fun () -> order.Add("release"))
+            )
+
+        cleanup.MarkStarted()
+        thread.Start()
+        test <@ thread.Join(2000) @>
+        test <@ not releasedBeforeExit @>
+        test <@ order |> Seq.toList = [ "stop"; "invalidate"; "stop-loop"; "release" ] @>
+
 type MacFsEventsFixture() = class end
 
 [<CollectionDefinition("MacFsEvents", DisableParallelization = true)>]

@@ -179,6 +179,68 @@ let private createCFStringArray (paths: string list) =
 
 // ─── FsEventStream ──────────────────────────────────────────────────
 
+/// The native stream was created and scheduled, but macOS refused to start it.
+/// Kept distinct so watcher setup can fail over without string-matching a native error.
+type internal StartFailedException() =
+    inherit Exception("FSEventStreamStart returned false — failed to start FSEvents stream")
+
+/// Serializes native teardown and keeps release behind run-loop termination.
+/// A timed-out join leaks rather than releasing memory a live native thread may use.
+type internal NativeCleanupCoordinator
+    (
+        stopStream: unit -> unit,
+        invalidateStream: unit -> unit,
+        stopRunLoop: unit -> unit,
+        getRunLoopThread: unit -> Thread,
+        releaseResources: unit -> unit
+    ) =
+    let gate = obj ()
+    let mutable started = false
+    let mutable cleanupRequested = false
+    let mutable released = false
+
+    let releaseOnce () =
+        lock gate (fun () ->
+            if not released then
+                released <- true
+                releaseResources ())
+
+    member _.MarkStarted() = lock gate (fun () -> started <- true)
+
+    member _.RunLoopExited() =
+        let shouldRelease = lock gate (fun () -> cleanupRequested)
+
+        if shouldRelease then
+            releaseOnce ()
+
+    member _.Cleanup() =
+        let thread =
+            lock gate (fun () ->
+                if not cleanupRequested then
+                    cleanupRequested <- true
+
+                    if started then
+                        stopStream ()
+                        started <- false
+
+                    invalidateStream ()
+                    stopRunLoop ()
+
+                getRunLoopThread ())
+
+        if isNull thread then
+            releaseOnce ()
+        elif obj.ReferenceEquals(thread, Thread.CurrentThread) then
+            // Joining self would deadlock. The run-loop thread calls
+            // RunLoopExited after CFRunLoopRun returns and releases there.
+            ()
+        elif thread.ThreadState &&& ThreadState.Unstarted <> enum<ThreadState> 0 then
+            releaseOnce ()
+        elif thread.Join(5000) then
+            releaseOnce ()
+        else
+            warn "fsevents" "run-loop thread did not exit within 5s; native resources retained until it exits"
+
 /// Managed wrapper around a native FSEventStream.
 /// Watches the given directories for file-level events and invokes the callback
 /// with each changed file path.
@@ -195,17 +257,18 @@ type FsEventStream
         onCoalescedEvent: (string -> unit) option,
         latencySeconds: float
     ) =
-    let mutable disposed = false
+    let mutable disposed = 0
     let mutable streamRef = nativeint 0
     let mutable runLoopRef = nativeint 0
     let mutable runLoopModeRef = nativeint 0
+    let mutable runLoopThread: Thread = null
     let mutable callbackHandle = Unchecked.defaultof<GCHandle>
     let mutable cfStringRefs: nativeint array = [||]
     let mutable cfArrayRef = nativeint 0
 
     let callback =
         FSEventStreamCallback(fun _streamRef _clientInfo numEvents eventPaths eventFlags _eventIds ->
-            if not (Volatile.Read(&disposed)) then
+            if Volatile.Read(&disposed) = 0 then
                 let count = int numEvents
                 debug "fsevents" $"callback fired: %d{count} events"
 
@@ -236,21 +299,13 @@ type FsEventStream
                         | None -> ()
                     | EventClassification.Ignored -> debug "fsevents" $"filtered event: flags=0x%08X{flags}")
 
-    let cleanup () =
+    let releaseResources () =
         if streamRef <> nativeint 0 then
-            FSEventStreamStop(streamRef)
-            FSEventStreamInvalidate(streamRef)
-
-            // Stop the dedicated run loop so its thread exits CFRunLoopRun()
-            let rl = Volatile.Read(&runLoopRef)
-
-            if rl <> nativeint 0 then
-                CFRunLoopStop(rl)
-
             FSEventStreamRelease(streamRef)
             streamRef <- nativeint 0
 
         runLoopRef <- nativeint 0
+        runLoopThread <- null
 
         if runLoopModeRef <> nativeint 0 then
             CFRelease(runLoopModeRef)
@@ -268,6 +323,25 @@ type FsEventStream
 
         if callbackHandle.IsAllocated then
             callbackHandle.Free()
+
+    let cleanupCoordinator =
+        NativeCleanupCoordinator(
+            (fun () ->
+                if streamRef <> nativeint 0 then
+                    FSEventStreamStop(streamRef)),
+            (fun () ->
+                if streamRef <> nativeint 0 then
+                    FSEventStreamInvalidate(streamRef)),
+            (fun () ->
+                let runLoop = Volatile.Read(&runLoopRef)
+
+                if runLoop <> nativeint 0 then
+                    CFRunLoopStop(runLoop)),
+            (fun () -> runLoopThread),
+            releaseResources
+        )
+
+    let cleanup () = cleanupCoordinator.Cleanup()
 
     do
         if directories.IsEmpty then
@@ -310,7 +384,7 @@ type FsEventStream
             let capturedModeRef = runLoopModeRef
             let runLoopReady = new ManualResetEventSlim(false)
 
-            let runLoopThread =
+            runLoopThread <-
                 Thread(fun () ->
                     // Get this thread's run loop — must be called from the thread that will run it
                     let rl = CFRunLoopGetCurrent()
@@ -323,6 +397,7 @@ type FsEventStream
 
                     // Blocks, pumping CFRunLoop events, until CFRunLoopStop() in cleanup().
                     CFRunLoopRun()
+                    cleanupCoordinator.RunLoopExited()
                     debug "fsevents" "CFRunLoopRun() returned — run loop thread exiting")
 
             runLoopThread.IsBackground <- true
@@ -333,7 +408,9 @@ type FsEventStream
 
             // Safe from any thread once the stream is scheduled.
             if not (FSEventStreamStart(streamRef)) then
-                failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
+                raise (StartFailedException())
+
+            cleanupCoordinator.MarkStarted()
 
             info
                 "fsevents"
@@ -347,12 +424,11 @@ type FsEventStream
 
     /// Returns true if the stream was successfully created and started.
     member _.IsRunning =
-        Volatile.Read(&streamRef) <> nativeint 0 && not (Volatile.Read(&disposed))
+        Volatile.Read(&streamRef) <> nativeint 0 && Volatile.Read(&disposed) = 0
 
     interface IDisposable with
         member _.Dispose() =
-            if not (Volatile.Read(&disposed)) then
-                Volatile.Write(&disposed, true)
+            if Interlocked.Exchange(&disposed, 1) = 0 then
                 cleanup ()
 
 /// Create an FsEventStream watching the given directories.

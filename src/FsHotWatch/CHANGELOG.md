@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- macOS watcher startup now falls back transactionally to one symlink-safe,
+  content-hashed polling watcher when native FSEvents setup fails. The fallback
+  covers source/project files, top-level solutions, and configured extra file
+  patterns without retaining partially-created FSEvents-backed watchers.
+
 - AUTOMATION-290: project discovery now atomically records one completed,
   serialized loader epoch, keeping discovered, Ionide-loaded, FCS-options-mapped,
   and pipeline-registered counts distinct. `WaitForComplete` waits through an
