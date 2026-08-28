@@ -1541,6 +1541,28 @@ type private FakeDaemon =
         Served: ResizeArray<int>
     }
 
+/// A real throwing frame whose compiled declaring type supplies the same marker the
+/// production classifier sees in StreamJsonRpc. NoInlining + NoOptimization and the
+/// catch/rethrow body keep this frame observable instead of tail-call-eliding it.
+module private HeaderDelimitedMessageHandler =
+    [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining
+                                                 ||| System.Runtime.CompilerServices.MethodImplOptions.NoOptimization)>]
+    let ReadCoreAsync () : unit =
+        try
+            raise (OverflowException("Arithmetic operation resulted in an overflow."))
+        with :? OverflowException ->
+            reraise ()
+
+let private raiseFrameReaderOverflow () =
+    let captured =
+        try
+            HeaderDelimitedMessageHandler.ReadCoreAsync()
+            failwith "unreachable"
+        with ex ->
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex)
+
+    captured.Throw()
+
 /// An IpcOps backed by `FakeDaemon`, rooted at `repoRoot`. Launching records THIS process's
 /// identity into `.fshw/daemon.identity`, exactly as the real daemon's `start` path does, so
 /// the CLI's next handshake sees a current daemon and reuses it.
@@ -1729,7 +1751,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                             if calls = 1 then
                                 // A garbage Content-Length header can overflow StreamJsonRpc's
                                 // framing arithmetic before it can accept the reply.
-                                raise (OverflowException("Arithmetic operation resulted in an overflow."))
+                                raiseFrameReaderOverflow ()
 
                             d.Served.Add d.Generation
                             return """{"count": 0, "files": {}, "unchecked": 0}"""
@@ -1754,6 +1776,64 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
         test <@ d.Served |> Seq.forall (fun g -> g = 2) @>
         test <@ stderr.Contains "corrupted" @>
         test <@ stderr.Contains "restarting the daemon and retrying" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a client OOM names the client and leaves the workspace daemon owned and reusable`` () =
+    // A failure allocating in this CLI says nothing about the daemon's health. Replacing
+    // the daemon would turn a workspace-owned warm process into needless churn; abandoning
+    // it would leave an orphan. The next command must reuse that same generation.
+    withTempDir "cli-client-oom-ownership" (fun tmpDir ->
+        stageStateDir tmpDir
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        let d = runningDaemon ()
+        let mutable calls = 0
+
+        let ipc =
+            { fakeDaemonIpc tmpDir d with
+                GetDiagnostics =
+                    fun _ _ ->
+                        async {
+                            calls <- calls + 1
+
+                            if calls = 1 then
+                                raise (OutOfMemoryException("client heap exhausted"))
+
+                            d.Served.Add d.Generation
+                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                        } }
+
+        let stderr, failedResult =
+            captureStderr (fun () ->
+                executeCommand
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    tmpDir
+                    "pipe"
+                    (Status None)
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        test <@ failedResult = 1 @>
+        test <@ stderr.Contains "fshw CLI ran out of memory" @>
+        test <@ not (stderr.Contains "Could not connect to daemon") @>
+        test <@ d.Running && d.Generation = 1 @>
+        test <@ d.Shutdowns = 0 && d.Launches = 0 @>
+
+        let nextResult =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe"
+                (Status None)
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ nextResult = 0 @>
+        test <@ d.Served |> Seq.toList = [ 1 ] @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a stale daemon-pid file is cleaned up on the next command`` () =
@@ -1839,40 +1919,78 @@ let ``runIpcWithSelfHeal retries ONLY proven corrupted frames, once`` () =
     // Every other fault goes straight through: self-healing on, say, a timeout would restart
     // healthy daemons and torch their warm caches.
     let mutable restarts = 0
+    let mutable lastFailure: exn option = None
 
-    let heal (throwCount: int) (ex: unit -> exn) =
+    let stampedStack =
+        try
+            raiseFrameReaderOverflow ()
+            "unreachable"
+        with ex ->
+            ex.StackTrace
+
+    test <@ stampedStack.Contains("HeaderDelimitedMessageHandler", StringComparison.Ordinal) @>
+
+    let heal (throwCount: int) (raiseFault: unit -> unit) =
         restarts <- 0
+        lastFailure <- None
         let mutable calls = 0
 
         let action () =
             calls <- calls + 1
-            if calls <= throwCount then raise (ex ()) else 0
+
+            if calls <= throwCount then
+                raiseFault ()
+
+            0
 
         let result =
             runIpcWithSelfHeal
                 (fun () ->
                     restarts <- restarts + 1
                     true)
-                (fun _ -> 99)
+                (fun ex ->
+                    lastFailure <- Some ex
+                    99)
                 action
 
         result, calls
 
-    // Overflow is the framing arithmetic failure observed in production: heal once.
-    test <@ heal 1 (fun () -> OverflowException("boom") :> exn) = (0, 2) @>
+    // Frame-reader overflow is the framing arithmetic failure observed in production:
+    // its stack is evidence, so heal once.
+    let healedOnce = heal 1 raiseFrameReaderOverflow
+
+    match lastFailure with
+    | Some ex -> failwithf "frame-reader fault was not healed; stack:\n%s" ex.StackTrace
+    | None -> ()
+
+    test <@ healedOnce = (0, 2) @>
     test <@ restarts = 1 @>
 
     // Corrupted pipe that RECURS: retried exactly once, then reported honestly.
-    test <@ heal 2 (fun () -> OverflowException("boom") :> exn) = (99, 2) @>
+    let mutable recurringFault = 0
+
+    let raiseRecurringFault () =
+        recurringFault <- recurringFault + 1
+
+        if recurringFault = 1 then
+            raiseFrameReaderOverflow ()
+        else
+            raise (OverflowException("corruption recurred"))
+
+    test <@ heal 2 raiseRecurringFault = (99, 2) @>
     test <@ restarts = 1 @>
+
+    // Overflow outside the frame reader carries no daemon-corruption evidence.
+    test <@ heal 1 (fun () -> raise (OverflowException("client arithmetic"))) = (99, 1) @>
+    test <@ restarts = 0 @>
 
     // A bare OOM has no frame-reader evidence: it is the client's own allocation
     // failure, so restarting the healthy daemon would only destroy its warm cache.
-    test <@ heal 1 (fun () -> OutOfMemoryException("client heap exhausted") :> exn) = (99, 1) @>
+    test <@ heal 1 (fun () -> raise (OutOfMemoryException("client heap exhausted"))) = (99, 1) @>
     test <@ restarts = 0 @>
 
     // Other faults also go straight to the failure path.
-    test <@ heal 1 (fun () -> TimeoutException("busy") :> exn) = (99, 1) @>
+    test <@ heal 1 (fun () -> raise (TimeoutException("busy"))) = (99, 1) @>
     test <@ restarts = 0 @>
 
 // ---------------------------------------------------------------------------

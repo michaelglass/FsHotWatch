@@ -9,7 +9,11 @@
 - AUTOMATION-581: IPC recovery now distinguishes a proven corrupt/oversized
   StreamJsonRpc frame from a genuine CLI `OutOfMemoryException`. Only the former
   restarts and retries the daemon; a client OOM preserves the healthy daemon and
-  reports the client memory failure and remedy precisely.
+  reports the client memory failure in the headline (never as a daemon-connection
+  failure). A lifecycle regression test proves the same workspace-owned daemon
+  remains reachable by the next command without a shutdown or replacement. An
+  `OverflowException` likewise authorizes a restart only when its stack proves it
+  arose in StreamJsonRpc's header-delimited frame reader; a bare overflow does not.
 
 - AUTOMATION-290: daemon-backed `check`/`confirm` and `--run-once` now fail fast
   when MSBuild loads zero of the discovered projects. Both paths overwrite any

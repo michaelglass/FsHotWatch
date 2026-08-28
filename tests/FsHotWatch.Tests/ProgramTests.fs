@@ -712,14 +712,22 @@ let ``OOM without frame-reader evidence is a genuine client OOM`` () =
     test <@ hint.Value.Contains("was not restarted") @>
 
 [<Fact(Timeout = 15000)>]
-let ``ipcErrorHint maps OverflowException to pipe-corruption hint`` () =
-    // Same root cause as the OOM case on a different exception path: a
-    // Content-Length that overflows Int32 downstream (seen in production) surfaces
-    // as OverflowException, which without a hint is cryptic and has no recovery path.
+let ``overflow in StreamJsonRpc frame reader is classified as a corrupted frame`` () =
     let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
-    let hint = ipcErrorHint ex
-    test <@ hint.IsSome @>
-    test <@ hint.Value.Contains("corrupted or oversized frame") @>
+
+    match classifyIpcFaultAt (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex with
+    | IpcFault.CorruptedFrame actual -> test <@ obj.ReferenceEquals(actual, ex) @>
+    | actual -> failwithf "expected CorruptedFrame, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``overflow without frame-reader evidence is not classified as corruption`` () =
+    let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
+
+    match classifyIpcFaultAt None ex with
+    | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, ex) @>
+    | actual -> failwithf "expected Other, got %A" actual
+
+    test <@ ipcErrorHint ex = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``ipcErrorHint maps TimeoutException to busy-or-hung hint`` () =

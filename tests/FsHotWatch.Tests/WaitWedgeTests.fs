@@ -273,6 +273,13 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
 
     test <@ host.AnyPluginBusy() @>
 
+    // Busy is incremented when work is POSTED, before the mailbox is scheduled. Under
+    // full-suite load the first continuation can otherwise start after the 500ms stall
+    // window, making this a scheduler-startup test rather than a draining-backlog test.
+    // Establish one real completion first; 99 events (~2s) still remain, so the drain
+    // remains continuously busy for many times the unchanged stall threshold.
+    test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > 0L) 10_000 @>
+
     // Must RESOLVE, not raise.
     Daemon.waitForAllTerminalCore
         host
