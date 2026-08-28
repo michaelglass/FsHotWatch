@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- chore(deps): bundle TestPrune.Core 8.1.4 and reuse the daemon's completed FCS
+  payload for impact analysis instead of running a second compiler pass. One
+  shared per-file traversal budget bounds all live FCS symbol walks, and
+  high-fanout graphs fail closed without materializing unbounded children.
+
+- fix: defer rebuilds for the complete lifetime of active test hosts, including
+  cache-replayed runs whose start boundary is synthesized, so a build cannot
+  rewrite instrumented binaries before their matching test completion event.
+
 - AUTOMATION-558: `tests.extensions` now supports explicit SQL attribution:
   `{"type":"sql"}` creates TestPrune's automatic `ReadsFrom`/`WritesTo`
   extension, while `{"type":"sql-hydra","generatedModulePrefix":"…"}`

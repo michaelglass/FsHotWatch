@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: consume the existing parse and full-check results carried by each
+  `FileChecked` event through TestPrune.Core 8.1.4 instead of re-entering FCS for
+  a duplicate check. Parse-only events now fail closed as explicitly
+  unanalysable, preserving the full-suite fallback. One shared per-file
+  traversal budget bounds all live FCS symbol walks; cyclic, pathologically
+  deep, or high-fanout graphs fail closed without unbounded materialization.
+
 ## 0.13.0-alpha.22 - 2026-08-26
 
 - AUTOMATION-245: `ArtifactFreshness`'s copy rule now goes through core's

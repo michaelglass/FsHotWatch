@@ -4480,7 +4480,7 @@ let create
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
                     // AUTOMATION-113: the ONE treatment for a file whose symbol analysis
-                    // failed (an `analyzeSource` Error and a handler fault are the same
+                    // failed (an `analyzeSourceFromResults` Error and a handler fault are the same
                     // condition). The file is REMEMBERED as unanalysable, with three
                     // consequences, none silent:
                     //   1. a WARNING lands in the error ledger, keyed to the file, so
@@ -4528,12 +4528,19 @@ let create
                         // strip; drop the trailing ".fsx" so config that specifies
                         // `"Lib"` matches both cases.
                         let projectName =
-                            let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+                            match result.CheckResults with
+                            | ParseOnly ->
+                                // Analysis below fails explicitly before this identity is
+                                // consumed. Do not inspect ProjectOptions: an aborted FCS
+                                // check may not carry usable options either.
+                                ""
+                            | FullCheck _ ->
+                                let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
 
-                            if raw.EndsWith(".fsx") then
-                                raw.Substring(0, raw.Length - 4)
-                            else
-                                raw
+                                if raw.EndsWith(".fsx") then
+                                    raw.Substring(0, raw.Length - 4)
+                                else
+                                    raw
 
                         // The per-file freshness sidecar gates the `detectChanges` call
                         // site, not the symbol-DB write: dirty FCS results are still
@@ -4556,8 +4563,24 @@ let create
                                 "test-prune"
                                 $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
 
-                        let! analysisResult =
-                            analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
+                        // FileChecked is the completion payload from the daemon's warm FCS
+                        // pass. Re-entering FSharpChecker here duplicated that expensive
+                        // work and could observe a different compiler state than the event
+                        // being handled. TestPrune 8.1 accepts the existing parse/check
+                        // results directly. ParseOnly is not analysable: spelling that as
+                        // Error keeps the established fail-closed full-suite fallback.
+                        let analysisResult =
+                            match result.CheckResults with
+                            | FullCheck checkResults ->
+                                analyzeSourceFromResults
+                                    fileStr
+                                    result.Source
+                                    result.ParseResults
+                                    checkResults
+                                    projectName
+                            | ParseOnly ->
+                                Error
+                                    "FCS produced parse-only results; full type-check results are required for impact analysis"
 
                         match analysisResult with
                         | Ok analysisResult ->
@@ -4710,7 +4733,7 @@ let create
                             Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
 
                             // Stamp the freshness sidecar with the result of THIS check.
-                            // After analysis, not at the top, so a failed `analyzeSource`
+                            // After analysis, not at the top, so a failed `analyzeSourceFromResults`
                             // cannot lock in a clean stamp for a file we have no symbols
                             // for. `markClean` only with a BuildCompleted this session
                             // (see `BuildCompletedInThisSession`) AND a clean FCS result;
@@ -4751,7 +4774,7 @@ let create
                             return markUnanalysable "Analysis failed" msg msg
 
                     with ex ->
-                        // A fault ANYWHERE in this handler — not just an `analyzeSource`
+                        // A fault ANYWHERE in this handler — not just an `analyzeSourceFromResults`
                         // Error — leaves the file unanalysed, the same condition and so
                         // the same treatment.
                         return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())

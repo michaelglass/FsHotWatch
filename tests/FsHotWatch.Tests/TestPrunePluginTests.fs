@@ -77,9 +77,31 @@ let private emitBatchAndQuiesce (host: PluginHost) (files: string list) =
 /// FileChecked events arriving after a BuildCompleted has been observed in the session,
 /// mirroring fshw's cold scan where BuildPlugin's terminal status gates the FCS tiers.
 let private emitBuildAndWaitTerminal (host: PluginHost) =
-    let await = beginAwaitNextTerminal host "test-prune"
+    let generationBefore =
+        host.WorkCycleGenerations()
+        |> Map.tryFind "test-prune"
+        |> Option.defaultValue 0L
+
     host.EmitBuildCompleted(BuildSucceeded)
-    await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+    let completedNewCycle =
+        waitUntilTrue
+            (fun () ->
+                let generationAfter =
+                    host.WorkCycleGenerations()
+                    |> Map.tryFind "test-prune"
+                    |> Option.defaultValue 0L
+
+                let terminal =
+                    match host.GetStatus("test-prune") with
+                    | Some(Completed _)
+                    | Some(Failed _) -> true
+                    | _ -> false
+
+                generationAfter > generationBefore && terminal && not (host.AnyPluginBusy()))
+            20000
+
+    test <@ completedNewCycle @>
 
 /// Stand up a test-prune plugin around a single one-project test config whose
 /// command is `sh -c "touch <sentinel>"`. Returns `(host, sentinel)`.
@@ -1951,42 +1973,12 @@ let ``seed ages count consecutive appearances only`` () =
     test <@ afterThird = Map.ofList [ "A", 3; "B", 1 ] @>
 
 [<Fact(Timeout = 15000)>]
-let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` () =
-    // The fake result carries CheckResults = ParseOnly, so analyzeSource yields no
-    // symbols and ChangedSymbols stays empty — the lazy IPC then answers "[]" without
-    // touching the DB, which is what the pre-populated rows below are there to prove.
-    withTempDir "tp-no-query" (fun tmpDir ->
+let ``ParseOnly FileChecked fails closed and reports the file as unanalysable`` () =
+    // ParseOnly has no trustworthy symbol graph. It must be a loud failure, not the old
+    // silent "no changes" result. The resulting UnanalyzableFiles state drives the
+    // full-suite fallback proved independently by the AUTOMATION-113 tests below.
+    withTempDir "tp-parse-only" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
-        let db = Database.create dbPath
-
-        let symbol: SymbolInfo =
-            { FullName = "Lib.foo"
-              Kind = SymbolKind.Value
-              SourceFile = "src/Lib.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "old-hash"
-              IsExtern = false }
-
-        let testMethod: TestMethodInfo =
-            { SymbolFullName = "Tests.myTest"
-              TestProject = "TestProj"
-              TestClass = "Tests"
-              TestMethod = "myTest" }
-
-        let analysis =
-            AnalysisResult.Create(
-                [ symbol ],
-                [ { FromSymbol = "Tests.myTest"
-                    ToSymbol = "Lib.foo"
-                    Kind = DependencyKind.Calls
-                    Source = "core" } ],
-                [ testMethod ]
-            )
-
-        db.RebuildProjects([ analysis ])
-
-        // No testConfigs — analysis-only mode.
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
@@ -1999,17 +1991,19 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
             { fakeFileCheckResult fakeFile with
                 Source = "module Lib\nlet foo = 2\n" }
 
-        try
-            host.EmitFileChecked(fakeResult)
-        with _ ->
-            ()
-
+        host.EmitFileChecked(fakeResult)
         waitForPluginTerminal host "test-prune" 12.0
 
-        let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
-        test <@ result.IsSome @>
-        test <@ result.Value = "[]" @>
-        test <@ not (result.Value.Contains("myTest")) @>)
+        match host.GetStatus("test-prune") with
+        | Some(Failed(summary, _, _)) -> test <@ summary.Contains("Analysis failed") @>
+        | other -> Assert.Fail($"Expected ParseOnly analysis to fail closed, got: %A{other}")
+
+        let errors = host.GetErrorsByPlugin("test-prune")
+        test <@ errors |> Map.containsKey fakeFile @>
+
+        let entries = errors[fakeFile]
+        test <@ entries.Length = 1 @>
+        test <@ entries.Head.Message.Contains("full type-check results are required") @>)
 
 [<Fact(Timeout = 60000)>]
 let ``affected-tests computes lazily on demand from ChangedSymbols`` () =
@@ -4069,6 +4063,28 @@ let private checkSourceForReal (tmpDir: string) (fileName: string) (source: stri
         let! result = pipeline.CheckFile(AbsFilePath.create filePath)
         return result
     }
+
+[<Fact(Timeout = 30000)>]
+let ``FileChecked analyzes its existing FCS payload without re-entering the checker`` () =
+    withTempDir "tp-no-checker-reentry" (fun tmpDir ->
+        let source = "module AlreadyChecked\nlet value = 42\n"
+
+        let result =
+            checkSourceForReal tmpDir "AlreadyChecked.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // The event already contains both parse and full-check results. Making the
+        // host checker unusable proves TestPrune consumes that payload instead of
+        // starting a second ParseAndCheckFileInProject pass.
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(create (Path.Combine(tmpDir, "test.db")) tmpDir None None None None None [])
+        host.EmitFileChecked(result)
+        waitForPluginTerminal host "test-prune" 12.0
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected payload-only analysis to complete, got: %A{other}"))
 
 [<Fact(Timeout = 15000)>]
 let ``hasFcsErrors returns false for ParseOnly`` () =
