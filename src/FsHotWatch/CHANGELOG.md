@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.20 - 2026-08-28
+
 - macOS watcher startup now falls back transactionally to one symlink-safe,
   content-hashed polling watcher when native FSEvents setup fails. The fallback
   covers source/project files, top-level solutions, and configured extra file
