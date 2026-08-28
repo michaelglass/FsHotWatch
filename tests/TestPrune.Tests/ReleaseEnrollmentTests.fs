@@ -85,18 +85,11 @@ let ``SQL packages are enrolled in every release authority`` () =
 
     let releaseTask = read root "mise.toml"
 
-    let coreRelease =
-        releaseTask.IndexOf("release --only TestPrune.Core", StringComparison.Ordinal)
-
-    let sqlRelease =
-        releaseTask.IndexOf("release --only TestPrune.Sql", StringComparison.Ordinal)
-
-    let sqlHydraRelease =
-        releaseTask.IndexOf("release --only TestPrune.SqlHydra", StringComparison.Ordinal)
-
-    test <@ coreRelease >= 0 @>
-    test <@ coreRelease < sqlRelease @>
-    test <@ sqlRelease < sqlHydraRelease @>
+    // Dependency ordering is derived from the project graph and enforced by
+    // ReleaseOrchestrationTests; enrollment only owns presence in this test.
+    test <@ releaseTask.Contains("TestPrune.Core") @>
+    test <@ releaseTask.Contains("TestPrune.Sql") @>
+    test <@ releaseTask.Contains("TestPrune.SqlHydra") @>
 
     let readme = read root "README.md"
     test <@ readme.Contains("[`TestPrune.Sql`](https://www.nuget.org/packages/TestPrune.Sql)") @>
