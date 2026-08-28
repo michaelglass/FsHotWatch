@@ -366,19 +366,24 @@ type IpcFault =
 /// process. Kept as a pure seam because Exception.StackTrace cannot be constructed
 /// portably in a unit test.
 let internal classifyIpcFaultAt (stackTrace: string option) (inner: exn) : IpcFault =
+    let aroseInFrameReader =
+        stackTrace
+        |> Option.exists (fun trace -> trace.Contains("HeaderDelimitedMessageHandler", StringComparison.Ordinal))
+
     match inner with
     | :? OutOfMemoryException as oom ->
-        let aroseInFrameReader =
-            stackTrace
-            |> Option.exists (fun trace -> trace.Contains("HeaderDelimitedMessageHandler", StringComparison.Ordinal))
-
         if aroseInFrameReader then
             IpcFault.CorruptedFrame inner
         else
             IpcFault.ClientOutOfMemory oom
-    // This was observed in HeaderDelimitedMessageHandler's length arithmetic. Unlike
-    // OOM, an arithmetic overflow is not a credible process-wide memory-pressure signal.
-    | :? OverflowException -> IpcFault.CorruptedFrame inner
+    | :? OverflowException ->
+        // Overflow was observed in HeaderDelimitedMessageHandler's frame-length
+        // arithmetic, but OverflowException is otherwise a generic client fault. The
+        // exception type alone cannot authorize destroying a healthy daemon.
+        if aroseInFrameReader then
+            IpcFault.CorruptedFrame inner
+        else
+            IpcFault.Other inner
     | :? TimeoutException as timeout -> IpcFault.TimedOut timeout
     | _ -> IpcFault.Other inner
 
@@ -407,12 +412,23 @@ let ipcErrorHint (inner: exn) : string option =
     | IpcFault.TimedOut _ -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
     | IpcFault.Other _ -> None
 
-/// Render a failed IPC call to stderr: the unwrapped daemon-connection error plus
-/// its recovery hint (if any). Shared by every IPC entry point so the message and
-/// hint stay identical across the CLI.
+/// The first line of an IPC failure must name the process whose failure is known.
+/// A bare OOM is evidence about this CLI, not about daemon connectivity; retaining
+/// the generic daemon-connection headline there sends operators toward the healthy
+/// process and contradicts the no-restart recovery policy below.
+let ipcErrorHeadline (inner: exn) : string =
+    match classifyIpcFault inner with
+    | IpcFault.ClientOutOfMemory _ -> $"The fshw CLI ran out of memory while handling daemon IPC: %s{inner.Message}"
+    | IpcFault.CorruptedFrame _
+    | IpcFault.TimedOut _
+    | IpcFault.Other _ -> $"Could not connect to daemon: %s{inner.Message}"
+
+/// Render a failed IPC call to stderr: a process-accurate headline plus the
+/// unwrapped error's recovery hint (if any). Shared by every IPC entry point so
+/// the message and hint stay identical across the CLI.
 let reportDaemonError (ex: exn) : unit =
     let inner = unwrapIpcException ex
-    eprintfn "Could not connect to daemon: %s" inner.Message
+    eprintfn "%s" (ipcErrorHeadline inner)
 
     match ipcErrorHint inner with
     | Some h -> eprintfn "  hint: %s" h
