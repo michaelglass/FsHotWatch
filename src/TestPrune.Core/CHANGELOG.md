@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.0.0 - 2026-08-28
+
 - fix(release): publish independent packages by semantic dependency level and
   require every exact artifact to restore from nuget.org before tagging its
   dependents. A bounded process timeout, retry limit, isolated package cache,
