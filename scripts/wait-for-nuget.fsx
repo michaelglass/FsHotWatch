@@ -222,4 +222,4 @@ match result with
 | Ok message -> printfn "%s" message
 | Error error ->
     eprintfn "NuGet publication barrier failed: %s" error
-    Environment.ExitCode <- 1
+    Environment.Exit 1

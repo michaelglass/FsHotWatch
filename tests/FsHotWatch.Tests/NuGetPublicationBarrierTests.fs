@@ -171,7 +171,7 @@ let ``success restores an exact version from only nuget org and cleans its probe
         let secondArgv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         test <@ secondResult.ExitCode = 0 @>
         test <@ secondArgv[5] <> firstPackages @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Theory>]
 [<InlineData("package-mismatch")>]
@@ -197,7 +197,7 @@ let ``invalid project identity or version fails before restore and leaves no pro
 
         test <@ result.ExitCode = 1 @>
         test <@ not (File.Exists countFile) @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``restore failures retry to the bound then fail and clean up`` () =
@@ -219,7 +219,7 @@ let ``restore failures retry to the bound then fail and clean up`` () =
         test <@ File.ReadAllText countFile = "3" @>
         test <@ result.Stderr.Contains("after 3 attempts") @>
         test <@ result.Stderr.Contains("synthetic restore failure") @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``a transient restore failure retries and can succeed`` () =
@@ -240,7 +240,7 @@ let ``a transient restore failure retries and can succeed`` () =
 
         test <@ result.ExitCode = 0 @>
         test <@ File.ReadAllText countFile = "2" @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``a wedged restore is killed at the process timeout and cleanup still runs`` () =
@@ -261,4 +261,4 @@ let ``a wedged restore is killed at the process timeout and cleanup still runs``
         test <@ result.ExitCode = 1 @>
         test <@ result.Elapsed < TimeSpan.FromSeconds 8. @>
         test <@ result.Stderr.Contains("restore timed out") @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
