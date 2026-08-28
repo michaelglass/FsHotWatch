@@ -11,6 +11,7 @@ open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.AstAnalyzer
@@ -6190,6 +6191,28 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
         let beforeRun = Some(fun () -> failwith "beforeRun boom")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let mutable startedId: Guid option = None
+        let mutable completedId: Guid option = None
+
+        let lifecycleRecorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "abort-lifecycle-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | TestRunStarted started -> startedId <- Some started.RunId
+                        | TestRunCompleted completed -> completedId <- Some completed.RunId
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
+              CacheKey = None
+              Teardown = None }
+
+        host.RegisterHandler(lifecycleRecorder)
         let handler = create dbPath tmpDir (Some configs) None beforeRun None None []
         host.RegisterHandler(handler)
 
@@ -6205,7 +6228,12 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
 
         // Still queued, so a subsequent run re-flags it.
         let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ queue.Contains("Lib.foo") @>)
+        test <@ queue.Contains("Lib.foo") @>
+
+        // The abort closes the exact lifecycle opened before beforeRun. Consumers such
+        // as Build use this identity to release their active-host deferral gate.
+        test <@ startedId.IsSome @>
+        test <@ completedId = startedId @>)
 
 [<Fact(Timeout = 15000)>]
 let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, not a swallowed error`` () =

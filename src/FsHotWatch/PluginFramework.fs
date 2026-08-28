@@ -739,6 +739,32 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // the cache hit looks like a distinct run.
                                 let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
 
+                                // Live TestRunStarted is emitted before the test host launches,
+                                // outside the later TestsFinished cache-write window. New cache
+                                // entries therefore carry only progress/completion; synthesize the
+                                // matching start on replay. Older entries already contain it.
+                                if
+                                    result.EmittedEvents
+                                    |> List.exists (function
+                                        | TaskCache.CachedTestRunCompleted _ -> true
+                                        | _ -> false)
+                                    && not (
+                                        result.EmittedEvents
+                                        |> List.exists (function
+                                            | TaskCache.CachedTestRunStarted _ -> true
+                                            | _ -> false)
+                                    )
+                                then
+                                    let completed =
+                                        result.EmittedEvents
+                                        |> List.pick (function
+                                            | TaskCache.CachedTestRunCompleted value -> Some value
+                                            | _ -> None)
+
+                                    services.EmitTestRunStarted
+                                        { RunId = freshRunId.Value
+                                          StartedAt = DateTime.UtcNow - completed.TotalElapsed }
+
                                 for emitted in result.EmittedEvents do
                                     match emitted with
                                     | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r

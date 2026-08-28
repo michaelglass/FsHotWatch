@@ -154,6 +154,152 @@ let ``build plugin emits BuildCompleted on successful build`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
+let ``file changes observed during a test host defer the build until that run completes`` () =
+    withTempDir "build-during-test-host" (fun tmpDir ->
+        let marker = System.IO.Path.Combine(tmpDir, "build-ran")
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let tests =
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                ":memory:"
+                tmpDir
+                (Some
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
+                        Command = "sleep"
+                        Args = "1"
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        TimeoutSec = None
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                None
+                None
+                None
+                None
+                []
+
+        let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
+        let mutable liveRun: Guid option = None
+
+        let lifecycleRecorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "build-test-lifecycle-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | TestRunStarted started -> liveRun <- Some started.RunId
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeTestRunStarted
+              CacheKey = None
+              Teardown = None }
+
+        host.RegisterHandler(lifecycleRecorder)
+        host.RegisterHandler(tests)
+        host.RegisterHandler(build)
+
+        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        waitUntil (fun () -> liveRun.IsSome) 5000
+
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
+        System.Threading.Thread.Sleep(250)
+        test <@ not (System.IO.File.Exists marker) @>
+
+        runTask.GetAwaiter().GetResult() |> ignore
+
+        waitUntil (fun () -> System.IO.File.Exists marker) 5000)
+
+let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
+    withTempDir "build-test-overlap" (fun tmpDir ->
+        let countFile = System.IO.Path.Combine(tmpDir, "build-count")
+        let script = System.IO.Path.Combine(tmpDir, "build.sh")
+        System.IO.File.WriteAllText(script, $"printf 'x\\n' >> '{countFile}'\nsleep {buildDelay}\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let tests =
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                ":memory:"
+                tmpDir
+                (Some
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
+                        Command = "sleep"
+                        Args = testDelay
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        TimeoutSec = None
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                None
+                None
+                None
+                None
+                []
+
+        let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+        let mutable liveRun: Guid option = None
+
+        let lifecycleRecorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "overlap-lifecycle-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | TestRunStarted started -> liveRun <- Some started.RunId
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeTestRunStarted
+              CacheKey = None
+              Teardown = None }
+
+        host.RegisterHandler(lifecycleRecorder)
+        host.RegisterHandler(tests)
+        host.RegisterHandler(build)
+
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "First.fs") ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("build") with
+                | Some(Running _) -> true
+                | _ -> false)
+            5000
+
+        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        waitUntil (fun () -> liveRun.IsSome) 5000
+
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Deferred.fs") ])
+        runTask.GetAwaiter().GetResult() |> ignore
+
+        waitUntil
+            (fun () ->
+                System.IO.File.Exists countFile
+                && System.IO.File.ReadAllLines(countFile).Length = 2)
+            8000
+
+        test <@ System.IO.File.ReadAllLines(countFile).Length = 2 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``deferred change survives when the overlapping build completes before the test`` () =
+    overlappingBuildAndTest "0.2" "1"
+
+[<Fact(Timeout = 20000)>]
+let ``deferred change survives when the overlapping test completes before the build`` () =
+    overlappingBuildAndTest "1" "0.2"
+
+[<Fact(Timeout = 15000)>]
 let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 

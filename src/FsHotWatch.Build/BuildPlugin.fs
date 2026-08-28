@@ -51,9 +51,15 @@ type BuildOutcome =
 /// `dotnet run --no-build` to execute (see ADR-012). `LastBuild` carries the most
 /// recent build's lifecycle.
 type BuildState =
-    { LastBuild: Lifecycle<Idle, BuildOutcome option>
-      PendingFiles: FileChangeKind list
-      SatisfiedDeps: Set<string> }
+    {
+        LastBuild: Lifecycle<Idle, BuildOutcome option>
+        PendingFiles: FileChangeKind list
+        SatisfiedDeps: Set<string>
+        /// Test/coverage hosts instrument binaries in place. File changes remain
+        /// owed, but MSBuild must not rewrite those outputs until every active run
+        /// has emitted its matching completion boundary.
+        ActiveTestRuns: Set<Guid>
+    }
 
 /// Internal message posted from the async build runner back to the plugin's
 /// own mailbox. Carries the outcome AND the parsed diagnostic entries so the
@@ -958,7 +964,8 @@ let createWith
         // ctx.IsRunning "build".
         { LastBuild = idle
           PendingFiles = []
-          SatisfiedDeps = Set.empty }
+          SatisfiedDeps = Set.empty
+          ActiveTestRuns = Set.empty }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -1070,7 +1077,8 @@ let createWith
 
             { LastBuild = idle
               PendingFiles = []
-              SatisfiedDeps = Set.empty }
+              SatisfiedDeps = Set.empty
+              ActiveTestRuns = Set.empty }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1086,10 +1094,12 @@ let createWith
         match buildTemplate with
         | Some template ->
             { (startTemplateBuild ctx idle template files) with
-                SatisfiedDeps = state.SatisfiedDeps }
+                SatisfiedDeps = state.SatisfiedDeps
+                ActiveTestRuns = state.ActiveTestRuns }
         | None ->
             { (startBuild ctx idle) with
-                SatisfiedDeps = state.SatisfiedDeps }
+                SatisfiedDeps = state.SatisfiedDeps
+                ActiveTestRuns = state.ActiveTestRuns }
 
     let handleProjectChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1097,17 +1107,58 @@ let createWith
         (idle: Lifecycle<Idle, BuildOutcome option>)
         =
         { (startBuild ctx idle) with
-            SatisfiedDeps = state.SatisfiedDeps }
+            SatisfiedDeps = state.SatisfiedDeps
+            ActiveTestRuns = state.ActiveTestRuns }
+
+    let launchPending (ctx: PluginCtx<BuildMsg>) (state: BuildState) =
+        if
+            ctx.IsRunning "build"
+            || not state.ActiveTestRuns.IsEmpty
+            || not (allDepsSatisfied state.SatisfiedDeps)
+        then
+            state
+        else
+            let hasProjectChange =
+                state.PendingFiles
+                |> List.exists (function
+                    | ProjectChanged _ -> true
+                    | _ -> false)
+
+            let sourceFiles =
+                state.PendingFiles
+                |> List.collect (function
+                    | SourceChanged files -> files
+                    | _ -> [])
+                |> List.map AbsFilePath.create
+                |> List.distinct
+
+            match hasProjectChange, sourceFiles with
+            | true, _ -> handleProjectChanged ctx state state.LastBuild
+            | _, _ :: _ -> handleSourceChanged ctx state state.LastBuild sourceFiles
+            | _ -> state
 
     { Name = PluginName.create "build"
       Init =
         { LastBuild = Lifecycle.create None
           PendingFiles = []
-          SatisfiedDeps = Set.empty }
+          SatisfiedDeps = Set.empty
+          ActiveTestRuns = Set.empty }
       Update =
         fun ctx state event ->
             async {
                 match event with
+                | TestRunStarted started ->
+                    return
+                        { state with
+                            ActiveTestRuns = Set.add started.RunId state.ActiveTestRuns }
+
+                | TestRunCompleted completed ->
+                    let updated =
+                        { state with
+                            ActiveTestRuns = Set.remove completed.RunId state.ActiveTestRuns }
+
+                    return launchPending ctx updated
+
                 // --- CommandCompleted: track dependency satisfaction ---
                 | CommandCompleted result when depNames.Contains(result.Name) ->
                     match result.Outcome with
@@ -1124,31 +1175,20 @@ let createWith
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
                         if allDepsSatisfied newDeps then
-                            let pendingFiles = state.PendingFiles
-
                             let updatedState = { state with SatisfiedDeps = newDeps }
-
-                            let hasProjectChange =
-                                pendingFiles
-                                |> List.exists (function
-                                    | ProjectChanged _ -> true
-                                    | _ -> false)
-
-                            let sourceFiles =
-                                pendingFiles
-                                |> List.collect (function
-                                    | SourceChanged files -> files
-                                    | _ -> [])
-                                |> List.map AbsFilePath.create
-                                |> List.distinct
-
-                            match hasProjectChange, sourceFiles with
-                            | true, _ -> return handleProjectChanged ctx updatedState updatedState.LastBuild
-                            | _, _ :: _ ->
-                                return handleSourceChanged ctx updatedState updatedState.LastBuild sourceFiles
-                            | _ -> return updatedState
+                            return launchPending ctx updatedState
                         else
                             return { state with SatisfiedDeps = newDeps }
+
+                // Coverage/test hosts instrument output DLLs in place. Preserve
+                // every observed input change, but do not let the resulting cache
+                // replay miss launch MSBuild into a live host.
+                | FileChanged change when not state.ActiveTestRuns.IsEmpty ->
+                    info "build" "Deferring file change until the active test host completes"
+
+                    return
+                        { state with
+                            PendingFiles = state.PendingFiles @ [ change ] }
 
                 // --- FileChanged: buffer if deps not yet satisfied ---
                 | FileChanged change when not depNames.IsEmpty && not (allDepsSatisfied state.SatisfiedDeps) ->
@@ -1226,11 +1266,20 @@ let createWith
                                 elapsed
                         )
 
-                    return
+                    // A manual/forced test can overlap this build. Any changes observed
+                    // under that live host remain owed when this older build completes;
+                    // keep them until the host boundary permits a subsequent build.
+                    let completedState =
                         { state with
                             LastBuild = idle
-                            PendingFiles = []
-                            SatisfiedDeps = Set.empty }
+                            SatisfiedDeps =
+                                if state.PendingFiles.IsEmpty then
+                                    Set.empty
+                                else
+                                    state.SatisfiedDeps
+                            ActiveTestRuns = state.ActiveTestRuns }
+
+                    return launchPending ctx completedState
 
                 | _ -> return state
             }
@@ -1281,7 +1330,7 @@ let createWith
         // MSBuild build, so there is no test-only-skip phase to wait on the FCS
         // cohort signal for. TestPrune keeps its own subscription (AffectedTests).
         Set.ofList (
-            [ SubscribeFileChanged ]
+            [ SubscribeFileChanged; SubscribeTestRunStarted; SubscribeTestRunCompleted ]
             @ (if dependsOn.IsEmpty then
                    []
                else

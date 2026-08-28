@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: defer file-change builds while a TestPrune run is active. Coverage hosts
+  instrument output assemblies in place; treating those transient writes as an
+  artifact-copy replay miss could launch MSBuild into the live test process and
+  crash it. The build plugin now tracks test-run lifecycle IDs, preserves every
+  observed change, and launches the owed build after the last matching
+  `TestRunCompleted` event.
+
 ## 0.7.0-alpha.28 - 2026-08-26
 
 - AUTOMATION-245: **a cache replay is now refused over a dependency copy the build still

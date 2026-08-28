@@ -711,6 +711,61 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
     |> Async.RunSynchronously
 
 [<Fact(Timeout = 30000)>]
+let ``cache replay synthesizes a matching start for a completion captured after a live test host`` () =
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "completion-only"
+        let pluginNameStr = "replay-completion-only"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        let completed: TestRunCompleted =
+            { RunId = System.Guid.NewGuid()
+              TotalElapsed = System.TimeSpan.FromSeconds 2.0
+              Outcome = TestRunOutcome.Normal
+              Results = Map.empty
+              Verification = Ran RunScope.FullSuite }
+
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = cachedRunDone
+              EmittedEvents = [ TaskCache.CachedTestRunCompleted completed ] }
+
+        let mutable replayedStart: TestRunStarted option = None
+        let mutable replayedCompletion: TestRunCompleted option = None
+        let mutable registeredCmd: CommandHandler option = None
+
+        let services =
+            { defaultServices with
+                EmitTestRunStarted = fun value -> replayedStart <- Some value
+                EmitTestRunCompleted = fun value -> replayedCompletion <- Some value
+                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+                TaskCache = Some cache }
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update = fun _ state _ -> async { return state }
+              Commands = [ "drain", fun _ _ _ -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = Some(fun _ -> Some cacheKey)
+              Teardown = None }
+
+        let reg = registerHandler services handler
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        let! _ = registeredCmd.Value [||]
+
+        test <@ replayedStart.IsSome @>
+        test <@ replayedCompletion.IsSome @>
+        test <@ replayedStart.Value.RunId = replayedCompletion.Value.RunId @>
+        test <@ replayedCompletion.Value.RunId <> completed.RunId @>
+        test <@ replayedStart.Value.StartedAt <= System.DateTime.UtcNow @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 30000)>]
 let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
     // When work throws, completion stays ValueNone (no Custom message posted) and the slot
     // is released so a subsequent RunExclusive can run.

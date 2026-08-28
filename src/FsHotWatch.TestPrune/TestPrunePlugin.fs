@@ -527,10 +527,11 @@ module TestRunInputs =
           UnanalyzableFiles = state.UnanalyzableFiles }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
-/// handler. Carries the lifecycle events (Started + Completed) so the handler can emit
-/// them inside the framework's per-event capture window — required for the cache to
-/// record EmittedEvents on terminal status, which `tryReplayCache` re-fires to
-/// downstream subscribers (FileCommandPlugin keys off TestRunCompleted) on a hit.
+/// handler. Carries the completed lifecycle event so the handler can emit it inside the
+/// framework's per-event capture window — required for the cache to record it on terminal
+/// status, which `tryReplayCache` re-fires to downstream subscribers (FileCommandPlugin
+/// keys off TestRunCompleted) on a hit. The start is emitted before the host launches;
+/// cache replay synthesizes a matching start for completion-only entries.
 ///
 /// Live `TestProgress` events still fire from the async because cache replay
 /// deliberately skips per-group progress and goes straight from Started to Completed.
@@ -639,15 +640,18 @@ type TestPruneMsg =
 /// impact path and the manual `run-tests` command so the two stay in lockstep.
 /// `Results = Map.empty` ⇒ the handler commits nothing from the pending queue; `reason`
 /// carries the hook's failure output so `fshw check` / `fshw errors` shows WHY.
-let private abortedRunLifecycle (reason: string) : TestRunStarted * TestRunCompleted =
-    let runId = Guid.NewGuid()
-
-    let started: TestRunStarted =
-        { RunId = runId
-          StartedAt = DateTime.UtcNow }
+let private abortedRunLifecycle
+    (emittedStart: TestRunStarted option)
+    (reason: string)
+    : TestRunStarted * TestRunCompleted =
+    let started =
+        emittedStart
+        |> Option.defaultWith (fun () ->
+            { RunId = Guid.NewGuid()
+              StartedAt = DateTime.UtcNow })
 
     let completed: TestRunCompleted =
-        { RunId = runId
+        { RunId = started.RunId
           TotalElapsed = TimeSpan.Zero
           Outcome = Aborted reason
           Results = Map.empty
@@ -1996,6 +2000,7 @@ let private flakinessHistoryPath (repoRoot: string) =
 let private executeTests
     (db: Database)
     (ctx: PluginCtx<'msg> option)
+    (emitStarted: TestRunStarted -> unit)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
@@ -2046,6 +2051,7 @@ let private executeTests
         // returned tuple), so the synchronous `TestsFinished` handler can fire it inside
         // the cache-write capture window.
         let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
+        emitStarted started
 
         match beforeRun with
         | Some setup ->
@@ -2646,7 +2652,8 @@ let private executeTests
         ctx |> Option.iter (fun c -> c.EndSubtask PrimarySubtaskKey)
 
         // `TestRunCompleted` is emitted by the CALLER (the synchronous Custom handler) so
-        // it lands in EmittedEvents for cache replay; returned in the tuple instead.
+        // it lands in EmittedEvents for cache replay; returned in the tuple instead. The
+        // matching start was emitted before any host could mutate its input artifacts.
         // `Outcome = Normal` means the run completed naturally — per-project pass/fail
         // lives in Results, and Aborted is reserved for cancellation/timeout/crash.
         let completed: TestRunCompleted =
@@ -3619,8 +3626,8 @@ let create
     Volatile.Write(&changedSymbolsRef, initialState.ChangedSymbols)
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
-    /// agent; the synchronous `Custom(TestsFinished)` handler emits the
-    /// `TestRunStarted`/`TestRunCompleted` events inside the cache-write capture window.
+    /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
+    /// inside the cache-write capture window. `TestRunStarted` fires before the host starts.
     /// Catches its own exceptions to produce an `Aborted` lifecycle — letting RunExclusive
     /// eat the message would free the slot with no completion posted, stranding
     /// `LastResults`/`PendingRerun`.
@@ -3647,6 +3654,12 @@ let create
         (fanoutProjects: Set<string>)
         : Async<TestPruneMsg> =
         async {
+            let mutable emittedStart: TestRunStarted option = None
+
+            let emitStarted started =
+                emittedStart <- Some started
+                ctx.EmitTestRunStarted started
+
             // The single chokepoint every launch path funnels through (BatchChecked
             // drain, BuildCompleted, deferred rerun). Both widenings live here rather
             // than at each call site, so no future launch path can forget one and
@@ -3847,14 +3860,15 @@ let create
                             "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
 
                     // Build a degenerate lifecycle (Started → Completed with empty
-                    // Results). The synchronous Custom handler emits both events
-                    // inside the cache-write capture window so they replay
-                    // correctly on cache hit.
+                    // Results). Start fires immediately; the synchronous Custom handler
+                    // emits completion inside the cache-write capture window.
                     let runId = Guid.NewGuid()
 
                     let started: TestRunStarted =
                         { RunId = runId
                           StartedAt = DateTime.UtcNow }
+
+                    emitStarted started
 
                     let completed: TestRunCompleted =
                         { RunId = runId
@@ -3916,6 +3930,7 @@ let create
                         executeTests
                             db
                             (Some ctx)
+                            emitStarted
                             repoRoot
                             beforeRun
                             coveragePaths
@@ -3924,9 +3939,9 @@ let create
                             affectedByProject
                             None
 
-                    // `executeTests` still emits per-group TestProgress live; the
-                    // synchronous handler emits Started + Completed inside the
-                    // cache-write capture window.
+                    // `executeTests` emits Started before launching the host and still
+                    // emits per-group TestProgress live; the synchronous handler captures
+                    // Completed for cache replay.
                     ignore results
                     return TestsFinished(started, completed, launch)
             with ex ->
@@ -3934,7 +3949,10 @@ let create
 
                 // Build an Aborted lifecycle so subscribers see a coherent end
                 // to this run rather than hanging at TestRunStarted.
-                let started, completed = abortedRunLifecycle ex.Message
+                let started, completed = abortedRunLifecycle emittedStart ex.Message
+
+                if emittedStart.IsNone then
+                    emitStarted started
 
                 // launch carries the queue snapshot this aborted run was
                 // launched against; the TestsFinished handler commits NOTHING
@@ -3969,6 +3987,7 @@ let create
     /// queue (over-testing is the safe direction). The queue drains through
     /// the normal BuildCompleted impact flow.
     let commandForceRun
+        (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
         (filter: string option)
         (reply: Tasks.TaskCompletionSource<string>)
@@ -3995,10 +4014,26 @@ let create
               WouldHaveRun = None }
 
         async {
+            let mutable emittedStart: TestRunStarted option = None
+
+            let emitStarted started =
+                emittedStart <- Some started
+                ctx.EmitTestRunStarted started
+
             try
                 try
                     let! results, started, completed =
-                        executeTests db None repoRoot beforeRun coveragePaths afterRun configs Map.empty filter
+                        executeTests
+                            db
+                            None
+                            emitStarted
+                            repoRoot
+                            beforeRun
+                            coveragePaths
+                            afterRun
+                            configs
+                            Map.empty
+                            filter
 
                     // The counts come from the CTRF reports THIS RUN wrote, located by
                     // the run id the daemon just handed back — declared membership, never
@@ -4024,7 +4059,10 @@ let create
                     // lifecycle drives the TestsFinished handler to a Failed
                     // status.
                     Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle ex.Message
+                    let started, completed = abortedRunLifecycle emittedStart ex.Message
+
+                    if emittedStart.IsNone then
+                        emitStarted started
 
                     reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
 
@@ -4991,7 +5029,6 @@ let create
                     // per-event capture window, so they land in the cached EmittedEvents
                     // and re-fire on cache replay — subscribers that key off
                     // TestRunCompleted (FileCommandPlugin) must see it on a hit.
-                    ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
 
                     // Apply error reporting synchronously here too — live emission from
@@ -5568,7 +5605,7 @@ let create
                                 AffectedTests = Analyzed []
                                 QueuedCommandRuns = laterRuns }
 
-                        match ctx.RunExclusive "tests" (commandForceRun queuedConfigs queuedFilter queuedReply) with
+                        match ctx.RunExclusive "tests" (commandForceRun ctx queuedConfigs queuedFilter queuedReply) with
                         | Claimed ->
                             Logging.info "test-prune" "Launching queued run-tests force-run"
                             return dequeuedState
@@ -5704,7 +5741,7 @@ let create
                     // Launched from the mailbox so it is serialised with every other
                     // launch site and holds the `RunExclusive "tests"` slot for its whole
                     // duration — see the `RunTestsRequested` case for why that matters.
-                    match ctx.RunExclusive "tests" (commandForceRun configs filter reply) with
+                    match ctx.RunExclusive "tests" (commandForceRun ctx configs filter reply) with
                     | Claimed -> return state
                     | SlotBusy ->
                         // A busy slot QUEUES the run, never refuses it: a refusal that
