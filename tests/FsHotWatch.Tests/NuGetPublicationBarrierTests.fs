@@ -26,7 +26,9 @@ let private repoRoot () =
 
 let private writeProject path packageIds versions =
     let elements name values =
-        values |> List.map (fun value -> $"    <%s{name}>%s{value}</%s{name}>") |> String.concat "\n"
+        values
+        |> List.map (fun value -> $"    <%s{name}>%s{value}</%s{name}>")
+        |> String.concat "\n"
 
     File.WriteAllText(
         path,
@@ -120,7 +122,10 @@ let private scratch body =
         body temp project fakeDotnet probeParent capture countFile)
 
 let private probeDirectories probeParent =
-    if Directory.Exists probeParent then Directory.GetDirectories probeParent else [||]
+    if Directory.Exists probeParent then
+        Directory.GetDirectories probeParent
+    else
+        [||]
 
 [<Fact>]
 let ``success restores an exact version from only nuget org and cleans its probe`` () =
@@ -134,7 +139,9 @@ let ``success restores an exact version from only nuget org and cleans its probe
                 probeParent
                 project
                 "Example.Package"
-                [ "FAKE_MODE", "success"; "FAKE_CAPTURE_DIR", capture; "FAKE_COUNT_FILE", countFile ]
+                [ "FAKE_MODE", "success"
+                  "FAKE_CAPTURE_DIR", capture
+                  "FAKE_COUNT_FILE", countFile ]
 
         test <@ result.ExitCode = 0 @>
         let probeProject = File.ReadAllText(Path.Combine(capture, "probe.csproj"))
@@ -166,7 +173,9 @@ let ``success restores an exact version from only nuget org and cleans its probe
                 probeParent
                 project
                 "Example.Package"
-                [ "FAKE_MODE", "success"; "FAKE_CAPTURE_DIR", capture; "FAKE_COUNT_FILE", countFile ]
+                [ "FAKE_MODE", "success"
+                  "FAKE_CAPTURE_DIR", capture
+                  "FAKE_COUNT_FILE", countFile ]
 
         let secondArgv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         test <@ secondResult.ExitCode = 0 @>

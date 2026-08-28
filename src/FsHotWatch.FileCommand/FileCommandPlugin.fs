@@ -431,13 +431,17 @@ let create
         // same inputs hash the same regardless of working-copy state. Recomputed
         // per event so mid-session edits to a referenced config invalidate it.
         //
-        // Always `Some` for a trigger event: a `None` key is uncacheable (neither
-        // replays nor stores), which would double-execute this side-effecting
-        // command.
+        // File triggers are content-cacheable. afterTests triggers are deliberately
+        // NOT: each run publishes new external evidence (Cobertura, and for a
+        // filtered run a newer coverage.partial marker) which need not be named in
+        // the command's args. Replaying a prior full run's cached RED skips the
+        // command that would observe the newer partial marker, so the obsolete RED
+        // survives a later converged check. Per-RunId state dedupe, not cross-run
+        // task caching, provides the side-effect-at-most-once rule for afterTests.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
-            | Custom _ -> None
-            | _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
+            | FileChanged _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
+            | _ -> None
 
         Some cacheKey
       Teardown = None }
