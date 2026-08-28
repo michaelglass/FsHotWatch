@@ -25,10 +25,25 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
     let root = repoRoot ()
     let coreProject = read root "src/TestPrune.Core/TestPrune.Core.fsproj"
     let cliProject = read root "src/TestPrune/TestPrune.fsproj"
-    test <@ coreProject.Contains("<Version>7.0.1</Version>") @>
-    test <@ cliProject.Contains("<Version>7.0.1</Version>") @>
-    test <@ not (coreProject.Contains("<Version>8.0.0</Version>")) @>
-    test <@ not (cliProject.Contains("<Version>8.0.0</Version>")) @>
+    let coreChangelog = read root "src/TestPrune.Core/CHANGELOG.md"
+    let cliChangelog = read root "src/TestPrune/CHANGELOG.md"
+
+    // The release tagger's version-bump commit must pass CI before its tag is pushed.
+    // Accept both valid states: the last released version with Core 8 still pending, or
+    // the synchronized Core 8 candidate with matching changelog headings.
+    let taggerReady =
+        coreProject.Contains("<Version>7.0.1</Version>")
+        && cliProject.Contains("<Version>7.0.1</Version>")
+        && not (coreChangelog.Contains("## 8.0.0"))
+        && not (cliChangelog.Contains("## 8.0.0"))
+
+    let taggerBumped =
+        coreProject.Contains("<Version>8.0.0</Version>")
+        && cliProject.Contains("<Version>8.0.0</Version>")
+        && coreChangelog.Contains("## 8.0.0 -")
+        && cliChangelog.Contains("## 8.0.0 -")
+
+    test <@ taggerReady || taggerBumped @>
 
     use tagger = JsonDocument.Parse(read root "semantic-tagger.json")
 
@@ -50,10 +65,6 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
     test <@ workflow.Contains("- 'core-v*'") @>
     test <@ workflow.Contains("extra-fsproj-paths: 'src/TestPrune/TestPrune.fsproj'") @>
 
-    let coreChangelog = read root "src/TestPrune.Core/CHANGELOG.md"
-    let cliChangelog = read root "src/TestPrune/CHANGELOG.md"
-    test <@ not (coreChangelog.Contains("## 8.0.0")) @>
-    test <@ not (cliChangelog.Contains("## 8.0.0")) @>
     let unreleased = coreChangelog.Split("## 7.0.1", StringSplitOptions.None)[0]
     test <@ unreleased.Contains("## Unreleased") @>
     test <@ unreleased.Contains("- feat!:") @>
