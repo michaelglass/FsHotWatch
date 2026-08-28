@@ -52,7 +52,7 @@ let private dependencyGraph root =
             Map.tryFind dependencyPath packageByPath)
         |> Set.ofSeq)
 
-let private dependencyLevels graph =
+let private dependencyLevels (graph: Map<string, Set<string>>) =
     let rec build released remaining levels =
         if Set.isEmpty remaining then
             List.rev levels
