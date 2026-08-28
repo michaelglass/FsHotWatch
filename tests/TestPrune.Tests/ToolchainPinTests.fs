@@ -19,7 +19,7 @@ let private repoRoot () =
 
 [<Theory>]
 // Change this one parameter only after the watcher/run-once fix has a real CLI release.
-[<InlineData("0.14.0-alpha.19")>]
+[<InlineData("0.14.0-alpha.29")>]
 let ``FsHotWatch gate uses the reviewed released pin`` (expectedReleasedVersion: string) =
     let root = repoRoot ()
 
