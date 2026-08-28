@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: cached test-run replay now synthesizes the `TestRunStarted` lifecycle
+  boundary omitted by newly written cache entries. Build deferral therefore
+  observes the same active-host lifetime on cache hits as on live test runs and
+  cannot rewrite instrumented binaries before the matching completion event.
+
 ## 0.10.0-alpha.20 - 2026-08-28
 
 - macOS watcher startup now falls back transactionally to one symlink-safe,
