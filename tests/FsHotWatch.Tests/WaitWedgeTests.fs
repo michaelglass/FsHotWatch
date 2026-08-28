@@ -267,17 +267,19 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     host.RegisterHandler(slowDrainingHandler "draining-plugin")
 
-    // ~25 events x 40ms = ~1s of continuous work, against a 200ms threshold.
-    for _ in 1..100 do
+    // 500 events x 20ms = ~10s of continuous work, against a 5s threshold. Keeping
+    // the proof above the threshold without making it subsecond avoids asserting
+    // scheduler latency when the merge gate deliberately saturates the machine.
+    for _ in 1..500 do
         host.EmitBuildCompleted(BuildSucceeded)
 
     test <@ host.AnyPluginBusy() @>
 
     // Busy is incremented when work is POSTED, before the mailbox is scheduled. Under
-    // full-suite load the first continuation can otherwise start after the 500ms stall
+    // full-suite load the first continuation can otherwise start after the stall
     // window, making this a scheduler-startup test rather than a draining-backlog test.
-    // Establish one real completion first; 99 events (~2s) still remain, so the drain
-    // remains continuously busy for many times the unchanged stall threshold.
+    // Establish one real completion first; about 499 events (~10s) still remain, so
+    // the drain remains continuously busy for roughly twice the 5s stall threshold.
     test <@ waitUntilTrue (fun () -> host.CompletedDispatches() > 0L) 10_000 @>
 
     // Must RESOLVE, not raise.
@@ -285,7 +287,7 @@ let ``a plugin draining a backlog is not a wedge, however long the drain`` () =
         host
         (TimeSpan.FromSeconds 30.0)
         false
-        (TimeSpan.FromMilliseconds 500.0)
+        (TimeSpan.FromSeconds 5.0)
         CancellationToken.None
     |> fun t -> t.GetAwaiter().GetResult()
 

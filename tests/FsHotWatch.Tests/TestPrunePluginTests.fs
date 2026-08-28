@@ -6565,6 +6565,8 @@ let private runA163CohortScenario name trigger testExitCode =
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
         let runMarker = Path.Combine(tmpDir, "runs")
+        let started = Path.Combine(tmpDir, "started")
+        let release = Path.Combine(tmpDir, "release")
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
 
@@ -6610,12 +6612,13 @@ let fooTest () = assert (foo 1 = 2)
         let configs =
             [ { Project = "Lib"
                 Command = "sh"
-                Args = $"-c \"printf 'run\\n' >> '{runMarker}'; sleep 0.8; exit {testExitCode}\""
+                Args =
+                  $"-c \"printf 'run\\n' >> '{runMarker}'; touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done; exit {testExitCode}\""
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None
+                TimeoutSec = Some 15
                 ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create checker tmpDir
@@ -6627,13 +6630,7 @@ let fooTest () = assert (foo 1 = 2)
 
         File.WriteAllText(libFile, libSource2)
         host.EmitBuildCompleted(BuildSucceeded)
-
-        waitUntil
-            (fun () ->
-                match host.GetStatus("test-prune") with
-                | Some(Running _) -> true
-                | _ -> false)
-            5000
+        waitUntil (fun () -> File.Exists started) 10000
 
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some result -> host.EmitFileChecked(result)
@@ -6643,6 +6640,12 @@ let fooTest () = assert (foo 1 = 2)
             { fakeBatchChecked [ libFile ] with
                 Trigger = trigger }
         )
+
+        // The command is deliberately held until the cohort seal is observed. A fixed
+        // sleep made this test assert scheduler speed on loaded Linux runners: the full
+        // run could finish before CheckFile, turning BootScan into a real second run.
+        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
 
