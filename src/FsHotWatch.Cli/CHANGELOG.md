@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.29 - 2026-08-28
+
 - fix: bundle TestPrune.Falco 3.1.3 so `>]` inside an attribute string no longer
   truncates the attribute while selecting tests, with its required
   Microsoft.Data.Sqlite 10.0.11 floor.
