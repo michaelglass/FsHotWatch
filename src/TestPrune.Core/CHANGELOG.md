@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.2 - 2026-08-29
+
 - fix: cap defensive FCS graph traversal at 4,096 expanded nodes and reduce the
   emergency depth ceiling to 32. Recreated branching type wrappers can no longer
   expand combinatorially; budget exhaustion is an analysis error, so callers widen

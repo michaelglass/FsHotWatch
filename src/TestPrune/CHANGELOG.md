@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.2 - 2026-08-29
+
 - fix: fail closed when a live FCS type graph exceeds the bounded traversal work
   budget. Compiler hosts now receive an index failure and subsequent full-suite
   fallback instead of runaway analysis on recreated branching wrappers.
