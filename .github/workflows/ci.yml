@@ -5,6 +5,8 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Release recovery: semantic-version bump commits must have an exact green CI
+  # run before their tag can be published, so maintainers need a safe retry path.
   workflow_dispatch:
 
 permissions:
