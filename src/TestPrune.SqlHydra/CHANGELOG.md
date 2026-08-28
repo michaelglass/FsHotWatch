@@ -1,6 +1,8 @@
 # Changelog — TestPrune.SqlHydra
 
-## [Unreleased]
+## Unreleased
+
+## 0.1.0 - 2026-08-28
 - feat: initial release of automatic table-level read/write attribution for
   SqlHydra query graphs.
 - fix: derive tables from the generated table value's `Calls` edge instead of
