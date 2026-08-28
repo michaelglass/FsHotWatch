@@ -1590,6 +1590,20 @@ let private extractResults
                       FilteredSymbols = filteredSymbolCount
                       TotalDefinitions = definitions.Length + localDefinitionCount } }
 
+/// Analyze a source file from parse and type-check results already produced by FCS.
+/// This path performs no parsing or checking and is intended for hosts that receive
+/// successful results from an existing compiler-service pipeline.
+/// The file name, source text, parse results, and check results must all describe the
+/// same file version; FCS results do not expose enough identity to validate a mismatch.
+let analyzeSourceFromResults
+    (sourceFileName: string)
+    (source: string)
+    (parseResults: FSharpParseFileResults)
+    (checkResults: FSharpCheckFileResults)
+    (projectName: string)
+    =
+    extractResults sourceFileName source parseResults (FSharpCheckFileAnswer.Succeeded checkResults) projectName
+
 /// Parse and analyze a single F# source string using project options.
 let analyzeSource
     (checker: FSharpChecker)

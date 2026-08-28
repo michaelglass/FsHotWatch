@@ -4,6 +4,7 @@ open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
+open TestPrune.AstAnalyzer
 
 module ``FSharp Compiler Service on NET 10`` =
 
@@ -113,3 +114,46 @@ let describeShape (shape: Shape) =
 
         test <@ areaSymbol.IsSome @>
         test <@ snd areaSymbol.Value = "FSharpMemberOrFunctionOrValue" @>
+
+    [<Fact>]
+    let ``existing parse and check results produce equivalent analysis without checking again`` () =
+        let localChecker = FSharpChecker.Create()
+        let uniqueFile = System.Guid.NewGuid().ToString("N")
+        let uniqueContent = System.Guid.NewGuid().ToString("N")
+        let sourceFileName = $"/tmp/TestPruneExistingResults-%s{uniqueFile}.fsx"
+        let source = sampleSource + $"\nlet uniqueVersion = \"%s{uniqueContent}\"\n"
+        let sourceText = SourceText.ofString source
+
+        let projOptions, _diagnostics =
+            localChecker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+
+        let parseResults, checkAnswer =
+            localChecker.ParseAndCheckFileInProject(sourceFileName, 1, sourceText, projOptions)
+            |> Async.RunSynchronously
+
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded results -> results
+            | FSharpCheckFileAnswer.Aborted -> failwith "Type checking was aborted"
+
+        let reused =
+            analyzeSourceFromResults sourceFileName source parseResults checkResults "TestProject"
+
+        let exportedMethod =
+            typeof<AnalysisResult>.Assembly.GetType("TestPrune.AstAnalyzer").GetMethod("analyzeSourceFromResults")
+
+        test <@ not (isNull exportedMethod) @>
+
+        test
+            <@
+                exportedMethod.GetParameters()
+                |> Array.exists (fun parameter -> parameter.ParameterType = typeof<FSharpChecker>)
+                |> not
+            @>
+
+        let legacy =
+            analyzeSource localChecker sourceFileName source projOptions "TestProject"
+            |> Async.RunSynchronously
+
+        test <@ reused = legacy @>

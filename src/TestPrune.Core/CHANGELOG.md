@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: add `AstAnalyzer.analyzeSourceFromResults` for compiler hosts that already
+  have successful FCS parse and check results. It produces the same analysis as
+  `analyzeSource` without parsing or type-checking the file a second time.
+
 ## 8.0.0 - 2026-08-28
 
 - fix(release): publish independent packages by semantic dependency level and

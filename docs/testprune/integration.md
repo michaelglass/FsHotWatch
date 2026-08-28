@@ -45,6 +45,11 @@ let projectName = "MyProject"
 
 let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
 
+// Compiler hosts that already checked this exact file version can skip the
+// duplicate FCS work and run only TestPrune's extraction step.
+let analyzeExistingResults parseResults checkResults =
+    analyzeSourceFromResults fileName source parseResults checkResults projectName
+
 match
     analyzeSource checker fileName source projOptions projectName
     |> Async.RunSynchronously
@@ -61,6 +66,13 @@ with
 
 `analyzeSource` takes `checker source-file source project-options
 project-name` and returns `Result<AnalysisResult, string>`.
+If the host already has `FSharpParseFileResults` and successful
+`FSharpCheckFileResults`, call `analyzeSourceFromResults source-file source
+parse-results check-results project-name` instead. That path performs only
+TestPrune extraction and never re-enters the `FSharpChecker`. The file name,
+source text, parse results, and check results must come from the same file version;
+FCS does not expose enough identity for TestPrune to validate mismatched inputs,
+which could otherwise produce an unsound graph.
 `getScriptOptions` is a convenient way to get project options for a
 single file; in a real build you'll usually have full project options
 already. `normalizeSymbolPaths repoRoot` rewrites absolute source paths

@@ -54,6 +54,11 @@ module Index =
 
     let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
 
+    // Compiler hosts that already checked this exact file version can skip the
+    // duplicate FCS work and run only TestPrune's extraction step.
+    let analyzeExistingResults parseResults checkResults =
+        analyzeSourceFromResults fileName source parseResults checkResults projectName
+
     match
         analyzeSource checker fileName source projOptions projectName
         |> Async.RunSynchronously
