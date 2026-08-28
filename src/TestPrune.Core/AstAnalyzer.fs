@@ -344,23 +344,32 @@ let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option
     | _ -> None
 
 [<Literal>]
-let private MaxSymbolTraversalDepth = 128
+let private MaxSymbolTraversalDepth = 32
+
+[<Literal>]
+let private MaxSymbolTraversalVisits = 4096
 
 exception private SymbolTraversalDepthExceeded of int
+exception private SymbolTraversalBudgetExceeded of int
 
 let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) : Result<'Value, string> =
     try
         operation ()
-    with SymbolTraversalDepthExceeded limit ->
+    with
+    | SymbolTraversalDepthExceeded limit ->
         Error $"FCS symbol graph exceeded the safe traversal depth of %d{limit}; refusing incomplete analysis"
+    | SymbolTraversalBudgetExceeded limit ->
+        Error
+            $"FCS symbol graph exceeded the safe traversal work budget of %d{limit} nodes; refusing incomplete analysis"
 
 /// Traverse an FCS graph defensively. FCS normally returns a finite DAG, but compiler
 /// hosts can expose recursive graphs and can recreate wrappers on each property read.
 /// Reference identity prevents repeated DAG expansion, the active logical-name path
 /// catches recreated cycles without suppressing equal siblings, and the depth limit is
 /// the final guard for endlessly novel wrappers.
-let private boundedDepthFirst
+let private boundedDepthFirstWithBudget
     (maxDepth: int)
+    (maxVisits: int)
     (tryStableName: 'Node -> string option)
     (children: 'Node -> 'Node seq)
     (roots: 'Node seq)
@@ -368,20 +377,27 @@ let private boundedDepthFirst
     let visitedReferences =
         System.Collections.Generic.HashSet<obj>(System.Collections.Generic.ReferenceEqualityComparer.Instance)
 
-    let rec visit depth activeNames node =
-        if depth >= maxDepth then
-            raise (SymbolTraversalDepthExceeded maxDepth)
-        else
-            let stableName =
-                try
-                    tryStableName node
-                with _ ->
-                    None
+    let mutable visitedCount = 0
 
-            match stableName with
-            | Some name when Set.contains name activeNames -> []
-            | _ when not (visitedReferences.Add(box node)) -> []
-            | _ ->
+    let rec visit depth activeNames node =
+        let stableName =
+            try
+                tryStableName node
+            with _ ->
+                None
+
+        match stableName with
+        | Some name when Set.contains name activeNames -> []
+        | _ when not (visitedReferences.Add(box node)) -> []
+        | _ ->
+            if depth >= maxDepth then
+                raise (SymbolTraversalDepthExceeded maxDepth)
+            else
+                visitedCount <- visitedCount + 1
+
+                if visitedCount > maxVisits then
+                    raise (SymbolTraversalBudgetExceeded maxVisits)
+
                 let nextActiveNames =
                     match stableName with
                     | Some name -> Set.add name activeNames
@@ -399,19 +415,11 @@ let private boundedDepthFirst
         roots |> Seq.toList |> List.collect (visit 0 Set.empty)
     with
     | SymbolTraversalDepthExceeded _ -> reraise ()
+    | SymbolTraversalBudgetExceeded _ -> reraise ()
     | _ -> []
 
-// Test helpers - expose internal classification for unit testing exception paths
-[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module internal TestHelpers =
-    let testClassifySymbol = classifySymbol
-    let testTryClassifyEntity = tryClassifyEntity
-    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
-    let testTryClassifyUnionCase = tryClassifyUnionCase
-    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
-    let testTryName = tryName
-    let testBoundedDepthFirst = boundedDepthFirst
-    let testProtectSymbolTraversal = protectSymbolTraversal
+let private boundedDepthFirst maxDepth tryStableName children roots =
+    boundedDepthFirstWithBudget maxDepth MaxSymbolTraversalVisits tryStableName children roots
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
@@ -420,13 +428,14 @@ let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     | _ -> None
 
 /// Recursively extract all concrete type argument entity full names from a type.
-let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
+let private extractGenericTypeArgsWithBudget (maxVisits: int) (fsharpType: FSharpType) : string list =
     try
         if fsharpType.IsGenericParameter then
             []
         else
-            boundedDepthFirst
+            boundedDepthFirstWithBudget
                 MaxSymbolTraversalDepth
+                maxVisits
                 (fun _ -> None)
                 (fun (t: FSharpType) -> t.GenericArguments)
                 fsharpType.GenericArguments
@@ -440,18 +449,35 @@ let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
                     None)
     with
     | SymbolTraversalDepthExceeded _ -> reraise ()
+    | SymbolTraversalBudgetExceeded _ -> reraise ()
     | _ -> []
 
 /// Extract generic type argument edges from a symbol use's full type.
-let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
+let private tryGetGenericTypeArgEdgesWithBudget (maxVisits: int) (symbol: FSharpSymbol) : string list =
     match symbol with
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
-            extractGenericTypeArgs mfv.FullType
+            extractGenericTypeArgsWithBudget maxVisits mfv.FullType
         with
         | SymbolTraversalDepthExceeded _ -> reraise ()
+        | SymbolTraversalBudgetExceeded _ -> reraise ()
         | _ -> []
     | _ -> []
+
+let private tryGetGenericTypeArgEdges =
+    tryGetGenericTypeArgEdgesWithBudget MaxSymbolTraversalVisits
+
+[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
+module internal TestHelpers =
+    let testClassifySymbol = classifySymbol
+    let testTryClassifyEntity = tryClassifyEntity
+    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
+    let testTryClassifyUnionCase = tryClassifyUnionCase
+    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
+    let testTryName = tryName
+    let testBoundedDepthFirst = boundedDepthFirst
+    let testProtectSymbolTraversal = protectSymbolTraversal
+    let testTryGetGenericTypeArgEdgesWithBudget = tryGetGenericTypeArgEdgesWithBudget
 
 /// When a record field is used, extract the containing record type's full name.
 let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
@@ -1461,6 +1487,7 @@ let private extractResults
                                         | None -> fallbackClass
                                     with
                                     | SymbolTraversalDepthExceeded _ -> reraise ()
+                                    | SymbolTraversalBudgetExceeded _ -> reraise ()
                                     | _ -> fallbackClass
 
                                 testMethods <-
@@ -1471,6 +1498,7 @@ let private extractResults
                                     :: testMethods
                             with
                             | SymbolTraversalDepthExceeded _ -> reraise ()
+                            | SymbolTraversalBudgetExceeded _ -> reraise ()
                             | _ -> ()
 
                             // Direct edges from the test method to every fixture its

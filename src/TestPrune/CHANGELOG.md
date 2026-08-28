@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: fail closed when a live FCS type graph exceeds the bounded traversal work
+  budget. Compiler hosts now receive an index failure and subsequent full-suite
+  fallback instead of runaway analysis on recreated branching wrappers.
+
 ## 8.1.1 - 2026-08-29
 
 - fix: make indexing atomic per project when any source file cannot be analyzed. A

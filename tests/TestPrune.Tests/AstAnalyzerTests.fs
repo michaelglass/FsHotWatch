@@ -1705,6 +1705,9 @@ module ``Generic type parameter edges`` =
         member _.Children = children
         member _.SetChildren(value) = children <- value
 
+    type private BranchingWrapper(depth: int) =
+        member _.Depth = depth
+
     [<Fact>]
     let ``bounded symbol traversal stops a reference cycle`` () =
         let node = TraversalNode("self")
@@ -1718,6 +1721,22 @@ module ``Generic type parameter edges`` =
                 [ node ]
 
         test <@ visited |> List.map _.Name = [ "self" ] @>
+
+    [<Fact>]
+    let ``reference back-edge at the depth boundary is rejected before depth exhaustion`` () =
+        let root = TraversalNode("root")
+        let one = TraversalNode("one")
+        let two = TraversalNode("two")
+        let three = TraversalNode("three")
+        root.SetChildren [ one ]
+        one.SetChildren [ two ]
+        two.SetChildren [ three ]
+        three.SetChildren [ root ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst 4 (fun (_: TraversalNode) -> None) (fun item -> item.Children) [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "one"; "two"; "three" ] @>
 
     [<Fact>]
     let ``bounded symbol traversal stops wrapper recreation with the same active name`` () =
@@ -1790,6 +1809,61 @@ module ``Generic type parameter edges`` =
             test <@ message.Contains("safe traversal depth of 4", StringComparison.Ordinal) @>
             test <@ message.Contains("refusing incomplete analysis", StringComparison.Ordinal) @>
         | Ok _ -> failwith "depth exhaustion must refuse incomplete analysis"
+
+    [<Fact>]
+    let ``recreated branching wrappers exhaust a global work budget before combinatorial expansion`` () =
+        let mutable childReads = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            childReads <- childReads + 1
+
+            if node.Depth >= 13 then
+                Seq.empty
+            else
+                [ BranchingWrapper(node.Depth + 1); BranchingWrapper(node.Depth + 1) ]
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirst
+                    16
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ BranchingWrapper(0) ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "work-budget exhaustion must refuse incomplete analysis"
+
+        test <@ childReads <= 4096 @>
+
+    [<Fact>]
+    let ``real FSharpType traversal exhaustion reaches the public analysis result`` () =
+        let source = "module RealGeneric\nlet value : list<int> = []\n"
+        let fileName = "/tmp/AstAnalyzerDeepGeneric.fsx"
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let _, checkAnswer =
+            checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+            |> Async.RunSynchronously
+
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded results -> results
+            | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+        let valueSymbol =
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.find (fun symbolUse -> symbolUse.IsFromDefinition && symbolUse.Symbol.DisplayName = "value")
+            |> _.Symbol
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testTryGetGenericTypeArgEdgesWithBudget 0 valueSymbol |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "real FSharpType work-budget exhaustion must reach the analysis Error boundary"
 
     [<Fact>]
     let ``using generic type with concrete arg creates edge to arg type`` () =

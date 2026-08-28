@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: cap defensive FCS graph traversal at 4,096 expanded nodes and reduce the
+  emergency depth ceiling to 32. Recreated branching type wrappers can no longer
+  expand combinatorially; budget exhaustion is an analysis error, so callers widen
+  conservatively instead of accepting a partial dependency graph. Finite repeated
+  generic wrappers remain fully attributed.
+
 ## 8.1.1 - 2026-08-29
 
 - fix: bound FCS type-argument and declaring-entity graph traversal by reference
