@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.1 - 2026-08-29
+
 - fix: bound FCS type-argument and declaring-entity graph traversal by reference
   identity, logical ancestry, and depth. Compiler hosts can now reuse live parse and
   check results containing recursive symbol graphs without runaway CPU or memory,

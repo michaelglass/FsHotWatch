@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.1 - 2026-08-29
+
 - fix: make indexing atomic per project when any source file cannot be analyzed. A
   failed project keeps its last complete graph while successful sibling projects may
   advance, and the command returns non-zero. A durable incomplete-index marker forces
