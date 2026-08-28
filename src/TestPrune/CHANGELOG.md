@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 8.1.0 - 2026-08-28
+
+- Finish: reuse existing FCS results in Core analysis
+
+
 ## 8.0.0 - 2026-08-28
 
 - docs(test): prepare the blocked FsHotWatch CLI pin upgrade without changing the
