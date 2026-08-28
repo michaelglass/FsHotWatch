@@ -122,6 +122,7 @@ module ``SQLite persistence`` =
                   ProjectIndexedEvent("MyProject", 5)
                   SymbolChangeDetectedEvent("f.fs", "Lib.func", Modified)
                   TestSelectedEvent("Tests.test1", SymbolChanged("Lib.func", Modified))
+                  ProjectSelectedByRuntimeCoverageEvent("Runtime.Tests", "src/RuntimeOnly.fs")
                   DiffParsedEvent [ "a.fs"; "b.fs" ]
                   IndexStartedEvent 3
                   IndexCompletedEvent(100, 50, 10)
@@ -134,7 +135,7 @@ module ``SQLite persistence`` =
             sink.Flush()
 
             let stored = db.GetEvents(runId)
-            test <@ stored.Length = 12 @>
+            test <@ stored.Length = 13 @>
 
             let types = stored |> List.map (fun (_, t, _) -> t)
             test <@ types |> List.contains "FileAnalyzed" @>
@@ -144,6 +145,7 @@ module ``SQLite persistence`` =
             test <@ types |> List.contains "ProjectIndexed" @>
             test <@ types |> List.contains "SymbolChangeDetected" @>
             test <@ types |> List.contains "TestSelected" @>
+            test <@ types |> List.contains "ProjectSelectedByRuntimeCoverage" @>
             test <@ types |> List.contains "DiffParsed" @>
             test <@ types |> List.contains "IndexStarted" @>
             test <@ types |> List.contains "IndexCompleted" @>

@@ -54,6 +54,8 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
     let cliChangelog = read root "src/TestPrune/CHANGELOG.md"
     test <@ not (coreChangelog.Contains("## 8.0.0")) @>
     test <@ not (cliChangelog.Contains("## 8.0.0")) @>
-    test <@ coreChangelog.Contains("## Unreleased\n\n- feat!:") @>
+    let unreleased = coreChangelog.Split("## 7.0.1", StringSplitOptions.None)[0]
+    test <@ unreleased.Contains("## Unreleased") @>
+    test <@ unreleased.Contains("- feat!:") @>
     test <@ coreChangelog.Contains("SchemaVersion` 11 -> 12") @>
     test <@ cliChangelog.Contains("SchemaVersion` 11 -> 12") @>

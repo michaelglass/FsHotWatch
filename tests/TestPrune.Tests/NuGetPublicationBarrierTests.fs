@@ -168,7 +168,7 @@ let ``success probes one exact version from only nuget org with a fresh cache`` 
 
         let secondArgv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         test <@ second.ExitCode = 0 && secondArgv[5] <> firstPackages @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``tool package uses an exact isolated tool install instead of PackageReference`` () =
@@ -204,7 +204,7 @@ let ``tool package uses an exact isolated tool install instead of PackageReferen
             @>
 
         test <@ not (File.Exists(Path.Combine(capture, "probe.csproj"))) @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Theory>]
 [<InlineData("package-mismatch")>]
@@ -223,7 +223,7 @@ let ``invalid identity or version fails before restore`` caseName =
             runBarrier (repoRoot ()) fakeDotnet probeParent project "Example.Package" [ "FAKE_COUNT_FILE", countFile ]
 
         test <@ result.ExitCode = 1 && not (File.Exists countFile) @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``restore failures exhaust the retry bound and clean up`` () =
@@ -249,7 +249,7 @@ let ``restore failures exhaust the retry bound and clean up`` () =
                 && result.Stderr.Contains("synthetic restore failure")
             @>
 
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``a transient failure retries and succeeds`` () =
@@ -269,7 +269,7 @@ let ``a transient failure retries and succeeds`` () =
                   "TESTPRUNE_NUGET_PROBE_ATTEMPTS", "3" ]
 
         test <@ result.ExitCode = 0 && File.ReadAllText countFile = "2" @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)
 
 [<Fact>]
 let ``a wedged restore is killed within its bound and cleaned up`` () =
@@ -289,4 +289,4 @@ let ``a wedged restore is killed within its bound and cleaned up`` () =
 
         test <@ result.ExitCode = 1 && result.Elapsed < TimeSpan.FromSeconds 8. @>
         test <@ result.Stderr.Contains("restore timed out") @>
-        test <@ probeDirectories probeParent = [||] @>)
+        test <@ probeDirectories probeParent |> Array.isEmpty @>)

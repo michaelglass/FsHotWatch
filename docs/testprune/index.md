@@ -215,10 +215,11 @@ don't mark a composition root.**
 
 ## Design choices
 
-**Static analysis, not coverage.** TestPrune reads your code's AST
-instead of instrumenting test runs. So you don't need to run tests to
-build the graph, and there's no flaky-coverage problem. The tradeoff:
-it may run a few extra tests, but it aims never to miss a broken one.
+**Static analysis first, runtime evidence as a conservative union.** TestPrune
+builds its precise graph from the F# AST. A runner may additionally retain the
+test-project identity from Cobertura and widen a changed source file to the
+whole project that executed it. Runtime evidence never narrows the AST result;
+missing or stale complete baselines are explicit states the runner must widen.
 
 **Safe by default.** When in doubt, run everything. A missed broken
 test is much worse than running a few unnecessary ones.

@@ -541,12 +541,13 @@ module ``File-dependency attributes`` =
     let ``malformed args_json is silently ignored`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        // Not JSON at all, empty array, and non-string first element — none should
-        // fire or crash the walk.
+        // Not JSON at all, a non-array root, an empty array, and a non-string
+        // first element — none should fire or crash the walk.
         let attrs =
             Map.ofList
                 [ "Tests.testA",
                   [ ("DependsOnFileAttribute", "not-json-at-all")
+                    ("DependsOnFileAttribute", "{}")
                     ("DependsOnFileAttribute", "[]")
                     ("DependsOnFileAttribute", "[42]") ] ]
 

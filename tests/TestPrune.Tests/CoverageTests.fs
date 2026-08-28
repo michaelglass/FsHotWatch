@@ -182,7 +182,7 @@ module ``Runtime coverage keeps test-project provenance`` =
             ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" xml |> ignore
 
             test <@ db.GetRuntimeCoverageProjects([ "src/RuntimeOnly.fs" ]) = [ "RuntimeTests" ] @>
-            test <@ db.GetRuntimeCoverageProjects([ "src/NeverExecuted.fs" ]) = [] @>)
+            test <@ db.GetRuntimeCoverageProjects([ "src/NeverExecuted.fs" ]) |> List.isEmpty @>)
 
     [<Fact>]
     let ``new full baseline replaces the project's prior runtime map`` () =
@@ -193,7 +193,7 @@ module ``Runtime coverage keeps test-project provenance`` =
             ingestRuntimeCoverage db None "RuntimeTests" Full "run-2" (cobertura [ "src/New.fs", [ 1, 1 ] ])
             |> ignore
 
-            test <@ db.GetRuntimeCoverageProjects([ "src/Old.fs" ]) = [] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/Old.fs" ]) |> List.isEmpty @>
             test <@ db.GetRuntimeCoverageProjects([ "src/New.fs" ]) = [ "RuntimeTests" ] @>
             test <@ db.GetRuntimeCoverageBaselines() = [ ("RuntimeTests", "run-2") ] @>)
 
@@ -221,7 +221,7 @@ module ``Runtime coverage keeps test-project provenance`` =
             ingestRuntimeCoverage db None "RuntimeTests" Full "run-2" "<coverage><packages /></coverage>"
             |> ignore
 
-            test <@ db.GetRuntimeCoverageProjects([ "src/Baseline.fs" ]) = [] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/Baseline.fs" ]) |> List.isEmpty @>
             test <@ db.GetRuntimeCoverageBaselines() = [ ("RuntimeTests", "run-2") ] @>)
 
     [<Fact>]
@@ -240,7 +240,11 @@ module ``Runtime coverage keeps test-project provenance`` =
             ingestRuntimeCoverage db None "RuntimeTests" Full "run-1" (cobertura [ "src/Runtime.fs", [ 1, 1 ] ])
             |> ignore
 
-            test <@ db.GetUnavailableRuntimeCoverageProjects([ "RuntimeTests" ], beforeIngest) = [] @>
+            test
+                <@
+                    db.GetUnavailableRuntimeCoverageProjects([ "RuntimeTests" ], beforeIngest)
+                    |> List.isEmpty
+                @>
 
             let afterIngest = System.DateTimeOffset.UtcNow.AddSeconds(1.0)
 
@@ -269,7 +273,7 @@ module ``Runtime coverage keeps test-project provenance`` =
             |> ignore
 
             test <@ db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ "RuntimeTests", Missing ] @>
-            test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+            test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) |> List.isEmpty @>
 
             let reopened = Database.create path
 
@@ -279,7 +283,7 @@ module ``Runtime coverage keeps test-project provenance`` =
                                                                                                  Missing ]
                 @>
 
-            test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>)
+            test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) |> List.isEmpty @>)
 
 module ``Cobertura emit`` =
 
