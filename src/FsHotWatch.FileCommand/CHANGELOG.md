@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Do not cache `afterTests` command outcomes across test runs. Each run may publish
+  newer external evidence such as a filtered-run coverage marker; replaying a prior
+  full run's failure prevented the command from observing that evidence. File-pattern
+  command results remain content-cached.
+
 ## 0.7.0-alpha.18 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back

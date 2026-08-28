@@ -964,6 +964,52 @@ let ``FullSuiteClaim tokens are the documented wire values`` () =
 // (coverage-ratchet.json thresholds, say) did not invalidate the cache. The salt must
 // include command, args, and the content of any path-like arg that exists on disk.
 
+[<Fact>]
+let ``afterTests events are never cacheable across runs, whether filtered or full`` () =
+    let trigger =
+        { FilePattern = Some(fun _ -> true)
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "coverage-gate")
+            trigger
+            "coverage-gate"
+            "counts.json"
+            "/tmp"
+            None
+
+    let key = handler.CacheKey.Value
+
+    let completed (verification: RunVerification) (results: (string * TestResult) list) : PluginEvent<unit> =
+        TestRunCompleted
+            { RunId = Guid.NewGuid()
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.ofList results
+              Verification = verification }
+
+    // A previous full run may have cached a RED from complete Cobertura. A later
+    // filtered run publishes newer coverage.partial evidence that the command must
+    // observe itself; replaying the old RED would skip that observation entirely.
+    test <@ key (completed (Ran RunScope.FullSuite) [ "P", passed false ]) = None @>
+    test <@ key (completed (Ran RunScope.Partial) [ "P", passed true ]) = None @>
+
+    let progress (filtered: bool) : PluginEvent<unit> =
+        TestProgress
+            { RunId = Guid.NewGuid()
+              NewResults = Map.ofList [ "P", passed filtered ] }
+
+    // The plugin may fire from progressive deltas before TestRunCompleted. Both
+    // breadths must bypass replay at that earlier seam too, or the stale RED can
+    // survive without the completion event ever reaching the handler.
+    test <@ key (progress false) = None @>
+    test <@ key (progress true) = None @>
+
+    // Pattern triggers keep their content cache. This positive control prevents
+    // the fix from silently disabling the useful, separately-correct file cache.
+    test <@ (key (FileChanged(SourceChanged [ "counts.json" ]))).IsSome @>
+
 let private cacheKeyFnFor (command: string) (args: string) =
     let handler =
         create

@@ -4,11 +4,6 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-- fix: package releases now follow project-reference dependency levels and wait
-  for each exact version to become restorable from NuGet before tagging a
-  dependent lane. The CLI remains last, so it cannot publish references to core
-  or plugin versions that NuGet has not made available yet.
-
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
@@ -78,6 +73,11 @@ All notable changes to FsHotWatch packages are documented here.
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+- fix: package releases now follow project-reference dependency levels and wait
+  for each exact version to become restorable from NuGet before tagging a
+  dependent lane. The CLI remains last, so it cannot publish references to core
+  or plugin versions that NuGet has not made available yet.
 
 ### core/cli: the tree hash now covers what DECIDES the check — BREAKING (verdict applicability)
 

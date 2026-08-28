@@ -27,7 +27,8 @@ let private taskBlock (mise: string) taskName =
     |> String.concat "\n"
 
 let private releaseProjects root =
-    use config = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "semantic-tagger.json")))
+    use config =
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "semantic-tagger.json")))
 
     config.RootElement.GetProperty("packages").EnumerateArray()
     |> Seq.map (fun package ->
@@ -39,7 +40,9 @@ let private releaseProjects root =
 
 let private dependencyGraph root =
     let projects = releaseProjects root
-    let packageByPath = projects |> Map.toSeq |> Seq.map (fun (name, path) -> path, name) |> Map.ofSeq
+
+    let packageByPath =
+        projects |> Map.toSeq |> Seq.map (fun (name, path) -> path, name) |> Map.ofSeq
 
     projects
     |> Map.map (fun _ projectPath ->
@@ -48,7 +51,10 @@ let private dependencyGraph root =
         project.Descendants(XName.Get "ProjectReference")
         |> Seq.choose (fun reference ->
             let relativePath = reference.Attribute(XName.Get "Include").Value
-            let dependencyPath = Path.GetFullPath(relativePath, Path.GetDirectoryName(projectPath))
+
+            let dependencyPath =
+                Path.GetFullPath(relativePath, Path.GetDirectoryName(projectPath))
+
             Map.tryFind dependencyPath packageByPath)
         |> Set.ofSeq)
 
@@ -57,7 +63,9 @@ let private dependencyLevels (graph: Map<string, Set<string>>) =
         if Set.isEmpty remaining then
             List.rev levels
         else
-            let ready = remaining |> Set.filter (fun package -> Set.isSubset graph[package] released)
+            let ready =
+                remaining |> Set.filter (fun package -> Set.isSubset graph[package] released)
+
             test <@ not (Set.isEmpty ready) @>
             build (Set.union released ready) (Set.difference remaining ready) (ready :: levels)
 
@@ -100,14 +108,22 @@ let ``release emits every dependency lane before the CLI lane`` () =
 
     test <@ mutatingReleaseLines.Length = expectedLevels.Length @>
     test <@ mutatingReleaseLines |> List.forall _.Contains("release --only ") @>
-    test <@ mutatingReleaseLines |> List.forall (fun line -> not (line.Contains("--dry-run"))) @>
 
-    let coreRelease = release.IndexOf("release --only FsHotWatch\n", StringComparison.Ordinal)
+    test
+        <@
+            mutatingReleaseLines
+            |> List.forall (fun line -> not (line.Contains("--dry-run")))
+        @>
+
+    let coreRelease =
+        release.IndexOf("release --only FsHotWatch\n", StringComparison.Ordinal)
 
     let pluginRelease =
         release.IndexOf("release --only FsHotWatch.TestPrune,", StringComparison.Ordinal)
 
-    let cliRelease = release.IndexOf("release --only FsHotWatch.Cli\n", StringComparison.Ordinal)
+    let cliRelease =
+        release.IndexOf("release --only FsHotWatch.Cli\n", StringComparison.Ordinal)
+
     test <@ 0 <= coreRelease && coreRelease < pluginRelease && pluginRelease < cliRelease @>
 
     for package in graph |> Map.keys do
@@ -131,6 +147,8 @@ let ``release dry run remains one exact whole-release preview`` () =
         File.ReadAllText(Path.Combine(root, "mise.toml"))
         |> fun mise -> taskBlock mise "release-dry-run"
 
-    let taggerLines = dryRun.Split('\n') |> Array.filter _.Contains("fssemantictagger release")
+    let taggerLines =
+        dryRun.Split('\n') |> Array.filter _.Contains("fssemantictagger release")
+
     test <@ taggerLines = [| "run = \"dotnet tool run fssemantictagger release --dry-run\"" |] @>
     test <@ not (dryRun.Contains("--only")) @>

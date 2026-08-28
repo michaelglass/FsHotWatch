@@ -304,6 +304,40 @@ let ``polling fallback reports unreadable files and holes conservatively every p
     test <@ changes |> Seq.filter ((=) SolutionChanged) |> Seq.length = 2 @>
 
 [<Fact(Timeout = 15000)>]
+let ``polling fallback isolates a failing change callback and continues the batch`` () =
+    let first = "/repo/src/First.fs"
+    let second = "/repo/src/Second.fs"
+    let mutable snapshots = 0
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        { Files =
+            if snapshots = 1 then
+                Map.empty
+            else
+                Map.ofList [ first, "first"; second, "second" ]
+          UnreadableFiles = Set.empty
+          Holes = Set.empty }
+
+    let callbacks = ResizeArray<FileChangeKind>()
+
+    let failingCallback change =
+        callbacks.Add(change)
+        raise (InvalidOperationException("consumer failed"))
+
+    use watcher =
+        new PollingFileWatcher("/repo", failingCallback, [], false, Some snapshot, None)
+
+    // One consumer exception must not escape Poll or prevent the next changed
+    // path in the same snapshot from being delivered.
+    watcher.Poll()
+
+    test <@ callbacks |> Seq.contains (SourceChanged [ first ]) @>
+    test <@ callbacks |> Seq.contains (SourceChanged [ second ]) @>
+    test <@ callbacks.Count = 2 @>
+
+[<Fact(Timeout = 15000)>]
 let ``polling fallback skips overlapping polls and emits nothing after disposal`` () =
     let entered = new ManualResetEventSlim(false)
     let release = new ManualResetEventSlim(false)
@@ -326,12 +360,13 @@ let ``polling fallback skips overlapping polls and emits nothing after disposal`
     let watcher =
         new PollingFileWatcher("/repo", changes.Add, [], false, Some snapshot, None)
 
-    let first = System.Threading.Tasks.Task.Run(fun () -> watcher.Poll())
-    test <@ entered.Wait(10000) @>
+    let first = Thread(ThreadStart(fun () -> watcher.Poll()))
+    first.Start()
+    test <@ entered.Wait(TimeSpan.FromSeconds(10.0)) @>
     watcher.Poll()
     test <@ snapshots = 2 @>
     release.Set()
-    first.GetAwaiter().GetResult()
+    first.Join()
     (watcher :> IDisposable).Dispose()
     watcher.Poll()
     test <@ snapshots = 2 @>
@@ -466,16 +501,31 @@ let ``automatic polling disposal waits for active callback then prevents later c
     let watcher =
         new PollingFileWatcher("/repo", ignore, [], true, Some snapshot, Some timerFactory)
 
-    let active = System.Threading.Tasks.Task.Run(callback)
-    test <@ entered.Wait(10000) @>
+    // Dedicated threads make this a lock-ordering test, not a ThreadPool
+    // availability test. The full suite deliberately runs enough parallel work
+    // that a queued Task may not start within an arbitrary two-second window.
+    let active = Thread(ThreadStart callback)
+    active.Start()
+    test <@ entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+    let disposeStarted = new ManualResetEventSlim(false)
+    let disposeCompleted = new ManualResetEventSlim(false)
 
     let disposing =
-        System.Threading.Tasks.Task.Run(fun () -> (watcher :> IDisposable).Dispose())
+        Thread(
+            ThreadStart(fun () ->
+                disposeStarted.Set()
+                (watcher :> IDisposable).Dispose()
+                disposeCompleted.Set())
+        )
 
-    test <@ not (disposing.Wait(100)) @>
+    disposing.Start()
+    test <@ disposeStarted.Wait(TimeSpan.FromSeconds(10.0)) @>
+    test <@ not disposeCompleted.IsSet @>
     release.Set()
-    active.GetAwaiter().GetResult()
-    disposing.GetAwaiter().GetResult()
+    active.Join()
+    disposing.Join()
+    test <@ disposeCompleted.IsSet @>
     callback ()
     test <@ snapshots = 2 @>
 
