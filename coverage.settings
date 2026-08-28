@@ -7,13 +7,13 @@
         <ModulePath>.*ExampleAnalyzer\.dll$</ModulePath>
         <ModulePath>.*xunit.*</ModulePath>
         <ModulePath>.*Unquote.*</ModulePath>
-        <!-- Sibling TestPrune repo (consumed via ProjectReference while the
-             [Unreleased] version is in development). Its sources show up in
-             cobertura with 0% coverage from this side; exclude so the ratchet
-             doesn't gate on them. FsHotWatch.TestPrune.dll (our plugin) is
-             NOT matched by these patterns. -->
+        <!-- External TestPrune packages. Their sources show up in cobertura with
+             0% coverage from this side; exclude so the ratchet doesn't gate on
+             dependencies. FsHotWatch.TestPrune.dll (our plugin) is NOT matched. -->
         <ModulePath>.*[/\\]TestPrune\.Core\.dll$</ModulePath>
         <ModulePath>.*[/\\]TestPrune\.Falco\.dll$</ModulePath>
+        <ModulePath>.*[/\\]TestPrune\.Sql\.dll$</ModulePath>
+        <ModulePath>.*[/\\]TestPrune\.SqlHydra\.dll$</ModulePath>
       </Exclude>
     </ModulePaths>
   </CodeCoverage>

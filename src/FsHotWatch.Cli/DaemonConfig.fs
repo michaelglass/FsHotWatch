@@ -127,16 +127,18 @@ type TestProjectConfig =
         ReportVerificationFormat: ReportVerificationFormat
     }
 
-/// The kind of test extension.
-type TestExtensionKind =
-    | Falco
-    | Unknown of string
+/// Configuration for Falco route attribution.
+type FalcoExtensionConfig = { Project: string; TestDir: string }
 
-/// Configuration for a test extension (e.g. Falco route mapping).
+/// Configuration for SqlHydra table attribution.
+type SqlHydraExtensionConfig = { GeneratedModulePrefix: string }
+
+/// A configured TestPrune extension. Each case carries only the fields its
+/// factory consumes, so malformed combinations cannot survive parsing.
 type TestExtensionConfig =
-    { Kind: TestExtensionKind
-      Project: string
-      TestDir: string }
+    | FalcoExtension of FalcoExtensionConfig
+    | SqlExtension
+    | SqlHydraExtension of SqlHydraExtensionConfig
 
 /// Format mode configuration.
 type FormatMode =
@@ -446,31 +448,32 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             let extensions =
                 match v.TryGetProperty("extensions") with
-                | true, arr ->
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
                     arr.EnumerateArray()
                     |> Seq.map (fun e ->
-                        let kind =
-                            match e.TryGetProperty("type") with
-                            | true, v ->
-                                match v.GetString().ToLowerInvariant() with
-                                | "falco" -> Falco
-                                | other -> Unknown other
-                            | _ -> Unknown "unknown"
+                        let requiredNonBlank (propertyName: string) =
+                            match e.TryGetProperty(propertyName) with
+                            | true, value when value.ValueKind = JsonValueKind.String ->
+                                let parsed = value.GetString()
 
-                        let project =
-                            match e.TryGetProperty("project") with
-                            | true, v -> v.GetString()
-                            | _ -> "unknown"
+                                if String.IsNullOrWhiteSpace(parsed) then
+                                    raise (ConfigError($"tests.extensions.%s{propertyName} must be non-blank"))
 
-                        let testDir =
-                            match e.TryGetProperty("testDir") with
-                            | true, v -> v.GetString()
-                            | _ -> ""
+                                parsed
+                            | _ -> raise (ConfigError($"tests.extensions.%s{propertyName} is required"))
 
-                        { Kind = kind
-                          Project = project
-                          TestDir = testDir })
+                        match (requiredNonBlank "type").ToLowerInvariant() with
+                        | "falco" ->
+                            FalcoExtension
+                                { Project = requiredNonBlank "project"
+                                  TestDir = requiredNonBlank "testDir" }
+                        | "sql" -> SqlExtension
+                        | "sql-hydra"
+                        | "sqlhydra" ->
+                            SqlHydraExtension { GeneratedModulePrefix = requiredNonBlank "generatedModulePrefix" }
+                        | other -> raise (ConfigError($"tests.extensions has unknown type '%s{other}'")))
                     |> Seq.toList
+                | true, _ -> raise (ConfigError("tests.extensions must be an array"))
                 | _ -> []
 
             let projects =
@@ -1327,6 +1330,25 @@ let private makeShellHook
             // that it did.
             failwith $"%s{label} failed: %s{cmd}\n%s{output}"
 
+/// Construct configured TestPrune extensions against the plugin-owned database.
+/// Construction fails closed: attribution participates in the gate's recall
+/// claim, so an invalid extension must not silently become an empty graph.
+let internal buildTestExtensions
+    (db: TestPrune.Database.Database)
+    (configs: TestExtensionConfig list)
+    : TestPrune.Extensions.ITestPruneExtension list =
+    configs
+    |> List.map (function
+        | FalcoExtension config ->
+            let routeStore = TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
+
+            TestPrune.Falco.FalcoRouteExtension(config.Project, config.TestDir, routeStore)
+            :> TestPrune.Extensions.ITestPruneExtension
+        | SqlExtension -> TestPrune.Sql.AutoSqlExtension() :> TestPrune.Extensions.ITestPruneExtension
+        | SqlHydraExtension config ->
+            TestPrune.SqlHydra.SqlHydraExtension(config.GeneratedModulePrefix)
+            :> TestPrune.Extensions.ITestPruneExtension)
+
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     // Format plugin
@@ -1551,28 +1573,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let buildExtensions =
             match t.Extensions with
             | [] -> None
-            | exts ->
-                Some(fun (db: TestPrune.Database.Database) ->
-                    // Routes are not a core concept: TestPrune.Core exposes only the
-                    // generic `PluginStore` seam (a connection to its cache DB), and
-                    // Falco's RouteStore creates and owns `route_handlers` on top of it.
-                    let routeStore = TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
-
-                    exts
-                    |> List.choose (fun ext ->
-                        match ext.Kind with
-                        | Falco ->
-                            Logging.info
-                                "config"
-                                $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
-
-                            Some(
-                                TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir, routeStore)
-                                :> TestPrune.Extensions.ITestPruneExtension
-                            )
-                        | Unknown other ->
-                            Logging.warn "config" $"Unknown test extension type: %s{other}"
-                            None))
+            | exts -> Some(fun db -> buildTestExtensions db exts)
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 

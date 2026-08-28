@@ -1043,9 +1043,77 @@ let ``parseConfig tests with extensions`` () =
     test <@ config.Tests.IsSome @>
     let tests = config.Tests.Value
     test <@ tests.Extensions.Length = 1 @>
-    test <@ tests.Extensions.[0].Kind = Falco @>
-    test <@ tests.Extensions.[0].Project = "IntTests" @>
-    test <@ tests.Extensions.[0].TestDir = "tests/IntTests" @>
+
+    test
+        <@
+            tests.Extensions.[0] = FalcoExtension
+                { Project = "IntTests"
+                  TestDir = "tests/IntTests" }
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig gives sql and sqlhydra distinct typed configurations`` () =
+    let json =
+        """{
+        "tests": {
+            "extensions": [
+                {"type": "sql"},
+                {"type": "sql-hydra", "generatedModulePrefix": "Intelligence.Database.Generated"}
+            ],
+            "projects": [{"project": "DatabaseTests"}]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+
+    test
+        <@
+            config.Tests.Value.Extensions = [ SqlExtension
+                                              SqlHydraExtension
+                                                  { GeneratedModulePrefix = "Intelligence.Database.Generated" } ]
+        @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{\"type\":\"sqlhydra\"}")>]
+[<InlineData("{\"type\":\"sqlhydra\",\"generatedModulePrefix\":\"  \"}")>]
+[<InlineData("{\"type\":\"not-an-extension\"}")>]
+let ``parseConfig refuses incomplete and unknown test extensions`` (extensionJson: string) =
+    let json =
+        $"""{{
+        "tests": {{
+            "extensions": [{extensionJson}],
+            "projects": [{{"project": "Tests"}}]
+        }}
+    }}"""
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.Message.Contains("tests.extensions") @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig accepts sqlhydra as compatibility alias`` () =
+    let config =
+        parseConfig
+            """{"tests":{"extensions":[{"type":"sqlhydra","generatedModulePrefix":"Intelligence.Database.Generated"}],"projects":[{"project":"DatabaseTests"}]}}"""
+            defaults
+
+    test
+        <@
+            config.Tests.Value.Extensions = [ SqlHydraExtension
+                                                  { GeneratedModulePrefix = "Intelligence.Database.Generated" } ]
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``test extension factory constructs sql and sqlhydra in declared order`` () =
+    withTempDir "cfg-sql-extension-factories" (fun tmpDir ->
+        let db = TestPrune.Database.Database.create (Path.Combine(tmpDir, "test-impact.db"))
+
+        let extensions =
+            buildTestExtensions
+                db
+                [ SqlExtension
+                  SqlHydraExtension { GeneratedModulePrefix = "Intelligence.Database.Generated" } ]
+
+        test <@ extensions |> List.map _.Name = [ "SQL Coupling (Auto)"; "SqlHydra" ] @>)
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests without extensions defaults to empty`` () =
