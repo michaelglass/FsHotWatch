@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: bound FCS type-argument and declaring-entity graph traversal by reference
+  identity, logical ancestry, and depth. Compiler hosts can now reuse live parse and
+  check results containing recursive symbol graphs without runaway CPU or memory,
+  while finite nested generic arguments retain their dependency edges. Reaching the
+  generous depth limit returns an analysis error instead of silently emitting an
+  incomplete dependency graph; the CLI treats that refusal as an atomic index failure
+  and preserves the last complete project graph.
+- fix!: **`SchemaVersion` 12 -> 13.** The automatic cache recreation introduces
+  durable, attempt-owned index metadata. A fresh or interrupted cache remains
+  fail-closed until one complete index owns and records completion.
+
 ## 8.1.0 - 2026-08-28
 
 - feat: add `AstAnalyzer.analyzeSourceFromResults` for compiler hosts that already

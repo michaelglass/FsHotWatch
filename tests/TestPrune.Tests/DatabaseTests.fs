@@ -1897,7 +1897,37 @@ module ``Schema version migration`` =
         try
             let _db = Database.create path
             let version = getUserVersion path
-            test <@ version > 0 @>
+            test <@ version = SchemaVersion @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``fresh database remains fail-closed until its first completed index`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            test <@ db.IsIndexIncomplete() @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.CompleteIndex token @>
+            test <@ not (db.IsIndexIncomplete()) @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``older concurrent index cannot complete a newer attempt`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            let older = db.MarkIndexIncomplete()
+            let newer = db.MarkIndexIncomplete()
+
+            test <@ not (db.CompleteIndex older) @>
+            test <@ db.IsIndexIncomplete() @>
+            test <@ db.CompleteIndex newer @>
+            test <@ not (db.IsIndexIncomplete()) @>
         finally
             cleanupDb path
 

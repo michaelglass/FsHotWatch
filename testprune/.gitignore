@@ -60,6 +60,7 @@ tmp/
 
 # TestPrune
 .test-prune.db*
+.test-prune.index.lock
 TODO.md
 .ionide/
 .fake

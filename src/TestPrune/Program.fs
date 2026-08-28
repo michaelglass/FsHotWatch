@@ -160,9 +160,12 @@ let private createAuditSinkForRepo (repoRoot: string) =
 
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) (parallelism: int) : int =
-    let checker = createChecker ()
-    let auditSink = createAuditSinkForRepo repoRoot
-    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink
+    withIndexLease repoRoot (fun () ->
+        // The lease covers Database.create in the audit sink too: on first upgrade that
+        // call may recreate the entire v12 cache before runOwnedIndexWith opens it.
+        let checker = createChecker ()
+        let auditSink = createAuditSinkForRepo repoRoot
+        runOwnedIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink)
 
 /// Run a `jj diff`-style command, capturing stdout, bounded by a hang-detector `timeoutMs`.
 ///

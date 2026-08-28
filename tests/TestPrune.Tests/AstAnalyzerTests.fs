@@ -420,6 +420,36 @@ type MyTests() =
         test <@ tc.EndsWith("OuterModule+MyTests", StringComparison.Ordinal) @>
 
     [<Fact>]
+    let ``test class inside three nested modules keeps the complete CLR class name`` () =
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+module MiddleModule =
+    module InnerModule =
+        type MyTests() =
+            [<Fact>]
+            member _.myTest() = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun item -> item.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+
+        test
+            <@
+                testMethod.Value.TestClass.EndsWith(
+                    "OuterModule+MiddleModule+InnerModule+MyTests",
+                    StringComparison.Ordinal
+                )
+            @>
+
+    [<Fact>]
     let ``top-level module let binding does not use + separator`` () =
         let result =
             analyze
@@ -1668,6 +1698,99 @@ let init () = Increment
 [<Collection("FCS-AstAnalyzer")>]
 module ``Generic type parameter edges`` =
 
+    type private TraversalNode(name: string) =
+        let mutable children: TraversalNode list = []
+
+        member _.Name = name
+        member _.Children = children
+        member _.SetChildren(value) = children <- value
+
+    [<Fact>]
+    let ``bounded symbol traversal stops a reference cycle`` () =
+        let node = TraversalNode("self")
+        node.SetChildren [ node ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ node ]
+
+        test <@ visited |> List.map _.Name = [ "self" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal stops wrapper recreation with the same active name`` () =
+        let root = TraversalNode("same-logical-node")
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> [ TraversalNode(item.Name) ])
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "same-logical-node" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal keeps finite sibling instances with the same name`` () =
+        let left = TraversalNode("shared")
+        let right = TraversalNode("shared")
+        let root = TraversalNode("root")
+        root.SetChildren [ left; right ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "shared"; "shared" ] @>
+
+    [<Fact>]
+    let ``logical rejection does not poison the same reference on a valid sibling path`` () =
+        let leaf = TraversalNode("leaf")
+        let shared = TraversalNode("shared")
+        shared.SetChildren [ leaf ]
+
+        let collisionParent = TraversalNode("shared")
+        collisionParent.SetChildren [ shared ]
+
+        let bridge = TraversalNode("bridge")
+        bridge.SetChildren [ shared ]
+
+        let root = TraversalNode("root")
+        root.SetChildren [ collisionParent; bridge ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "shared"; "bridge"; "shared"; "leaf" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal refuses an endlessly novel chain`` () =
+        let root = TraversalNode("0")
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirst
+                    4
+                    (fun (item: TraversalNode) -> Some item.Name)
+                    (fun item -> [ TraversalNode(string (int item.Name + 1)) ])
+                    [ root ]
+                |> Ok)
+
+        match result with
+        | Error message ->
+            test <@ message.Contains("safe traversal depth of 4", StringComparison.Ordinal) @>
+            test <@ message.Contains("refusing incomplete analysis", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "depth exhaustion must refuse incomplete analysis"
+
     [<Fact>]
     let ``using generic type with concrete arg creates edge to arg type`` () =
         let result =
@@ -1742,6 +1865,47 @@ let lookup : Map<Key, Val> = Map.empty
 
         test <@ hasEdgeToKey @>
         test <@ hasEdgeToVal @>
+
+    [<Fact>]
+    let ``nested finite generic args keep every concrete type edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Left = { Id: int }
+type Right = { Text: string }
+
+let nested : Map<string, Result<Left list, Right option>> = Map.empty
+"""
+
+        let targets =
+            result.Dependencies
+            |> List.filter (fun dependency -> dependency.FromSymbol.EndsWith("nested", StringComparison.Ordinal))
+            |> List.map _.ToSymbol
+
+        test <@ targets |> List.exists _.EndsWith("Left", StringComparison.Ordinal) @>
+        test <@ targets |> List.exists _.EndsWith("Right", StringComparison.Ordinal) @>
+
+    [<Fact>]
+    let ``repeated finite generic wrappers still reach the concrete leaf`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Leaf = { Id: int }
+
+let repeated : Leaf list list list = []
+"""
+
+        let hasLeafEdge =
+            result.Dependencies
+            |> List.exists (fun dependency ->
+                dependency.FromSymbol.EndsWith("repeated", StringComparison.Ordinal)
+                && dependency.ToSymbol.EndsWith("Leaf", StringComparison.Ordinal))
+
+        test <@ hasLeafEdge @>
 
 [<Collection("FCS-AstAnalyzer")>]
 module ``Record type edge from field usage`` =

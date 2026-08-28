@@ -343,6 +343,64 @@ let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option
     | :? FSharpActivePatternCase as apc -> tryClassifyActivePatternCase apc
     | _ -> None
 
+[<Literal>]
+let private MaxSymbolTraversalDepth = 128
+
+exception private SymbolTraversalDepthExceeded of int
+
+let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) : Result<'Value, string> =
+    try
+        operation ()
+    with SymbolTraversalDepthExceeded limit ->
+        Error $"FCS symbol graph exceeded the safe traversal depth of %d{limit}; refusing incomplete analysis"
+
+/// Traverse an FCS graph defensively. FCS normally returns a finite DAG, but compiler
+/// hosts can expose recursive graphs and can recreate wrappers on each property read.
+/// Reference identity prevents repeated DAG expansion, the active logical-name path
+/// catches recreated cycles without suppressing equal siblings, and the depth limit is
+/// the final guard for endlessly novel wrappers.
+let private boundedDepthFirst
+    (maxDepth: int)
+    (tryStableName: 'Node -> string option)
+    (children: 'Node -> 'Node seq)
+    (roots: 'Node seq)
+    : 'Node list =
+    let visitedReferences =
+        System.Collections.Generic.HashSet<obj>(System.Collections.Generic.ReferenceEqualityComparer.Instance)
+
+    let rec visit depth activeNames node =
+        if depth >= maxDepth then
+            raise (SymbolTraversalDepthExceeded maxDepth)
+        else
+            let stableName =
+                try
+                    tryStableName node
+                with _ ->
+                    None
+
+            match stableName with
+            | Some name when Set.contains name activeNames -> []
+            | _ when not (visitedReferences.Add(box node)) -> []
+            | _ ->
+                let nextActiveNames =
+                    match stableName with
+                    | Some name -> Set.add name activeNames
+                    | None -> activeNames
+
+                let childNodes =
+                    try
+                        children node |> Seq.toList
+                    with _ ->
+                        []
+
+                node :: (childNodes |> List.collect (visit (depth + 1) nextActiveNames))
+
+    try
+        roots |> Seq.toList |> List.collect (visit 0 Set.empty)
+    with
+    | SymbolTraversalDepthExceeded _ -> reraise ()
+    | _ -> []
+
 // Test helpers - expose internal classification for unit testing exception paths
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module internal TestHelpers =
@@ -352,6 +410,8 @@ module internal TestHelpers =
     let testTryClassifyUnionCase = tryClassifyUnionCase
     let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
     let testTryName = tryName
+    let testBoundedDepthFirst = boundedDepthFirst
+    let testProtectSymbolTraversal = protectSymbolTraversal
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
@@ -361,22 +421,26 @@ let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
 
 /// Recursively extract all concrete type argument entity full names from a type.
 let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
-    let rec collect (t: FSharpType) =
-        try
-            [ if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
-                  yield t.TypeDefinition.FullName
-              for arg in t.GenericArguments do
-                  yield! collect arg ]
-        with _ ->
-            []
-
     try
         if fsharpType.IsGenericParameter then
             []
         else
-            fsharpType.GenericArguments |> Seq.toList |> List.collect collect
-    with _ ->
-        []
+            boundedDepthFirst
+                MaxSymbolTraversalDepth
+                (fun _ -> None)
+                (fun (t: FSharpType) -> t.GenericArguments)
+                fsharpType.GenericArguments
+            |> List.choose (fun t ->
+                try
+                    if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
+                        Some t.TypeDefinition.FullName
+                    else
+                        None
+                with _ ->
+                    None)
+    with
+    | SymbolTraversalDepthExceeded _ -> reraise ()
+    | _ -> []
 
 /// Extract generic type argument edges from a symbol use's full type.
 let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
@@ -384,8 +448,9 @@ let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
             extractGenericTypeArgs mfv.FullType
-        with _ ->
-            []
+        with
+        | SymbolTraversalDepthExceeded _ -> reraise ()
+        | _ -> []
     | _ -> []
 
 /// When a record field is used, extract the containing record type's full name.
@@ -460,15 +525,44 @@ let private extractTestClass (fullName: string) : string * string =
 /// F# compiles types inside modules as CLR nested types (Module+Type).
 /// FCS FullName uses '.' throughout, but xUnit v3 --filter-class needs '+'.
 let private buildClrClassName (entity: FSharpEntity) : string =
-    let rec collect (e: FSharpEntity) acc =
+    let tryEntityName (e: FSharpEntity) =
+        try
+            Some e.FullName
+        with _ ->
+            None
+
+    let declaringModule (e: FSharpEntity) =
         try
             match e.DeclaringEntity with
-            | Some parent when parent.IsFSharpModule -> collect parent (e.CompiledName :: acc)
-            | _ -> (e.FullName :: acc) |> String.concat "+"
+            | Some parent when parent.IsFSharpModule -> Seq.singleton parent
+            | _ -> Seq.empty
         with _ ->
-            (e.FullName :: acc) |> String.concat "+"
+            Seq.empty
 
-    collect entity []
+    let path =
+        boundedDepthFirst MaxSymbolTraversalDepth tryEntityName declaringModule [ entity ]
+
+    match List.rev path with
+    | [] ->
+        try
+            entity.FullName
+        with _ ->
+            entity.CompiledName
+    | outermost :: nested ->
+        let outerName =
+            try
+                outermost.FullName
+            with _ ->
+                outermost.CompiledName
+
+        outerName
+        :: (nested
+            |> List.map (fun item ->
+                try
+                    item.CompiledName
+                with _ ->
+                    item.DisplayName))
+        |> String.concat "+"
 
 /// Extract the binding name from a SynPat head pattern.
 let private extractBindingName (pat: SynPat) : string option =
@@ -1365,8 +1459,9 @@ let private extractResults
                                         match mfv.DeclaringEntity with
                                         | Some entity -> buildClrClassName entity
                                         | None -> fallbackClass
-                                    with _ ->
-                                        fallbackClass
+                                    with
+                                    | SymbolTraversalDepthExceeded _ -> reraise ()
+                                    | _ -> fallbackClass
 
                                 testMethods <-
                                     { SymbolFullName = mfv.FullName
@@ -1374,8 +1469,9 @@ let private extractResults
                                       TestClass = testClass
                                       TestMethod = testMethod }
                                     :: testMethods
-                            with _ ->
-                                ()
+                            with
+                            | SymbolTraversalDepthExceeded _ -> reraise ()
+                            | _ -> ()
 
                             // Direct edges from the test method to every fixture its
                             // declaring class exposes (ctor-param types + IClassFixture /
@@ -1602,7 +1698,8 @@ let analyzeSourceFromResults
     (checkResults: FSharpCheckFileResults)
     (projectName: string)
     =
-    extractResults sourceFileName source parseResults (FSharpCheckFileAnswer.Succeeded checkResults) projectName
+    protectSymbolTraversal (fun () ->
+        extractResults sourceFileName source parseResults (FSharpCheckFileAnswer.Succeeded checkResults) projectName)
 
 /// Parse and analyze a single F# source string using project options.
 let analyzeSource
@@ -1618,7 +1715,8 @@ let analyzeSource
         let! parseResults, checkAnswer =
             checker.ParseAndCheckFileInProject(sourceFileName, 0, sourceText, projectOptions)
 
-        return extractResults sourceFileName source parseResults checkAnswer projectName
+        return
+            protectSymbolTraversal (fun () -> extractResults sourceFileName source parseResults checkAnswer projectName)
     }
 
 /// Parse and analyze a single F# source file using a project snapshot.
@@ -1633,7 +1731,8 @@ let analyzeSourceWithSnapshot
     async {
         let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
 
-        return extractResults sourceFileName source parseResults checkAnswer projectName
+        return
+            protectSymbolTraversal (fun () -> extractResults sourceFileName source parseResults checkAnswer projectName)
     }
 
 /// Create a project snapshot from project options, using file modification times as version keys.

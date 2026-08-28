@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: make indexing atomic per project when any source file cannot be analyzed. A
+  failed project keeps its last complete graph while successful sibling projects may
+  advance, and the command returns non-zero. A durable incomplete-index marker forces
+  subsequent selection to run all tests—even for an upstream-only diff—until a fully
+  successful retry clears it. The marker is written before build/index work starts, so
+  crashes remain fail-closed; recovery bypasses project and file caches so an unchanged
+  dependent that failed last time must really analyze before the marker clears. No
+  caller can under-select by ignoring the exit code. Concurrent attempts are
+  mutually excluded across cache migration and graph writes and generation-owned, so a
+  concurrent attempt fails closed instead of clearing or overwriting the active one;
+  selection rechecks its completed generation and
+  widens to all tests if an index overlapped its snapshot. Malformed project files also
+  fail the index instead of disappearing from it.
+- fix!: the first index after upgrading automatically recreates `.test-prune.db`
+  (`SchemaVersion` 12 -> 13) for the durable completion protocol. A fresh v13 database
+  is conservatively incomplete until its first successful index.
+
 ## 8.1.0 - 2026-08-28
 
 - Finish: reuse existing FCS results in Core analysis

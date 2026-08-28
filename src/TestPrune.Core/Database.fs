@@ -6,6 +6,15 @@ open System.IO
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
+[<Literal>]
+let internal IndexIncompleteLookupKey = "\u0000testprune:index-incomplete"
+
+[<Literal>]
+let internal IndexGenerationLookupKey = "\u0000testprune:index-generation"
+
+[<Literal>]
+let internal IndexIncompleteValue = "\u0000testprune:incomplete"
+
 let private schema =
     """
     CREATE TABLE IF NOT EXISTS symbols (
@@ -46,6 +55,11 @@ let private schema =
     CREATE TABLE IF NOT EXISTS file_keys (
         source_file TEXT PRIMARY KEY,
         key TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS index_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS analysis_events (
@@ -245,6 +259,9 @@ let private openConnection (dbPath: string) =
 ///          every report into a run-independent high-water mark and therefore cannot
 ///          answer which test project executed a file. The two runtime-coverage tables
 ///          retain that provenance plus the last complete baseline run per project.
+/// v13    — durable index-attempt metadata. Selection must remain fail-closed across
+///          failed, crashed, or concurrent indexing attempts, so older caches are
+///          recreated before the completion protocol is used.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -259,7 +276,7 @@ let private openConnection (dbPath: string) =
 /// the next bump: an old-version DB would pass the stale probe and then be recreated by
 /// the newer open path.
 [<Literal>]
-let SchemaVersion = 12
+let SchemaVersion = 13
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -1035,15 +1052,77 @@ type Database(dbPath: string) =
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
     /// Get the stored cache key for a project, or None if not yet indexed.
-    member _.GetProjectKey(projectName: string) : string option =
+    member this.GetProjectKey(projectName: string) : string option =
+        if projectName = IndexIncompleteLookupKey then
+            if this.IsIndexIncomplete() then
+                Some IndexIncompleteValue
+            else
+                None
+        elif projectName = IndexGenerationLookupKey then
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT value FROM index_metadata WHERE key = 'index_completed' LIMIT 1"
+            cmd.ExecuteScalar() |> Option.ofObj |> Option.map string
+        else
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
+            cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
+
+            use reader = cmd.ExecuteReader()
+
+            if reader.Read() then Some(reader.GetString(0)) else None
+
+    /// Persist a fail-closed marker when an index attempt cannot produce a complete graph.
+    member internal _.MarkIndexIncomplete() : string =
+        let token = Guid.NewGuid().ToString("N")
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
-        cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
-        cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
 
-        use reader = cmd.ExecuteReader()
+        cmd.CommandText <- "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_incomplete', @value)"
 
-        if reader.Read() then Some(reader.GetString(0)) else None
+        cmd.Parameters.AddWithValue("@value", token) |> ignore
+
+        cmd.ExecuteNonQuery() |> ignore
+        token
+
+    /// Complete an index attempt only while it still owns the durable marker. A newer
+    /// concurrent attempt supersedes an older one, whose success must not make selection
+    /// trust a graph that the newer attempt may still be mutating.
+    member internal _.CompleteIndex(token: string) : bool =
+        use conn = openConnection dbPath
+        use transaction = conn.BeginTransaction()
+        use cmd = conn.CreateCommand()
+        cmd.Transaction <- transaction
+
+        cmd.CommandText <- "DELETE FROM index_metadata WHERE key = 'index_incomplete' AND value = @token"
+
+        cmd.Parameters.AddWithValue("@token", token) |> ignore
+        let ownsAttempt = cmd.ExecuteNonQuery() = 1
+
+        if ownsAttempt then
+            cmd.Parameters.Clear()
+            cmd.CommandText <- "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_completed', @value)"
+
+            cmd.Parameters.AddWithValue("@value", token) |> ignore
+
+            cmd.ExecuteNonQuery() |> ignore
+
+        transaction.Commit()
+        ownsAttempt
+
+    /// Whether the last index attempt failed before producing a complete graph.
+    member internal this.IsIndexIncomplete() : bool =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete')
+                   OR NOT EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_completed')
+                 THEN 1 ELSE 0 END"""
+
+        cmd.ExecuteScalar() :?> int64 = 1L
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =

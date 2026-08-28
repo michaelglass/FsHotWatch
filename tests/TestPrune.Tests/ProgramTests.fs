@@ -227,6 +227,7 @@ module ``analyzeChanges`` =
             Directory.CreateDirectory(tmp) |> ignore
             let dbPath = Path.Combine(tmp, ".test-prune.db")
             let db = Database.create dbPath
+            db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Error "not a repo"
 
@@ -252,6 +253,7 @@ module ``analyzeChanges`` =
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Ok ""
             let store = toSymbolStore db
+            db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
 
             let result = analyzeChanges fakeDiff tmp store checker (createNoopSink ())
 
@@ -375,6 +377,7 @@ module ``analyzeChanges`` =
             Directory.CreateDirectory(tmp) |> ignore
             let dbPath = Path.Combine(tmp, ".test-prune.db")
             let db = Database.create dbPath
+            db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
             let checker = makeChecker ()
 
             // Create a .fs file that exists but has invalid content
@@ -468,6 +471,7 @@ module ``runDeadCode`` =
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
+        db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
         db
 
     [<Fact>]
@@ -787,6 +791,7 @@ module ``runStatusWith RunSubset`` =
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
+        db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
         db
 
     [<Fact>]
@@ -963,6 +968,7 @@ module ``runRunWithExecutor`` =
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
+        db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
         db
 
     [<Fact>]
@@ -970,7 +976,8 @@ module ``runRunWithExecutor`` =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
-        Database.create dbPath |> ignore
+        let db = Database.create dbPath
+        db.MarkIndexIncomplete() |> db.CompleteIndex |> ignore
         let fakeDiff: DiffProvider = fun () -> Ok ""
 
         let fakeExecutor: TestExecutor =
@@ -1431,6 +1438,78 @@ module ``runIndexWith`` =
             Directory.Delete(tmpDir, true)
 
     [<Fact>]
+    let ``concurrent index cannot write or complete ahead of the active owner`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        use enteredBuild = new Threading.ManualResetEventSlim(false)
+        use releaseBuild = new Threading.ManualResetEventSlim(false)
+
+        let blockingBuild: BuildRunner =
+            fun _ ->
+                enteredBuild.Set()
+                releaseBuild.Wait()
+                0
+
+        try
+            let first =
+                Threading.Tasks.Task.Run(fun () ->
+                    runIndexWith blockingBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()))
+
+            test <@ enteredBuild.Wait(TimeSpan.FromSeconds(5.0)) @>
+
+            let second =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            test <@ second = 1 @>
+            test <@ Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete() @>
+
+            releaseBuild.Set()
+            test <@ first.Result = 0 @>
+
+            test
+                <@
+                    Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete()
+                    |> not
+                @>
+        finally
+            releaseBuild.Set()
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``selection widens when completed index generation changes during its snapshot`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+
+            let inner =
+                Database.create (Path.Combine(tmpDir, ".test-prune.db")) |> toSymbolStore
+
+            let mutable generationReads = 0
+
+            let interleaved =
+                { inner with
+                    GetProjectKey =
+                        fun key ->
+                            if key = IndexGenerationLookupKey then
+                                generationReads <- generationReads + 1
+
+                                if generationReads = 1 then
+                                    Some "generation-1"
+                                else
+                                    Some "generation-2"
+                            else
+                                inner.GetProjectKey key }
+
+            match analyzeChanges (fun () -> Ok "") tmpDir interleaved testChecker (createNoopSink ()) with
+            | Ok(RunAll(AnalysisFailedFallback reason), _) ->
+                test <@ reason.Contains("changed while selecting", StringComparison.Ordinal) @>
+            | other -> failwith $"changed generation must force RunAll, got %A{other}"
+        finally
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
     let ``indexes a simple project with one source file`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
@@ -1465,6 +1544,148 @@ module ``runIndexWith`` =
             let db = Database.create dbPath
             let symbols = db.GetAllSymbolNames()
             test <@ symbols.Count > 0 @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``analysis failure fails indexing and preserves the last complete project graph`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        let sourceFile = Path.Combine(srcDir, "Lib.fs")
+        File.WriteAllText(sourceFile, "module Lib\nlet preservedSymbol = 42\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+
+            let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+            let beforeFailure = Database.create(dbPath).GetAllSymbolNames() |> Set.ofSeq
+
+            test
+                <@
+                    beforeFailure
+                    |> Set.exists _.EndsWith("preservedSymbol", StringComparison.Ordinal)
+                @>
+
+            File.WriteAllText(sourceFile, "module Lib\nlet definitelyBroken =\n")
+
+            let failedExit =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            let afterFailure = Database.create(dbPath).GetAllSymbolNames() |> Set.ofSeq
+
+            test <@ failedExit = 1 @>
+            test <@ afterFailure = beforeFailure @>
+            test <@ sw.ToString().Contains("indexing failed", StringComparison.OrdinalIgnoreCase) @>
+
+            let failedDb = Database.create dbPath
+            test <@ failedDb.IsIndexIncomplete() @>
+
+            let upstreamOnlyDiff =
+                "diff --git a/src/Upstream.fs b/src/Upstream.fs\n--- a/src/Upstream.fs\n+++ b/src/Upstream.fs\n"
+
+            match
+                analyzeChanges
+                    (fun () -> Ok upstreamOnlyDiff)
+                    tmpDir
+                    (toSymbolStore failedDb)
+                    testChecker
+                    (createNoopSink ())
+            with
+            | Ok(RunAll(AnalysisFailedFallback reason), _) ->
+                test <@ reason.Contains("previous index", StringComparison.OrdinalIgnoreCase) @>
+            | other -> failwith $"incomplete index must force RunAll, got %A{other}"
+
+            File.WriteAllText(sourceFile, "module Lib\nlet preservedSymbol = 43\n")
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+            test <@ Database.create(dbPath).IsIndexIncomplete() |> not @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``retry after a failed dependency-forced project bypasses matching cache keys`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let aDir = Path.Combine(tmpDir, "src", "A")
+        let bDir = Path.Combine(tmpDir, "src", "B")
+        Directory.CreateDirectory(aDir) |> ignore
+        Directory.CreateDirectory(bDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(aDir, "A.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"""
+        )
+
+        File.WriteAllText(
+            Path.Combine(bDir, "B.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="B.fs" /><ProjectReference Include="../A/A.fsproj" /></ItemGroup></Project>"""
+        )
+
+        let aSource = Path.Combine(aDir, "A.fs")
+        let bSource = Path.Combine(bDir, "B.fs")
+        File.WriteAllText(aSource, "module A\nlet value = 1\n")
+        File.WriteAllText(bSource, "module B\nlet value = 2\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+
+            let db = Database.create (Path.Combine(tmpDir, ".test-prune.db"))
+            let bRelative = Path.GetRelativePath(tmpDir, bSource).Replace('\\', '/')
+
+            use conn = db.OpenConnection()
+            use deleteKey = conn.CreateCommand()
+            deleteKey.CommandText <- "DELETE FROM file_keys WHERE source_file = @sourceFile"
+            deleteKey.Parameters.AddWithValue("@sourceFile", bRelative) |> ignore
+            deleteKey.ExecuteNonQuery() |> ignore
+
+            File.WriteAllText(aSource, "module A\nlet value = 1000\n")
+
+            let failB: ProjectOptionsProvider =
+                fun checker fsprojPath ->
+                    if Path.GetFileNameWithoutExtension(fsprojPath) = "B" then
+                        failwith "deterministic B analysis failure"
+                    else
+                        scriptOptions checker fsprojPath
+
+            test <@ runIndexWith successBuild failB tmpDir testChecker 1 (createNoopSink ()) = 1 @>
+            test <@ Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete() @>
+
+            let mutable bWasReanalyzed = false
+
+            let trackB: ProjectOptionsProvider =
+                fun checker fsprojPath ->
+                    if Path.GetFileNameWithoutExtension(fsprojPath) = "B" then
+                        bWasReanalyzed <- true
+
+                    scriptOptions checker fsprojPath
+
+            test <@ runIndexWith successBuild trackB tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+            test <@ bWasReanalyzed @>
+
+            test
+                <@
+                    Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete()
+                    |> not
+                @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -1659,7 +1880,7 @@ module ``runIndexWith`` =
             Directory.Delete(tmpDir, true)
 
     [<Fact>]
-    let ``skips project with invalid fsproj`` () =
+    let ``invalid fsproj fails indexing and retains incomplete marker`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
         let srcDir = Path.Combine(tmpDir, "src", "Bad")
         Directory.CreateDirectory(srcDir) |> ignore
@@ -1675,9 +1896,10 @@ module ``runIndexWith`` =
             let exitCode =
                 runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
 
-            test <@ exitCode = 0 @>
+            test <@ exitCode = 1 @>
             let errOutput = sw.ToString()
             test <@ errOutput.Contains("Error parsing") @>
+            test <@ Database.create(Path.Combine(tmpDir, ".test-prune.db")).IsIndexIncomplete() @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)

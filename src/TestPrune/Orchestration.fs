@@ -131,6 +131,8 @@ type ProjectResult =
       Outcome: ProjectOutcome
       Events: AnalysisEvent list }
 
+exception private ProjectAnalysisFailed of file: string * message: string
+
 /// Sort project infos into topological levels based on project references.
 let topoLevels
     (projectPathSet: Set<string>)
@@ -161,6 +163,7 @@ let indexProject
     (getOptions: ProjectOptionsProvider)
     (checker: FSharpChecker)
     (reindexedSet: Set<string>)
+    (forceFullReindex: bool)
     (fsprojPath: string, compileFiles: string list, projectRefs: string list)
     : ProjectResult =
     let projName = Path.GetFileNameWithoutExtension(fsprojPath)
@@ -171,7 +174,7 @@ let indexProject
         let depReindexed = projectRefs |> List.exists reindexedSet.Contains
 
         match store.GetProjectKey(projName) with
-        | Some stored when stored = hash && not depReindexed ->
+        | Some stored when stored = hash && not depReindexed && not forceFullReindex ->
             eprintfn $"  %s{projName}: unchanged, skipping"
 
             { ProjectName = projName
@@ -203,7 +206,8 @@ let indexProject
                                 | _ -> false
 
                             let cached =
-                                not forcedByCompilationOrder
+                                not forceFullReindex
+                                && not forcedByCompilationOrder
                                 && match store.GetFileKey(relPath) with
                                    | Some stored when stored = fileKey -> true
                                    | _ -> false
@@ -263,10 +267,7 @@ let indexProject
                                      FileAnalyzedEvent(relPath, symbols.Length, deps.Length, testMethods.Length)
                                      :: events,
                                      r :: results)
-                                | Error msg ->
-                                    eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
-
-                                    (idx + 1, analyzedFiles, firstChangedIndex, fileKeys, skippedFiles, events, results))
+                                | Error msg -> raise (ProjectAnalysisFailed(relPath, msg)))
                     (0, 0, None, [], 0, [], [])
 
             let (_idx, analyzedFiles, _firstChangedIndex, localFileKeys, localSkippedFiles, localEvents, revResults) =
@@ -319,7 +320,7 @@ let indexProject
           Events = [] }
 
 /// Run the index command with injectable build runner and project options provider.
-let runIndexWith
+let internal runOwnedIndexWith
     (buildRunner: BuildRunner)
     (getOptions: ProjectOptionsProvider)
     (repoRoot: string)
@@ -331,6 +332,11 @@ let runIndexWith
     let db = Database.create dbPath
     let store = toSymbolStore db
     let sink = toSymbolSink db
+    let recoveringIncompleteIndex = db.IsIndexIncomplete()
+
+    // Set before build or analysis begins. A crash or early return must leave selection
+    // fail-closed; only final successful persistence below clears this marker.
+    let indexAttemptToken = db.MarkIndexIncomplete()
 
     let projectFiles = findProjectFiles repoRoot
     eprintfn $"Found %d{projectFiles.Length} projects"
@@ -342,16 +348,20 @@ let runIndexWith
         eprintfn "Build failed — cannot index"
         1
     else
-        let projectInfos =
+        let projectInfos, parseFailures =
             projectFiles
-            |> List.choose (fun fsprojPath ->
-                try
-                    let fullPath = Path.GetFullPath(fsprojPath)
-                    let compileFiles, projectRefs = parseProjectFile fsprojPath
-                    Some(fullPath, compileFiles, projectRefs)
-                with ex ->
-                    eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
-                    None)
+            |> List.fold
+                (fun (infos, failures) fsprojPath ->
+                    try
+                        let fullPath = Path.GetFullPath(fsprojPath)
+                        let compileFiles, projectRefs = parseProjectFile fsprojPath
+                        ((fullPath, compileFiles, projectRefs) :: infos, failures)
+                    with ex ->
+                        eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
+                        (infos, fsprojPath :: failures))
+                ([], [])
+
+        let projectInfos = List.rev projectInfos
 
         let projectPathSet = projectInfos |> List.map (fun (p, _, _) -> p) |> Set.ofList
 
@@ -365,11 +375,21 @@ let runIndexWith
         for level in levels do
             let levelResults =
                 if level.Length = 1 then
-                    [ indexProject repoRoot store getOptions checker reindexedSet level.Head ]
+                    [ indexProject repoRoot store getOptions checker reindexedSet recoveringIncompleteIndex level.Head ]
                 else
                     level
                     |> List.map (fun proj ->
-                        async { return indexProject repoRoot store getOptions checker reindexedSet proj })
+                        async {
+                            return
+                                indexProject
+                                    repoRoot
+                                    store
+                                    getOptions
+                                    checker
+                                    reindexedSet
+                                    recoveringIncompleteIndex
+                                    proj
+                        })
                     |> fun tasks -> Async.Parallel(tasks, maxDegreeOfParallelism = parallelism)
                     |> Async.RunSynchronously
                     |> Array.toList
@@ -391,6 +411,14 @@ let runIndexWith
             allProjectResults <- levelResults :: allProjectResults
 
         let allProjectResults = allProjectResults |> List.rev |> List.collect id
+
+        let failedProjects =
+            allProjectResults
+            |> List.filter (fun result ->
+                match result.Outcome with
+                | Failed -> true
+                | Cached _
+                | Indexed _ -> false)
 
         let allResults, allFileKeys, allProjectKeys, totalSymbols, totalDeps, totalTests, skippedProjects, skippedFiles =
             allProjectResults
@@ -446,9 +474,49 @@ let runIndexWith
         if skippedFiles > 0 then
             eprintfn $"Skipped %d{skippedFiles} unchanged file(s)"
 
-        auditSink.Post(timestamp (IndexCompletedEvent(totalSymbols, totalDeps, totalTests)))
+        if failedProjects.IsEmpty && parseFailures.IsEmpty then
+            if db.CompleteIndex indexAttemptToken then
+                auditSink.Post(timestamp (IndexCompletedEvent(totalSymbols, totalDeps, totalTests)))
+                0
+            else
+                eprintfn "Index attempt was superseded by a concurrent index; selection remains fail-closed"
+                1
+        else
+            let names = failedProjects |> List.map _.ProjectName |> String.concat ", "
 
-        0
+            eprintfn $"Indexing failed for %d{failedProjects.Length + parseFailures.Length} project(s): %s{names}"
+
+            1
+
+/// Run one index attempt at a time. Graph persistence spans several SQLite
+/// transactions, so the process-wide file lease is the ownership boundary: a later
+/// attempt cannot publish or complete while an older attempt is still writing.
+let internal withIndexLease (repoRoot: string) (runOwned: unit -> int) : int =
+    let lockPath = Path.Combine(repoRoot, ".test-prune.index.lock")
+
+    let lease =
+        try
+            Some(new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        with :? IOException ->
+            None
+
+    match lease with
+    | None ->
+        eprintfn "Another index attempt is already running; selection remains fail-closed"
+        1
+    | Some indexLease ->
+        use _indexLease = indexLease
+        runOwned ()
+
+let runIndexWith
+    (buildRunner: BuildRunner)
+    (getOptions: ProjectOptionsProvider)
+    (repoRoot: string)
+    (checker: FSharpChecker)
+    (parallelism: int)
+    (auditSink: AuditSink)
+    : int =
+    withIndexLease repoRoot (fun () -> runOwnedIndexWith buildRunner getOptions repoRoot checker parallelism auditSink)
 
 type DiffProvider = unit -> Result<string, string>
 
@@ -471,43 +539,59 @@ let analyzeChanges
     | Error msg -> Error msg
     | Ok diffText ->
         let changedFiles = parseChangedPaths diffText
+        let startingGeneration = store.GetProjectKey IndexGenerationLookupKey
+        let startingIncomplete = store.GetProjectKey IndexIncompleteLookupKey
 
         auditSink.Post(timestamp (DiffParsedEvent changedFiles))
 
-        if changedFiles.IsEmpty then
-            Ok(RunSubset [], [])
+        if startingIncomplete = Some IndexIncompleteValue then
+            Ok(RunAll(AnalysisFailedFallback "previous index attempt was incomplete"), changedFiles)
         else
-            let mutable parseFailures = []
+            let selectionResult =
+                if changedFiles.IsEmpty then
+                    RunSubset []
+                else
+                    let mutable parseFailures = []
 
-            let currentSymbolsByFile =
-                changedFiles
-                |> List.filter (fun f ->
-                    f.EndsWith(".fs", StringComparison.OrdinalIgnoreCase)
-                    && not (DiffParser.isFsproj f))
-                |> List.choose (fun relPath ->
-                    let fullPath = Path.Combine(repoRoot, relPath)
+                    let currentSymbolsByFile =
+                        changedFiles
+                        |> List.filter (fun f ->
+                            f.EndsWith(".fs", StringComparison.OrdinalIgnoreCase)
+                            && not (DiffParser.isFsproj f))
+                        |> List.choose (fun relPath ->
+                            let fullPath = Path.Combine(repoRoot, relPath)
 
-                    if File.Exists(fullPath) then
-                        match parseFile checker fullPath with
-                        | Ok result -> Some(relPath, normalizeSymbolPaths repoRoot result.Symbols)
-                        | Error msg ->
-                            eprintfn $"  Warning: could not parse %s{relPath}: %s{msg}"
-                            parseFailures <- relPath :: parseFailures
-                            None
+                            if File.Exists(fullPath) then
+                                match parseFile checker fullPath with
+                                | Ok result -> Some(relPath, normalizeSymbolPaths repoRoot result.Symbols)
+                                | Error msg ->
+                                    eprintfn $"  Warning: could not parse %s{relPath}: %s{msg}"
+                                    parseFailures <- relPath :: parseFailures
+                                    None
+                            else
+                                None)
+                        |> Map.ofList
+
+                    if not parseFailures.IsEmpty then
+                        let failedFiles = parseFailures |> List.rev |> String.concat ", "
+                        RunAll(AnalysisFailedFallback failedFiles)
                     else
-                        None)
-                |> Map.ofList
+                        let selection, events = selectTests store changedFiles currentSymbolsByFile
 
-            if not parseFailures.IsEmpty then
-                let failedFiles = parseFailures |> List.rev |> String.concat ", "
-                Ok(RunAll(AnalysisFailedFallback failedFiles), changedFiles)
+                        for event in events do
+                            auditSink.Post(timestamp event)
+
+                        selection
+
+            let endingGeneration = store.GetProjectKey IndexGenerationLookupKey
+            let endingIncomplete = store.GetProjectKey IndexIncompleteLookupKey
+
+            let indexBecameIncomplete = endingIncomplete = Some IndexIncompleteValue
+
+            if indexBecameIncomplete || endingGeneration <> startingGeneration then
+                Ok(RunAll(AnalysisFailedFallback "index changed while selecting tests"), changedFiles)
             else
-                let selection, events = selectTests store changedFiles currentSymbolsByFile
-
-                for event in events do
-                    auditSink.Post(timestamp event)
-
-                Ok(selection, changedFiles)
+                Ok(selectionResult, changedFiles)
 
 let private withAnalysis
     (getDiff: DiffProvider)
