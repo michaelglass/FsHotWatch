@@ -3,6 +3,7 @@ module TestPrune.Tests.CoreReleaseSemanticsTests
 open System
 open System.IO
 open System.Text.Json
+open System.Text.RegularExpressions
 open Xunit
 open Swensen.Unquote
 
@@ -29,21 +30,18 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
     let cliChangelog = read root "src/TestPrune/CHANGELOG.md"
 
     // The release tagger's version-bump commit must pass CI before its tag is pushed.
-    // Accept both valid states: the last released version with Core 8 still pending, or
-    // the synchronized Core 8 candidate with matching changelog headings.
-    let taggerReady =
-        coreProject.Contains("<Version>7.0.1</Version>")
-        && cliProject.Contains("<Version>7.0.1</Version>")
-        && not (coreChangelog.Contains("## 8.0.0"))
-        && not (cliChangelog.Contains("## 8.0.0"))
+    // Validate the invariant for every future release rather than enumerating versions:
+    // Core and its shared-tag CLI must carry one version with matching changelog headings.
+    let projectVersion project =
+        let matched = Regex.Match(project, "<Version>([^<]+)</Version>")
+        test <@ matched.Success @>
+        matched.Groups[1].Value
 
-    let taggerBumped =
-        coreProject.Contains("<Version>8.0.0</Version>")
-        && cliProject.Contains("<Version>8.0.0</Version>")
-        && coreChangelog.Contains("## 8.0.0 -")
-        && cliChangelog.Contains("## 8.0.0 -")
-
-    test <@ taggerReady || taggerBumped @>
+    let coreVersion = projectVersion coreProject
+    let cliVersion = projectVersion cliProject
+    test <@ coreVersion = cliVersion @>
+    test <@ coreChangelog.Contains($"## %s{coreVersion} -") @>
+    test <@ cliChangelog.Contains($"## %s{cliVersion} -") @>
 
     use tagger = JsonDocument.Parse(read root "semantic-tagger.json")
 
