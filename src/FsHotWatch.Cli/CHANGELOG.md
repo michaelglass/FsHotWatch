@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- AUTOMATION-558: `tests.extensions` now supports explicit SQL attribution:
+  `{"type":"sql"}` creates TestPrune's automatic `ReadsFrom`/`WritesTo`
+  extension, while `{"type":"sql-hydra","generatedModulePrefix":"…"}`
+  creates its generated-query extension. Configuration is typed per kind,
+  preserves declared factory order, and fails closed for unknown kinds or
+  missing fields. Both integrations use the public TestPrune.Sql and
+  TestPrune.SqlHydra 0.1.0 packages.
+
 ## 0.14.0-alpha.29 - 2026-08-28
 
 - fix: bundle TestPrune.Falco 3.1.3 so `>]` inside an attribute string no longer

@@ -35,6 +35,27 @@ non-zero on failures (exit 1) or when completeness cannot be confirmed
 (exit 2). `fshw status` is the read-only observer: it reports the daemon's
 current state without triggering anything.
 
+## SQL test attribution extensions
+
+`tests.extensions` composes explicit TestPrune dependency attribution into the
+daemon's impact graph:
+
+```json
+{
+  "tests": {
+    "extensions": [
+      {"type": "sql"},
+      {"type": "sql-hydra", "generatedModulePrefix": "Intelligence.Database.Generated"}
+    ]
+  }
+}
+```
+
+`sql` uses `AutoSqlExtension()` to discover `ReadsFrom` and `WritesTo`
+attributes. `sql-hydra` uses `SqlHydraExtension(prefix)` and requires the full,
+non-blank prefix before generated schema/table types. `sqlhydra` is accepted as
+a compatibility alias. Unknown or incomplete entries fail configuration.
+
 ## Commands
 
 | Command | Description |
