@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.31 - 2026-08-29
+
+- Fix: satisfy analyzer in A67 quarantine regression
+- Finish: AUTOMATION-67 preserve literal selections and quarantine prior reds
+
+
 ## 0.14.0-alpha.30 - 2026-08-29
 
 - chore(deps): bundle TestPrune.Core 8.1.5 and reuse the daemon's completed FCS
