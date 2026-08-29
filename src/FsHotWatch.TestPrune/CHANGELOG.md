@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.24 - 2026-08-29
+
+- Fix: satisfy analyzer in quarantine regression
+- Finish: preserve literal selections and quarantine prior reds
+
+
 ## 0.13.0-alpha.23 - 2026-08-29
 
 - fix: consume the existing parse and full-check results carried by each
