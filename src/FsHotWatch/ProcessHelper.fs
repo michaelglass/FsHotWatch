@@ -976,26 +976,52 @@ let runProcess
 /// analyzers) and the timeout-test path injects a cooperative wait to force
 /// expiry; both starve the default thread pool under parallel test load and
 /// caused 5s xUnit timeouts to fire spuriously on unrelated tests.
-let runWithCancellableTimeout (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> =
+let runWithCancellableTimeoutTracked (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> * Task =
     if timeout = Threading.Timeout.InfiniteTimeSpan then
-        WorkCompleted(work CancellationToken.None)
+        WorkCompleted(work CancellationToken.None), Task.CompletedTask
     else
-        use cts = new CancellationTokenSource()
+        let cts = new CancellationTokenSource()
 
         let task =
             Task.Factory.StartNew((fun () -> work cts.Token), TaskCreationOptions.LongRunning)
 
-        if task.Wait(timeout) then
-            WorkCompleted task.Result
-        else
-            // Signal the work to unwind so it stops holding any lock. We do NOT
-            // block on the orphan after cancelling — a cooperative unit observes
-            // the token and exits promptly; a non-cooperative one would hang us
-            // here, which is precisely what we must avoid. The CTS is disposed by
-            // the enclosing `use`; cancellation has already been requested, so a
-            // late-cancelling token registration on a disposed CTS cannot occur.
-            cts.Cancel()
-            WorkTimedOut timeout
+        let mutable completionOwnsCts = false
+
+        try
+            if task.Wait(timeout) then
+                WorkCompleted task.Result, Task.CompletedTask
+            else
+                // Signal the work to unwind so it stops holding any lock. We do NOT
+                // block on the orphan after cancelling — a cooperative unit observes
+                // the token and exits promptly; a non-cooperative one would hang us
+                // here, which is precisely what we must avoid. Keep the CTS alive until
+                // the work really exits: an Async may register against the token after
+                // the timeout signal, and disposing it here turns that legitimate late
+                // observation into ObjectDisposedException.
+                cts.Cancel()
+
+                let completion =
+                    task.ContinueWith(
+                        (fun (completed: Task<'a>) ->
+                            try
+                                completed.GetAwaiter().GetResult() |> ignore
+                            finally
+                                cts.Dispose()),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default
+                    )
+
+                completionOwnsCts <- true
+                WorkTimedOut timeout, completion
+        finally
+            // A synchronously completed or faulted task has no continuation to
+            // own cleanup. A timed-out task transfers ownership before returning.
+            if not completionOwnsCts then
+                cts.Dispose()
+
+let runWithCancellableTimeout (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> =
+    runWithCancellableTimeoutTracked timeout work |> fst
 
 /// Run a synchronous unit of work with a wall-clock timeout. Back-compat
 /// shim over `runWithCancellableTimeout` for work that cannot observe
