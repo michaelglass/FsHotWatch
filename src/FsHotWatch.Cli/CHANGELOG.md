@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- chore(deps): bundle TestPrune.Core 8.1.4 and reuse the daemon's completed FCS
+- chore(deps): bundle TestPrune.Core 8.1.5 and reuse the daemon's completed FCS
   payload for impact analysis instead of running a second compiler pass. One
-  shared per-file traversal budget bounds all live FCS symbol walks, and
-  high-fanout graphs fail closed without materializing unbounded children.
+  shared per-file traversal budget bounds all live FCS symbol walks; typed-AST
+  literal extraction avoids reflection-driven allocation, and pathological
+  cyclic, deep, or high-fanout graphs fail closed.
 
 - fix: defer rebuilds for the complete lifetime of active test hosts, including
   cache-replayed runs whose start boundary is synthesized, so a build cannot
