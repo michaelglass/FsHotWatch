@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-08-29
+
+- Fix: keep analyzer timeout visible behind execution fence
+- Fix: fence timed-out synchronous analyzers
+
+
 ## 0.7.0-alpha.26 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
