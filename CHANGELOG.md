@@ -4,14 +4,6 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-`check-reach` and the persisted verdict's `checkComparison.conditionalFailureRecall` now
-include measured failure recall for full-suite `confirm` evidence:
-`reached / total` observed failing tests, with a correctness threshold of 100%. Zero
-failures is recorded as not measurable rather than vacuous 100%, and the field is
-explicitly limited to observed failures—not general relevance recall. (AUTOMATION-67)
-The measurement is accepted only when the `check-reach` receipt names the exact run
-graded by the verdict; missing or mismatched run identity is recorded as not measurable.
-
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
@@ -81,6 +73,14 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+`check-reach` and the persisted verdict's `checkComparison.conditionalFailureRecall` now
+include measured failure recall for full-suite `confirm` evidence:
+`reached / total` observed failing tests, with a correctness threshold of 100%. Zero
+failures is recorded as not measurable rather than vacuous 100%, and the field is
+explicitly limited to observed failures—not general relevance recall. (AUTOMATION-67)
+The measurement is accepted only when the `check-reach` receipt names the exact run
+graded by the verdict; missing or mismatched run identity is recorded as not measurable.
 
 - fix: package releases now follow project-reference dependency levels and wait
   for each exact version to become restorable from NuGet before tagging a
