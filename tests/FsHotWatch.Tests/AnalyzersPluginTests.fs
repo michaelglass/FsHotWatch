@@ -699,6 +699,14 @@ let ``timed-out synchronous analyzer cannot overlap the next file`` () =
         Assert.Equal(1, System.Threading.Volatile.Read(&started))
         Assert.Equal(1, System.Threading.Volatile.Read(&maximumActive))
 
+        // A queued next file is waiting behind the retained execution fence. It
+        // must not overwrite the terminal timeout with a fresh Running status;
+        // otherwise `check` appears silently busy forever while the timed-out
+        // synchronous callback continues to consume CPU.
+        match host.GetStatus("analyzers") with
+        | Some(Failed(_, _, value)) -> Assert.Contains("timed out", value.Summary)
+        | other -> Assert.Fail $"timeout must remain visible while the execution fence is held, got %A{other}"
+
         release.Set()
         waitUntil (fun () -> System.Threading.Volatile.Read(&started) >= 2) 5000
         Assert.Equal(1, System.Threading.Volatile.Read(&maximumActive))
