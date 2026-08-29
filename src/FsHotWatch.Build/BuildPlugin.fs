@@ -425,6 +425,12 @@ let createWith
     /// actually completed, so the fresh result still gets stored normally.
     let forceRebuild = ref false
 
+    // Cache lookup happens before Update and receives the event but not BuildState.
+    // Mirror only the active-run set so a FileChanged observed while a test host owns
+    // the output DLLs cannot bypass Update by replaying a cached BuildCompleted.
+    // Both reads and writes happen on this plugin's serialized mailbox.
+    let activeTestRunsForCache: Set<Guid> ref = ref Set.empty
+
     /// Canonical DLL paths that a build reported SUCCESS without producing.
     ///
     /// THE FLOOR under the missing-output half of the replay gate below. That gate
@@ -1148,14 +1154,20 @@ let createWith
             async {
                 match event with
                 | TestRunStarted started ->
+                    let activeTestRuns = Set.add started.RunId state.ActiveTestRuns
+                    activeTestRunsForCache.Value <- activeTestRuns
+
                     return
                         { state with
-                            ActiveTestRuns = Set.add started.RunId state.ActiveTestRuns }
+                            ActiveTestRuns = activeTestRuns }
 
                 | TestRunCompleted completed ->
+                    let activeTestRuns = Set.remove completed.RunId state.ActiveTestRuns
+                    activeTestRunsForCache.Value <- activeTestRuns
+
                     let updated =
                         { state with
-                            ActiveTestRuns = Set.remove completed.RunId state.ActiveTestRuns }
+                            ActiveTestRuns = activeTestRuns }
 
                     return launchPending ctx updated
 
@@ -1358,7 +1370,9 @@ let createWith
             // correctness fixes into a standing inner-loop regression.
             | Custom _ -> merkleKey ()
 
-            // EVERY OTHER SUBSCRIBED EVENT IS A READ, and both gates belong to reads.
+            // Only events that can actually launch a build are reads, and both gates
+            // belong to those reads. Test lifecycle events are state notifications;
+            // letting them read replays BuildCompleted and creates a test-run loop.
             //
             // These arms used to match `FileChanged` alone, which is only the whole story
             // for a plugin with no `dependsOn`. With one, a `FileChanged` arriving before
@@ -1372,7 +1386,11 @@ let createWith
             // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
             // `None` is the framework's documented "outputs missing" bypass — skip the
             // cache, run Update.
-            | _ when forceRebuild.Value -> None
+            | FileChanged _ when not activeTestRunsForCache.Value.IsEmpty -> None
+            | CommandCompleted result when depNames.Contains result.Name && not activeTestRunsForCache.Value.IsEmpty ->
+                None
+            | FileChanged _ when forceRebuild.Value -> None
+            | CommandCompleted result when depNames.Contains result.Name && forceRebuild.Value -> None
 
             // Re-verify the ARTIFACTS at cache-replay time, not only after a real
             // build (AUTOMATION-245).
@@ -1421,12 +1439,28 @@ let createWith
             //
             // Ordered BEFORE the merkle so a bypass skips that hash entirely: the
             // WEDGE path is now cheaper than the warm path, not dearer.
-            | _ ->
+            | FileChanged _ ->
                 match replayBlockers () with
                 | [] -> merkleKey ()
                 | stale ->
                     info "build" (replayBypassDiagnostic stale)
                     None
+
+            | CommandCompleted result when depNames.Contains result.Name ->
+                match result.Outcome with
+                | CommandSucceeded _ ->
+                    match replayBlockers () with
+                    | [] -> merkleKey ()
+                    | stale ->
+                        info "build" (replayBypassDiagnostic stale)
+                        None
+                | CommandFailed _ -> None
+
+            // Test lifecycle events exist only to maintain ActiveTestRuns. They must
+            // reach Update; replaying a cached BuildCompleted here launches another
+            // test run and feeds the same lifecycle events back forever. Irrelevant
+            // CommandCompleted events likewise cannot trigger a build.
+            | _ -> None
 
         Some cacheKey
       // There is NO cold-start gate in the framework — a comment here used to claim

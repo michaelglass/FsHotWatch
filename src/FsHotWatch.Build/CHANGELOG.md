@@ -7,7 +7,10 @@
   artifact-copy replay miss could launch MSBuild into the live test process and
   crash it. The build plugin now tracks test-run lifecycle IDs, preserves every
   observed change, and launches the owed build after the last matching
-  `TestRunCompleted` event.
+  `TestRunCompleted` event. Test lifecycle notifications themselves never read
+  the build cache, and cache lookup is bypassed while a run is active; otherwise
+  replaying `BuildCompleted` starts another TestPrune run and forms an infinite
+  lifecycle/cache feedback loop.
 
 ## 0.7.0-alpha.28 - 2026-08-26
 

@@ -811,6 +811,125 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     test <@ fileKey = doneKey @>
 
 [<Fact(Timeout = 15000)>]
+let ``BuildPlugin test lifecycle events cannot read or replay the build cache`` () =
+    // These events are subscribed so Update can defer source changes while a test host
+    // owns the output DLLs. They are not build triggers. Giving either event the build
+    // merkle key lets the framework replay CachedBuildCompleted, which starts another
+    // test run and feeds the same lifecycle event back into this plugin forever.
+    let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
+
+    let cacheKey = handler.CacheKey.Value
+    let runId = Guid.NewGuid()
+
+    let started: TestRunStarted =
+        { RunId = runId
+          StartedAt = DateTime.UtcNow }
+
+    let completed: TestRunCompleted =
+        { RunId = runId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.empty
+          Verification = NoProjectsSelected }
+
+    test <@ cacheKey (TestRunStarted started) = None @>
+    test <@ cacheKey (TestRunCompleted completed) = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``BuildPlugin cache reads are limited to genuine build-trigger events`` () =
+    let handler =
+        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [ "codegen" ] None
+
+    let cacheKey = handler.CacheKey.Value
+
+    let command name outcome =
+        CommandCompleted { Name = name; Outcome = outcome }
+
+    let fileChangedKey = cacheKey (FileChanged(SourceChanged [ "Source.fs" ]))
+    let dependencyKey = cacheKey (command "codegen" (CommandSucceeded "ok"))
+    let failedDependencyKey = cacheKey (command "codegen" (CommandFailed "failed"))
+    let unrelatedKey = cacheKey (command "unrelated" (CommandSucceeded "ok"))
+
+    test <@ fileChangedKey.IsSome @>
+    test <@ dependencyKey.IsSome @>
+    test <@ failedDependencyKey = None @>
+    test <@ unrelatedKey = None @>
+
+    let stored = cacheKey (Custom(BuildDone(BuildPassed "ok", [], TimeSpan.Zero)))
+
+    test <@ stored.IsSome @>
+
+[<Fact(Timeout = 15000)>]
+let ``cached build lifecycle still defers one source change until the test run completes`` () =
+    withTempDir "build-cache-test-lifecycle" (fun tmpDir ->
+        let source = System.IO.Path.Combine(tmpDir, "Source.fs")
+        let buildCount = System.IO.Path.Combine(tmpDir, "build-count")
+        let script = System.IO.Path.Combine(tmpDir, "build.sh")
+        System.IO.File.WriteAllText(source, "module Source")
+        System.IO.File.WriteAllText(script, $"printf 'x\\n' >> '{buildCount}'\n")
+
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+
+        let host =
+            PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = (cache :> FsHotWatch.TaskCache.ITaskCache))
+
+        let mutable completedBuilds = 0
+
+        let recorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "cached-build-lifecycle-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BuildCompleted _ -> System.Threading.Interlocked.Increment(&completedBuilds) |> ignore
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeBuildCompleted
+              CacheKey = None
+              Teardown = None }
+
+        let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+        host.RegisterHandler(recorder)
+        host.RegisterHandler(build)
+
+        // Warm a real successful build and its CachedBuildCompleted entry.
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitUntil (fun () -> System.IO.File.Exists buildCount) 5000
+        waitUntil (fun () -> completedBuilds = 1) 5000
+
+        let runId = Guid.NewGuid()
+
+        host.EmitTestRunStarted(
+            { RunId = runId
+              StartedAt = DateTime.UtcNow }
+        )
+
+        // The lifecycle start must reach Update, and the cached FileChanged must
+        // likewise reach Update so it is owed rather than replayed or executed.
+        host.EmitFileChanged(SourceChanged [ source ])
+        System.Threading.Thread.Sleep 250
+        test <@ System.IO.File.ReadAllLines(buildCount).Length = 1 @>
+        test <@ completedBuilds = 1 @>
+
+        host.EmitTestRunCompleted(
+            { RunId = runId
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.empty
+              Verification = NoProjectsSelected }
+        )
+
+        // Completion drains the single owed change as one real build, and the host
+        // returns to a stable terminal state instead of replaying another lifecycle.
+        waitUntil (fun () -> System.IO.File.ReadAllLines(buildCount).Length = 2) 5000
+        waitUntil (fun () -> completedBuilds = 2) 5000
+        waitForTerminalStatus host "build" 5000)
+
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin does not subscribe to BatchChecked`` () =
     // Every source change (test files included) drives a real build, so there is no
     // test-only-skip phase waiting on the FCS cohort signal. TestPrune still owns its
