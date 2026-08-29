@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.21 - 2026-08-29
+
 - fix: cached test-run replay now synthesizes the `TestRunStarted` lifecycle
   boundary omitted by newly written cache entries. Build deferral therefore
   observes the same active-host lifetime on cache hits as on live test runs and
