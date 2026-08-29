@@ -286,11 +286,16 @@ type ``faithful FsHot FCS capture``() =
                 let pluginResult, pluginVisits =
                     analyze 32768 pluginFile pluginSource pluginParse pluginCheck
 
+                let allocatedBeforeTests = GC.GetAllocatedBytesForCurrentThread()
+
                 let testsResult, testsVisits =
                     analyze 32768 testsFile testsSource testsParse testsCheck
 
+                let testsAllocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBeforeTests
+
                 test <@ pluginVisits = 7707 @>
                 test <@ testsVisits = 27109 @>
+                test <@ testsAllocated < 512L * 1024L * 1024L @>
                 test <@ pluginResult |> Result.isOk @>
                 test <@ testsResult |> Result.isOk @>
 

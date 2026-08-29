@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- perf: collect shared literals through FCS's typed syntax fold instead of recursively
+  reflecting over the compiler's full object graph. Large files no longer allocate
+  gigabytes while walking value-rich live parse trees; opt-in analysis diagnostics expose
+  per-stage timing, allocation, GC, and traversal-cache counters for host investigations.
+
 ## 8.1.4 - 2026-08-29
 
 - fix: reuse completed generic-edge traversal for recreated wrappers of the same

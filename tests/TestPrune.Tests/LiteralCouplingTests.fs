@@ -5,6 +5,8 @@ open System.IO
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Syntax
+open FSharp.Compiler.Text
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.InMemoryStore
@@ -29,6 +31,81 @@ module ``AST literal bridge`` =
         |> List.filter (fun dependency ->
             dependency.FromSymbol.StartsWith("TestPrune.__Literal__.", StringComparison.Ordinal)
             || dependency.ToSymbol.StartsWith("TestPrune.__Literal__.", StringComparison.Ordinal))
+
+    let private referenceSharedLiterals (tree: ParsedInput) =
+        let found = ResizeArray<string * range>()
+
+        let isSharedLiteral (text: string) =
+            text.Length >= 24
+            && text.Split([| ' '; '\t'; '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries).Length
+               >= 4
+
+        let rec walk (value: obj) =
+            if not (isNull value) then
+                match value with
+                | :? string -> ()
+                | :? SynExpr as expression ->
+                    match expression with
+                    | SynExpr.Const(SynConst.String(text = text), expressionRange) when isSharedLiteral text ->
+                        found.Add(text, expressionRange)
+                    | SynExpr.InterpolatedString _ -> ()
+                    | _ -> walkUnionFields expression
+                | :? System.Collections.IEnumerable as values ->
+                    for item in values do
+                        walk item
+                | _ ->
+                    let valueType = value.GetType()
+
+                    if Microsoft.FSharp.Reflection.FSharpType.IsUnion valueType then
+                        walkUnionFields value
+                    elif Microsoft.FSharp.Reflection.FSharpType.IsRecord valueType then
+                        for field in Microsoft.FSharp.Reflection.FSharpValue.GetRecordFields value do
+                            walk field
+                    elif Microsoft.FSharp.Reflection.FSharpType.IsTuple valueType then
+                        for field in Microsoft.FSharp.Reflection.FSharpValue.GetTupleFields value do
+                            walk field
+
+        and walkUnionFields (value: obj) =
+            let _, fields =
+                Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(value, value.GetType())
+
+            for field in fields do
+                walk field
+
+        walk tree
+        found |> Seq.distinct |> Seq.toList
+
+    let private literalKey (text, literalRange: range) =
+        text,
+        literalRange.FileName,
+        literalRange.StartLine,
+        literalRange.StartColumn,
+        literalRange.EndLine,
+        literalRange.EndColumn
+
+    let private assertTypedLiteralParity caseName source =
+        let fileName = $"/tmp/LiteralParity-{caseName}.fsx"
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let parseResults, checkAnswer =
+            checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+            |> Async.RunSynchronously
+
+        match checkAnswer with
+        | FSharpCheckFileAnswer.Aborted -> failwith $"Type checking aborted for {caseName}"
+        | FSharpCheckFileAnswer.Succeeded _ -> ()
+
+        let expected =
+            referenceSharedLiterals parseResults.ParseTree
+            |> List.map literalKey
+            |> Set.ofList
+
+        let actual =
+            collectSharedLiterals parseResults.ParseTree
+            |> List.map literalKey
+            |> Set.ofList
+
+        test <@ actual = expected @>
 
     let private producerSource literal =
         $"""module Producer
@@ -185,6 +262,157 @@ let emit count = $"the audit log write failed and dropped {count} entries"
 """
 
         test <@ literalEdges result |> List.isEmpty @>
+
+    [<Fact>]
+    let ``a prose literal in a binding attribute is attributed to that binding`` () =
+        let result =
+            analyze
+                "/tmp/LiteralAttribute.fsx"
+                "Producer"
+                """module Producer
+
+open System
+
+type MarkerAttribute(message: string) =
+    inherit Attribute()
+
+[<Marker("the audit log write failed and dropped the entry")>]
+let emit () = ()
+"""
+
+        let edge = literalEdges result |> List.exactlyOne
+        test <@ edge.FromSymbol.StartsWith("TestPrune.__Literal__.", StringComparison.Ordinal) @>
+        test <@ edge.ToSymbol = "Producer.emit" @>
+
+    [<Fact>]
+    let ``ordinary prose inside an interpolated fill is excluded with the whole interpolation`` () =
+        let result =
+            analyze
+                "/tmp/LiteralInterpolationFill.fsx"
+                "Producer"
+                ("module Producer\n\n"
+                 + "let emit condition =\n"
+                 + "    $\"\"\"result: {if condition then \"the audit log write failed and dropped the entry\" else \"the audit log write succeeded and retained the entry\"}\"\"\"\n")
+
+        test <@ literalEdges result |> List.isEmpty @>
+
+    [<Fact>]
+    let ``typed literal traversal matches the 8_1_4 reflection baseline across pruned syntax branches`` () =
+        let prelude =
+            """module Corpus
+
+open System
+
+[<AttributeUsage(AttributeTargets.All, AllowMultiple = true)>]
+type MarkerAttribute(message: string) =
+    inherit Attribute()
+    member val Detail = "" with get, set
+"""
+
+        let bindingSource =
+            prelude
+            + "\nlet emit condition =\n"
+            + "    let ordinary = \"the ordinary binding message has enough words\"\n"
+            + "    let verbatim = @\"the verbatim binding message has enough words\"\n"
+            + "    let triple = \"\"\"the triple binding message has enough words\"\"\"\n"
+            + "    let skipped = $\"the interpolated binding message has {condition} words\"\n"
+            + "    ordinary, verbatim, triple, skipped\n"
+
+        let attributeSource =
+            prelude
+            + "\n[<Marker(\"the binding attribute has enough prose words\", Detail = \"the named argument has enough prose words\")>]\n"
+            + "let attributed () = ()\n\n"
+            + "[<Marker(\"the record field attribute has enough prose words\")>]\n"
+            + "type Record =\n"
+            + "    { [<Marker(\"the nested record field has enough prose words\")>]\n"
+            + "      Value: string }\n"
+
+        let nestedModuleSource =
+            prelude
+            + "\n[<Marker(\"the nested module attribute has enough prose words\")>]\n"
+            + "module Nested =\n    let value = 1\n"
+
+        let exceptionSource =
+            prelude
+            + "\n[<Marker(\"the exception attribute has enough prose words\")>]\n"
+            + "exception CorpusFailure of string with\n"
+            + "    member _.Explanation = \"the exception member has enough prose words\"\n"
+            + "    member _.AttributedReturn() : [<Marker(\"the exception return attribute has enough prose words\")>] string = \"the attributed return body has enough prose words\"\n"
+            + "    member _.Deferred = lazy \"the deferred exception value has enough prose words\"\n"
+            + "    member _.Lambda = fun () -> \"the exception lambda has enough prose words\"\n"
+            + "    member _.Matcher = function | _ -> \"the exception match lambda has enough prose words\"\n"
+            + "    member _.Interpolated(value) = $\"the excluded exception interpolation has {value} prose words\"\n"
+            + "    member _.Sequence = seq { \"the implicit sequence statement has enough prose words\"; yield \"the explicit sequence yield has enough prose words\" }\n"
+            + "    member _.SetIndexed() = let values = [| \"the initial indexed value has enough prose words\" |] in values.[0] <- \"the updated indexed value has enough prose words\"\n"
+            + "    member _.Property\n"
+            + "        with get () = \"the exception getter has enough prose words\"\n"
+            + "        and set value = ignore value\n"
+
+        let exceptionCastsSource =
+            prelude
+            + "\nexception CastFailure of string with\n"
+            + "    member _.Upcast = (\"the upcast expression has enough prose words\" :> obj)\n"
+            + "    member _.Downcast = (box \"the downcast expression has enough prose words\" :?> string)\n"
+            + "    member _.TypeTest = (box \"the type test expression has enough prose words\" :? string)\n"
+
+        let exceptionInterfaceSource =
+            prelude
+            + "\nexception InterfaceFailure of string with\n"
+            + "    interface IDisposable with\n"
+            + "        [<Marker(\"the nested interface member attribute has enough prose words\")>]\n"
+            + "        member _.Dispose() = ()\n"
+
+        let exceptionNestedTypeSource =
+            prelude
+            + "\ntype Base(message: string) =\n    member _.Message = message\n\n"
+            + "exception NestedTypeFailure of string with\n"
+            + "    type Nested =\n"
+            + "        inherit Base(\"the implicit inheritance argument has enough prose words\")\n"
+            + "        let stored = \"the nested let binding has enough prose words\"\n"
+            + "        [<DefaultValue; Marker(\"the nested value field attribute has enough prose words\")>]\n"
+            + "        val mutable Field: string\n"
+            + "        [<Marker(\"the nested auto property attribute has enough prose words\")>]\n"
+            + "        member val Auto = \"the nested auto property has enough prose words\" with get, set\n"
+            + "        [<Marker(\"the nested type member attribute has enough prose words\")>]\n"
+            + "        member _.Value = stored\n"
+            + "        member _.AttributedReturn() : [<Marker(\"the nested return attribute has enough prose words\")>] string = stored\n"
+            + "        member _.Property\n"
+            + "            with get () = \"the nested getter has enough prose words\"\n"
+            + "            and set value = ignore value\n"
+
+        let exceptionControlFlowSource =
+            prelude
+            + "\ntype MessageRecord = { Value: string }\n\n"
+            + "exception ControlFlowFailure of string with\n"
+            + "    member _.Run(condition, items: int list) =\n"
+            + "        let quoted = <@ \"the quoted expression has enough prose words\" @>\n"
+            + "        let chosen = if condition then \"the true branch has enough prose words\" else \"the false branch has enough prose words\"\n"
+            + "        let matched = match items with | [] -> \"the empty match has enough prose words\" | _ -> \"the full match has enough prose words\"\n"
+            + "        let collected = [ for item in items do if item > 0 then yield \"the yielded item has enough prose words\" ]\n"
+            + "        let array = [| \"the array item has enough prose words\"; \"the second array item has enough words\" |]\n"
+            + "        let slice = array.[0..1]\n"
+            + "        let record = { Value = \"the record field has enough prose words\" }\n"
+            + "        let anonymous = {| Value = \"the anonymous field has enough prose words\" |}\n"
+            + "        let disposable = { new IDisposable with member _.Dispose() = ignore \"the object expression has enough prose words\" }\n"
+            + "        let extraInterface = { new obj() with interface IDisposable with member _.Dispose() = ignore \"the extra interface body has enough prose words\" }\n"
+            + "        let mutable assigned = \"the initial assignment has enough prose words\"\n"
+            + "        assigned <- \"the updated assignment has enough prose words\"\n"
+            + "        for _ in items do ignore \"the foreach body has enough prose words\"\n"
+            + "        for _ = 0 to 0 do ignore \"the numeric for body has enough prose words\"\n"
+            + "        while false do ignore \"the while body has enough prose words\"\n"
+            + "        try ignore \"the protected body has enough prose words\" with _ -> ignore \"the handler body has enough prose words\"\n"
+            + "        try ignore \"the finalizable body has enough prose words\" finally ignore \"the finally body has enough prose words\"\n"
+            + "        quoted, chosen, matched, collected, slice, record, anonymous, disposable, extraInterface, assigned\n"
+
+        [ "binding-and-interpolation", bindingSource
+          "attributes", attributeSource
+          "nested-module", nestedModuleSource
+          "exception", exceptionSource
+          "exception-casts", exceptionCastsSource
+          "exception-interface", exceptionInterfaceSource
+          "exception-nested-type", exceptionNestedTypeSource
+          "exception-control-flow", exceptionControlFlowSource ]
+        |> List.iter (fun (caseName, source) -> assertTypedLiteralParity caseName source)
 
     [<Fact>]
     let ``identifier-shaped strings do not create a literal bridge`` () =

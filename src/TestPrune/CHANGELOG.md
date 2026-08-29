@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- perf: reduce cold-scan latency and retained allocation pressure when TestPrune analyzes
+  large FCS syntax trees containing shared object subgraphs.
+
 ## 8.1.4 - 2026-08-29
 
 - fix: avoid false incomplete-analysis fallback on large files containing thousands of
