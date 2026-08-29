@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.5 - 2026-08-29
+
 - perf: collect shared literals through FCS's typed syntax fold instead of recursively
   reflecting over the compiler's full object graph. Large files no longer allocate
   gigabytes while walking value-rich live parse trees; opt-in analysis diagnostics expose

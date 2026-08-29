@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.5 - 2026-08-29
+
 - perf: reduce cold-scan latency and retained allocation pressure when TestPrune analyzes
   large FCS syntax trees containing shared object subgraphs.
 
