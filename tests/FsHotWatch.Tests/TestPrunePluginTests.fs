@@ -6188,6 +6188,7 @@ module private PendingQueueHelpers =
             failwith $"expected a readable pending-verification ledger, got Unreadable: {reason}"
 
 [<Fact(Timeout = 20000)>]
+[<Trait("Regression", "LifecycleMailboxOrder")>]
 let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
     // A beforeRun throw propagates out of executeTests, `runTestsWithImpact` catches it,
     // and the completion carries Outcome = Aborted with Results = Map.empty. Empty results
@@ -6218,7 +6219,12 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
                     async {
                         match event with
                         | TestRunStarted started -> startedId <- Some started.RunId
-                        | TestRunCompleted completed -> completedId <- Some completed.RunId
+                        | TestRunCompleted completed ->
+                            // Keep the recorder behind the producer long enough to prove
+                            // that observing TestPrune's terminal status does not imply a
+                            // separate plugin mailbox has consumed the lifecycle event.
+                            do! Async.Sleep 250
+                            completedId <- Some completed.RunId
                         | _ -> ()
 
                         return state
@@ -6234,7 +6240,12 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
 
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
-        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        test <@ await.Wait(TimeSpan.FromSeconds 15.0) @>
+
+        // TestPrune publishes its terminal status from its own mailbox after queuing the
+        // lifecycle event. The recorder consumes that event on another mailbox, so wait
+        // for both mailboxes to drain before reading recorder-owned state.
+        waitForQuiescent host 10000
 
         // An aborted run verified nothing.
         match host.GetStatus("test-prune") with
