@@ -8338,25 +8338,46 @@ let ``AUTOMATION-125: a COVERING impact-filtered green DOES clear the red (no st
     // The over-correction guard. A filtered run that DID execute the failing class and
     // passed it is real evidence; a check that can never go green again is not a fix, it
     // is a different bug.
-    let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+    withTempDir "a125-covering-receipt" (fun repoRoot ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
-    let fullRun =
-        testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+        let fullRun =
+            testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
 
-    let coveringRun =
-        testsFinishedEvent
-            [ "ProjA", passed true; "ProjB", impactSkipped ]
-            (filteredLaunch [ "ProjA", [ "ProjATests" ] ])
+        let runId = Guid.NewGuid()
+        let reportDir = Path.Combine(repoRoot, ".fshw", "test-runs", runId.ToString("N"))
+        Directory.CreateDirectory(reportDir) |> ignore
 
-    let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; coveringRun ]
+        File.WriteAllText(
+            Path.Combine(reportDir, "ProjA.ctrf.json"),
+            """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"FsHotWatch.Tests.ProjATests.boom","status":"passed","duration":1}]}}"""
+        )
 
-    test <@ List.isEmpty final.OutstandingFailures @>
-    test <@ List.isEmpty (ledgerFilesOf ledger) @>
+        let started: TestRunStarted =
+            { RunId = runId
+              StartedAt = DateTime.UtcNow }
 
-    match lastStatus statuses with
-    | PluginStatus.Completed _ -> ()
-    | other -> Assert.Fail($"a filtered run that executed the failing class green must clear it, got %A{other}")
+        let results = Map.ofList [ "ProjA", passed true; "ProjB", impactSkipped ]
+
+        let completed: TestRunCompleted =
+            { RunId = runId
+              TotalElapsed = TimeSpan.FromSeconds 1.0
+              Outcome = Normal
+              Results = results
+              Verification = RunVerification.ofResults results }
+
+        let coveringRun =
+            Custom(TestsFinished(started, completed, filteredLaunch [ "ProjA", [ "FsHotWatch.Tests.ProjATests" ] ]))
+
+        let _ctx, statuses, ledger, final = driveRuns handler [ fullRun; coveringRun ]
+
+        test <@ List.isEmpty final.OutstandingFailures @>
+        test <@ List.isEmpty (ledgerFilesOf ledger) @>
+
+        match lastStatus statuses with
+        | PluginStatus.Completed _ -> ()
+        | other -> Assert.Fail($"a filtered run that executed the failing class green must clear it, got %A{other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: an unfiltered re-run (test-rerun) clears an outstanding red`` () =
@@ -8392,11 +8413,15 @@ let ``AUTOMATION-125: a filtered green over a DIFFERENT class in the same projec
         testsFinishedEvent [ "ProjA", failedProjA ] (fullSuiteLaunch [ "ProjA" ])
 
     let otherClassRun =
-        testsFinishedEvent [ "ProjA", passed true ] (filteredLaunch [ "ProjA", [ "SomeOtherTests" ] ])
+        testsFinishedEvent [ "ProjA", passed true ] (filteredLaunch [ "ProjA", [ "FsHotWatch.Tests.SomeOtherTests" ] ])
 
     let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; otherClassRun ]
 
-    test <@ final.OutstandingFailures |> List.exists (fun f -> f.Class = Some "ProjATests") @>
+    test
+        <@
+            final.OutstandingFailures
+            |> List.exists (fun f -> f.Class = Some "FsHotWatch.Tests.ProjATests")
+        @>
 
     match lastStatus statuses with
     | PluginStatus.Failed _ -> ()
@@ -9101,6 +9126,25 @@ let ``OutstandingFailure.quarantine promotes an unknown-scope prior red to the w
 
     test <@ quarantined.["ProjA"] = [] @>
     test <@ quarantined.["ProjB"] = [ "OtherTests" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-87 browser red survives a following edit whose graph selects zero tests`` () =
+    let project = "Intelligence.Tests.Integration"
+
+    let browserClass =
+        "Intelligence.Tests.Integration.Web.BrowserIntegrationTests+BrowserIntegrationTests"
+
+    // The historical AUTOMATION-87 edit changed only browser-test waits. Its graph
+    // selection was empty; that must not let an already-red browser class disappear.
+    let graphSelectionAfterBrowserEdit: Map<string, string list> = Map.empty
+
+    let selected =
+        OutstandingFailure.quarantine
+            (Set.singleton project)
+            [ redIn project (Some browserClass) ]
+            graphSelectionAfterBrowserEdit
+
+    test <@ selected = Map.ofList [ project, [ browserClass ] ] @>
 
 [<Fact(Timeout = 10000)>]
 let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-passed one`` () =
