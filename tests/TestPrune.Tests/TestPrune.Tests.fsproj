@@ -97,6 +97,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="Fixtures/FcsTraversal/ReplayDependencies.fsproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="../../src/TestPrune.Core/TestPrune.Core.fsproj" />
     <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Falco/TestPrune.Falco.fsproj" />

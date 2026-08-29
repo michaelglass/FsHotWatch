@@ -83,6 +83,30 @@ let private parseOptions captureRoot nugetPackages dotnetRoot path =
             .Replace("${NUGET_PACKAGES}", nugetPackages, StringComparison.Ordinal)
             .Replace("${DOTNET_ROOT}", dotnetRoot, StringComparison.Ordinal)
 
+    let activeNetCoreRefRoot =
+        let packRoot = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref")
+
+        Directory.EnumerateDirectories packRoot
+        |> Seq.choose (fun directory ->
+            match Version.TryParse(Path.GetFileName directory) with
+            | true, version when Directory.Exists(Path.Combine(directory, "ref", "net10.0")) ->
+                Some(version, Path.Combine(directory, "ref", "net10.0"))
+            | _ -> None)
+        |> Seq.sortByDescending fst
+        |> Seq.tryHead
+        |> Option.map snd
+        |> Option.defaultWith (fun () -> failwith $"No net10.0 reference pack found below %s{packRoot}")
+
+    let resolveOption (value: string) =
+        let capturedRefPrefix =
+            "-r:${DOTNET_ROOT}/packs/Microsoft.NETCore.App.Ref/10.0.9/ref/net10.0/"
+
+        if value.StartsWith(capturedRefPrefix, StringComparison.Ordinal) then
+            "-r:"
+            + Path.Combine(activeNetCoreRefRoot, value.Substring(capturedRefPrefix.Length))
+        else
+            replaceRoots value
+
     let readSection prefix =
         let count = next () |> parseCount prefix
 
@@ -107,7 +131,7 @@ let private parseOptions captureRoot nugetPackages dotnetRoot path =
     { ProjectFileName = projectLine.Substring("# Project: ".Length) |> replaceRoots
       ProjectId = None
       SourceFiles = sourceFiles |> Array.map resolveSource
-      OtherOptions = otherOptions |> Array.map replaceRoots
+      OtherOptions = otherOptions |> Array.map resolveOption
       ReferencedProjects = [||]
       IsIncompleteTypeCheckEnvironment = false
       UseScriptResolutionRules = false
@@ -192,6 +216,14 @@ type ``faithful FsHot FCS capture``() =
             verifyCaptureIntegrity captureRoot
 
             let runSemanticReplay () =
+                let rec findDotnetRoot (directory: DirectoryInfo) =
+                    if Directory.Exists(Path.Combine(directory.FullName, "packs")) then
+                        directory.FullName
+                    elif isNull directory.Parent then
+                        failwith "Could not locate the active .NET installation root"
+                    else
+                        findDotnetRoot directory.Parent
+
                 let nugetPackages =
                     Environment.GetEnvironmentVariable("NUGET_PACKAGES")
                     |> Option.ofObj
@@ -204,15 +236,9 @@ type ``faithful FsHot FCS capture``() =
                     )
 
                 let dotnetRoot =
-                    Environment.GetEnvironmentVariable("DOTNET_ROOT")
-                    |> Option.ofObj
-                    |> Option.defaultWith (fun () ->
-                        Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()
-                        |> Directory.GetParent
-                        |> _.Parent
-                        |> _.Parent
-                        |> _.Parent
-                        |> _.FullName)
+                    Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()
+                    |> DirectoryInfo
+                    |> findDotnetRoot
 
                 let checker = FSharpChecker.Create(keepAssemblyContents = true)
 

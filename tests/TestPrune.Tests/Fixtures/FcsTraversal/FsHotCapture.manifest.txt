@@ -12,6 +12,11 @@ The replay is self-contained and performs no checkout or network access. Placeho
 roots in the captured options resolve to the extracted archive, the active .NET SDK,
 and the already-restored NuGet cache.
 
+`ReplayDependencies.fsproj` is the restore-only manifest for all 71 exact package
+paths named by the capture. It does not enter TestPrune's compile graph. The replay
+maps the captured 10.0.9 framework-reference path to the active installed net10.0
+reference-pack patch, so the fixture remains portable across SDK servicing releases.
+
 Self-contained replay archive
   path: FsHotFaithfulCapture.zip
   sha256: c9846328cc5ba32622502d8bae05629beae320c0d0ba66d706bff4f2f7c048cc
