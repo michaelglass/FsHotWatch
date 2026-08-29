@@ -352,6 +352,15 @@ let private MaxSymbolTraversalVisits = 4096
 exception private SymbolTraversalDepthExceeded of int
 exception private SymbolTraversalBudgetExceeded of int
 
+type private SymbolTraversalBudget(maxVisits: int) =
+    let mutable visits = 0
+
+    member _.Consume() =
+        visits <- visits + 1
+
+        if visits > maxVisits then
+            raise (SymbolTraversalBudgetExceeded maxVisits)
+
 let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) : Result<'Value, string> =
     try
         operation ()
@@ -369,7 +378,7 @@ let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) :
 /// the final guard for endlessly novel wrappers.
 let private boundedDepthFirstWithBudget
     (maxDepth: int)
-    (maxVisits: int)
+    (budget: SymbolTraversalBudget)
     (tryStableName: 'Node -> string option)
     (children: 'Node -> 'Node seq)
     (roots: 'Node seq)
@@ -377,9 +386,13 @@ let private boundedDepthFirstWithBudget
     let visitedReferences =
         System.Collections.Generic.HashSet<obj>(System.Collections.Generic.ReferenceEqualityComparer.Instance)
 
-    let mutable visitedCount = 0
+    let results = ResizeArray<'Node>()
 
     let rec visit depth activeNames node =
+        // Charge exactly once when a candidate is yielded by its parent/root
+        // enumerator, before any wrapper inspection or child enumeration.
+        budget.Consume()
+
         let stableName =
             try
                 tryStableName node
@@ -387,39 +400,43 @@ let private boundedDepthFirstWithBudget
                 None
 
         match stableName with
-        | Some name when Set.contains name activeNames -> []
-        | _ when not (visitedReferences.Add(box node)) -> []
+        | Some name when Set.contains name activeNames -> ()
+        | _ when not (visitedReferences.Add(box node)) -> ()
         | _ ->
             if depth >= maxDepth then
                 raise (SymbolTraversalDepthExceeded maxDepth)
             else
-                visitedCount <- visitedCount + 1
-
-                if visitedCount > maxVisits then
-                    raise (SymbolTraversalBudgetExceeded maxVisits)
-
                 let nextActiveNames =
                     match stableName with
                     | Some name -> Set.add name activeNames
                     | None -> activeNames
 
-                let childNodes =
-                    try
-                        children node |> Seq.toList
-                    with _ ->
-                        []
+                results.Add(node)
 
-                node :: (childNodes |> List.collect (visit (depth + 1) nextActiveNames))
+                try
+                    use childEnumerator = (children node).GetEnumerator()
+
+                    while childEnumerator.MoveNext() do
+                        visit (depth + 1) nextActiveNames childEnumerator.Current
+                with
+                | SymbolTraversalDepthExceeded _ -> reraise ()
+                | SymbolTraversalBudgetExceeded _ -> reraise ()
+                | _ -> ()
 
     try
-        roots |> Seq.toList |> List.collect (visit 0 Set.empty)
+        use rootEnumerator = roots.GetEnumerator()
+
+        while rootEnumerator.MoveNext() do
+            visit 0 Set.empty rootEnumerator.Current
+
+        results |> Seq.toList
     with
     | SymbolTraversalDepthExceeded _ -> reraise ()
     | SymbolTraversalBudgetExceeded _ -> reraise ()
     | _ -> []
 
 let private boundedDepthFirst maxDepth tryStableName children roots =
-    boundedDepthFirstWithBudget maxDepth MaxSymbolTraversalVisits tryStableName children roots
+    boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget MaxSymbolTraversalVisits) tryStableName children roots
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
@@ -428,14 +445,14 @@ let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     | _ -> None
 
 /// Recursively extract all concrete type argument entity full names from a type.
-let private extractGenericTypeArgsWithBudget (maxVisits: int) (fsharpType: FSharpType) : string list =
+let private extractGenericTypeArgsWithBudget (budget: SymbolTraversalBudget) (fsharpType: FSharpType) : string list =
     try
         if fsharpType.IsGenericParameter then
             []
         else
             boundedDepthFirstWithBudget
                 MaxSymbolTraversalDepth
-                maxVisits
+                budget
                 (fun _ -> None)
                 (fun (t: FSharpType) -> t.GenericArguments)
                 fsharpType.GenericArguments
@@ -453,19 +470,16 @@ let private extractGenericTypeArgsWithBudget (maxVisits: int) (fsharpType: FShar
     | _ -> []
 
 /// Extract generic type argument edges from a symbol use's full type.
-let private tryGetGenericTypeArgEdgesWithBudget (maxVisits: int) (symbol: FSharpSymbol) : string list =
+let private tryGetGenericTypeArgEdgesWithBudget (budget: SymbolTraversalBudget) (symbol: FSharpSymbol) : string list =
     match symbol with
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
-            extractGenericTypeArgsWithBudget maxVisits mfv.FullType
+            extractGenericTypeArgsWithBudget budget mfv.FullType
         with
         | SymbolTraversalDepthExceeded _ -> reraise ()
         | SymbolTraversalBudgetExceeded _ -> reraise ()
         | _ -> []
     | _ -> []
-
-let private tryGetGenericTypeArgEdges =
-    tryGetGenericTypeArgEdgesWithBudget MaxSymbolTraversalVisits
 
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module internal TestHelpers =
@@ -476,8 +490,22 @@ module internal TestHelpers =
     let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
     let testTryName = tryName
     let testBoundedDepthFirst = boundedDepthFirst
+
+    let testBoundedDepthFirstWithSharedBudget maxDepth maxVisits tryStableName children rootGroups =
+        let budget = SymbolTraversalBudget maxVisits
+
+        rootGroups
+        |> List.collect (boundedDepthFirstWithBudget maxDepth budget tryStableName children)
+
     let testProtectSymbolTraversal = protectSymbolTraversal
-    let testTryGetGenericTypeArgEdgesWithBudget = tryGetGenericTypeArgEdgesWithBudget
+
+    let testTryGetGenericTypeArgEdgesWithBudget maxVisits symbol =
+        tryGetGenericTypeArgEdgesWithBudget (SymbolTraversalBudget maxVisits) symbol
+
+    let testTryGetGenericTypeArgEdgesWithSharedBudget maxVisits symbols =
+        protectSymbolTraversal (fun () ->
+            let budget = SymbolTraversalBudget maxVisits
+            symbols |> List.collect (tryGetGenericTypeArgEdgesWithBudget budget) |> Ok)
 
 /// When a record field is used, extract the containing record type's full name.
 let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
@@ -550,7 +578,7 @@ let private extractTestClass (fullName: string) : string * string =
 /// Build the CLR-style class name from an entity chain.
 /// F# compiles types inside modules as CLR nested types (Module+Type).
 /// FCS FullName uses '.' throughout, but xUnit v3 --filter-class needs '+'.
-let private buildClrClassName (entity: FSharpEntity) : string =
+let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEntity) : string =
     let tryEntityName (e: FSharpEntity) =
         try
             Some e.FullName
@@ -566,7 +594,7 @@ let private buildClrClassName (entity: FSharpEntity) : string =
             Seq.empty
 
     let path =
-        boundedDepthFirst MaxSymbolTraversalDepth tryEntityName declaringModule [ entity ]
+        boundedDepthFirstWithBudget MaxSymbolTraversalDepth budget tryEntityName declaringModule [ entity ]
 
     match List.rev path with
     | [] ->
@@ -1012,6 +1040,10 @@ let private extractResults
         match checkAnswer with
         | FSharpCheckFileAnswer.Aborted -> Error "Type checking aborted"
         | FSharpCheckFileAnswer.Succeeded checkResults ->
+            // One budget covers every defensive FCS graph traversal in this file. A
+            // per-symbol budget still permits thousands of bounded expansions to add up
+            // to runaway work on large source files.
+            let symbolTraversalBudget = SymbolTraversalBudget MaxSymbolTraversalVisits
             let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
             let sourceLines = source.Split('\n')
 
@@ -1250,7 +1282,7 @@ let private extractResults
                                                       Source = "core" })
 
                                     let genericArgEdges =
-                                        tryGetGenericTypeArgEdges u.Symbol
+                                        tryGetGenericTypeArgEdgesWithBudget symbolTraversalBudget u.Symbol
                                         |> List.choose (fun argName ->
                                             if argName = enclosingSi.FullName || argName = usedFullName then
                                                 None
@@ -1483,7 +1515,7 @@ let private extractResults
                                 let testClass =
                                     try
                                         match mfv.DeclaringEntity with
-                                        | Some entity -> buildClrClassName entity
+                                        | Some entity -> buildClrClassName symbolTraversalBudget entity
                                         | None -> fallbackClass
                                     with
                                     | SymbolTraversalDepthExceeded _ -> reraise ()

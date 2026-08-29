@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: share the 4,096-node FCS traversal budget across the entire source-file
+  analysis, including every symbol-use generic graph and test declaring-entity chain.
+  Large files can no longer multiply the per-traversal allowance by thousands; the
+  cumulative limit still fails closed while ordinary multi-symbol generic attribution
+  remains intact.
+
 ## 8.1.2 - 2026-08-29
 
 - fix: cap defensive FCS graph traversal at 4,096 expanded nodes and reduce the

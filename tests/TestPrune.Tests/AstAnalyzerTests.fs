@@ -1838,6 +1838,64 @@ module ``Generic type parameter edges`` =
         test <@ childReads <= 4096 @>
 
     [<Fact>]
+    let ``recreated branching work is budgeted cumulatively across symbol traversals`` () =
+        let mutable childReads = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            childReads <- childReads + 1
+
+            if node.Depth >= 5 then
+                Seq.empty
+            else
+                [ BranchingWrapper(node.Depth + 1); BranchingWrapper(node.Depth + 1) ]
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ [ BranchingWrapper(0) ]; [ BranchingWrapper(0) ] ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "cumulative symbol traversal work must share one budget"
+
+        test <@ childReads <= 100 @>
+
+    [<Fact>]
+    let ``high fanout child enumeration stops at the shared candidate budget`` () =
+        let mutable created = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            if node.Depth > 0 then
+                Seq.empty
+            else
+                seq {
+                    for _ in 1..10000 do
+                        created <- created + 1
+                        yield BranchingWrapper(node.Depth + 1)
+                }
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ [ BranchingWrapper(0) ] ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "high-fanout traversal must stop at the shared candidate budget"
+
+        test <@ created <= 100 @>
+
+    [<Fact>]
     let ``real FSharpType traversal exhaustion reaches the public analysis result`` () =
         let source = "module RealGeneric\nlet value : list<int> = []\n"
         let fileName = "/tmp/AstAnalyzerDeepGeneric.fsx"
@@ -1864,6 +1922,46 @@ module ``Generic type parameter edges`` =
         match result with
         | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
         | Ok _ -> failwith "real FSharpType work-budget exhaustion must reach the analysis Error boundary"
+
+    [<Fact>]
+    let ``finite generic attribution is retained across multiple symbols under the shared budget`` () =
+        let source =
+            "module ManyGenerics\ntype Leaf = { Value: int }\n"
+            + ([ 0..9 ]
+               |> List.map (fun index -> $"let value%d{index} : list<Leaf> = []")
+               |> String.concat "\n")
+
+        let fileName = "/tmp/AstAnalyzerManyGenerics.fsx"
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let _, checkAnswer =
+            checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+            |> Async.RunSynchronously
+
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded results -> results
+            | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+        let valueSymbols =
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.filter (fun symbolUse ->
+                symbolUse.IsFromDefinition
+                && symbolUse.Symbol.DisplayName.StartsWith("value", StringComparison.Ordinal))
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let edges =
+            match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 100 valueSymbols with
+            | Ok edges -> edges
+            | Error message -> failwith message
+
+        test <@ valueSymbols.Length = 10 @>
+        test <@ edges.Length = 10 @>
+
+        match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 5 valueSymbols with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "real generic symbols must consume the shared file budget cumulatively"
 
     [<Fact>]
     let ``using generic type with concrete arg creates edge to arg type`` () =

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: apply the defensive FCS traversal budget cumulatively per analyzed file, so
+  thousands of individually bounded symbol uses cannot combine into runaway analyzer
+  work. Exhaustion remains an index failure with full-suite fallback.
+
 ## 8.1.2 - 2026-08-29
 
 - fix: fail closed when a live FCS type graph exceeds the bounded traversal work
