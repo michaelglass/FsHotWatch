@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.4 - 2026-08-29
+
 - fix: reuse completed generic-edge traversal for recreated wrappers of the same
   structurally identified monomorphic declaration, while generic instantiations and
   degraded traversals remain isolated. The calibrated 32,768-candidate file-wide cap

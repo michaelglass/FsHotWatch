@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.4 - 2026-08-29
+
 - fix: avoid false incomplete-analysis fallback on large files containing thousands of
   ordinary shallow generic symbol uses, while retaining strict recursive FCS graph
   bounds and fail-closed behavior for genuinely pathological graphs.
