@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.3 - 2026-08-29
+
 - fix: share the 4,096-node FCS traversal budget across the entire source-file
   analysis, including every symbol-use generic graph and test declaring-entity chain.
   Large files can no longer multiply the per-traversal allowance by thousands; the

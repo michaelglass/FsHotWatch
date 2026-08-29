@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 8.1.3 - 2026-08-29
+
 - fix: apply the defensive FCS traversal budget cumulatively per analyzed file, so
   thousands of individually bounded symbol uses cannot combine into runaway analyzer
   work. Exhaustion remains an index failure with full-suite fallback.
