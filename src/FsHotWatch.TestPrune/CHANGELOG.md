@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.23 - 2026-08-29
+
 - fix: consume the existing parse and full-check results carried by each
   `FileChecked` event through TestPrune.Core 8.1.5 instead of re-entering FCS for
   a duplicate check. Parse-only events now fail closed as explicitly

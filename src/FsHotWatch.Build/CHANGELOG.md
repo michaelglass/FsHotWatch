@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-08-29
+
 - fix: defer file-change builds while a TestPrune run is active. Coverage hosts
   instrument output assemblies in place; treating those transient writes as an
   artifact-copy replay miss could launch MSBuild into the live test process and
