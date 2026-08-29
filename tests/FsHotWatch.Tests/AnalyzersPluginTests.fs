@@ -647,6 +647,66 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
         | other -> Assert.Fail $"Expected TimedOut, got {other}"
     | None -> Assert.Fail "Expected LastRun record"
 
+[<Fact(Timeout = 15000)>]
+let ``timed-out synchronous analyzer cannot overlap the next file`` () =
+    // Production change that makes this pass: retain the analyzer concurrency
+    // permit until non-cooperative timed-out work has actually exited. Merely
+    // cancelling its token is insufficient for a synchronous analyzer callback.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use release = new System.Threading.ManualResetEventSlim(false)
+    let mutable started = 0
+    let mutable active = 0
+    let mutable maximumActive = 0
+
+    let slowHook () =
+        System.Threading.Interlocked.Increment(&started) |> ignore
+        let nowActive = System.Threading.Interlocked.Increment(&active)
+
+        let rec recordMaximum () =
+            let observed = System.Threading.Volatile.Read(&maximumActive)
+
+            if nowActive > observed then
+                let prior =
+                    System.Threading.Interlocked.CompareExchange(&maximumActive, nowActive, observed)
+
+                if prior <> observed then
+                    recordMaximum ()
+
+        recordMaximum ()
+
+        try
+            release.Wait()
+        finally
+            System.Threading.Interlocked.Decrement(&active) |> ignore
+
+        // The retained permit must be released even when timed-out work later
+        // faults while unwinding.
+        failwith "late analyzer failure"
+
+    let handler =
+        createWithSlowHook None [] (Some 1) DiagnosticSeverity.Hint (Some slowHook)
+
+    host.RegisterHandler(handler)
+
+    try
+        host.EmitFileChecked(fakeResult "/tmp/slow/First.fs")
+        host.EmitFileChecked(fakeResult "/tmp/slow/Second.fs")
+        waitUntil (fun () -> System.Threading.Volatile.Read(&started) >= 1) 3000
+
+        // The first timeout has fired by now. A token-ignoring synchronous
+        // callback is still alive, so the second file must not start beside it.
+        System.Threading.Thread.Sleep 1500
+        Assert.Equal(1, System.Threading.Volatile.Read(&started))
+        Assert.Equal(1, System.Threading.Volatile.Read(&maximumActive))
+
+        release.Set()
+        waitUntil (fun () -> System.Threading.Volatile.Read(&started) >= 2) 5000
+        Assert.Equal(1, System.Threading.Volatile.Read(&maximumActive))
+    finally
+        release.Set()
+        waitUntil (fun () -> System.Threading.Volatile.Read(&active) = 0) 5000
+        host.Teardown()
+
 [<Fact(Timeout = 20000)>]
 let ``analyzers skip compile items outside the repo (AUTOMATION-49)`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

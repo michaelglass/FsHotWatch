@@ -237,6 +237,27 @@ let ``runWithCancellableTimeout cancelled unit releases its lock so the next uni
         gate.Release() |> ignore
 
 [<Fact(Timeout = 20000)>]
+let ``runWithCancellableTimeoutTracked keeps token source alive through late registration`` () =
+    // A synchronous callback can reach its first token-aware Async boundary only
+    // after the caller has observed timeout. Disposing the CTS at timeout made that
+    // late registration throw ObjectDisposedException on the orphan thread.
+    let registered = new System.Threading.ManualResetEventSlim(false)
+
+    let outcome, completion =
+        runWithCancellableTimeoutTracked (TimeSpan.FromMilliseconds 20.0) (fun ct ->
+            System.Threading.Thread.Sleep 100
+            use _registration = ct.Register(fun () -> registered.Set())
+            registered.Set())
+
+    match outcome with
+    | WorkTimedOut _ -> ()
+    | WorkCompleted _ -> Assert.Fail "expected timeout"
+
+    Assert.True(completion.Wait(TimeSpan.FromSeconds 5.0), "timed-out work never completed")
+    Assert.Equal(System.Threading.Tasks.TaskStatus.RanToCompletion, completion.Status)
+    Assert.True(registered.IsSet, "late token registration did not execute")
+
+[<Fact(Timeout = 20000)>]
 let ``runProcess succeeds for echo`` () =
     runProcess "echo" "hello" "." [] |> expectStdout "hello"
 

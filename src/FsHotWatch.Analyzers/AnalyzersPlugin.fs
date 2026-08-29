@@ -201,6 +201,10 @@ let internal createWithSlowHook
     let mutable client = Client<CliAnalyzerAttribute, CliContext>()
     let concurrencyLimit = 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
+    // Only one synchronous analyzer callback may be alive at a time. Normal
+    // FileChecked delivery is serialized already; this fence matters after a
+    // timeout, when a token-ignoring callback can outlive its event handler.
+    let executionFence = new SemaphoreSlim(1, 1)
     let cts = new CancellationTokenSource()
 
     // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
@@ -362,6 +366,8 @@ let internal createWithSlowHook
                         let! analysisOutcome =
                             async {
                                 do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
+                                do! executionFence.WaitAsync(cts.Token) |> Async.AwaitTask
+                                let mutable releaseExecutionFenceOnExit = true
 
                                 try
                                     return!
@@ -396,8 +402,28 @@ let internal createWithSlowHook
                                                             cancellationToken = workCt
                                                         )
 
-                                                    match runWithCancellableTimeout analyzerTimeout runAnalyzers with
+                                                    let outcome, actualCompletion =
+                                                        runWithCancellableTimeoutTracked analyzerTimeout runAnalyzers
+
+                                                    match outcome with
                                                     | WorkTimedOut after ->
+                                                        // Cancellation is cooperative. A synchronous analyzer
+                                                        // callback can ignore the token and keep executing after
+                                                        // the wall-clock timeout. Retain this permit until that
+                                                        // callback really exits; otherwise the mailbox starts the
+                                                        // next file alongside it and each timeout multiplies the
+                                                        // runaway analyzer work.
+                                                        releaseExecutionFenceOnExit <- false
+
+                                                        actualCompletion.ContinueWith(
+                                                            (fun (_: Threading.Tasks.Task) ->
+                                                                executionFence.Release() |> ignore),
+                                                            Threading.CancellationToken.None,
+                                                            Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously,
+                                                            Threading.Tasks.TaskScheduler.Default
+                                                        )
+                                                        |> ignore
+
                                                         let reason = $"timed out after %d{int after.TotalSeconds}s"
 
                                                         error
@@ -459,6 +485,9 @@ let internal createWithSlowHook
                                                     return Choice3Of3(ex.ToString())
                                             })
                                 finally
+                                    if releaseExecutionFenceOnExit then
+                                        executionFence.Release() |> ignore
+
                                     semaphore.Release() |> ignore
                             }
 
@@ -574,9 +603,11 @@ let internal createWithSlowHook
         Some cacheKey
       Teardown =
         Some(fun () ->
-            cts.Cancel()
-            cts.Dispose()
-            semaphore.Dispose()) }
+            // Cancellation is cooperative. Do not dispose tokens/semaphores while
+            // a token-ignoring synchronous analyzer may still be unwinding: its
+            // completion continuation owns the retained execution-fence permit.
+            // These small managed objects become collectible with the handler.
+            cts.Cancel()) }
 
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results. Per-event work is bounded by
