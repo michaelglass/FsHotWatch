@@ -343,9 +343,7 @@ let internal createWithSlowHook
                         return state
                     else
 
-                        let runStarted = DateTime.UtcNow
-                        ctx.ReportStatus(Running(since = runStarted))
-                        ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
+                        let mutable runStarted = DateTime.UtcNow
 
                         reloadIfStale ()
 
@@ -367,6 +365,9 @@ let internal createWithSlowHook
                             async {
                                 do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
                                 do! executionFence.WaitAsync(cts.Token) |> Async.AwaitTask
+                                runStarted <- DateTime.UtcNow
+                                ctx.ReportStatus(Running(since = runStarted))
+                                ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
                                 let mutable releaseExecutionFenceOnExit = true
 
                                 try
