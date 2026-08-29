@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: avoid false incomplete-analysis fallback on large files containing thousands of
+  ordinary shallow generic symbol uses, while retaining strict recursive FCS graph
+  bounds and fail-closed behavior for genuinely pathological graphs.
+
 ## 8.1.3 - 2026-08-29
 
 - fix: apply the defensive FCS traversal budget cumulatively per analyzed file, so

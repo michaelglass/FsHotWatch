@@ -347,7 +347,10 @@ let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option
 let private MaxSymbolTraversalDepth = 32
 
 [<Literal>]
-let private MaxSymbolTraversalVisits = 4096
+let private MaxSymbolTraversalVisits = 32768
+
+[<Literal>]
+let private MaxSymbolTraversalRoots = 64
 
 exception private SymbolTraversalDepthExceeded of int
 exception private SymbolTraversalBudgetExceeded of int
@@ -360,6 +363,110 @@ type private SymbolTraversalBudget(maxVisits: int) =
 
         if visits > maxVisits then
             raise (SymbolTraversalBudgetExceeded maxVisits)
+
+    member _.Visits = visits
+
+type private TraversalResult<'Value> = { Value: 'Value; IsComplete: bool }
+
+let private cacheCompletedTraversal
+    (cache: System.Collections.Generic.Dictionary<'Key, 'Value>)
+    key
+    (traversal: TraversalResult<'Value>)
+    =
+    if traversal.IsComplete then
+        cache[key] <- traversal.Value
+
+let private resolveCachedTraversal
+    enableMemoization
+    (referenceCache: System.Collections.Generic.Dictionary<'ReferenceKey, 'Value>)
+    (semanticCache: System.Collections.Generic.Dictionary<'SemanticKey, 'Value>)
+    (referenceKey: 'ReferenceKey)
+    (semanticKey: 'SemanticKey option)
+    (compute: unit -> TraversalResult<'Value>)
+    =
+    match
+        if enableMemoization then
+            referenceCache.TryGetValue(referenceKey)
+        else
+            false, Unchecked.defaultof<_>
+    with
+    | true, cached -> cached
+    | false, _ ->
+        let semanticCached =
+            match enableMemoization, semanticKey with
+            | true, Some key ->
+                match semanticCache.TryGetValue(key) with
+                | true, cached -> Some cached
+                | false, _ -> None
+            | _ -> None
+
+        match semanticCached with
+        | Some cached ->
+            referenceCache[referenceKey] <- cached
+            cached
+        | None ->
+            let traversal = compute ()
+
+            if enableMemoization then
+                cacheCompletedTraversal referenceCache referenceKey traversal
+
+                match semanticKey with
+                | Some key -> cacheCompletedTraversal semanticCache key traversal
+                | None -> ()
+
+            traversal.Value
+
+[<StructuralEquality; StructuralComparison>]
+type private GenericEdgeCacheKey =
+    { WrapperType: string
+      AssemblyIdentity: string
+      DeclaringEntityFullName: string option
+      DeclaringEntityCompiledName: string option
+      MemberFullName: string
+      MemberCompiledName: string
+      MemberLogicalName: string
+      DeclarationFile: string
+      StartLine: int
+      StartColumn: int
+      EndLine: int
+      EndColumn: int }
+
+let private tryGenericEdgeSemanticKey (symbol: FSharpSymbol) =
+    try
+        match symbol, symbol.DeclarationLocation with
+        | (:? FSharpMemberOrFunctionOrValue as mfv), Some declaration ->
+            let declaringIdentity =
+                match mfv.DeclaringEntity with
+                | Some entity when entity.GenericParameters.Count = 0 ->
+                    Some(Some entity.FullName, Some entity.CompiledName)
+                | Some _ -> None
+                | None -> Some(None, None)
+
+            match declaringIdentity with
+            | Some(declaringFullName, declaringCompiledName) when
+                mfv.GenericParameters.Count = 0
+                && not (String.IsNullOrEmpty mfv.FullName)
+                && not (String.IsNullOrEmpty mfv.CompiledName)
+                && not (String.IsNullOrEmpty mfv.LogicalName)
+                && not (String.IsNullOrEmpty declaration.FileName)
+                ->
+                Some
+                    { WrapperType = symbol.GetType().FullName
+                      AssemblyIdentity = mfv.Assembly.QualifiedName
+                      DeclaringEntityFullName = declaringFullName
+                      DeclaringEntityCompiledName = declaringCompiledName
+                      MemberFullName = mfv.FullName
+                      MemberCompiledName = mfv.CompiledName
+                      MemberLogicalName = mfv.LogicalName
+                      DeclarationFile = declaration.FileName
+                      StartLine = declaration.StartLine
+                      StartColumn = declaration.StartColumn
+                      EndLine = declaration.EndLine
+                      EndColumn = declaration.EndColumn }
+            | _ -> None
+        | _ -> None
+    with _ ->
+        None
 
 let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) : Result<'Value, string> =
     try
@@ -382,16 +489,14 @@ let private boundedDepthFirstWithBudget
     (tryStableName: 'Node -> string option)
     (children: 'Node -> 'Node seq)
     (roots: 'Node seq)
-    : 'Node list =
+    : TraversalResult<'Node list> =
     let visitedReferences =
         System.Collections.Generic.HashSet<obj>(System.Collections.Generic.ReferenceEqualityComparer.Instance)
 
     let results = ResizeArray<'Node>()
+    let mutable isComplete = true
 
     let rec visit depth activeNames node =
-        // Charge exactly once when a candidate is yielded by its parent/root
-        // enumerator, before any wrapper inspection or child enumeration.
-        budget.Consume()
 
         let stableName =
             try
@@ -416,27 +521,48 @@ let private boundedDepthFirstWithBudget
                 try
                     use childEnumerator = (children node).GetEnumerator()
 
-                    while childEnumerator.MoveNext() do
-                        visit (depth + 1) nextActiveNames childEnumerator.Current
+                    let mutable hasMore = true
+                    let mutable childCount = 0
+
+                    while hasMore do
+                        if childEnumerator.MoveNext() then
+                            childCount <- childCount + 1
+
+                            if childCount > MaxSymbolTraversalRoots then
+                                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+
+                            budget.Consume()
+                            visit (depth + 1) nextActiveNames childEnumerator.Current
+                        else
+                            hasMore <- false
                 with
                 | SymbolTraversalDepthExceeded _ -> reraise ()
                 | SymbolTraversalBudgetExceeded _ -> reraise ()
-                | _ -> ()
+                | _ -> isComplete <- false
 
     try
         use rootEnumerator = roots.GetEnumerator()
+        let mutable rootCount = 0
 
         while rootEnumerator.MoveNext() do
+            rootCount <- rootCount + 1
+
+            if rootCount > MaxSymbolTraversalRoots then
+                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+
+            budget.Consume()
             visit 0 Set.empty rootEnumerator.Current
 
-        results |> Seq.toList
+        { Value = results |> Seq.toList
+          IsComplete = isComplete }
     with
     | SymbolTraversalDepthExceeded _ -> reraise ()
     | SymbolTraversalBudgetExceeded _ -> reraise ()
-    | _ -> []
+    | _ -> { Value = []; IsComplete = false }
 
 let private boundedDepthFirst maxDepth tryStableName children roots =
-    boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget MaxSymbolTraversalVisits) tryStableName children roots
+    (boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget MaxSymbolTraversalVisits) tryStableName children roots)
+        .Value
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
@@ -445,32 +571,46 @@ let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     | _ -> None
 
 /// Recursively extract all concrete type argument entity full names from a type.
-let private extractGenericTypeArgsWithBudget (budget: SymbolTraversalBudget) (fsharpType: FSharpType) : string list =
+let private extractGenericTypeArgsWithBudget
+    (budget: SymbolTraversalBudget)
+    (fsharpType: FSharpType)
+    : TraversalResult<string list> =
     try
         if fsharpType.IsGenericParameter then
-            []
+            { Value = []; IsComplete = true }
         else
-            boundedDepthFirstWithBudget
-                MaxSymbolTraversalDepth
-                budget
-                (fun _ -> None)
-                (fun (t: FSharpType) -> t.GenericArguments)
-                fsharpType.GenericArguments
-            |> List.choose (fun t ->
-                try
-                    if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
-                        Some t.TypeDefinition.FullName
-                    else
-                        None
-                with _ ->
-                    None)
+            let traversal =
+                boundedDepthFirstWithBudget
+                    MaxSymbolTraversalDepth
+                    budget
+                    (fun _ -> None)
+                    (fun (t: FSharpType) -> t.GenericArguments)
+                    fsharpType.GenericArguments
+
+            let mutable namesComplete = true
+
+            { Value =
+                traversal.Value
+                |> List.choose (fun t ->
+                    try
+                        if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
+                            Some t.TypeDefinition.FullName
+                        else
+                            None
+                    with _ ->
+                        namesComplete <- false
+                        None)
+              IsComplete = traversal.IsComplete && namesComplete }
     with
     | SymbolTraversalDepthExceeded _ -> reraise ()
     | SymbolTraversalBudgetExceeded _ -> reraise ()
-    | _ -> []
+    | _ -> { Value = []; IsComplete = false }
 
 /// Extract generic type argument edges from a symbol use's full type.
-let private tryGetGenericTypeArgEdgesWithBudget (budget: SymbolTraversalBudget) (symbol: FSharpSymbol) : string list =
+let private tryGetGenericTypeArgEdgesWithBudget
+    (budget: SymbolTraversalBudget)
+    (symbol: FSharpSymbol)
+    : TraversalResult<string list> =
     match symbol with
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
@@ -478,8 +618,28 @@ let private tryGetGenericTypeArgEdgesWithBudget (budget: SymbolTraversalBudget) 
         with
         | SymbolTraversalDepthExceeded _ -> reraise ()
         | SymbolTraversalBudgetExceeded _ -> reraise ()
-        | _ -> []
-    | _ -> []
+        | _ -> { Value = []; IsComplete = false }
+    | _ -> { Value = []; IsComplete = true }
+
+let private createGenericEdgeResolver (budget: SymbolTraversalBudget) enableMemoization =
+    let referenceCache =
+        System.Collections.Generic.Dictionary<obj, string list>(
+            System.Collections.Generic.ReferenceEqualityComparer.Instance
+        )
+
+    let semanticCache =
+        System.Collections.Generic.Dictionary<GenericEdgeCacheKey, string list>()
+
+    fun (symbol: FSharpSymbol) ->
+        let referenceKey = box symbol
+
+        resolveCachedTraversal
+            enableMemoization
+            referenceCache
+            semanticCache
+            referenceKey
+            (tryGenericEdgeSemanticKey symbol)
+            (fun () -> tryGetGenericTypeArgEdgesWithBudget budget symbol)
 
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module internal TestHelpers =
@@ -495,17 +655,77 @@ module internal TestHelpers =
         let budget = SymbolTraversalBudget maxVisits
 
         rootGroups
-        |> List.collect (boundedDepthFirstWithBudget maxDepth budget tryStableName children)
+        |> List.collect (fun roots -> (boundedDepthFirstWithBudget maxDepth budget tryStableName children roots).Value)
 
     let testProtectSymbolTraversal = protectSymbolTraversal
 
     let testTryGetGenericTypeArgEdgesWithBudget maxVisits symbol =
-        tryGetGenericTypeArgEdgesWithBudget (SymbolTraversalBudget maxVisits) symbol
+        (tryGetGenericTypeArgEdgesWithBudget (SymbolTraversalBudget maxVisits) symbol).Value
 
     let testTryGetGenericTypeArgEdgesWithSharedBudget maxVisits symbols =
         protectSymbolTraversal (fun () ->
             let budget = SymbolTraversalBudget maxVisits
-            symbols |> List.collect (tryGetGenericTypeArgEdgesWithBudget budget) |> Ok)
+
+            symbols
+            |> List.collect (fun symbol -> (tryGetGenericTypeArgEdgesWithBudget budget symbol).Value)
+            |> Ok)
+
+    let testIsGenericEdgeSemanticKeyEligible symbol =
+        tryGenericEdgeSemanticKey symbol |> Option.isSome
+
+    let testGenericEdgeSemanticKeyDistinctCount symbols =
+        symbols |> Seq.choose tryGenericEdgeSemanticKey |> Seq.distinct |> Seq.length
+
+    let testBoundedDepthFirstCompletion maxDepth maxVisits tryStableName children roots =
+        let result =
+            boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget maxVisits) tryStableName children roots
+
+        result.Value, result.IsComplete
+
+    let testCompletedTraversalCacheRetry () =
+        let cache = System.Collections.Generic.Dictionary<string, string>()
+
+        cacheCompletedTraversal
+            cache
+            "symbol"
+            { Value = "partial"
+              IsComplete = false }
+
+        let afterDegraded = cache.TryGetValue("symbol")
+
+        cacheCompletedTraversal
+            cache
+            "symbol"
+            { Value = "complete"
+              IsComplete = true }
+
+        afterDegraded, cache.TryGetValue("symbol")
+
+    let testSemanticTraversalMemo enableMemoization maxComputations semanticKeys =
+        protectSymbolTraversal (fun () ->
+            let references = System.Collections.Generic.Dictionary<int, string list>()
+            let semantics = System.Collections.Generic.Dictionary<string, string list>()
+            let mutable computations = 0
+
+            let results =
+                semanticKeys
+                |> List.mapi (fun referenceKey semanticKey ->
+                    resolveCachedTraversal
+                        enableMemoization
+                        references
+                        semantics
+                        referenceKey
+                        (Some semanticKey)
+                        (fun () ->
+                            computations <- computations + 1
+
+                            if computations > maxComputations then
+                                raise (SymbolTraversalBudgetExceeded maxComputations)
+
+                            { Value = [ "Leaf" ]
+                              IsComplete = true }))
+
+            Ok(results, computations))
 
 /// When a record field is used, extract the containing record type's full name.
 let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
@@ -578,7 +798,7 @@ let private extractTestClass (fullName: string) : string * string =
 /// Build the CLR-style class name from an entity chain.
 /// F# compiles types inside modules as CLR nested types (Module+Type).
 /// FCS FullName uses '.' throughout, but xUnit v3 --filter-class needs '+'.
-let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEntity) : string =
+let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEntity) : TraversalResult<string> =
     let tryEntityName (e: FSharpEntity) =
         try
             Some e.FullName
@@ -586,37 +806,38 @@ let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEnt
             None
 
     let declaringModule (e: FSharpEntity) =
-        try
-            match e.DeclaringEntity with
-            | Some parent when parent.IsFSharpModule -> Seq.singleton parent
-            | _ -> Seq.empty
-        with _ ->
-            Seq.empty
+        match e.DeclaringEntity with
+        | Some parent when parent.IsFSharpModule -> Seq.singleton parent
+        | _ -> Seq.empty
 
     let path =
         boundedDepthFirstWithBudget MaxSymbolTraversalDepth budget tryEntityName declaringModule [ entity ]
 
-    match List.rev path with
-    | [] ->
-        try
-            entity.FullName
-        with _ ->
-            entity.CompiledName
-    | outermost :: nested ->
-        let outerName =
+    let className =
+        match List.rev path.Value with
+        | [] ->
             try
-                outermost.FullName
+                entity.FullName
             with _ ->
-                outermost.CompiledName
-
-        outerName
-        :: (nested
-            |> List.map (fun item ->
+                entity.CompiledName
+        | outermost :: nested ->
+            let outerName =
                 try
-                    item.CompiledName
+                    outermost.FullName
                 with _ ->
-                    item.DisplayName))
-        |> String.concat "+"
+                    outermost.CompiledName
+
+            outerName
+            :: (nested
+                |> List.map (fun item ->
+                    try
+                        item.CompiledName
+                    with _ ->
+                        item.DisplayName))
+            |> String.concat "+"
+
+    { Value = className
+      IsComplete = path.IsComplete }
 
 /// Extract the binding name from a SynPat head pattern.
 let private extractBindingName (pat: SynPat) : string option =
@@ -1024,6 +1245,9 @@ let internal parseErrorDiagnostics (parseResults: FSharpParseFileResults) : FSha
 
 /// Extract analysis results from parse and type-check results.
 let private extractResults
+    (maxTraversalVisits: int)
+    (enableMemoization: bool)
+    (recordTraversalVisits: int -> unit)
     (sourceFileName: string)
     (source: string)
     (parseResults: FSharpParseFileResults)
@@ -1043,9 +1267,12 @@ let private extractResults
             // One budget covers every defensive FCS graph traversal in this file. A
             // per-symbol budget still permits thousands of bounded expansions to add up
             // to runaway work on large source files.
-            let symbolTraversalBudget = SymbolTraversalBudget MaxSymbolTraversalVisits
+            let symbolTraversalBudget = SymbolTraversalBudget maxTraversalVisits
             let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
             let sourceLines = source.Split('\n')
+
+            let genericEdgesForSymbol =
+                createGenericEdgeResolver symbolTraversalBudget enableMemoization
 
             let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
             let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
@@ -1282,7 +1509,7 @@ let private extractResults
                                                       Source = "core" })
 
                                     let genericArgEdges =
-                                        tryGetGenericTypeArgEdgesWithBudget symbolTraversalBudget u.Symbol
+                                        genericEdgesForSymbol u.Symbol
                                         |> List.choose (fun argName ->
                                             if argName = enclosingSi.FullName || argName = usedFullName then
                                                 None
@@ -1484,6 +1711,36 @@ let private extractResults
             let mutable attributes = []
             let mutable parentLinks = []
             let mutable fixtureEdges = []
+            let testClassCache = System.Collections.Generic.Dictionary<string, string>()
+
+            let testClassForEntity fallbackClass (entity: FSharpEntity) =
+                let key =
+                    try
+                        entity.FullName
+                    with _ ->
+                        ""
+
+                if String.IsNullOrEmpty key || not enableMemoization then
+                    (buildClrClassName symbolTraversalBudget entity).Value
+                else
+                    match testClassCache.TryGetValue(key) with
+                    | true, cached -> cached
+                    | false, _ ->
+                        let traversal = buildClrClassName symbolTraversalBudget entity
+
+                        let resolved =
+                            if String.IsNullOrEmpty traversal.Value then
+                                fallbackClass
+                            else
+                                traversal.Value
+
+                        cacheCompletedTraversal
+                            testClassCache
+                            key
+                            { Value = resolved
+                              IsComplete = traversal.IsComplete }
+
+                        resolved
 
             for u in allUses do
                 if u.IsFromDefinition then
@@ -1515,7 +1772,7 @@ let private extractResults
                                 let testClass =
                                     try
                                         match mfv.DeclaringEntity with
-                                        | Some entity -> buildClrClassName symbolTraversalBudget entity
+                                        | Some entity -> testClassForEntity fallbackClass entity
                                         | None -> fallbackClass
                                     with
                                     | SymbolTraversalDepthExceeded _ -> reraise ()
@@ -1735,7 +1992,7 @@ let private extractResults
             let filteredSymbolCount =
                 localDefinitionCount + (definitions.Length - symbols.Length)
 
-            Ok
+            let result =
                 { Symbols = allSymbols
                   Dependencies = dependencies
                   TestMethods = testMethods
@@ -1745,6 +2002,9 @@ let private extractResults
                     { DroppedEdges = droppedEdgeCount
                       FilteredSymbols = filteredSymbolCount
                       TotalDefinitions = definitions.Length + localDefinitionCount } }
+
+            recordTraversalVisits symbolTraversalBudget.Visits
+            Ok result
 
 /// Analyze a source file from parse and type-check results already produced by FCS.
 /// This path performs no parsing or checking and is intended for hosts that receive
@@ -1759,7 +2019,15 @@ let analyzeSourceFromResults
     (projectName: string)
     =
     protectSymbolTraversal (fun () ->
-        extractResults sourceFileName source parseResults (FSharpCheckFileAnswer.Succeeded checkResults) projectName)
+        extractResults
+            MaxSymbolTraversalVisits
+            true
+            ignore
+            sourceFileName
+            source
+            parseResults
+            (FSharpCheckFileAnswer.Succeeded checkResults)
+            projectName)
 
 /// Parse and analyze a single F# source string using project options.
 let analyzeSource
@@ -1776,7 +2044,16 @@ let analyzeSource
             checker.ParseAndCheckFileInProject(sourceFileName, 0, sourceText, projectOptions)
 
         return
-            protectSymbolTraversal (fun () -> extractResults sourceFileName source parseResults checkAnswer projectName)
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    MaxSymbolTraversalVisits
+                    true
+                    ignore
+                    sourceFileName
+                    source
+                    parseResults
+                    checkAnswer
+                    projectName)
     }
 
 /// Parse and analyze a single F# source file using a project snapshot.
@@ -1792,8 +2069,44 @@ let analyzeSourceWithSnapshot
         let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
 
         return
-            protectSymbolTraversal (fun () -> extractResults sourceFileName source parseResults checkAnswer projectName)
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    MaxSymbolTraversalVisits
+                    true
+                    ignore
+                    sourceFileName
+                    source
+                    parseResults
+                    checkAnswer
+                    projectName)
     }
+
+[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
+module internal AnalysisTestHelpers =
+    let analyzeSourceFromResultsWithPolicy
+        maxVisits
+        enableMemoization
+        sourceFileName
+        source
+        parseResults
+        checkResults
+        projectName
+        =
+        let mutable chargedVisits = -1
+
+        let result =
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    maxVisits
+                    enableMemoization
+                    (fun visits -> chargedVisits <- visits)
+                    sourceFileName
+                    source
+                    parseResults
+                    (FSharpCheckFileAnswer.Succeeded checkResults)
+                    projectName)
+
+        result, chargedVisits
 
 /// Create a project snapshot from project options, using file modification times as version keys.
 /// FCS uses version strings to skip re-checking files that haven't changed.

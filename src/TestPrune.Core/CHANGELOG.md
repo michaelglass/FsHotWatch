@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: reuse completed generic-edge traversal for recreated wrappers of the same
+  structurally identified monomorphic declaration, while generic instantiations and
+  degraded traversals remain isolated. The calibrated 32,768-candidate file-wide cap
+  covers captured FsHot files that charged 7,707 and 27,109 candidates (20.9% headroom
+  over the measured maximum); root/child fanout, total work, and depth retain hard bounds.
+
 ## 8.1.3 - 2026-08-29
 
 - fix: share the 4,096-node FCS traversal budget across the entire source-file

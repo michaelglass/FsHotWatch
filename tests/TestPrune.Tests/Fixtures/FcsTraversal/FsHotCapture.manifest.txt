@@ -1,0 +1,60 @@
+TestPrune FCS traversal calibration capture
+
+Source: https://github.com/michaelglass/FsHotWatch
+License: MIT
+Bundled external source: xunit.v3.core.mtp-v1 3.2.2 DefaultRunnerReporters.fs
+External source: https://github.com/xunit/xunit
+External license: Apache-2.0 (included as LICENSE.xunit)
+Working-copy revision: 63cd53c3 (based on 09626abd, sql-extensions-final workspace)
+Captured: 2026-08-29
+
+The replay is self-contained and performs no checkout or network access. Placeholder
+roots in the captured options resolve to the extracted archive, the active .NET SDK,
+and the already-restored NuGet cache.
+
+Self-contained replay archive
+  path: FsHotFaithfulCapture.zip
+  sha256: c9846328cc5ba32622502d8bae05629beae320c0d0ba66d706bff4f2f7c048cc
+  bytes: 1254621
+  contents: exact 82-file ordered source cohorts, full sanitized options, nine
+    source-revision reference assemblies, MIT and Apache-2.0 licenses, provenance,
+    and checksums
+
+FsHotWatch.TestPrune opts
+  path: .fshw/logs/projinfo/FsHotWatch.TestPrune.opts.txt
+  sha256: bd9ed4bc462bb3c82382825b6e97551e6a48bff929808d5a889a8ca57a190a60
+  lines: 246
+  source cohort: 9
+  other options: 232
+
+TestPrunePlugin.fs
+  path: src/FsHotWatch.TestPrune/TestPrunePlugin.fs
+  sha256: 2c93a96a9a0339b84b8b0a5e71a05fce0628d500843d179f7d0333c9e92c55fe
+  lines: 5878
+  bytes: 339620
+  symbol uses: 7780
+  definitions: 1134
+  charged traversal candidates: 7707
+
+FsHotWatch.Tests opts
+  path: .fshw/logs/projinfo/FsHotWatch.Tests.opts.txt
+  sha256: b6afae115f91fa759f58c47410abf990da1d2128e29df5b4e03c53685a284b48
+  lines: 379
+  source cohort: 73
+  other options: 293
+
+TestPrunePluginTests.fs
+  path: tests/FsHotWatch.Tests/TestPrunePluginTests.fs
+  sha256: 3d20261a5faf432cedf417cea87069af3d31a0bd45d40135ba145e826d63bce5
+  lines: 10051
+  bytes: 443319
+  symbol uses: 18593
+  definitions: 2433
+  CheckFile uses/reference-distinct wrappers: 32/32
+  CheckFile structural semantic keys: 1
+  charged traversal candidates: 27109
+
+Expected boundary: both files succeed at 32768 candidates and refuse incomplete
+analysis at 4096. TestPrunePluginTests also refuses at 27108.
+The semantic replay was executed with SDK 10.0.301 and restored captured package
+versions on 2026-08-29.

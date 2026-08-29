@@ -29,6 +29,30 @@ let analyze source =
     | Ok r -> r
     | Error msg -> failwith $"Analysis failed: %s{msg}"
 
+let checkSource source =
+    let fileName = $"/tmp/AstAnalyzerPolicy-{Guid.NewGuid():N}.fsx"
+    let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+    let parseResults, checkAnswer =
+        checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+        |> Async.RunSynchronously
+
+    match checkAnswer with
+    | FSharpCheckFileAnswer.Succeeded results -> fileName, parseResults, results
+    | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+let analyzeWithPolicy maxVisits enableMemoization source =
+    let fileName, parseResults, checkResults = checkSource source
+
+    AnalysisTestHelpers.analyzeSourceFromResultsWithPolicy
+        maxVisits
+        enableMemoization
+        fileName
+        source
+        parseResults
+        checkResults
+        "TestProject"
+
 [<Collection("FCS-AstAnalyzer")>]
 module ``Simple function extraction`` =
 
@@ -447,6 +471,59 @@ module MiddleModule =
                     "OuterModule+MiddleModule+InnerModule+MyTests",
                     StringComparison.Ordinal
                 )
+            @>
+
+    [<Fact>]
+    let ``many test methods reuse only their exact nested declaring class`` () =
+        let methods prefix =
+            [ 1..200 ]
+            |> List.map (fun index -> $"    [<Fact>]\n    member _.%s{prefix}%d{index}() = ()")
+            |> String.concat "\n"
+
+        let source =
+            "module StressClasses\n"
+            + "type FactAttribute() = inherit System.Attribute()\n"
+            + "module Outer =\n"
+            + "  module Inner =\n"
+            + "   type First() =\n"
+            + methods "first"
+            + "\n   type Second() =\n"
+            + methods "second"
+
+        let cachedResult, _ = source |> analyzeWithPolicy 2000 true
+
+        let testMethods =
+            match cachedResult with
+            | Ok result -> result.TestMethods
+            | Error message -> failwith message
+
+        match source |> analyzeWithPolicy 2000 false |> fst with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "uncached declaring-class traversal must exhaust the equivalent low budget"
+
+        let first =
+            testMethods
+            |> List.filter (fun method' -> method'.TestMethod.StartsWith("first"))
+
+        let second =
+            testMethods
+            |> List.filter (fun method' -> method'.TestMethod.StartsWith("second"))
+
+        test <@ first.Length = 200 @>
+        test <@ second.Length = 200 @>
+
+        test
+            <@
+                first
+                |> List.forall (fun method' ->
+                    method'.TestClass.EndsWith("StressClasses+Outer+Inner+First", StringComparison.Ordinal))
+            @>
+
+        test
+            <@
+                second
+                |> List.forall (fun method' ->
+                    method'.TestClass.EndsWith("StressClasses+Outer+Inner+Second", StringComparison.Ordinal))
             @>
 
     [<Fact>]
@@ -1811,6 +1888,47 @@ module ``Generic type parameter edges`` =
         | Ok _ -> failwith "depth exhaustion must refuse incomplete analysis"
 
     [<Fact>]
+    let ``child enumeration failure stays degraded and a later good wrapper can complete`` () =
+        let root = TraversalNode("root")
+        let leaf = TraversalNode("leaf")
+        let mutable throwChildren = true
+
+        let children (node: TraversalNode) : TraversalNode seq =
+            if throwChildren then failwith "simulated FCS child failure"
+            elif node.Name = "root" then [ leaf ]
+            else []
+
+        let firstNodes, firstComplete =
+            TestHelpers.testBoundedDepthFirstCompletion
+                8
+                8
+                (fun (node: TraversalNode) -> Some node.Name)
+                children
+                [ root ]
+
+        throwChildren <- false
+
+        let retryNodes, retryComplete =
+            TestHelpers.testBoundedDepthFirstCompletion
+                8
+                8
+                (fun (node: TraversalNode) -> Some node.Name)
+                children
+                [ root ]
+
+        test <@ firstNodes |> List.map _.Name = [ "root" ] @>
+        test <@ not firstComplete @>
+        test <@ retryNodes |> List.map _.Name = [ "root"; "leaf" ] @>
+        test <@ retryComplete @>
+
+    [<Fact>]
+    let ``degraded traversal is not admitted to shared caches and a complete retry is`` () =
+        let afterDegraded, afterRetry = TestHelpers.testCompletedTraversalCacheRetry ()
+
+        test <@ afterDegraded = (false, null) @>
+        test <@ afterRetry = (true, "complete") @>
+
+    [<Fact>]
     let ``recreated branching wrappers exhaust a global work budget before combinatorial expansion`` () =
         let mutable childReads = 0
 
@@ -1824,18 +1942,19 @@ module ``Generic type parameter edges`` =
 
         let result =
             TestHelpers.testProtectSymbolTraversal (fun () ->
-                TestHelpers.testBoundedDepthFirst
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
                     16
+                    4096
                     (fun (_: BranchingWrapper) -> None)
                     children
-                    [ BranchingWrapper(0) ]
+                    [ [ BranchingWrapper(0) ] ]
                 |> Ok)
 
         match result with
         | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
         | Ok _ -> failwith "work-budget exhaustion must refuse incomplete analysis"
 
-        test <@ childReads <= 4096 @>
+        test <@ childReads <= 4098 @>
 
     [<Fact>]
     let ``recreated branching work is budgeted cumulatively across symbol traversals`` () =
@@ -1863,7 +1982,7 @@ module ``Generic type parameter edges`` =
         | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
         | Ok _ -> failwith "cumulative symbol traversal work must share one budget"
 
-        test <@ childReads <= 100 @>
+        test <@ childReads <= 106 @>
 
     [<Fact>]
     let ``high fanout child enumeration stops at the shared candidate budget`` () =
@@ -1893,11 +2012,38 @@ module ``Generic type parameter edges`` =
         | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
         | Ok _ -> failwith "high-fanout traversal must stop at the shared candidate budget"
 
-        test <@ created <= 100 @>
+        test <@ created <= 65 @>
+
+    [<Fact>]
+    let ``high fanout root enumeration stops at the per-type arity bound`` () =
+        let mutable created = 0
+
+        let roots =
+            seq {
+                for _ in 1..10000 do
+                    created <- created + 1
+                    yield BranchingWrapper(0)
+            }
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    (fun _ -> Seq.empty)
+                    [ roots ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "high-fanout roots must stop at the per-type arity bound"
+
+        test <@ created <= 65 @>
 
     [<Fact>]
     let ``real FSharpType traversal exhaustion reaches the public analysis result`` () =
-        let source = "module RealGeneric\nlet value : list<int> = []\n"
+        let source = "module RealGeneric\nlet value : list<list<list<int>>> = []\n"
         let fileName = "/tmp/AstAnalyzerDeepGeneric.fsx"
         let options = getScriptOptions checker fileName source |> Async.RunSynchronously
 
@@ -1959,9 +2105,132 @@ module ``Generic type parameter edges`` =
         test <@ valueSymbols.Length = 10 @>
         test <@ edges.Length = 10 @>
 
-        match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 5 valueSymbols with
+        test
+            <@
+                edges
+                |> List.forall (fun edge -> edge.EndsWith("Leaf", StringComparison.Ordinal))
+            @>
+
+        match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 0 valueSymbols with
         | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
-        | Ok _ -> failwith "real generic symbols must consume the shared file budget cumulatively"
+        | Ok _ -> failwith "distinct shallow roots must still consume the file-wide budget"
+
+    [<Fact>]
+    let ``recreated uses of one declared symbol share generic traversal work`` () =
+        let sourceWithUses count =
+            let calls = [ 1..count ] |> List.map (fun _ -> "consume []") |> String.concat "\n"
+
+            "module RepeatedDeclaredSymbol\n"
+            + "type Leaf = { Value: int }\n"
+            + "let consume (_: list<list<list<Leaf>>>) = ()\n"
+            + calls
+
+        let relevantEdges result =
+            result.Dependencies
+            |> List.filter (fun edge ->
+                edge.FromSymbol.EndsWith("consume", StringComparison.Ordinal)
+                && edge.ToSymbol.EndsWith("Leaf", StringComparison.Ordinal)
+                && edge.Kind = UsesType)
+
+        let single = sourceWithUses 1 |> analyze |> relevantEdges
+
+        let repeated =
+            match sourceWithUses 2500 |> analyzeWithPolicy 100 true |> fst with
+            | Ok result -> relevantEdges result
+            | Error message -> failwith message
+
+        test <@ single.Length = 1 @>
+        test <@ repeated = single @>
+
+    [<Fact>]
+    let ``semantic generic cache is required to keep recreated wrappers within a low budget`` () =
+        let repeatedKey = List.replicate 50 "same-monomorphic-declaration"
+        let cached = TestHelpers.testSemanticTraversalMemo true 1 repeatedKey
+        let uncached = TestHelpers.testSemanticTraversalMemo false 1 repeatedKey
+
+        match cached with
+        | Ok(edges, computations) ->
+            test <@ computations = 1 @>
+            test <@ edges = List.replicate 50 [ "Leaf" ] @>
+        | Error message -> failwith message
+
+        match uncached with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "disabled semantic caching must exhaust the same low budget"
+
+        match TestHelpers.testSemanticTraversalMemo true 1 [ "first"; "second" ] with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "distinct semantic keys must not share cached traversal"
+
+    [<Fact>]
+    let ``semantic identity unifies recreated wrappers but separates declarations`` () =
+        let source =
+            "module SemanticIdentity\n"
+            + "type Leaf = { Value: int }\n"
+            + "type Holder() =\n"
+            + "    member _.One : Leaf list = []\n"
+            + "    member _.Two : Leaf list = []\n"
+            + "let consume (holder: Holder) = holder.One, holder.One, holder.Two"
+
+        let _, _, checkResults = checkSource source
+        let uses = checkResults.GetAllUsesOfAllSymbolsInFile()
+
+        let symbols name =
+            uses
+            |> Seq.filter (fun use' -> not use'.IsFromDefinition && use'.Symbol.DisplayName = name)
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let one = symbols "One"
+        let two = symbols "Two"
+
+        test <@ one.Length >= 2 @>
+        test <@ two.Length >= 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount one = 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount two = 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount (one @ two) = 2 @>
+
+
+    [<Fact>]
+    let ``generic declaration instantiations retain both concrete type edges`` () =
+        let result =
+            analyze
+                """
+module GenericInstantiations
+type Alpha = { A: int }
+type Beta = { B: int }
+let identity value = value
+let alpha : Alpha = identity { A = 1 }
+let beta : Beta = identity { B = 2 }
+"""
+
+        let genericSymbols =
+            let source =
+                "module GenericEligibility\nlet identity value = value\nlet one = identity 1\nlet two = identity \"two\"\n"
+
+            let _, _, checkResults = checkSource source
+
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.filter (fun use' -> use'.Symbol.DisplayName = "identity")
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let hasEdge fromName toName =
+            result.Dependencies
+            |> List.exists (fun edge ->
+                edge.FromSymbol.EndsWith(fromName, StringComparison.Ordinal)
+                && edge.ToSymbol.EndsWith(toName, StringComparison.Ordinal)
+                && edge.Kind = UsesType)
+
+        test <@ hasEdge "alpha" "Alpha" @>
+        test <@ hasEdge "beta" "Beta" @>
+        test <@ genericSymbols.Length >= 2 @>
+
+        test
+            <@
+                genericSymbols
+                |> List.forall (TestHelpers.testIsGenericEdgeSemanticKeyEligible >> not)
+            @>
 
     [<Fact>]
     let ``using generic type with concrete arg creates edge to arg type`` () =
