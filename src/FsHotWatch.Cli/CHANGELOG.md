@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.30 - 2026-08-29
+
 - chore(deps): bundle TestPrune.Core 8.1.5 and reuse the daemon's completed FCS
   payload for impact analysis instead of running a second compiler pass. One
   shared per-file traversal budget bounds all live FCS symbol walks; typed-AST
