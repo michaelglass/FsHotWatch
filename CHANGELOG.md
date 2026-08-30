@@ -4,11 +4,6 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-- **AUTOMATION-315:** coverage-derived source-file → test-project evidence is
-  unioned with TestPrune's AST selection. Project identity survives collection,
-  integration suites may opt into impact collection without the consumer
-  ratchet, and missing/stale complete evidence widens instead of narrowing.
-
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
@@ -78,6 +73,11 @@ All notable changes to FsHotWatch packages are documented here.
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+- **AUTOMATION-315:** coverage-derived source-file → test-project evidence is
+  unioned with TestPrune's AST selection. Project identity survives collection,
+  integration suites may opt into impact collection without the consumer
+  ratchet, and missing/stale complete evidence widens instead of narrowing.
 
 `check-reach` and the persisted verdict's `checkComparison.conditionalFailureRecall` now
 include measured failure recall for full-suite `confirm` evidence:
