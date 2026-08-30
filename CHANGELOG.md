@@ -4,10 +4,6 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-- Exclude CoverageRatchet's own portable-PDB sources from FsHotWatch coverage and
-  remove stale floors for three deleted FsHotWatch source files. Release gates now
-  fail only on live first-party coverage floors.
-
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
@@ -77,6 +73,10 @@ All notable changes to FsHotWatch packages are documented here.
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+- Exclude CoverageRatchet's own portable-PDB sources from FsHotWatch coverage and
+  remove stale floors for three deleted FsHotWatch source files. Release gates now
+  fail only on live first-party coverage floors.
 
 - **Release reliability:** pin FsSemanticTagger 0.14.0-alpha.7 and
   CoverageRatchet 0.15.0-alpha.14 so completed CI runs with skipped or neutral
