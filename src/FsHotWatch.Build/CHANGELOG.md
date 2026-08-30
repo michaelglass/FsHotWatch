@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- AUTOMATION-578: a nominally successful build now resolves each `MSB3026`
+  retry warning against the source and destination bytes after MSBuild exits. A
+  destination that is missing, unreadable, or still different fails the build
+  with both paths; a later retry that produced matching bytes remains a success.
+  Other build warnings retain their existing policy.
+
 ## 0.7.0-alpha.29 - 2026-08-29
 
 - fix: defer file-change builds while a TestPrune run is active. Coverage hosts
