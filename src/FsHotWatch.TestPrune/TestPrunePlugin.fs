@@ -1708,6 +1708,15 @@ let internal projectStructureHash (repoRoot: string) : string =
 /// call sites and is what the analyzer allow-list names.
 let internal verificationOf (results: Map<string, TestResult>) : RunVerification = RunVerification.ofResults results
 
+/// Refine the result-shaped receipt with the configured-suite boundary. An unfiltered
+/// result map can only mean FullSuite when it names every configured project; manual
+/// `--project` runs are unfiltered inside the selected projects but partial overall.
+let internal verificationWithin (configuredProjects: Set<string>) (results: Map<string, TestResult>) =
+    match verificationOf results with
+    | Ran FullSuite when results |> Map.keys |> Set.ofSeq = configuredProjects -> Ran FullSuite
+    | Ran FullSuite -> Ran RunScope.Partial
+    | other -> other
+
 /// "Projects ran, and every one of them matched nothing." The predicate the aggregators
 /// want; `NoProjectsSelected` is deliberately NOT this, because no project is not the
 /// same claim as every project matching nothing.
@@ -3699,7 +3708,10 @@ let private executeTests
               TotalElapsed = sw.Elapsed
               Outcome = Normal
               Results = finalResults
-              Verification = verificationOf finalResults }
+              Verification =
+                verificationWithin
+                    (configuredCoverageProjects |> List.map (fun c -> c.Project) |> Set.ofList)
+                    finalResults }
 
         match afterRun with
         | Some hook -> hook testResults
@@ -4030,8 +4042,12 @@ let internal cacheKeyFor
         // into state and there is no evidence to see. Its key is never used for a LOOKUP:
         // the framework does not replay over a `Custom` message at all, since a Custom's
         // payload is not in its key.
+        // AUTOMATION-357: this write feeds the key an ordinary whole-tree check reads.
+        // The terminal receipt therefore has to establish the whole configured suite;
+        // a green project-scoped/manual or impact-scoped run cannot mint broader proof.
         if
-            noProjectRefutedOrUnrun
+            completed.Verification = Ran FullSuite
+            && noProjectRefutedOrUnrun
             && notAborted
             && not allZeroMatchRun
             && (pendingQueueHash ()).IsNone

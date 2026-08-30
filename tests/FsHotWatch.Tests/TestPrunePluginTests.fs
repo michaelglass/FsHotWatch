@@ -4294,58 +4294,168 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 // returns no key when any project did not pass, making the failure uncacheable.
 // =============================================================================
 
+let private outcomeCacheKey event =
+    cacheKeyFor
+        (fun () -> "symbols")
+        (fun () -> None)
+        (fun () -> None)
+        (fun () -> "structure")
+        (fun () -> None)
+        (fun () -> false)
+        (fun () -> true)
+        event
+
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some for an all-pass`` () =
-    withTempDir "tp-cache-key-outcome" (fun tmpDir ->
-        let handler = create ":memory:" tmpDir None None None None None []
-        let cacheKeyFn = handler.CacheKey.Value
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
 
-        let started: TestRunStarted =
-            { RunId = Guid.NewGuid()
-              StartedAt = DateTime.UtcNow }
+    let completedWith (results: (string * TestResult) list) : TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results
+          Verification = Ran RunScope.FullSuite }
 
-        let completedWith (results: (string * TestResult) list) : TestRunCompleted =
-            { RunId = started.RunId
-              TotalElapsed = TimeSpan.Zero
-              Outcome = Normal
-              Results = Map.ofList results
-              Verification = Ran RunScope.FullSuite }
-
-        let failing =
-            Custom(
-                TestsFinished(
-                    started,
-                    completedWith
-                        [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
-                          "ProjB", TestsFailed("boom", false, TimeSpan.Zero) ],
-                    emptyLaunch
-                )
+    let failing =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith
+                    [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
+                      "ProjB", TestsFailed("boom", false, TimeSpan.Zero) ],
+                emptyLaunch
             )
+        )
 
-        let passing =
-            Custom(
-                TestsFinished(
-                    started,
-                    completedWith
-                        [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
-                          "ProjB", TestsPassed("ok", false, TimeSpan.Zero) ],
-                    emptyLaunch
-                )
+    let passing =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith
+                    [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
+                      "ProjB", TestsPassed("ok", false, TimeSpan.Zero) ],
+                emptyLaunch
             )
+        )
 
-        // A timed-out / deferred project is non-green too.
-        let timedOut =
-            Custom(
-                TestsFinished(
-                    started,
-                    completedWith [ "ProjA", TestsTimedOut("slow", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero) ],
-                    emptyLaunch
-                )
+    // A timed-out / deferred project is non-green too.
+    let timedOut =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith [ "ProjA", TestsTimedOut("slow", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero) ],
+                emptyLaunch
             )
+        )
 
-        test <@ (cacheKeyFn failing).IsNone @>
-        test <@ (cacheKeyFn timedOut).IsNone @>
-        test <@ (cacheKeyFn passing).IsSome @>)
+    test <@ (outcomeCacheKey failing).IsNone @>
+    test <@ (outcomeCacheKey timedOut).IsNone @>
+    test <@ (outcomeCacheKey passing).IsSome @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Regression", "AUTOMATION-357")>]
+let ``AUTOMATION-357: a green partial receipt cannot write a whole-tree cache entry`` () =
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
+
+    let completed verification : TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList [ "ProjA", TestsPassed("ok", true, TimeSpan.Zero) ]
+          Verification = verification }
+
+    let finished verification =
+        Custom(TestsFinished(started, completed verification, emptyLaunch))
+
+    let keyFor verification = outcomeCacheKey (finished verification)
+
+    // The break this catches: ignoring the run's receipt lets a narrow manual run mint
+    // the same entry an ordinary whole-tree check looks up.
+    test <@ (keyFor (Ran RunScope.Partial)).IsNone @>
+
+    // Positive control: this is not a blanket ban on caching green tests. A run whose
+    // own receipt says it covered the configured suite keeps the established fast path.
+    test <@ (keyFor (Ran RunScope.FullSuite)).IsSome @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Regression", "AUTOMATION-357")>]
+let ``AUTOMATION-357: an unfiltered project subset receives partial verification`` () =
+    let passed (project: string) : string * TestResult =
+        project, TestsPassed("ok", false, TimeSpan.Zero)
+
+    test
+        <@ verificationWithin (Set.ofList [ "ProjA"; "ProjB" ]) (Map.ofList [ passed "ProjA" ]) = Ran RunScope.Partial @>
+
+    test
+        <@
+            verificationWithin (Set.ofList [ "ProjA"; "ProjB" ]) (Map.ofList [ passed "ProjA"; passed "ProjB" ]) = Ran
+                RunScope.FullSuite
+        @>
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Regression", "AUTOMATION-357")>]
+let ``AUTOMATION-357: a project-scoped rerun cannot satisfy the next whole-suite check`` () =
+    withTempDir "tp-a357-partial-cache" (fun tmpDir ->
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+        let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cacheIface)
+        let runs = Path.Combine(tmpDir, "runs")
+
+        let config project =
+            { Project = project
+              Command = "sh"
+              Args = $"-c \"printf '%s{project}\\n' >> '%s{runs}'\""
+              Group = "default"
+              Environment = []
+              FilterTemplate = None
+              ClassJoin = " "
+              TimeoutSec = None
+              ReportVerificationFormat = AutoDetect }
+
+        let handler =
+            create
+                (Path.Combine(tmpDir, "tp.db"))
+                tmpDir
+                (Some [ config "ProjA"; config "ProjB" ])
+                None
+                None
+                None
+                None
+                []
+
+        host.RegisterHandler(handler)
+
+        let partialTerminal = beginAwaitNextTerminal host "test-prune"
+
+        host.RunCommand("run-tests", [| "{\"projects\":[\"ProjA\"]}" |])
+        |> Async.RunSynchronously
+        |> ignore
+
+        partialTerminal.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
+        let wholeTreeKey = handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+        test <@ wholeTreeKey.IsSome @>
+        test <@ (cacheIface.TryGet key wholeTreeKey.Value).IsNone @>
+
+        // Make the following ordinary BuildCompleted unambiguously owe the full suite.
+        // Before the fix, the partial run's cache entry replayed before this state could
+        // execute, leaving ProjB untouched. A miss reaches Update and runs both projects.
+        host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
+        |> Async.RunSynchronously
+        |> ignore
+
+        let fullTerminal = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        fullTerminal.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        let executions = File.ReadAllLines(runs) |> Array.countBy id |> Map.ofArray
+        test <@ executions.["ProjA"] = 2 @>
+        test <@ executions.["ProjB"] = 1 @>)
 
 // A filter that matched nothing is `TestsNoMatch`, for which `TestResult.isPassed` is
 // deliberately TRUE — per project, selecting nothing is not that project's failure — so
@@ -4356,38 +4466,34 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
 // zero-match is the case it misses.
 [<Fact(Timeout = 15000)>]
 let ``a run where every project matched zero tests is not cacheable as a green`` () =
-    withTempDir "tp-cache-key-zero-match" (fun tmpDir ->
-        let handler = create ":memory:" tmpDir None None None None None []
-        let cacheKeyFn = handler.CacheKey.Value
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
 
-        let started: TestRunStarted =
-            { RunId = Guid.NewGuid()
-              StartedAt = DateTime.UtcNow }
+    let completedWith (results: (string * TestResult) list) : TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results
+          Verification = Ran RunScope.FullSuite }
 
-        let completedWith (results: (string * TestResult) list) : TestRunCompleted =
-            { RunId = started.RunId
-              TotalElapsed = TimeSpan.Zero
-              Outcome = Normal
-              Results = Map.ofList results
-              Verification = Ran RunScope.FullSuite }
+    let zeroMatch = TestsNoMatch("Zero tests ran", TimeSpan.Zero)
 
-        let zeroMatch = TestsNoMatch("Zero tests ran", TimeSpan.Zero)
+    let allZeroMatch =
+        Custom(TestsFinished(started, completedWith [ "ProjA", zeroMatch; "ProjB", zeroMatch ], emptyLaunch))
 
-        let allZeroMatch =
-            Custom(TestsFinished(started, completedWith [ "ProjA", zeroMatch; "ProjB", zeroMatch ], emptyLaunch))
-
-        // The guard must key on "nothing was verified", not "a filter was used anywhere".
-        let mixed =
-            Custom(
-                TestsFinished(
-                    started,
-                    completedWith [ "ProjA", zeroMatch; "ProjB", TestsPassed("ok", true, TimeSpan.Zero) ],
-                    emptyLaunch
-                )
+    // The guard must key on "nothing was verified", not "a filter was used anywhere".
+    let mixed =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith [ "ProjA", zeroMatch; "ProjB", TestsPassed("ok", true, TimeSpan.Zero) ],
+                emptyLaunch
             )
+        )
 
-        test <@ (cacheKeyFn allZeroMatch).IsNone @>
-        test <@ (cacheKeyFn mixed).IsSome @>)
+    test <@ (outcomeCacheKey allZeroMatch).IsNone @>
+    test <@ (outcomeCacheKey mixed).IsSome @>
 
 // =============================================================================
 // tests.dependsOn — external-input cache-key salt. Editing a DB migration changes the

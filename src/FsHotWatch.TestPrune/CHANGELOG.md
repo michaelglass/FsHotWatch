@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-357): only a green run whose terminal receipt establishes the
+  full configured suite may populate the whole-tree outcome cache. Project- and
+  impact-scoped runs remain valid evidence for their own scope but can no longer
+  be replayed as proof that an ordinary whole-tree check ran.
+
 ## 0.13.0-alpha.25 - 2026-08-30
 
 - feat(AUTOMATION-315): preserve the producing test project and consumer-ratchet
