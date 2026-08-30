@@ -350,6 +350,12 @@ let internal armRuntimeCoverageUnknownDebt
 [<Literal>]
 let private ProjectRatchetCoverageTable = "fshw_project_ratchet_coverage"
 
+[<Literal>]
+let private ProjectRatchetMetadataTable = "fshw_project_ratchet_metadata"
+
+[<Literal>]
+let private ProjectRatchetSchemaVersion = 1
+
 type private ProjectRatchetCoveragePoint =
     { SymbolId: int64
       LineOffset: int
@@ -372,9 +378,57 @@ let private ensureProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.Sqlit
                 PRIMARY KEY (project, symbol_id, line_offset)
             );
             CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_symbol
-                ON %s{ProjectRatchetCoverageTable} (symbol_id);"""
+                ON %s{ProjectRatchetCoverageTable} (symbol_id);
+            CREATE TABLE IF NOT EXISTS %s{ProjectRatchetMetadataTable} (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                schema_version INTEGER NOT NULL,
+                legacy_output_invalidated INTEGER NOT NULL CHECK (legacy_output_invalidated IN (0, 1))
+            );
+            INSERT OR IGNORE INTO %s{ProjectRatchetMetadataTable}
+                (singleton, schema_version, legacy_output_invalidated)
+            SELECT 1,
+                   %d{ProjectRatchetSchemaVersion},
+                   CASE WHEN EXISTS (SELECT 1 FROM coverage_points LIMIT 1) THEN 0 ELSE 1 END;
+            UPDATE %s{ProjectRatchetMetadataTable}
+            SET schema_version = %d{ProjectRatchetSchemaVersion},
+                legacy_output_invalidated = 0
+            WHERE schema_version <> %d{ProjectRatchetSchemaVersion};"""
 
     cmd.ExecuteNonQuery() |> ignore
+
+/// The f311 ratchet had no project identity. If its Core high-water mark still
+/// exists when this plugin table first appears, the shared file cannot be
+/// subtracted honestly. Delete it once; a healthy attributed aggregate may be
+/// written later in the same call. A Core schema recreation has no legacy
+/// coverage points, so the marker starts settled and A67's cold no-clobber path
+/// remains intact.
+let private invalidateLegacyRatchetOutput (db: Database) (coverageOutput: string option) =
+    match coverageOutput with
+    | None -> false
+    | Some output ->
+        use conn = db.OpenConnection()
+        ensureProjectRatchetCoverageTable conn
+        use query = conn.CreateCommand()
+
+        query.CommandText <-
+            $"SELECT legacy_output_invalidated FROM %s{ProjectRatchetMetadataTable} WHERE singleton = 1;"
+
+        let pending =
+            Convert.ToInt32(query.ExecuteScalar(), CultureInfo.InvariantCulture) = 0
+
+        if pending then
+            // Commit the marker only AFTER deletion. A crash between these two
+            // operations retries the idempotent delete instead of accepting a
+            // stale projectless artifact as migrated.
+            File.Delete output
+            use update = conn.CreateCommand()
+
+            update.CommandText <-
+                $"UPDATE %s{ProjectRatchetMetadataTable} SET legacy_output_invalidated = 1 WHERE singleton = 1;"
+
+            update.ExecuteNonQuery() |> ignore
+
+        pending
 
 let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: string) =
     let rows = parseCobertura xml
@@ -588,6 +642,12 @@ let internal ingestAndEmitCoverageForProjects
     : CoverageIngestOutcome =
     let existing = inputs |> List.filter (fun input -> File.Exists input.RawPath)
 
+    let legacyOutputInvalidated =
+        if coverageOutput.IsNone && inputs.IsEmpty && Set.isEmpty enabledRatchetProjects then
+            false
+        else
+            invalidateLegacyRatchetOutput db coverageOutput
+
     let removedContributions =
         if coverageOutput.IsNone && inputs.IsEmpty && Set.isEmpty enabledRatchetProjects then
             0
@@ -655,7 +715,8 @@ let internal ingestAndEmitCoverageForProjects
         match coverageOutput with
         | None -> ()
         | Some _ when
-            removedContributions = 0
+            not legacyOutputInvalidated
+            && removedContributions = 0
             && not ratchetInputs.IsEmpty
             && symbolGraphLooksIncomplete totalIngested totalSkipped
             ->
@@ -671,7 +732,11 @@ let internal ingestAndEmitCoverageForProjects
                     Directory.CreateDirectory(dir) |> ignore
 
                 File.WriteAllText(out, xml)
-            | None when Set.isEmpty enabledRatchetProjects || removedContributions > 0 ->
+            | None when
+                legacyOutputInvalidated
+                || Set.isEmpty enabledRatchetProjects
+                || removedContributions > 0
+                ->
                 // An old shared file has no project identity. Once the eligible set
                 // shrinks, preserving that file would preserve the removed project's
                 // contribution. Absence is the only honest empty aggregate.
@@ -2920,6 +2985,7 @@ let private executeTests
     (coveragePaths: (string -> CoveragePaths option) option)
     (coverageIngestFailed: CoverageIngestFailure -> unit)
     (afterRun: (TestResults -> unit) option)
+    (configuredCoverageProjects: TestConfig list)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
@@ -2978,7 +3044,7 @@ let private executeTests
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
         let coveragePathsByProject =
-            configs
+            configuredCoverageProjects
             |> List.choose (fun config ->
                 coveragePaths
                 |> Option.bind (fun pathsForProject -> pathsForProject config.Project)
@@ -4018,6 +4084,7 @@ let create
     (dependsOn: string list)
     =
     let db = Database.create dbPath
+    let configuredTestProjects = testConfigs |> Option.defaultValue []
 
     // A recreated DB (schema bump) leaves the FCS check cache stale — see
     // `clearFcsCheckCache`.
@@ -5046,6 +5113,7 @@ let create
                             coveragePaths
                             coverageIngestFailed
                             afterRun
+                            configuredTestProjects
                             configs
                             affectedByProject
                             None
@@ -5145,6 +5213,7 @@ let create
                             coveragePaths
                             coverageIngestFailed
                             afterRun
+                            configuredTestProjects
                             configs
                             Map.empty
                             filter

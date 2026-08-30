@@ -3752,6 +3752,113 @@ let ``AUTOMATION-315 disabling a formerly ratcheted project removes its persiste
         test <@ not (after.Contains("number=\"11\"")) @>)
 
 [<Fact>]
+let ``AUTOMATION-315 first project-attributed ingest invalidates a legacy projectless ratchet`` () =
+    withTempDir "cov-ratchet-legacy-migration" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let integrationRaw = Path.Combine(dir, "integration.xml")
+        let sharedOut = Path.Combine(dir, "coverage", CoberturaName)
+        Directory.CreateDirectory(Path.GetDirectoryName sharedOut) |> ignore
+
+        // f311 persisted only the projectless Core high-water mark plus the shared
+        // consumer file. Deliberately never call the project-attributed ingest here.
+        let legacy = mkCobertura "Legacy" absFile [ (10, 3); (11, 7) ]
+        ingestCobertura db (Some repoRoot) legacy |> ignore
+        File.WriteAllText(sharedOut, legacy)
+
+        // Integration has become collect-only. With no attributable Unit baseline,
+        // preserving the legacy file would preserve Integration's historical line.
+        File.WriteAllText(integrationRaw, mkCobertura "IntegrationTests" absFile [ (11, 9) ])
+
+        ingestAndEmitCoverageForProjects
+            db
+            repoRoot
+            "first-attributed-run"
+            (set [ "UnitTests" ])
+            (Some sharedOut)
+            [ coverageInput "IntegrationTests" false integrationRaw ]
+        |> ignore
+
+        test <@ not (File.Exists sharedOut) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``AUTOMATION-315 project-filtered run keeps unrelated configured ratchet projects eligible`` () =
+    withTempDir "cov-ratchet-filtered-wiring" (fun dir ->
+        let repoRoot = dir
+        let dbPath = Path.Combine(dir, "test.db")
+        seedSymbolDb dbPath "src/Foo.fs" 10 12 |> ignore
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let sharedOut = Path.Combine(dir, "coverage", CoberturaName)
+        let mutable integrationEnabled = true
+
+        let configFor project line =
+            let source = Path.Combine(dir, $"%s{project}.source.xml")
+            let runner = Path.Combine(dir, $"%s{project}.runner.sh")
+            File.WriteAllText(source, mkCobertura project absFile [ (line, line) ])
+
+            File.WriteAllText(
+                runner,
+                $"""#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--coverage-output" ]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+cp "%s{source}" "$output"
+"""
+            )
+
+            { Project = project
+              Command = "sh"
+              Args = runner
+              Group = "default"
+              Environment = []
+              FilterTemplate = None
+              ClassJoin = " "
+              TimeoutSec = Some 10
+              ReportVerificationFormat = Disabled }
+
+        let configs = [ configFor "UnitTests" 10; configFor "IntegrationTests" 11 ]
+
+        let coveragePaths project =
+            let projectDir = Path.Combine(dir, "coverage", project)
+
+            Some
+                { Baseline = Path.Combine(projectDir, BaselineName)
+                  Partial = Path.Combine(projectDir, PartialName)
+                  Cobertura = sharedOut
+                  IncludeInRatchet = project = "UnitTests" || integrationEnabled
+                  ArgsTemplate = "--coverage-output {output}" }
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+
+        let handler =
+            create dbPath dir (Some configs) None None None (Some coveragePaths) []
+
+        host.RegisterHandler(handler)
+
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+        let before = File.ReadAllText sharedOut
+        test <@ before.Contains("number=\"10\"") @>
+        test <@ before.Contains("number=\"11\"") @>
+
+        integrationEnabled <- false
+
+        host.RunCommand("run-tests", [| """{"projects": ["IntegrationTests"]}""" |])
+        |> Async.RunSynchronously
+        |> ignore
+
+        let after = File.ReadAllText sharedOut
+        test <@ after.Contains("number=\"10\"") @>
+        test <@ not (after.Contains("number=\"11\"")) @>)
+
+[<Fact>]
 let ``AUTOMATION-315 coverage receipt removes stale artifact and accepts only a newly written successful result`` () =
     withTempDir "cov-fresh-receipt" (fun dir ->
         let rawPath = Path.Combine(dir, BaselineName)
