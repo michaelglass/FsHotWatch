@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.25 - 2026-08-30
+
 - feat(AUTOMATION-315): preserve the producing test project and consumer-ratchet
   intent on raw coverage inputs. Coverage configuration can now collect for
   TestPrune impact analysis without opting a project into the consumer ratchet

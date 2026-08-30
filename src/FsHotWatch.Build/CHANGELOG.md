@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-08-30
+
 - AUTOMATION-578: a nominally successful build now resolves each `MSB3026`
   retry warning against the source and destination bytes after MSBuild exits. A
   destination that is missing, unreadable, or still different fails the build
