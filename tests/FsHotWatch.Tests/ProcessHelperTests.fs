@@ -307,9 +307,13 @@ let ``mergeDotnetEnv injects MSBUILDDISABLENODEREUSE for dotnet`` () =
     Assert.Contains(("MSBUILDDISABLENODEREUSE", "1"), merged)
 
 [<Fact(Timeout = 15000)>]
-let ``mergeDotnetEnv leaves non-dotnet commands untouched`` () =
-    Assert.Empty(mergeDotnetEnv "sh" [])
-    Assert.Equal<(string * string) list>([ "FOO", "bar" ], mergeDotnetEnv "sh" [ "FOO", "bar" ])
+let ``mergeDotnetEnv injects the guard for wrapper commands`` () =
+    Assert.Contains(("MSBUILDDISABLENODEREUSE", "1"), mergeDotnetEnv "sh" [])
+
+    Assert.Equal<(string * string) list>(
+        [ "MSBUILDDISABLENODEREUSE", "1"; "FOO", "bar" ],
+        mergeDotnetEnv "sh" [ "FOO", "bar" ]
+    )
 
 [<Fact(Timeout = 15000)>]
 let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
@@ -333,6 +337,12 @@ let ``runProcess inherits the parent process environment (no scrubbing)`` () =
     let value = "nix-store-path-marker-" + Guid.NewGuid().ToString("N")
 
     withEnv key (Some value) (fun () -> runProcess "sh" (echoEnv key) "." [] |> expectStdout value)
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess gives wrapper descendants the MSBuild node-reuse guard`` () =
+    let args = "-c \"sh -c 'printf %s \\\"$MSBUILDDISABLENODEREUSE\\\"'\""
+
+    withEnv "MSBUILDDISABLENODEREUSE" None (fun () -> runProcess "sh" args "." [] |> expectStdout "1")
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess strips DOTNET_ROOT_ARM64 unconditionally`` () =

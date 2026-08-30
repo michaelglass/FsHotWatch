@@ -442,7 +442,9 @@ let internal classifyDrain
         ProcessOutput.DrainTimedOut(captured, window)
 
 /// True when the command will spawn `dotnet` (matching `dotnet`, `dotnet.exe`,
-/// or paths ending in either). Used to inject MSBUILDDISABLENODEREUSE.
+/// or paths ending in either). Retained as a public command-classification helper;
+/// the node-reuse guard itself now applies before every child process because a
+/// non-dotnet wrapper can launch dotnet later.
 let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
@@ -478,13 +480,12 @@ let private sanitizedChildEnvKeys =
       "MSBuildExtensionsPath"
       "MSBuildSDKsPath" ]
 
-/// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
-/// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
-let mergeDotnetEnv (command: string) (env: (string * string) list) : (string * string) list =
-    if
-        isDotnetCommand command
-        && not (env |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE"))
-    then
+/// Merge `MSBUILDDISABLENODEREUSE=1` into every child env unless the caller
+/// already set the key. A shell or other wrapper may launch `dotnet` after the
+/// immediate child starts, so deciding from the first executable loses the guard
+/// at exactly that process boundary. See docs/msbuild-node-reuse-bug.md.
+let mergeDotnetEnv (_command: string) (env: (string * string) list) : (string * string) list =
+    if not (env |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE")) then
         ("MSBUILDDISABLENODEREUSE", "1") :: env
     else
         env

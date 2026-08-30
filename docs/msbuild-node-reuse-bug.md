@@ -75,17 +75,16 @@ corroborate the orphan-accumulation phenomenon.
 ## Fix Location
 
 `src/FsHotWatch/ProcessHelper.fs` — `runProcess` injects
-`MSBUILDDISABLENODEREUSE=1` whenever the command basename is `dotnet`
-(or `dotnet.exe`) and the caller hasn't already set the key. This means
-all callers — BuildPlugin, TestPrunePlugin's per-project `dotnet run`,
-FileCommandPlugin when invoking `dotnet`, etc. — get the fix
-automatically without per-plugin duplication.
+`MSBUILDDISABLENODEREUSE=1` into every child environment when the caller
+hasn't already set the key. Applying the guard at the first process boundary
+also covers shell and tool wrappers whose descendants invoke `dotnet`; limiting
+it to an immediate `dotnet` basename allowed those nested MSBuild processes to
+reuse nodes. All callers get the fix automatically without per-plugin
+duplication.
 
 Tests: `tests/FsHotWatch.Tests/ProcessHelperTests.fs` covers
-`isDotnetCommand` matching and `mergeDotnetEnv` injection /
-caller-precedence behavior. The pure helpers are tested directly;
-spawning a real subprocess to assert the env reached it would require
-an end-to-end harness (see follow-ups).
+`isDotnetCommand` matching, `mergeDotnetEnv` injection / caller precedence,
+and a real shell-wrapper descendant observing the inherited guard.
 
 ## Possible Follow-ups
 
