@@ -662,8 +662,15 @@ let ``callKillWithin: a BLOCKING kill is cut off at the budget (AUTOMATION-454)`
         let elapsed = clock.Elapsed
 
         Assert.Equal(KillCall.DidNotReturn shortBudget, call)
-        // It waited for the budget...
-        Assert.True(elapsed >= shortBudget, $"gave up after %A{elapsed}, before the %A{shortBudget} budget")
+        // It waited for approximately the budget. `Task.Wait`'s timeout and this
+        // Stopwatch are separate clocks, so allow one scheduling quantum at the
+        // lower boundary (CI has observed a 250ms wait as 249.3ms here).
+        let schedulingTolerance = TimeSpan.FromMilliseconds 10.0
+
+        Assert.True(
+            elapsed >= shortBudget - schedulingTolerance,
+            $"gave up after %A{elapsed}, materially before the %A{shortBudget} budget"
+        )
         // ...and then it STOPPED waiting. Without the bound this line is never reached.
         Assert.True(elapsed < TimeSpan.FromSeconds 3.0, $"the budget did not cut the wait off: %A{elapsed}")
     finally
