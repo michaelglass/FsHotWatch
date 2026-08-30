@@ -51,11 +51,6 @@
         "platform": "linux"
       }
     ],
-    "CacheEventLog.fs": {
-      "line": 84,
-      "branch": 100,
-      "reason": "loosened automatically"
-    },
     "CheckCache.fs": [
       {
         "line": 80,
@@ -91,11 +86,6 @@
         "platform": "linux"
       }
     ],
-    "Cobertura.fs": {
-      "line": 60,
-      "branch": 43,
-      "reason": "loosened automatically"
-    },
     "ContentDedup.fs": [
       {
         "line": 82,
@@ -120,19 +110,6 @@
         "line": 97,
         "branch": 58,
         "reason": "provisional Linux floor (AUTOMATION-129, 2026-07-14): not measured locally; set below the macOS actual by the margin this repo already sees on pure-logic files (cf. CheckVerdict.fs), to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
-        "platform": "linux"
-      }
-    ],
-    "CoverageMerge.fs": [
-      {
-        "line": 97,
-        "branch": 65,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
-        "platform": "macos"
-      },
-      {
-        "line": 97,
-        "branch": 66,
         "platform": "linux"
       }
     ],
@@ -433,20 +410,6 @@
         "platform": "linux"
       }
     ],
-    "JjHelper.fs": [
-      {
-        "line": 58,
-        "branch": 40,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
-        "platform": "macos"
-      },
-      {
-        "line": 58,
-        "branch": 40,
-        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed — daemon scan is not hit during unit tests",
-        "platform": "linux"
-      }
-    ],
     "LintPlugin.fs": [
       {
         "line": 90,
@@ -475,11 +438,6 @@
         "platform": "linux"
       }
     ],
-    "Merge.fs": {
-      "line": 56,
-      "branch": 39,
-      "reason": "loosened automatically"
-    },
     "OperationWatchdog.fs": [
       {
         "line": 84,
@@ -647,11 +605,6 @@
         "platform": "linux"
       }
     ],
-    "Ratchet.fs": {
-      "line": 0,
-      "branch": 0,
-      "reason": "loosened automatically"
-    },
     "RunLog.fs": [
       {
         "line": 94,
@@ -735,11 +688,6 @@
         "platform": "linux"
       }
     ],
-    "Thresholds.fs": {
-      "line": 59,
-      "branch": 30,
-      "reason": "loosened automatically"
-    },
     "TreeHash.fs": [
       {
         "line": 100,
