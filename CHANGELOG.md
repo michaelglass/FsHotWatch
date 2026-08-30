@@ -74,6 +74,10 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **Release reliability:** pin FsSemanticTagger 0.14.0-alpha.7 and
+  CoverageRatchet 0.15.0-alpha.14 so completed CI runs with skipped or neutral
+  matrix jobs no longer stall or falsely fail guarded releases.
+
 - **AUTOMATION-315:** coverage-derived source-file → test-project evidence is
   unioned with TestPrune's AST selection. Project identity survives collection,
   integration suites may opt into impact collection without the consumer
