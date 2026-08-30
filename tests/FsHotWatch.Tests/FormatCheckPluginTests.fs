@@ -395,37 +395,36 @@ let ``format check clears errors when file becomes formatted`` () =
         host.RegisterHandler(handler)
 
         // First: unformatted
+        let firstTerminal = beginAwaitTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            15000
+        test <@ firstTerminal.Wait(TimeSpan.FromSeconds 15.0) @>
+
+        test
+            <@
+                match firstTerminal.Result with
+                | Completed _ -> true
+                | _ -> false
+            @>
 
         let errors1 = host.GetErrors()
         test <@ not errors1.IsEmpty @>
 
         // Now fix the file
+        // Subscribe before emitting: this small clean-file run can otherwise pass
+        // through Running to Completed between two status polls.
+        let secondTerminal = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
 
-        // Wait for the second run to start (status leaves Completed)
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> false
-                | _ -> true)
-            15000
+        test <@ secondTerminal.Wait(TimeSpan.FromSeconds 15.0) @>
 
-        // Then wait for it to finish
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            15000
+        test
+            <@
+                match secondTerminal.Result with
+                | Completed _ -> true
+                | _ -> false
+            @>
 
         let errors2 = host.GetErrors()
         let fileErrors = errors2 |> Map.tryFind file
