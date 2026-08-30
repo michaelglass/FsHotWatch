@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.32 - 2026-08-30
+
 - feat(AUTOMATION-315): `tests.projects[].coverage` now accepts independent
   `enabled` and `collectForImpact` booleans. This lets integration projects feed
   project-attributed runtime impact selection without joining the consumer
