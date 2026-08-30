@@ -136,6 +136,13 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
           DeclaredCount = 0
           AbsentDeclarationCount = 0 } }
 
+let private structuralRedCause: Verdict.RedCause =
+    { Source = "test-fixture"
+      File = "src/Lib/Thing.fs"
+      Severity = "error"
+      Message = "the fixture's structural failure"
+      Kind = Verdict.AboutThisTree }
+
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
 let private serializeSpec (s: Spec) : string = Verdict.serialize (build s)
 
@@ -308,6 +315,7 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
                     Scope = ImpactFiltered(2, 6)
                     Outcome = Verdict.Red
                     ExitCode = 1
+                    RedCauses = [ structuralRedCause ]
                     Suites =
                         [ { Project = "Lib.Tests"
                             Ctrf = ".fshw/test-runs/Lib.Tests-0123456789abcdef0123456789abcdef.ctrf.json"
@@ -1270,7 +1278,8 @@ let ``Verdict.create refuses a CONFIRM carrying an impact-filtered scope`` () =
                 { spec with
                     Scope = ImpactFiltered(5, 6)
                     Outcome = Verdict.Red
-                    ExitCode = 1 }
+                    ExitCode = 1
+                    RedCauses = [ structuralRedCause ] }
         @>
 
     // The rule is about the PAIR, not about being non-green: an INCOMPLETE confirm cannot
@@ -1347,6 +1356,11 @@ let ``a confirm whose forced full run did not complete records no filtered scope
     // projection of `LastCoverage`), and publishing must not write that down verbatim.
     withTempDir "verdict-confirm-escalation" (fun root ->
         let publish (mode: CheckVerdict.CheckMode) (scope: TestScope) (outcome: CheckVerdict.CheckOutcome) =
+            let redCauses =
+                match outcome with
+                | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
+                | _ -> []
+
             IpcOutput.publishVerdict
                 root
                 []
@@ -1355,7 +1369,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 (TestRunReport.ofScopeOnly scope)
                 Verdict.NoReading
                 Map.empty
-                []
+                redCauses
                 (IpcOutput.SettledTree.capture root [])
                 outcome
             |> ignore
@@ -1445,6 +1459,11 @@ let private publishConfirm
     (impactScoped: Verdict.ImpactScopedRun option)
     (outcome: CheckVerdict.CheckOutcome)
     : Verdict.Verdict =
+    let redCauses =
+        match outcome with
+        | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
+        | _ -> []
+
     IpcOutput.publishVerdict
         root
         []
@@ -1455,7 +1474,7 @@ let private publishConfirm
          | Some reading -> Verdict.ExecutedReading(reading, ReachUnavailable "test fixture")
          | None -> Verdict.NoReading)
         Map.empty
-        []
+        redCauses
         (IpcOutput.SettledTree.capture root [])
         outcome
     |> ignore
@@ -2433,7 +2452,8 @@ let ``every Report case has its own exit code, and none of them is a silent 0`` 
         build
             { spec with
                 Outcome = Verdict.Red
-                ExitCode = 1 }
+                ExitCode = 1
+                RedCauses = [ structuralRedCause ] }
 
     test <@ Verdict.reportExitCode (Verdict.Report.Applies red) = 1 @>
 
@@ -2732,7 +2752,8 @@ let ``AUTOMATION-161: a RED verdict does not short-circuit — confirm re-runs a
             { greenVerdict tree.Hash tree.FileCount with
                 Scope = FullSuite 1
                 Outcome = Verdict.Red
-                ExitCode = 1 }
+                ExitCode = 1
+                RedCauses = [ structuralRedCause ] }
 
         test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
 
@@ -2799,19 +2820,17 @@ let ``the failing-plugin hint is NOT a blanket — a green run names no plugin a
     test <@ not (joined.Contains "UNEXPLAINED") @>
 
 [<Fact>]
-let ``a red run that names NOTHING says so — a tidy block with a non-zero exit is the worst case`` () =
-    let hints =
-        hintsFor
+let ``AUTOMATION-357: Verdict.create refuses a red with no failing plugin and no structural cause`` () =
+    let construct () =
+        build
             { greenVerdict "deadbeef" 10 with
                 Outcome = Verdict.Red
                 ExitCode = 1
                 Plugins = []
-                Suites = allSuitesGreen }
+                Suites = allSuitesGreen
+                RedCauses = [] }
 
-    let joined = String.Join("\n", hints)
-
-    test <@ joined.Contains "UNEXPLAINED" @>
-    test <@ joined.Contains "do NOT read this as a pass" @>
+    raises<ArgumentException> <@ construct () @>
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-303 case 3 — the verdict must explain its own exit code
@@ -2866,24 +2885,24 @@ let ``AUTOMATION-303: a red with every plugin ok NAMES the diagnostics that redd
         test <@ not (joined.Contains "UNEXPLAINED") @>)
 
 [<Fact>]
-let ``AUTOMATION-303: the UNEXPLAINED hint still fires when nothing at all is named`` () =
-    // THE POSITIVE CONTROL for the `not (joined.Contains "UNEXPLAINED")` assertion
-    // above. An absence test over a detector that cannot fire is worth nothing: this is
-    // the same verdict with the causes removed, and it must still say so loudly.
-    let joined =
-        String.Join(
-            "\n",
-            hintsFor
-                { greenVerdict "deadbeef" 10 with
-                    Outcome = Verdict.Red
-                    ExitCode = 1
-                    Plugins = []
-                    Suites = allSuitesGreen
-                    RedCauses = [] }
+let ``AUTOMATION-357: a persisted unexplained red degrades to incomplete`` () =
+    withTempDir "verdict-unexplained-red" (fun root ->
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+
+        File.WriteAllText(
+            Verdict.path root,
+            """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"red"},
+                "exitCode":1,"plugins":[],"reddenedBy":[],"reddenedByCount":0}"""
         )
 
-    test <@ joined.Contains "UNEXPLAINED" @>
-    test <@ not (joined.Contains "REDDENED") @>
+        match Verdict.read root with
+        | Verdict.Reading.Found verdict ->
+            match verdict.Outcome with
+            | Verdict.Incomplete reason -> test <@ reason.Contains "no failing plugin" @>
+            | other -> failwithf "an unexplained persisted red must degrade to INCOMPLETE, got %A" other
+
+            test <@ verdict.ExitCode = 2 @>
+        | other -> failwithf "an unexplained persisted red must remain a fail-closed reading, got %A" other)
 
 [<Fact>]
 let ``AUTOMATION-303: a flood of causes is truncated but its true count is not`` () =
@@ -3341,6 +3360,7 @@ let ``AUTOMATION-111: a recall miss is named as a SELECTION BUG in the verdict o
         hintsFor
             { greenVerdict "t" 1 with
                 Outcome = Verdict.Red
+                RedCauses = [ structuralRedCause ]
                 Comparison = comparisonWith Verdict.Divergence.CheckMissedFailures }
 
     let text = String.concat "\n" hints
@@ -3361,6 +3381,7 @@ let ``AUTOMATION-67: verdict output reports the persisted conditional recall fra
         hintsFor
             { greenVerdict "t" 1 with
                 Outcome = Verdict.Red
+                RedCauses = [ structuralRedCause ]
                 Comparison = comparison }
         |> String.concat "\n"
 
@@ -3394,6 +3415,7 @@ let ``AUTOMATION-111: the recall alarm is the FIRST thing in the block`` () =
         hintsFor
             { greenVerdict "t" 1 with
                 Outcome = Verdict.Red
+                RedCauses = [ structuralRedCause ]
                 Comparison = comparisonWith Verdict.Divergence.CheckMissedFailures }
 
     test <@ hints |> List.head |> (fun l -> l.Contains "RECALL") @>
@@ -3420,6 +3442,7 @@ let ``AUTOMATION-111: no recall alarm when the two readings agreed`` () =
             hintsFor
                 { greenVerdict "t" 1 with
                     Outcome = Verdict.Red
+                    RedCauses = [ structuralRedCause ]
                     Comparison = c }
 
         let text = String.concat "\n" hints

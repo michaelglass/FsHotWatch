@@ -981,16 +981,28 @@ type Verdict =
     /// How many seeds there were before `Trigger` was truncated.
     member this.TriggerCount = this.triggerCount
 
-/// The invariants. THREE, and they are the same lie in three places: a record whose own
+let private hasFailingPlugin (v: Verdict) : bool =
+    v.Plugins |> List.exists (fun p -> PluginOutcome.isFailing p.Outcome)
+
+let private isUnexplainedRed (v: Verdict) : bool =
+    v.Outcome = Red && not (hasFailingPlugin v) && List.isEmpty v.RedCauses
+
+[<Literal>]
+let private UnexplainedRedReason =
+    "the recorded red names no failing plugin and no structural red cause — it cannot establish what failed"
+
+/// The invariants. FOUR, and they are the same lie in four places: a record whose own
 /// fields disagree, so that reading any ONE of them cold gives the wrong answer.
 ///
 ///   * a GREEN verdict may not contain a failing plugin;
+///   * a RED verdict must name a failing plugin or a structural red cause;
 ///   * a CONFIRM verdict may not carry an `ImpactFiltered` scope;
 ///   * a check-vs-confirm classification may not disagree with the reading beside it.
 ///
 /// Both construction sites — `create` (producing) and `read` (rehydrating from disk) —
-/// go through this, so a hand-edited or hostile verdict file is refused on the way IN
-/// as well as being impossible on the way out.
+/// go through this. A hand-edited or hostile contradiction is therefore refused on the
+/// way IN; the one legacy shape with an honest conservative migration (an unexplained
+/// red) is degraded to `Incomplete` before validation rather than preserved as red.
 let private validate (v: Verdict) : Result<Verdict, string> =
     // AUTOMATION-258. `confirm` never accepts a filtered run: it DETECTS one and escalates
     // to the full suite (`CheckVerdict.confirmNeedsFullRun`), and `CheckVerdict.verdict`
@@ -1011,8 +1023,9 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 
     let outcomeAgreesWithPlugins () =
         match v.Outcome with
-        | Red
         | Incomplete _ -> Ok v
+        | Red when isUnexplainedRed v -> Error $"a RED verdict is unexplained — %s{UnexplainedRedReason}."
+        | Red -> Ok v
         | Green ->
             match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
             | [] -> Ok v
@@ -1755,7 +1768,21 @@ let read (repoRoot: string) : Reading =
                              | _ -> [])
                           triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0 }
 
-                    match validate rehydrated with
+                    // AUTOMATION-357. Old and malformed files can carry a bare red with
+                    // no structural evidence. It is still a usable, fail-closed reading,
+                    // but it cannot remain load-bearing as a claim that something failed.
+                    // Degrade it to the wire's existing third answer and its established
+                    // exit code rather than promoting silence to Red or discarding the
+                    // whole record as unreadable.
+                    let failClosed =
+                        if isUnexplainedRed rehydrated then
+                            { rehydrated with
+                                outcome = Incomplete UnexplainedRedReason
+                                exitCode = CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete 0) }
+                        else
+                            rehydrated
+
+                    match validate failClosed with
                     | Ok v -> Reading.Found v
                     | Error reason -> Reading.Unreadable reason
                 | None, _, _, _ -> Reading.Unreadable "no treeHash — the verdict does not say which tree it verified"
