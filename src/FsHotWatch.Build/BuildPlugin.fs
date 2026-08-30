@@ -98,6 +98,108 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
 
         BuildOutputFailed [ output ], entries
 
+/// A retryable MSBuild copy warning retains the exact files whose relationship must
+/// be checked after the subprocess exits. MSB3026 is not itself a failure: MSBuild
+/// commonly emits it before a later retry succeeds.
+type CopyRetryWarning =
+    { Source: string
+      Destination: string
+      Project: string option }
+
+let private copyRetryWarningRegex =
+    System.Text.RegularExpressions.Regex(
+        @"warning\s+MSB3026:\s+Could not copy ""([^""]+)"" to ""([^""]+)""\.(?<tail>[^\r\n]*)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        ||| System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+let private projectSuffixRegex =
+    System.Text.RegularExpressions.Regex(
+        @"\[([^\[\]]+\.(?:fs|cs|vb)proj)\]\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        ||| System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+/// Parse only MSBuild's structured retry warning. Other warnings retain their normal
+/// diagnostics policy and never enter the copy-resolution gate.
+let parseCopyRetryWarnings (output: string) : CopyRetryWarning list =
+    copyRetryWarningRegex.Matches(output)
+    |> Seq.cast<System.Text.RegularExpressions.Match>
+    |> Seq.map (fun m ->
+        let projectMatch = projectSuffixRegex.Match(m.Groups.["tail"].Value)
+
+        { Source = m.Groups.[1].Value
+          Destination = m.Groups.[2].Value
+          Project =
+            if projectMatch.Success then
+                Some projectMatch.Groups.[1].Value
+            else
+                None })
+    |> Seq.distinct
+    |> Seq.toList
+
+let private resolveCopyRetryPath (repoRoot: string) (warning: CopyRetryWarning) (path: string) : string =
+    if Path.IsPathRooted path then
+        Path.GetFullPath path
+    else
+        let baseDirectory =
+            match warning.Project with
+            | Some project ->
+                let projectPath =
+                    if Path.IsPathRooted project then
+                        project
+                    else
+                        Path.Combine(repoRoot, project)
+
+                Path.GetDirectoryName(Path.GetFullPath projectPath)
+            | None -> repoRoot
+
+        Path.GetFullPath(Path.Combine(baseDirectory, path))
+
+/// After a nominally successful build, distinguish an MSB3026 retry that recovered
+/// from one that left its destination absent, unreadable, or holding different bytes.
+/// Hashing is injected so the filesystem boundary is deterministic in unit tests.
+let verifyCopyRetryWarningsWith
+    (hashFile: string -> string)
+    (repoRoot: string)
+    (outcome: BuildOutcome)
+    (entries: ErrorEntry list)
+    : BuildOutcome * ErrorEntry list =
+    match outcome with
+    | BuildPassed output ->
+        let unresolved =
+            parseCopyRetryWarnings output
+            |> List.choose (fun warning ->
+                let source = resolveCopyRetryPath repoRoot warning warning.Source
+                let destination = resolveCopyRetryPath repoRoot warning warning.Destination
+                let sourceHash = hashFile source
+                let destinationHash = hashFile destination
+
+                if
+                    not (FsHotWatch.ContentHash.isReadable sourceHash)
+                    || not (FsHotWatch.ContentHash.isReadable destinationHash)
+                    || sourceHash <> destinationHash
+                then
+                    Some(source, destination)
+                else
+                    None)
+
+        match unresolved with
+        | [] -> outcome, entries
+        | warnings ->
+            let diagnostic =
+                "Build subprocess reported success, but an MSB3026 copy is still unresolved after all retries:\n"
+                + (warnings
+                   |> List.map (fun (source, destination) -> $"%s{source} -> %s{destination}")
+                   |> String.concat "\n")
+
+            BuildOutputFailed [ diagnostic ], entries @ [ ErrorEntry.error diagnostic ]
+    | BuildArtifactsStale _
+    | BuildOutputFailed _ -> outcome, entries
+
+let private verifyCopyRetryWarnings repoRoot =
+    verifyCopyRetryWarningsWith FsHotWatch.ContentHash.ofFile repoRoot
+
 /// stable merkle key for the build cache, independent of the cold-start
 /// guard. Pure function — exposed `internal` so unit tests can assert the key
 /// responds to its inputs without driving a full plugin lifecycle to flip the
@@ -910,7 +1012,10 @@ let createWith
                             let (rawOutcome, entries) =
                                 decideBuildOutcome (isSucceeded result) (outputOf result)
 
-                            let outcome = verifyAndDemote rawOutcome
+                            let copyVerifiedOutcome, verifiedEntries =
+                                verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
+
+                            let outcome = verifyAndDemote copyVerifiedOutcome
 
                             match outcome, result with
                             | BuildOutputFailed _, TimedOut(after, _, kill) ->
@@ -944,7 +1049,7 @@ let createWith
                                 error "build" "Build FAILED"
                             | _ -> ()
 
-                            return applyBuildOutcome ctx outcome entries (DateTime.UtcNow - buildStarted)
+                            return applyBuildOutcome ctx outcome verifiedEntries (DateTime.UtcNow - buildStarted)
                         with ex ->
                             let crashEntry = ErrorEntry.error ex.Message
                             // ReportErrors / EmitBuildCompleted belong to the synchronous
@@ -1058,11 +1163,14 @@ let createWith
 
                                         BuildOutputFailed failedOutputs, entries
 
+                                let copyVerifiedOutcome, verifiedEntries =
+                                    verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
+
                                 return
                                     applyBuildOutcome
                                         ctx
-                                        (verifyAndDemote rawOutcome)
-                                        entries
+                                        (verifyAndDemote copyVerifiedOutcome)
+                                        verifiedEntries
                                         (DateTime.UtcNow - buildStarted)
                             with ex ->
                                 error "build" $"Unexpected error: %s{ex.Message}"

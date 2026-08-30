@@ -34,6 +34,181 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
     test <@ entries.[0].Line = 3 @>
 
 [<Fact(Timeout = 15000)>]
+let ``successful build is refused when an MSB3026 migration copy remains unresolved`` () =
+    let source = "/repo/src/Database/bin/Debug/net10.0/Thellma.Database.Migrations.dll"
+
+    let destination =
+        "/repo/tests/Integration/bin/Debug/net10.0/Thellma.Database.Migrations.dll"
+
+    let output =
+        "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net10.0/Thellma.Database.Migrations.dll\" to \"bin/Debug/net10.0/Thellma.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
+
+    let rawOutcome, entries = decideBuildOutcome true output
+
+    let outcome, verifiedEntries =
+        verifyCopyRetryWarningsWith
+            (fun path ->
+                if path = source then
+                    "source-hash"
+                else
+                    FsHotWatch.ContentHash.UnhashableContent)
+            "/repo"
+            rawOutcome
+            entries
+
+    match outcome with
+    | BuildOutputFailed [ diagnostic ] ->
+        test <@ diagnostic.Contains source @>
+        test <@ diagnostic.Contains destination @>
+        test <@ diagnostic.Contains "still unresolved" @>
+    | actual -> failwithf "expected unresolved copy failure, got %A" actual
+
+    test
+        <@
+            verifiedEntries
+            |> List.exists (fun entry -> entry.Severity = DiagnosticSeverity.Error)
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``MSB3026 retry that eventually copied matching dependency bytes remains successful`` () =
+    let source = "/repo/src/Lib/bin/Debug/net10.0/Dependency.dll"
+    let destination = "/repo/tests/Tests/bin/Debug/net10.0/Dependency.dll"
+
+    let output =
+        $"/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"%s{source}\" to \"%s{destination}\". Beginning retry 2 in 1000ms. The process cannot access the file."
+
+    let rawOutcome, entries = decideBuildOutcome true output
+
+    let outcome, verifiedEntries =
+        verifyCopyRetryWarningsWith (fun _ -> "matching-hash") "/repo" rawOutcome entries
+
+    test <@ outcome = BuildPassed output @>
+    test <@ verifiedEntries = entries @>
+
+[<Fact(Timeout = 15000)>]
+let ``MSB3026 destination with stale bytes is refused even when the file exists`` () =
+    let output =
+        "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
+
+    let rawOutcome, entries = decideBuildOutcome true output
+
+    let outcome, _ =
+        verifyCopyRetryWarningsWith
+            (fun path ->
+                if path.EndsWith("source.dll") then
+                    "new-bytes"
+                else
+                    "old-bytes")
+            "/repo"
+            rawOutcome
+            entries
+
+    test
+        <@
+            match outcome with
+            | BuildOutputFailed _ -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``copy verifier ignores unrelated warnings and existing failed outcomes`` () =
+    let warningOutput = "/repo/Lib.fs(1,1): warning FS0040: ordinary compiler warning"
+    let passed, warningEntries = decideBuildOutcome true warningOutput
+    let mutable hashes = 0
+
+    let hash (_: string) =
+        hashes <- hashes + 1
+        "unused"
+
+    test <@ verifyCopyRetryWarningsWith hash "/repo" passed warningEntries = (passed, warningEntries) @>
+
+    let failed = BuildOutputFailed [ "already failed" ]
+    test <@ verifyCopyRetryWarningsWith hash "/repo" failed warningEntries = (failed, warningEntries) @>
+    test <@ hashes = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``duplicate MSB3026 retries verify and diagnose one copy pair`` () =
+    let line =
+        "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
+
+    let output = line + "\n" + line.Replace("retry 1", "retry 2")
+    let rawOutcome, entries = decideBuildOutcome true output
+    let mutable hashes = 0
+
+    let outcome, _ =
+        verifyCopyRetryWarningsWith
+            (fun _ ->
+                hashes <- hashes + 1
+                FsHotWatch.ContentHash.UnhashableContent)
+            "/repo"
+            rawOutcome
+            entries
+
+    test <@ parseCopyRetryWarnings output |> List.length = 1 @>
+    test <@ hashes = 2 @>
+
+    match outcome with
+    | BuildOutputFailed [ diagnostic ] ->
+        let pair = "/repo/source.dll -> /repo/destination.dll"
+
+        test
+            <@
+                diagnostic.IndexOf(pair, StringComparison.Ordinal) = diagnostic.LastIndexOf(
+                    pair,
+                    StringComparison.Ordinal
+                )
+            @>
+    | actual -> failwithf "expected one unresolved-copy diagnostic, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``unreadable source and unreadable destination both refuse copy evidence`` () =
+    let output =
+        "/sdk/targets(1,1): warning MSB3026: Could not copy \"/repo/source.dll\" to \"/repo/destination.dll\". Beginning retry 1 in 1000ms."
+
+    let rawOutcome, entries = decideBuildOutcome true output
+
+    let refuses unreadablePath =
+        verifyCopyRetryWarningsWith
+            (fun path ->
+                if path = unreadablePath then
+                    FsHotWatch.ContentHash.UnhashableContent
+                else
+                    "readable")
+            "/repo"
+            rawOutcome
+            entries
+        |> fst
+        |> function
+            | BuildOutputFailed _ -> true
+            | _ -> false
+
+    test <@ refuses "/repo/source.dll" @>
+    test <@ refuses "/repo/destination.dll" @>
+
+[<Fact(Timeout = 15000)>]
+let ``copy verifier passes BuildArtifactsStale through without hashing`` () =
+    let stale =
+        BuildArtifactsStale(
+            [ { Project = "Lib"
+                Reason = DllMissing "/repo/Lib.dll" } ],
+            "nominal output"
+        )
+
+    let mutable hashes = 0
+
+    let result =
+        verifyCopyRetryWarningsWith
+            (fun _ ->
+                hashes <- hashes + 1
+                "unused")
+            "/repo"
+            stale
+            []
+
+    test <@ result = (stale, []) @>
+    test <@ hashes = 0 @>
+
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and parsed entries`` () =
     let output =
         "/src/Foo.fs(12,5): error FS0001: This expression was expected to have type int"
@@ -124,6 +299,58 @@ let ``formatSilentFailureDiagnostic omits elapsed when not present`` () =
     let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)"
     let detail = formatSilentFailureDiagnostic 1 output
     test <@ not (detail.Contains "elapsed=") @>
+
+let private writeUnresolvedCopyWarningScript (tmpDir: string) =
+    let script = System.IO.Path.Combine(tmpDir, "copy-warning.sh")
+    let source = System.IO.Path.Combine(tmpDir, "missing", "Migration.dll")
+    let destination = System.IO.Path.Combine(tmpDir, "bin", "Migration.dll")
+
+    let warning =
+        $"/sdk/targets(1,1): warning MSB3026: Could not copy \"%s{source}\" to \"%s{destination}\". Beginning retry 1 in 1000ms."
+
+    System.IO.File.WriteAllText(script, "#!/bin/sh\nprintf '%s\\n' '" + warning + "'\n")
+    script
+
+let private assertUnresolvedCopyFailure (getBuild: unit -> BuildResult option) =
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
+
+    match getBuild () with
+    | Some(BuildFailed [ diagnostic ]) -> test <@ diagnostic.Contains "still unresolved" @>
+    | actual -> failwithf "expected unresolved-copy BuildFailed, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``ordinary build handler verifies MSB3026 copies before emitting BuildSucceeded`` () =
+    withTempDir "build-copy-warning-ordinary" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let getBuild, recorder = buildRecorder ()
+        let script = writeUnresolvedCopyWarningScript tmpDir
+        let handler = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+
+        host.RegisterHandler(recorder)
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Lib.fs") ])
+        waitForTerminalStatus host "build" 12000
+        assertUnresolvedCopyFailure getBuild)
+
+[<Fact(Timeout = 15000)>]
+let ``template build handler verifies MSB3026 copies before emitting BuildSucceeded`` () =
+    withTempDir "build-copy-warning-template" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let getBuild, recorder = buildRecorder ()
+        let script = writeUnresolvedCopyWarningScript tmpDir
+        let graph = ProjectGraph()
+        let project = System.IO.Path.Combine(tmpDir, "src", "Lib", "Lib.fsproj")
+        let source = System.IO.Path.Combine(tmpDir, "src", "Lib", "Lib.fs")
+        graph.RegisterProject(AbsProjectPath.create project, [ AbsFilePath.create source ], [])
+
+        let handler =
+            BuildPlugin.create "should-not-run" "" [] graph [] (Some $"sh %s{script} {{project}}") [] None
+
+        host.RegisterHandler(recorder)
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ source ])
+        waitForTerminalStatus host "build" 12000
+        assertUnresolvedCopyFailure getBuild)
 
 [<Fact(Timeout = 15000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
