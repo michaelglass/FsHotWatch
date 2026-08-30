@@ -3494,7 +3494,7 @@ let ``AUTOMATION-315 runtime selector widens missing and stale configured projec
         // is the tracer's static miss. Only project-attributed runtime coverage
         // can select CurrentTests for the changed file.
         db.RebuildProjects([ AnalysisResult.Create(runtimeTarget :: testSymbols, [], testMethods) ])
-        test <@ db.QueryAffectedTests([ runtimeTarget.FullName ]) = [] @>
+        test <@ db.QueryAffectedTests([ runtimeTarget.FullName ]).IsEmpty @>
         db.ReplaceRuntimeCoverage("CurrentTests", "current", [ "src/Foo.fs" ])
         db.ReplaceRuntimeCoverage("StaleTests", "old", [ "src/Other.fs" ])
         db.ReplaceRuntimeCoverage("UnconfiguredTests", "other", [ "src/Foo.fs" ])
@@ -3526,6 +3526,29 @@ let ``AUTOMATION-315 runtime selector widens missing and stale configured projec
                     | "StaleTests", StaleBaseline _ -> true
                     | _ -> false)
             @>)
+
+[<Fact>]
+let ``AUTOMATION-315 runtime widening is diagnosed when the AST change has zero symbols`` () =
+    let observedAt =
+        DateTimeOffset.UtcNow.Subtract(RuntimeCoverageMaxAge).AddMinutes(-1.0)
+
+    let selection =
+        { ProjectsByFile = Map.ofList [ "src/RuntimeOnly.fs", set [ "RuntimeTests" ] ]
+          Widenings =
+            [ "MissingRuntimeTests", MissingBaseline
+              "StaleRuntimeTests", StaleBaseline observedAt ] }
+
+    let messages = ResizeArray<string>()
+
+    // No symbol list participates in this reporting boundary: a file-level runtime
+    // widening remains visible even when symbol extraction yielded [] for the edit.
+    reportRuntimeCoverageWidenings messages.Add selection
+
+    test <@ messages.Count = 2 @>
+    test <@ messages.[0].Contains "MissingRuntimeTests" @>
+    test <@ messages.[0].Contains "no complete baseline" @>
+    test <@ messages.[1].Contains "StaleRuntimeTests" @>
+    test <@ messages.[1].Contains "older than" @>
 
 [<Fact>]
 let ``AUTOMATION-315 runtime file obligations survive restart without cross-producting projects`` () =
@@ -3684,6 +3707,51 @@ let ``AUTOMATION-315 collect-only coverage stays project-attributed and out of r
         test <@ db.GetRuntimeCoverageProjects([ "src/Foo.fs" ]) = [ "RatchetTests"; "RuntimeTests" ] @>)
 
 [<Fact>]
+let ``AUTOMATION-315 disabling a formerly ratcheted project removes its persisted contribution`` () =
+    withTempDir "cov-ratchet-transition" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let unitRaw = Path.Combine(dir, "unit.xml")
+        let integrationRaw = Path.Combine(dir, "integration.xml")
+        let sharedOut = Path.Combine(dir, "coverage", CoberturaName)
+
+        File.WriteAllText(unitRaw, mkCobertura "UnitTests" absFile [ (10, 3) ])
+        File.WriteAllText(integrationRaw, mkCobertura "IntegrationTests" absFile [ (11, 7) ])
+
+        ingestAndEmitCoverageForProjects
+            db
+            repoRoot
+            "run-enabled"
+            (set [ "UnitTests"; "IntegrationTests" ])
+            (Some sharedOut)
+            [ coverageInput "UnitTests" true unitRaw
+              coverageInput "IntegrationTests" true integrationRaw ]
+        |> ignore
+
+        let before = File.ReadAllText sharedOut
+        test <@ before.Contains("number=\"10\"") @>
+        test <@ before.Contains("number=\"11\"") @>
+
+        // The next configuration keeps collecting IntegrationTests for impact
+        // evidence but removes it from the consumer ratchet. UnitTests does not
+        // need to run again: its attributed contribution is persisted separately.
+        File.WriteAllText(integrationRaw, mkCobertura "IntegrationTests" absFile [ (11, 9) ])
+
+        ingestAndEmitCoverageForProjects
+            db
+            repoRoot
+            "run-collect-only"
+            (set [ "UnitTests" ])
+            (Some sharedOut)
+            [ coverageInput "IntegrationTests" false integrationRaw ]
+        |> ignore
+
+        let after = File.ReadAllText sharedOut
+        test <@ after.Contains("number=\"10\"") @>
+        test <@ not (after.Contains("number=\"11\"")) @>)
+
+[<Fact>]
 let ``AUTOMATION-315 coverage receipt removes stale artifact and accepts only a newly written successful result`` () =
     withTempDir "cov-fresh-receipt" (fun dir ->
         let rawPath = Path.Combine(dir, BaselineName)
@@ -3737,6 +3805,101 @@ let ``AUTOMATION-315 failed or filtered launches cannot replace a complete runti
         | None -> Assert.Fail "a successful filtered run must yield a partial receipt")
 
 [<Fact>]
+let ``AUTOMATION-315 successful full run without a fresh receipt revokes its baseline and denies green`` () =
+    withTempDir "cov-missing-full" (fun dir ->
+        let db = Database.create (Path.Combine(dir, "test.db"))
+        let staleBefore = DateTimeOffset.UtcNow.AddMinutes(-1.0)
+        db.ReplaceRuntimeCoverage("RuntimeTests", "prior-green", [ "src/Prior.fs" ])
+
+        let fullLaunch =
+            { Project = "RuntimeTests"
+              IncludeInRatchet = false
+              RawPath = Path.Combine(dir, BaselineName)
+              Scope = CoverageRunScope.Full
+              Before = CoverageArtifactState.Missing
+              DeletionProven = true }
+
+        let failure =
+            match coverageReceiptFromObservedState true fullLaunch CoverageArtifactState.Missing with
+            | CoverageReceiptFailed failure -> failure
+            | outcome ->
+                Assert.Fail $"a green full run without a receipt must fail coverage processing, got %A{outcome}"
+                Unchecked.defaultof<_>
+
+        test <@ failure.Project = "RuntimeTests" @>
+        test <@ failure.Reason.Contains "missing" @>
+
+        invalidateCoverageReceiptFailure db failure
+
+        test
+            <@
+                db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ ("RuntimeTests",
+                                                                                        TestPrune.Domain.Missing) ]
+            @>
+
+        test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]).IsEmpty @>
+
+        let denied =
+            Map.ofList [ "RuntimeTests", TestsPassed("", false, TimeSpan.FromSeconds 1.0) ]
+            |> applyCoverageIngestFailures [ failure ]
+
+        test <@ denied.["RuntimeTests"] |> TestResult.isErrored @>)
+
+[<Fact>]
+let ``AUTOMATION-315 successful filtered run without a receipt preserves its full baseline`` () =
+    withTempDir "cov-missing-filtered" (fun dir ->
+        let db = Database.create (Path.Combine(dir, "test.db"))
+        let staleBefore = DateTimeOffset.UtcNow.AddMinutes(-1.0)
+        db.ReplaceRuntimeCoverage("RuntimeTests", "prior-green", [ "src/Prior.fs" ])
+
+        let partialLaunch =
+            { Project = "RuntimeTests"
+              IncludeInRatchet = false
+              RawPath = Path.Combine(dir, PartialName)
+              Scope = CoverageRunScope.Partial
+              Before = CoverageArtifactState.Missing
+              DeletionProven = true }
+
+        test
+            <@
+                coverageReceiptFromObservedState true partialLaunch CoverageArtifactState.Missing = CoverageReceiptAbsent
+            @>
+
+        test
+            <@
+                db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore) = [ ("RuntimeTests",
+                                                                                        TestPrune.Domain.Current) ]
+            @>
+
+        test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [ "RuntimeTests" ] @>)
+
+[<Fact>]
+let ``AUTOMATION-315 successful full run diagnoses unreadable and unchanged stale receipts`` () =
+    let prior =
+        CoverageArtifactState.Fingerprinted
+            { Length = 42L
+              LastWriteUtc = DateTime.UnixEpoch
+              Sha256 = "ABC" }
+
+    let launch =
+        { Project = "RuntimeTests"
+          IncludeInRatchet = false
+          RawPath = "/tmp/runtime.xml"
+          Scope = CoverageRunScope.Full
+          Before = prior
+          DeletionProven = false }
+
+    let reasonFor after =
+        match coverageReceiptFromObservedState true launch after with
+        | CoverageReceiptFailed failure -> failure.Reason
+        | outcome ->
+            Assert.Fail $"a green full run must reject %A{after}, got %A{outcome}"
+            ""
+
+    test <@ (reasonFor (CoverageArtifactState.Unreadable "locked")).Contains "readable" @>
+    test <@ (reasonFor prior).Contains "unchanged stale" @>
+
+[<Fact>]
 let ``AUTOMATION-315 malformed full receipt invalidates prior runtime evidence and denies green`` () =
     withTempDir "cov-malformed-full" (fun dir ->
         let dbPath = Path.Combine(dir, "test.db")
@@ -3768,7 +3931,7 @@ let ``AUTOMATION-315 malformed full receipt invalidates prior runtime evidence a
             db.GetRuntimeCoverageAvailability([ "RuntimeTests" ], staleBefore)
 
         test <@ invalidatedAvailability = [ ("RuntimeTests", TestPrune.Domain.Missing) ] @>
-        test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+        test <@ db.GetRuntimeCoverageProjects([ "src/Prior.fs" ]).IsEmpty @>
 
         let markerDirectory = Path.Combine(dir, "recovery-marker-is-a-directory")
         Directory.CreateDirectory markerDirectory |> ignore
@@ -3792,7 +3955,7 @@ let ``AUTOMATION-315 malformed full receipt invalidates prior runtime evidence a
 
         test <@ reopenedAvailability = [ ("RuntimeTests", TestPrune.Domain.Missing) ] @>
 
-        test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]) = [] @>
+        test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]).IsEmpty @>
 
         let marker = runtimeCoverageRecoveryPath dir
         let mutable unknownDebt = false
