@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.33 - 2026-08-30
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.32 - 2026-08-30
 
 - feat: `tests.projects[].coverage` now accepts independent
