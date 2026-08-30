@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.26 - 2026-08-31
+
 - fix(AUTOMATION-357): only a green run whose terminal receipt establishes the
   full configured suite may populate the whole-tree outcome cache. Project- and
   impact-scoped runs remain valid evidence for their own scope but can no longer
