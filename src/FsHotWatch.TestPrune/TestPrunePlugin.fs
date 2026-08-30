@@ -2,10 +2,12 @@ module FsHotWatch.TestPrune.TestPrunePlugin
 
 open System
 open System.Diagnostics
+open System.Globalization
 open System.IO
 open System.Security.Cryptography
 open System.Text.Json
 open System.Threading
+open System.Xml.Linq
 open FSharp.Compiler.Diagnostics
 open FsHotWatch.Events
 open FsHotWatch
@@ -157,6 +159,13 @@ type CoverageArtifactLaunch =
       Before: CoverageArtifactState
       DeletionProven: bool }
 
+type CoverageIngestFailure = { Project: string; Reason: string }
+
+type CoverageReceiptOutcome =
+    | CoverageReceiptAccepted of CoverageInput
+    | CoverageReceiptAbsent
+    | CoverageReceiptFailed of CoverageIngestFailure
+
 let private coverageArtifactState (path: string) : CoverageArtifactState =
     try
         File.GetAttributes path |> ignore
@@ -224,12 +233,40 @@ let internal coverageInputFromObservedState
     else
         None
 
+let internal coverageReceiptFromObservedState
+    (verifiedGreen: bool)
+    (launch: CoverageArtifactLaunch)
+    (after: CoverageArtifactState)
+    : CoverageReceiptOutcome =
+    match coverageInputFromObservedState verifiedGreen launch after with
+    | Some input -> CoverageReceiptAccepted input
+    | None when verifiedGreen && launch.Scope = CoverageRunScope.Full ->
+        let reason =
+            match after with
+            | Missing ->
+                $"successful full test run produced no fresh runtime coverage receipt: %s{launch.RawPath} is missing"
+            | Unreadable detail ->
+                $"successful full test run produced no fresh readable runtime coverage receipt at %s{launch.RawPath}: %s{detail}"
+            | Fingerprinted _ ->
+                $"successful full test run left an unchanged stale runtime coverage receipt at %s{launch.RawPath}"
+
+        CoverageReceiptFailed
+            { Project = launch.Project
+              Reason = reason }
+    | None -> CoverageReceiptAbsent
+
 /// Turn a launch into an ingest receipt only when the runner finished green and
 /// wrote a new artifact. Full receipts are therefore trustworthy replacement
 /// baselines; failed, aborted, timed-out and stable-artifact launches contribute
 /// no runtime evidence.
 let internal coverageInputFromReceipt (verifiedGreen: bool) (launch: CoverageArtifactLaunch) : CoverageInput option =
     coverageInputFromObservedState verifiedGreen launch (coverageArtifactState launch.RawPath)
+
+let internal coverageReceiptFromReceipt
+    (verifiedGreen: bool)
+    (launch: CoverageArtifactLaunch)
+    : CoverageReceiptOutcome =
+    coverageReceiptFromObservedState verifiedGreen launch (coverageArtifactState launch.RawPath)
 
 /// Default coverage args template for Microsoft Testing Platform hosts
 /// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
@@ -269,21 +306,20 @@ let internal symbolGraphLooksIncomplete (ingested: int) (skipped: int) : bool =
     ingested + skipped > 0 && ingested < skipped
 
 /// Serially ingest each project's raw runner cobertura into the TestPrune DB
-/// (symbol-relative, max-merged across all test projects), then emit the FULL
-/// DB ONCE to a single shared cobertura file that downstream gating reads.
+/// for runtime selection and into the plugin-owned project-attributed ratchet
+/// table, then emit the eligible projects' aggregate ONCE to the shared
+/// cobertura file that downstream gating reads.
 ///
 /// `inputs` retains the producing test project and whether that project belongs
-/// to the consumer ratchet. TestPrune.Core 7.0.1 still stores coverage without
-/// project identity; keeping it here makes the lossy compatibility boundary
-/// explicit until Core offers project-aware ingest and emission.
+/// to the consumer ratchet. TestPrune.Core's line ratchet stores coverage without
+/// project identity, so this local table is the compatibility layer that lets a later
+/// configuration transition subtract one project's historical contribution.
 ///
 /// Invariants:
 /// - An empty / aborted raw cobertura parses to zero rows → ingests nothing →
 ///   cannot clobber the DB or the emitted file.
 /// - If NO raw inputs exist on disk, the shared cobertura is NOT written, so a
 ///   prior good emission is never overwritten with nothing.
-type CoverageIngestFailure = { Project: string; Reason: string }
-
 type CoverageIngestOutcome =
     { Failures: CoverageIngestFailure list }
 
@@ -311,14 +347,252 @@ let internal armRuntimeCoverageUnknownDebt
     FsHwPaths.atomicWriteAllText recoveryPath message
     setUnknown ()
 
-let internal ingestAndEmitCoverage
+[<Literal>]
+let private ProjectRatchetCoverageTable = "fshw_project_ratchet_coverage"
+
+type private ProjectRatchetCoveragePoint =
+    { SymbolId: int64
+      LineOffset: int
+      Hits: int }
+
+type private ProjectRatchetCoverageMapping =
+    { Points: ProjectRatchetCoveragePoint list
+      Ingested: int
+      Skipped: int }
+
+let private ensureProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.SqliteConnection) =
+    use cmd = conn.CreateCommand()
+
+    cmd.CommandText <-
+        $"""CREATE TABLE IF NOT EXISTS %s{ProjectRatchetCoverageTable} (
+                project TEXT NOT NULL,
+                symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                line_offset INTEGER NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (project, symbol_id, line_offset)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fshw_project_ratchet_coverage_symbol
+                ON %s{ProjectRatchetCoverageTable} (symbol_id);"""
+
+    cmd.ExecuteNonQuery() |> ignore
+
+let private mapProjectRatchetCoverage (db: Database) (repoRoot: string) (xml: string) =
+    let rows = parseCobertura xml
+    use conn = db.OpenConnection()
+    use lookup = conn.CreateCommand()
+
+    let normalizeSourceFile (filename: string) =
+        (if Path.IsPathRooted filename then
+             Path.GetRelativePath(repoRoot, filename)
+         else
+             filename)
+            .Replace('\\', '/')
+
+    // Match TestPrune.Core's line-to-symbol anchor: the nearest declaration at
+    // or before the covered line. The stored offset then follows symbol moves.
+    lookup.CommandText <-
+        """SELECT id, @line - line_start
+           FROM symbols
+           WHERE source_file = @file AND line_start <= @line
+           ORDER BY line_start DESC
+           LIMIT 1;"""
+
+    let points, ingested, skipped =
+        ((Map.empty, 0, 0), rows)
+        ||> List.fold (fun (points, ingested, skipped) (filename, line, hits) ->
+            let sourceFile = normalizeSourceFile filename
+            lookup.Parameters.Clear()
+            lookup.Parameters.AddWithValue("@file", sourceFile) |> ignore
+            lookup.Parameters.AddWithValue("@line", line) |> ignore
+
+            use reader = lookup.ExecuteReader()
+
+            if reader.Read() then
+                let key = reader.GetInt64(0), reader.GetInt32(1)
+                let prior = Map.tryFind key points |> Option.defaultValue 0
+                Map.add key (max prior hits) points, ingested + 1, skipped
+            else
+                points, ingested, skipped + 1)
+
+    { Points =
+        points
+        |> Map.toList
+        |> List.map (fun ((symbolId, lineOffset), hits) ->
+            { SymbolId = symbolId
+              LineOffset = lineOffset
+              Hits = hits })
+      Ingested = ingested
+      Skipped = skipped }
+
+let private persistProjectRatchetCoverage (db: Database) (repoRoot: string) (input: CoverageInput) (xml: string) =
+    let mapped = mapProjectRatchetCoverage db repoRoot xml
+
+    let replaceFull =
+        input.Scope = CoverageRunScope.Full
+        && mapped.Ingested + mapped.Skipped > 0
+        && not (symbolGraphLooksIncomplete mapped.Ingested mapped.Skipped)
+
+    if replaceFull || input.Scope = CoverageRunScope.Partial then
+        use conn = db.OpenConnection()
+        ensureProjectRatchetCoverageTable conn
+        use transaction = conn.BeginTransaction()
+
+        if replaceFull then
+            use delete = conn.CreateCommand()
+            delete.Transaction <- transaction
+            delete.CommandText <- $"DELETE FROM %s{ProjectRatchetCoverageTable} WHERE project = @project;"
+            delete.Parameters.AddWithValue("@project", input.Project) |> ignore
+            delete.ExecuteNonQuery() |> ignore
+
+        use upsert = conn.CreateCommand()
+        upsert.Transaction <- transaction
+
+        upsert.CommandText <-
+            $"""INSERT INTO %s{ProjectRatchetCoverageTable} (project, symbol_id, line_offset, hits)
+                VALUES (@project, @symbol, @offset, @hits)
+                ON CONFLICT(project, symbol_id, line_offset)
+                DO UPDATE SET hits = MAX(hits, excluded.hits);"""
+
+        for point in mapped.Points do
+            upsert.Parameters.Clear()
+            upsert.Parameters.AddWithValue("@project", input.Project) |> ignore
+            upsert.Parameters.AddWithValue("@symbol", point.SymbolId) |> ignore
+            upsert.Parameters.AddWithValue("@offset", point.LineOffset) |> ignore
+            upsert.Parameters.AddWithValue("@hits", point.Hits) |> ignore
+            upsert.ExecuteNonQuery() |> ignore
+
+        transaction.Commit()
+
+    mapped
+
+let private removeProjectRatchetCoverage (db: Database) (project: string) =
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- $"DELETE FROM %s{ProjectRatchetCoverageTable} WHERE project = @project;"
+    cmd.Parameters.AddWithValue("@project", project) |> ignore
+    cmd.ExecuteNonQuery()
+
+let private pruneProjectRatchetCoverage (db: Database) (enabledProjects: Set<string>) =
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+
+    let storedProjects =
+        use query = conn.CreateCommand()
+        query.CommandText <- $"SELECT DISTINCT project FROM %s{ProjectRatchetCoverageTable};"
+        use reader = query.ExecuteReader()
+        let projects = ResizeArray<string>()
+
+        while reader.Read() do
+            projects.Add(reader.GetString 0)
+
+        projects |> Seq.toList
+
+    storedProjects
+    |> List.filter (fun project -> not (Set.contains project enabledProjects))
+    |> List.sumBy (fun project ->
+        use delete = conn.CreateCommand()
+        delete.CommandText <- $"DELETE FROM %s{ProjectRatchetCoverageTable} WHERE project = @project;"
+        delete.Parameters.AddWithValue("@project", project) |> ignore
+        delete.ExecuteNonQuery())
+
+let private projectRatchetCobertura (db: Database) : string option =
+    use conn = db.OpenConnection()
+    ensureProjectRatchetCoverageTable conn
+    use cmd = conn.CreateCommand()
+
+    cmd.CommandText <-
+        $"""SELECT s.source_file,
+                   s.line_start + c.line_offset AS absolute_line,
+                   MAX(c.hits)
+            FROM %s{ProjectRatchetCoverageTable} c
+            JOIN symbols s ON s.id = c.symbol_id
+            GROUP BY s.source_file, s.line_start + c.line_offset
+            ORDER BY s.source_file, absolute_line;"""
+
+    use reader = cmd.ExecuteReader()
+    let points = ResizeArray<string * int * int>()
+
+    while reader.Read() do
+        points.Add(reader.GetString(0), reader.GetInt32(1), reader.GetInt32(2))
+
+    if points.Count = 0 then
+        None
+    else
+        let element name = XElement(XName.Get name)
+
+        let setAttr name value (node: XElement) =
+            node.SetAttributeValue(XName.Get name, value)
+
+        let root = element "coverage"
+        let packages = element "packages"
+        let package = element "package"
+        let classes = element "classes"
+        let total = points.Count
+        let covered = points |> Seq.filter (fun (_, _, hits) -> hits > 0) |> Seq.length
+
+        let rate = (float covered / float total).ToString("R", CultureInfo.InvariantCulture)
+
+        setAttr "line-rate" rate root
+        setAttr "branch-rate" "0" root
+        setAttr "lines-covered" covered root
+        setAttr "lines-valid" total root
+        setAttr "name" "runtime" package
+        setAttr "line-rate" rate package
+        setAttr "branch-rate" "0" package
+
+        points
+        |> Seq.groupBy (fun (file, _, _) -> file)
+        |> Seq.iter (fun (file, filePoints) ->
+            let filePoints = filePoints |> Seq.toList
+            let classNode = element "class"
+            let linesNode = element "lines"
+
+            let fileCovered =
+                filePoints |> List.filter (fun (_, _, hits) -> hits > 0) |> List.length
+
+            let fileRate =
+                (float fileCovered / float filePoints.Length).ToString("R", CultureInfo.InvariantCulture)
+
+            setAttr "name" file classNode
+            setAttr "filename" file classNode
+            setAttr "line-rate" fileRate classNode
+            setAttr "branch-rate" "0" classNode
+
+            for _, line, hits in filePoints do
+                let lineNode = element "line"
+                setAttr "number" line lineNode
+                setAttr "hits" hits lineNode
+                setAttr "branch" "false" lineNode
+                linesNode.Add lineNode
+
+            classNode.Add linesNode
+            classes.Add classNode)
+
+        package.Add classes
+        packages.Add package
+        root.Add packages
+        Some(XDocument(root).ToString(SaveOptions.DisableFormatting))
+
+let internal invalidateCoverageReceiptFailure (db: Database) (failure: CoverageIngestFailure) =
+    db.InvalidateRuntimeCoverage failure.Project
+    removeProjectRatchetCoverage db failure.Project |> ignore
+
+let internal ingestAndEmitCoverageForProjects
     (db: Database)
     (repoRoot: string)
     (runId: string)
+    (enabledRatchetProjects: Set<string>)
     (coverageOutput: string option)
     (inputs: CoverageInput list)
     : CoverageIngestOutcome =
     let existing = inputs |> List.filter (fun input -> File.Exists input.RawPath)
+
+    let removedContributions =
+        if coverageOutput.IsNone && inputs.IsEmpty && Set.isEmpty enabledRatchetProjects then
+            0
+        else
+            pruneProjectRatchetCoverage db enabledRatchetProjects
 
     let accepted, failures =
         (([], []), existing)
@@ -332,13 +606,27 @@ let internal ingestAndEmitCoverage
                 |> ignore
 
                 let ratchetResult =
-                    if input.IncludeInRatchet then
-                        Some(ingestCobertura db (Some repoRoot) xml)
+                    if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
+                        let result = ingestCobertura db (Some repoRoot) xml
+                        persistProjectRatchetCoverage db repoRoot input xml |> ignore
+                        Some result
                     else
+                        removeProjectRatchetCoverage db input.Project |> ignore
                         None
 
                 (input, ratchetResult) :: accepted, failures
             with ex ->
+                // A malformed FULL receipt has the same replacement semantics as
+                // a missing one: neither runtime selection nor the consumer ratchet
+                // may retain this project's prior complete evidence.
+                if input.Scope = CoverageRunScope.Full then
+                    try
+                        removeProjectRatchetCoverage db input.Project |> ignore
+                    with cleanupEx ->
+                        Logging.error
+                            "test-prune"
+                            $"failed to revoke prior ratchet coverage for %s{input.Project}: %s{cleanupEx.Message}"
+
                 let failure =
                     { Project = input.Project
                       Reason = $"%s{ex.GetType().Name}: %s{ex.Message}" }
@@ -364,25 +652,49 @@ let internal ingestAndEmitCoverage
         // cobertura that DROPS every not-yet-indexed file's coverage, clobbering a prior good
         // emission and failing the ratchet. Skip — the DB persists and max-merges, so a later
         // warm run emits in full.
-        match ratchetInputs, coverageOutput with
-        | [], _
-        | _, None -> ()
-        | _, Some _ when totalIngested + totalSkipped = 0 -> ()
-        | _, Some _ when symbolGraphLooksIncomplete totalIngested totalSkipped ->
+        match coverageOutput with
+        | None -> ()
+        | Some _ when
+            removedContributions = 0
+            && not ratchetInputs.IsEmpty
+            && symbolGraphLooksIncomplete totalIngested totalSkipped
+            ->
             Logging.warn
                 "test-prune"
                 $"coverage: only %d{totalIngested} of %d{totalIngested + totalSkipped} lines mapped to a symbol — symbol graph still indexing; skipping emit to avoid a partial snapshot (will emit once warm)."
-        | _, Some out ->
-            let dir = Path.GetDirectoryName(out)
+        | Some out ->
+            match projectRatchetCobertura db with
+            | Some xml ->
+                let dir = Path.GetDirectoryName(out)
 
-            if not (String.IsNullOrEmpty dir) then
-                Directory.CreateDirectory(dir) |> ignore
+                if not (String.IsNullOrEmpty dir) then
+                    Directory.CreateDirectory(dir) |> ignore
 
-            File.WriteAllText(out, emitCobertura db)
+                File.WriteAllText(out, xml)
+            | None when Set.isEmpty enabledRatchetProjects || removedContributions > 0 ->
+                // An old shared file has no project identity. Once the eligible set
+                // shrinks, preserving that file would preserve the removed project's
+                // contribution. Absence is the only honest empty aggregate.
+                File.Delete out
+            | None -> ()
     with ex ->
         Logging.error "test-prune" $"coverage emission failed: %s{ex.Message}"
 
     { Failures = List.rev failures }
+
+let internal ingestAndEmitCoverage
+    (db: Database)
+    (repoRoot: string)
+    (runId: string)
+    (coverageOutput: string option)
+    (inputs: CoverageInput list)
+    : CoverageIngestOutcome =
+    let enabledProjects =
+        inputs
+        |> List.choose (fun input -> if input.IncludeInRatchet then Some input.Project else None)
+        |> Set.ofList
+
+    ingestAndEmitCoverageForProjects db repoRoot runId enabledProjects coverageOutput inputs
 
 /// How fshw obtains the structured pass/fail report a test verdict is derived
 /// from. The report (CTRF) — not the process exit code — is authoritative, but
@@ -749,6 +1061,16 @@ let internal selectByRuntimeCoverage
 
     { ProjectsByFile = projectsByFile
       Widenings = widenings }
+
+let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: RuntimeCoverageSelection) =
+    for project, reason in selection.Widenings do
+        match reason with
+        | MissingBaseline ->
+            warn
+                $"runtime coverage: project '%s{project}' has no complete baseline; widening to every test in that configured project"
+        | StaleBaseline observedAt ->
+            warn
+                $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -2655,6 +2977,26 @@ let private executeTests
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
+        let coveragePathsByProject =
+            configs
+            |> List.choose (fun config ->
+                coveragePaths
+                |> Option.bind (fun pathsForProject -> pathsForProject config.Project)
+                |> Option.map (fun paths -> config.Project, paths))
+            |> Map.ofList
+
+        let enabledRatchetProjects =
+            coveragePathsByProject
+            |> Map.toSeq
+            |> Seq.choose (fun (project, paths) -> if paths.IncludeInRatchet then Some project else None)
+            |> Set.ofSeq
+
+        let configuredCoverageOutput =
+            coveragePathsByProject
+            |> Map.toSeq
+            |> Seq.tryHead
+            |> Option.map (fun (_, paths) -> paths.Cobertura)
+
         // Impact analysis may have decided a project has no affected classes. Such a
         // project never launches, so it is neither preflighted (no artifacts worth
         // walking) nor deferred (nothing was going to run).
@@ -2685,9 +3027,7 @@ let private executeTests
         // Async.Parallel completes so concurrent group completions never race on
         // the DB write or the single shared output file.
         let mutable coverageInputs: CoverageInput list = []
-        // Every ratchet project's CoveragePaths.Cobertura is the same run-wide
-        // shared path; collect-only projects must not create a consumer artifact.
-        let mutable coverageOutput: string option = None
+        let mutable coverageReceiptFailures: CoverageIngestFailure list = []
         let coverageRawPathsLock = obj ()
 
         // Per-test flakiness records, COLLECTED here and written ONCE after the
@@ -2844,8 +3184,7 @@ let private executeTests
                             // Resolve per-project coverage paths (if coverage is configured for
                             // this project). wasFiltered determines which file coverlet writes
                             // to; the post-test step reads those files back to produce cobertura.
-                            let projectCoveragePaths =
-                                coveragePaths |> Option.bind (fun fn -> fn config.Project)
+                            let projectCoveragePaths = Map.tryFind config.Project coveragePathsByProject
 
                             let projectCoverageLaunch =
                                 projectCoveragePaths
@@ -3154,16 +3493,15 @@ let private executeTests
                             // cannot lower coverage.
                             match
                                 projectCoverageLaunch
-                                |> Option.bind (coverageInputFromReceipt (TestResult.verifiedGreen result))
+                                |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
                             with
-                            | Some input ->
+                            | Some(CoverageReceiptAccepted input) ->
+                                lock coverageRawPathsLock (fun () -> coverageInputs <- input :: coverageInputs)
+                            | Some(CoverageReceiptFailed failure) ->
                                 lock coverageRawPathsLock (fun () ->
-                                    coverageInputs <- input :: coverageInputs
-
-                                    match projectCoveragePaths with
-                                    | Some paths when input.IncludeInRatchet -> coverageOutput <- Some paths.Cobertura
-                                    | _ -> ())
-                            | _ -> ()
+                                    coverageReceiptFailures <- failure :: coverageReceiptFailures)
+                            | Some CoverageReceiptAbsent
+                            | None -> ()
 
                             // Per-test flakiness tracking: reuse the report content
                             // already read for the verdict; COLLECT this project's
@@ -3225,13 +3563,30 @@ let private executeTests
         // symbol-relative) and emit the FULL DB ONCE to the single shared
         // cobertura file. Done here, outside Async.Parallel, so there is no
         // DB-write contention and no file-write race on the shared output.
-        let collectedInputs, sharedOutput =
-            lock coverageRawPathsLock (fun () -> List.rev coverageInputs, coverageOutput)
+        let collectedInputs, receiptFailures =
+            lock coverageRawPathsLock (fun () -> List.rev coverageInputs, List.rev coverageReceiptFailures)
+
+        let receiptFailures =
+            receiptFailures
+            |> List.map (fun failure ->
+                try
+                    invalidateCoverageReceiptFailure db failure
+                    failure
+                with ex ->
+                    { failure with
+                        Reason =
+                            $"%s{failure.Reason}; prior coverage invalidation failed (%s{ex.GetType().Name}: %s{ex.Message})" })
 
         let coverageOutcome =
-            ingestAndEmitCoverage db repoRoot (runId.ToString("N")) sharedOutput collectedInputs
+            ingestAndEmitCoverageForProjects
+                db
+                repoRoot
+                (runId.ToString("N"))
+                enabledRatchetProjects
+                configuredCoverageOutput
+                collectedInputs
 
-        let coverageFailures = coverageIngestFailures coverageOutcome
+        let coverageFailures = receiptFailures @ coverageIngestFailures coverageOutcome
 
         if not coverageFailures.IsEmpty then
             for failure in coverageFailures do
@@ -4045,6 +4400,8 @@ let create
                         "test-prune"
                         $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
 
+        reportRuntimeCoverageWidenings (Logging.warn "test-prune") runtimeSelection
+
         let affectedTests =
             if symbols.IsEmpty then
                 []
@@ -4062,18 +4419,6 @@ let create
                             ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
 
                 let affected = queryRunnable symbols
-
-                for project, reason in runtimeSelection.Widenings do
-                    match reason with
-                    | MissingBaseline ->
-                        Logging.warn
-                            "test-prune"
-                            $"runtime coverage: project '%s{project}' has no complete baseline; widening to every test in that configured project"
-                    | StaleBaseline observedAt ->
-                        Logging.warn
-                            "test-prune"
-                            $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
-
                 let sortedSeeds = List.sort symbols
 
                 // Count the INPUT explicitly, not just the output. `symbols` is the
