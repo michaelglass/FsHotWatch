@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.34 - 2026-08-31
+
+- Finish: AUTOMATION-357 refuse unexplained red verdicts
+- Finish: AUTOMATION-357 keep subset test receipts out of the whole-tree cache
+
+
 ## 0.14.0-alpha.33 - 2026-08-30
 
 - chore: rebuild to bundle updated dependencies
