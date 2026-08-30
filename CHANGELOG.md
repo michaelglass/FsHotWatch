@@ -4,6 +4,10 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- Exclude CoverageRatchet's own portable-PDB sources from FsHotWatch coverage and
+  remove stale floors for three deleted FsHotWatch source files. Release gates now
+  fail only on live first-party coverage floors.
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
