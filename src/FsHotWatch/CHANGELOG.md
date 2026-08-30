@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: propagate `MSBUILDDISABLENODEREUSE=1` through shell and other wrapper
+  commands so descendant `dotnet` builds cannot reuse stale MSBuild nodes.
+
 ## 0.10.0-alpha.21 - 2026-08-29
 
 - fix: cached test-run replay now synthesizes the `TestRunStarted` lifecycle
