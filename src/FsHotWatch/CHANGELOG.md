@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.22 - 2026-08-30
+
 - fix: propagate `MSBUILDDISABLENODEREUSE=1` through shell and other wrapper
   commands so descendant `dotnet` builds cannot reuse stale MSBuild nodes.
 
