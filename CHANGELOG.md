@@ -106,6 +106,14 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### daemon: cold-scan retry work is visible and bounded
+
+The scan-completion log now reports the number of file-check attempts and how
+many were retries. A file whose check continues returning no result receives
+only three retry rounds, while files that succeed are not checked again within
+that scan. Negative retry budgets are refused instead of producing an impossible
+negative retry count.
+
 ### test-prune: a changed message retains its pre-rebuild literal selection edge
 
 An incremental scan used to discover a changed producer symbol, replace that file's

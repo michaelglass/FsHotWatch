@@ -953,6 +953,104 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
     test <@ attempts["/a.fs"] = 1 @>
 
 [<Fact(Timeout = 15000)>]
+let ``retry round at Int32.MaxValue remains within an Int32 retry budget`` () =
+    let finalAllowedRound = int64 Int32.MaxValue
+
+    test <@ retryRoundIsWithinBudget Int32.MaxValue finalAllowedRound @>
+    test <@ not (retryRoundIsWithinBudget Int32.MaxValue (finalAllowedRound + 1L)) @>
+
+[<Fact(Timeout = 15000)>]
+let ``zero retry budget performs the initial check once and records no retries`` () =
+    let file = AbsFilePath.create "/initial-check-only.fs"
+    let mutable attempts = 0
+
+    let check (_: AbsFilePath) =
+        async {
+            attempts <- attempts + 1
+            return None
+        }
+
+    let measured =
+        runChecksWithRetryMeasured 0 check ignore [ file ] |> Async.RunSynchronously
+
+    test <@ measured.Unchecked = 1 @>
+    test <@ measured.Attempts = 1L @>
+    test <@ measured.Retries = 0L @>
+    test <@ attempts = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetryMeasured counts the bounded retries of a persistently failed check`` () =
+    let file = AbsFilePath.create "/persistent-check-failure.fs"
+    let mutable attempts = 0
+
+    let check (_: AbsFilePath) =
+        async {
+            attempts <- attempts + 1
+            return None
+        }
+
+    let measured =
+        runChecksWithRetryMeasured 3 check ignore [ file ] |> Async.RunSynchronously
+
+    test <@ measured.Unchecked = 1 @>
+    test <@ measured.Attempts = 4L @>
+    test <@ measured.Retries = 3L @>
+    test <@ attempts = 4 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetryMeasured counts only calls after the initial attempt as retries`` () =
+    let files =
+        [ "/first-pass.fs"; "/transient-cancellation.fs"; "/persistent-failure.fs" ]
+        |> List.map AbsFilePath.create
+
+    let attempts = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+    let emitted = System.Collections.Concurrent.ConcurrentBag<string>()
+
+    let check (file: AbsFilePath) =
+        async {
+            let path = AbsFilePath.value file
+            let attempt = attempts.AddOrUpdate(path, 1, fun _ count -> count + 1)
+
+            return
+                match path with
+                | "/first-pass.fs" -> Some path
+                | "/transient-cancellation.fs" when attempt = 1 -> None
+                | "/transient-cancellation.fs" -> Some path
+                | _ -> None
+        }
+
+    let measured =
+        runChecksWithRetryMeasured 2 check emitted.Add files |> Async.RunSynchronously
+
+    test <@ measured.Unchecked = 1 @>
+    test <@ measured.Attempts = 6L @>
+    test <@ measured.Retries = 3L @>
+    test <@ emitted.Count = 2 @>
+    test <@ attempts["/first-pass.fs"] = 1 @>
+    test <@ attempts["/transient-cancellation.fs"] = 2 @>
+    test <@ attempts["/persistent-failure.fs"] = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetryMeasured rejects a negative retry budget`` () =
+    let file = AbsFilePath.create "/file.fs"
+    let check (_: AbsFilePath) = async { return Some() }
+
+    let ex =
+        Assert.Throws<ArgumentOutOfRangeException>(fun () ->
+            runChecksWithRetryMeasured -1 check ignore [ file ]
+            |> Async.RunSynchronously
+            |> ignore)
+
+    test <@ ex.ParamName = "maxRetries" @>
+
+[<Fact(Timeout = 15000)>]
+let ``scan completion summary retains retry measurements above Int32.MaxValue`` () =
+    let summary = formatScanCompletionSummary 71 4 9 2 2147483648L 2147483577L
+
+    test
+        <@ summary = "Checked 71 files (4 tiers), skipped 9, unchecked 2, check attempts 2147483648, retries 2147483577" @>
+
+[<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` () =
     let status = formatScanStatusWith 70 5 (ScanComplete(TimeSpan.FromSeconds(15.5)))
 
