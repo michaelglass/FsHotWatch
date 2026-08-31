@@ -136,6 +136,31 @@ let ``a later executed report wholly replaces the prior report`` () =
     | None -> failwith "the later executed report must itself be retained"
 
 [<Fact>]
+let ``a later filtered run cannot downgrade same-tree full-suite evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retainedFull = TestRunEvidence.reconcile tree executedB None
+
+    let effective, retainedAfterFiltered =
+        TestRunEvidence.reconcile tree executedA retainedFull
+
+    test <@ effective = executedB @>
+    test <@ retainedAfterFiltered = retainedFull @>
+
+[<Fact>]
+let ``a later full-suite run upgrades same-tree filtered evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retainedFiltered = TestRunEvidence.reconcile tree executedA None
+
+    let effective, retainedFull =
+        TestRunEvidence.reconcile tree executedB retainedFiltered
+
+    test <@ effective = executedB @>
+
+    match retainedFull with
+    | Some evidence -> test <@ evidence.Report = executedB @>
+    | None -> failwith "full-suite evidence must replace filtered evidence"
+
+[<Fact>]
 let ``retained test evidence cannot hide a later plugin failure`` () =
     let tree = evidenceTree "sha256:same"
     let _, retained = TestRunEvidence.reconcile tree executedA None
