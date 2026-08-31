@@ -549,6 +549,96 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         None
 
 [<Fact(Timeout = 60000)>]
+let ``run-once command retains executed evidence across a same-tree quiet convergence read`` () =
+    withProjectOnlyRepo "runonce-retained-command" (fun repoRoot ->
+        let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
+        let pendingPath = System.IO.Path.Combine(repoRoot, "src", "Pending.fs")
+        let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
+        System.IO.File.WriteAllText(sourcePath, "module Library\n")
+        let runId = Guid.Parse "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
+        System.IO.Directory.CreateDirectory(runDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
+            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        )
+
+        let mutable scopeReads = 0
+
+        let createDaemon (root: string) =
+            let daemon =
+                Daemon.createWith
+                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                    root
+                    Daemon.DaemonOptions.defaults
+
+            let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+                { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
+                  Init = ()
+                  Update = fun _ctx state _event -> async { return state }
+                  Commands =
+                    [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
+                      fun _ctx _state _args ->
+                          async {
+                              scopeReads <- scopeReads + 1
+
+                              return
+                                  if scopeReads = 1 then
+                                      $"""{{"scope":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"}}"""
+                                  else
+                                      """{"scope":"none","noTestsReason":"already-verified"}"""
+                          } ]
+                  Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+                  CacheKey = None
+                  Teardown = None }
+
+            daemon.Host.RegisterHandler(handler)
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            daemon.RegisterProject(projectPath, makeProjectOptions projectPath [ sourcePath; pendingPath ] [])
+            daemon.Host.EmitFileChanged(SourceChanged [ sourcePath; pendingPath ])
+            daemon
+
+        let mutable scanCount = 0
+
+        let runScan (daemon: Daemon) =
+            scanCount <- scanCount + 1
+
+            if scanCount > 1 then
+                for file in [ sourcePath; pendingPath ] do
+                    daemon.Host.EmitFileChecked(
+                        { File = AbsFilePath.create file
+                          Source = ""
+                          ParseResults = Unchecked.defaultof<_>
+                          CheckResults = FullCheck(Unchecked.defaultof<_>)
+                          ProjectOptions = Unchecked.defaultof<_>
+                          Version = 0L }
+                    )
+
+            daemon.Host.GetAllStatuses()
+
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                runScan
+                (fun _ -> "")
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+                false
+                createDaemon
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        test <@ exitCode = 0 @>
+        test <@ scanCount = 2 @>
+
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId = Some runId @>
+            test <@ verdict.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(2, 4) @>
+            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
+        | other -> failwithf "expected a published run-once verdict, got %A" other)
+
+[<Fact(Timeout = 60000)>]
 let ``run-once overwrites a current green before surfacing total discovery failure`` () =
     withProjectOnlyRepo "runonce-total-discovery-failure" (fun repoRoot ->
         // Seed the exact dangerous state: a readable green from an earlier run.

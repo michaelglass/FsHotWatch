@@ -719,6 +719,53 @@ module internal SettledTree =
     let capture (repoRoot: string) (excludePatterns: string list) : SettledTree =
         VerifiedTree(FsHotWatch.TreeHash.compute repoRoot excludePatterns)
 
+type internal RetainedTestRun =
+    { Report: TestRunReport
+      TreeHash: string }
+
+module internal TestRunEvidence =
+    let private executed (report: TestRunReport) =
+        match report.RunId, report.Scope with
+        | None, _ -> false
+        | Some _, FullSuite _ -> true
+        | Some _, ImpactFiltered(ran, total) -> ran > 0 && total > 0 && ran <= total
+        | Some _, NoTestsRun _
+        | Some _, ScopeUnknown
+        | Some _, ScopeUnreadable _ -> false
+
+    let reconcile
+        (settledTree: SettledTree)
+        (current: TestRunReport)
+        (retained: RetainedTestRun option)
+        : TestRunReport * RetainedTestRun option =
+        match settledTree, current.Scope with
+        | VerifiedTree tree, ImpactFiltered _ ->
+            match retained with
+            | Some evidence when
+                String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal)
+                && (match evidence.Report.Scope with
+                    | FullSuite _ -> true
+                    | _ -> false)
+                ->
+                evidence.Report, retained
+            | _ when executed current ->
+                current,
+                Some
+                    { Report = current
+                      TreeHash = tree.Hash }
+            | _ -> current, None
+        | VerifiedTree tree, _ when executed current ->
+            current,
+            Some
+                { Report = current
+                  TreeHash = tree.Hash }
+        | VerifiedTree tree, NoTestsRun NoTestsReason.AlreadyVerified ->
+            match retained with
+            | Some evidence when String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal) ->
+                evidence.Report, retained
+            | _ -> current, None
+        | _ -> current, None
+
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
 /// (stdout not a TTY) — print the steering block that names it. The file and the exit
 /// code are two renderings of ONE `CheckOutcome`, never a second computation.
@@ -1016,6 +1063,16 @@ let pollAndRender
     let finalRun =
         ref (TestRunReport.ofScopeOnly (ScopeUnreadable "the check aborted before the test scope could be read"))
 
+    let retainedTestRun: RetainedTestRun option ref = ref None
+
+    let observeTestRun (run: TestRunReport) : TestRunReport =
+        let effective, retained =
+            TestRunEvidence.reconcile settledTree.Value run retainedTestRun.Value
+
+        retainedTestRun.Value <- retained
+        finalRun.Value <- effective
+        effective
+
     // AUTOMATION-259. Set once, at the escalation below, and read again on every publish
     // path INCLUDING the abort handlers: a `confirm` that escalated and then lost its
     // daemon is precisely the "the escalated run never completed" sample, and dropping the
@@ -1051,14 +1108,12 @@ let pollAndRender
             let resp = parseDiagnosticsResponse (getErrors ())
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
-            let run = getTestRun ()
+            let run = getTestRun () |> observeTestRun
             finalStatuses.Value <- resp.Statuses
             finalCauses.Value <- redCausesOf noWarnFail resp
-            finalRun.Value <- run
             checkInputs noWarnFail run.Scope resp
 
-        let firstRun = getTestRun ()
-        finalRun.Value <- firstRun
+        let firstRun = getTestRun () |> observeTestRun
 
         // CONFIRM EARNS ITS EVIDENCE.
         //

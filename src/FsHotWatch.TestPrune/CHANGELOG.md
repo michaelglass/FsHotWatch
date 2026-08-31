@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-608): keep one atomic run receipt for scope, run ID, seeds,
+  and zero-selection evidence. Queued convergence runs can no longer replace a
+  completed full-suite receipt with narrower evidence from the same check.
 - Fix: capture the test-child launch deadline when a TestPrune handler is created
   and expose a handler-scoped test seam. A short deadline used by one regression can
   no longer leak through process-global environment state and kill unrelated silent

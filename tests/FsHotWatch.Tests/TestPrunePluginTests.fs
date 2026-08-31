@@ -31,6 +31,7 @@ let private emptyLaunch: TestRunLaunch =
       RuntimeProjectsByFile = Map.empty
       Selection = Map.empty
       WouldHaveRun = None
+      Seeds = []
       ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
@@ -41,6 +42,7 @@ let private fullSuiteLaunch (projects: string list) : TestRunLaunch =
       RuntimeProjectsByFile = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
       WouldHaveRun = None
+      Seeds = []
       ZeroSelection = ZeroSelection.NotAZero }
 
 /// A launch that ran only `classes` in each named project — an impact-filtered
@@ -54,6 +56,7 @@ let private filteredLaunch (selection: (string * string list) list) : TestRunLau
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
         |> Map.ofList
       WouldHaveRun = None
+      Seeds = []
       ZeroSelection = ZeroSelection.NotAZero }
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
@@ -10347,6 +10350,183 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
     test <@ final.LastResults.IsSome @>
     test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
+
+[<Fact(Timeout = 20000)>]
+let ``a queued narrow drain cannot replace the full-suite receipt exposed to the verdict writer`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let narrowRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let fullRunId =
+        match fullRun with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
+
+    let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
+
+    let receipt = final.EvidenceReceipt.Value
+    test <@ receipt.RunId = fullRunId @>
+    test <@ RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] receipt.Coverage @>
+
+    let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    let report =
+        scopeCommand commandCtx final [||]
+        |> Async.RunSynchronously
+        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+    test <@ report.RunId = Some fullRunId @>
+    test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) -> test <@ verdict.Summary.Contains("2 projects") @>
+    | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let narrowRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let mutable claims = [ SlotBusy; Claimed ]
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    let ctx =
+        { recordingCtx with
+            RunExclusive =
+                fun _ _ ->
+                    match claims with
+                    | claim :: later ->
+                        claims <- later
+                        claim
+                    | [] -> failwith "unexpected extra test-slot claim" }
+
+    let fullState = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+    test <@ fullState.EvidenceReceipt.IsSome @>
+
+    let queuedReply = System.Threading.Tasks.TaskCompletionSource<string>()
+
+    let queuedState =
+        handler.Update
+            ctx
+            fullState
+            (Custom(RunTestsRequested([ a125Config "ProjB" ], Some "FullyQualifiedName~ProjBTests", queuedReply)))
+        |> Async.RunSynchronously
+
+    test <@ queuedState.EvidenceReceipt.IsSome @>
+    test <@ queuedState.QueuedCommandRuns.Length = 1 @>
+
+    // `narrowRun` completes the pre-existing in-flight run. Its terminal handler must
+    // dequeue and LAUNCH the explicit manual filter as a new top-level receipt boundary.
+    let drainedState =
+        handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
+
+    test <@ drainedState.EvidenceReceipt.IsNone @>
+    test <@ drainedState.QueuedCommandRuns.IsEmpty @>
+    test <@ claims.IsEmpty @>
+
+[<Fact(Timeout = 20000)>]
+let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let seedsA = [ "Lib.A.changed" ]
+    let seedsB = [ "Lib.B.changed" ]
+
+    let launch =
+        { fullSuiteLaunch [ "ProjA" ] with
+            Seeds = seedsA }
+
+    let run = testsFinishedEvent [ "ProjA", passed false ] launch
+
+    // This is the state at completion after BatchChecked has flushed cohort B while
+    // run A held the test slot. Every other receipt input already comes from `launch`.
+    let stateAtCompletion = { handler.Init with LastSeeds = seedsB }
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let final = handler.Update ctx stateAtCompletion run |> Async.RunSynchronously
+    let receipt = final.EvidenceReceipt.Value
+
+    let runId =
+        match run with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
+
+    test <@ receipt.RunId = runId @>
+    test <@ RunCoverage.coversWholeSuite [ "ProjA" ] receipt.Coverage @>
+    test <@ receipt.Seeds = seedsA @>
+
+[<Fact(Timeout = 20000)>]
+let ``a zero-selection receipt carries the previous seeds captured at launch`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let previousSeeds = [ "Lib.PreviouslyVerified.changed" ]
+
+    let zeroLaunch =
+        { emptyLaunch with
+            Seeds = previousSeeds
+            ZeroSelection = ZeroSelection.AlreadyVerified }
+
+    let run = testsFinishedEvent [] zeroLaunch
+
+    let stateAtCompletion =
+        { handler.Init with
+            LastSeeds = [ "Lib.Later.changed" ] }
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let final = handler.Update ctx stateAtCompletion run |> Async.RunSynchronously
+    let receipt = final.EvidenceReceipt.Value
+
+    test <@ receipt.Seeds = previousSeeds @>
+    test <@ receipt.ZeroSelection = ZeroSelection.AlreadyVerified @>
+
+[<Fact(Timeout = 20000)>]
+let ``a queued narrow failure remains red while the earlier full-suite receipt is retained`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let narrowFailure =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped
+              "ProjB", TestsFailed("boom", true, TimeSpan.FromSeconds 1.0) ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let fullRunId =
+        match fullRun with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
+
+    let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowFailure ]
+
+    test <@ final.EvidenceReceipt |> Option.map (fun receipt -> receipt.RunId) = Some fullRunId @>
+
+    match lastStatus statuses with
+    | PluginStatus.Failed _ -> ()
+    | other -> Assert.Fail($"the later narrow failure must remain red, got %A{other}")
 
 // `verificationOf` replaces a boolean that could not tell "no project was selected" from
 // "every project matched nothing": for an empty result set it answered `false` to both

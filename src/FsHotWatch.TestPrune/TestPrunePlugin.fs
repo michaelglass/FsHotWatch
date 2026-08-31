@@ -1181,6 +1181,12 @@ type AffectedTestsState =
     | NotYetAnalyzed
     | Analyzed of TestMethodInfo list
 
+type TestEvidenceReceipt =
+    { RunId: Guid
+      Coverage: RunCoverage
+      Seeds: string list
+      ZeroSelection: ZeroSelection }
+
 type TestPruneState =
     {
         PendingAnalysis: Map<string, AnalysisResult list>
@@ -1293,6 +1299,10 @@ type TestPruneState =
         /// clears by. Empty until the first run completes.
         LastCoverage: RunCoverage
         LastZeroSelection: ZeroSelection
+        /// Atomic receipt exposed by `test-scope`. A queued narrower drain may update
+        /// status and failure state, but cannot split or downgrade a full-suite receipt
+        /// earned earlier in the same top-level verification episode.
+        EvidenceReceipt: TestEvidenceReceipt option
     }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
@@ -1328,6 +1338,9 @@ type TestRunInputs =
         /// project attribution is file-granular, so it consumes this alongside
         /// the symbol-precise AST selection.
         ChangedFiles: string list
+        /// Seed receipt captured at dispatch. A later BatchChecked may replace the
+        /// live state's LastSeeds while this run is still executing.
+        Seeds: string list
     }
 
 module TestRunInputs =
@@ -1338,7 +1351,8 @@ module TestRunInputs =
           ChangedSymbolsAllUncovered = state.ChangedSymbolsAllUncovered
           UnanalyzableFiles = state.UnanalyzableFiles
           OutstandingFailures = state.OutstandingFailures
-          ChangedFiles = state.ChangedFiles }
+          ChangedFiles = state.ChangedFiles
+          Seeds = state.LastSeeds }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -1383,6 +1397,8 @@ type TestRunLaunch =
         /// every project in full, and would read as "check would have run everything": a
         /// perfect, permanent, false agreement).
         WouldHaveRun: Map<string, ProjectSelection> option
+        /// The seeds that selected this run, captured atomically with its scope.
+        Seeds: string list
         ZeroSelection: ZeroSelection
     }
 
@@ -4844,7 +4860,8 @@ let internal createWithLaunchDeadline
           QueuedCommandRuns = []
           OutstandingFailures = []
           LastCoverage = RunCoverage.none
-          LastZeroSelection = ZeroSelection.NotAZero }
+          LastZeroSelection = ZeroSelection.NotAZero
+          EvidenceReceipt = None }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -5053,6 +5070,7 @@ let internal createWithLaunchDeadline
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
                       WouldHaveRun = wouldHaveRun
+                      Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero }
 
                 // The skip gate counts symbol-affected classes only. A pure
@@ -5224,6 +5242,7 @@ let internal createWithLaunchDeadline
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
                       WouldHaveRun = None
+                      Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero }
 
                 return TestsFinished(started, completed, launch)
@@ -5270,6 +5289,7 @@ let internal createWithLaunchDeadline
               // ESCALATING `confirm`'s path, and it already carries an EXECUTED
               // impact-scoped reading taken before the escalation.
               WouldHaveRun = None
+              Seeds = []
               ZeroSelection = ZeroSelection.NotAZero }
 
         async {
@@ -5459,8 +5479,8 @@ let internal createWithLaunchDeadline
                         // (`.fshw/test-runs/<runId>/`) instead of inferring membership
                         // from mtimes.
                         let runId =
-                            match state.LastRunId with
-                            | Some id -> box (id.ToString("N"))
+                            match state.EvidenceReceipt with
+                            | Some receipt -> box (receipt.RunId.ToString("N"))
                             | None -> null
 
                         // The scope is a PROJECTION of `LastCoverage` — the very value the
@@ -5479,13 +5499,23 @@ let internal createWithLaunchDeadline
                         // pathological flush can carry thousands of seeds, and a
                         // reply that grows without bound to serve a diagnostic line
                         // is a new failure mode in the path that earns verdicts.
-                        let seeds = state.LastSeeds |> List.truncate 8 |> List.toArray
-                        let seedCount = List.length state.LastSeeds
+                        let evidenceSeeds =
+                            state.EvidenceReceipt
+                            |> Option.map (fun receipt -> receipt.Seeds)
+                            |> Option.defaultValue []
+
+                        let seeds = evidenceSeeds |> List.truncate 8 |> List.toArray
+                        let seedCount = List.length evidenceSeeds
 
                         if ctx.IsRunning "tests" then
                             return JsonSerializer.Serialize({| scope = "running"; runId = runId |})
                         else
-                            match scopeOf projects state.LastCoverage with
+                            let evidenceCoverage =
+                                state.EvidenceReceipt
+                                |> Option.map (fun receipt -> receipt.Coverage)
+                                |> Option.defaultValue RunCoverage.none
+
+                            match scopeOf projects evidenceCoverage with
                             | ScopeFull n ->
                                 return
                                     JsonSerializer.Serialize(
@@ -5507,7 +5537,10 @@ let internal createWithLaunchDeadline
                                            seedCount = seedCount |}
                                     )
                             | ScopeNone total ->
-                                let zero = state.LastZeroSelection
+                                let zero =
+                                    state.EvidenceReceipt
+                                    |> Option.map (fun receipt -> receipt.ZeroSelection)
+                                    |> Option.defaultValue ZeroSelection.NotAZero
 
                                 return
                                     JsonSerializer.Serialize(
@@ -6323,7 +6356,8 @@ let internal createWithLaunchDeadline
 
                                     let launchState =
                                         { stateWithAffected with
-                                            PendingForceRunProjects = Set.empty }
+                                            PendingForceRunProjects = Set.empty
+                                            EvidenceReceipt = None }
 
                                     match
                                         ctx.RunExclusive
@@ -6452,11 +6486,27 @@ let internal createWithLaunchDeadline
                     // handler.
                     let bootScanDebtDuringFullRun = state.BootScanDebtDuringFullRun
 
+                    let candidateReceipt =
+                        { RunId = completed.RunId
+                          Coverage = coverage
+                          Seeds = launch.Seeds
+                          ZeroSelection = launch.ZeroSelection }
+
+                    let evidenceReceipt =
+                        match state.EvidenceReceipt with
+                        | Some previous when
+                            RunCoverage.coversWholeSuite (Set.toList runnableProjects) previous.Coverage
+                            && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) coverage)
+                            ->
+                            previous
+                        | _ -> candidateReceipt
+
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
+                            EvidenceReceipt = Some evidenceReceipt
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.
@@ -6958,6 +7008,7 @@ let internal createWithLaunchDeadline
                                 ChangedFiles = []
                                 ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed []
+                                EvidenceReceipt = None
                                 QueuedCommandRuns = laterRuns }
 
                         match ctx.RunExclusive "tests" (commandForceRun ctx queuedConfigs queuedFilter queuedReply) with
@@ -7097,7 +7148,7 @@ let internal createWithLaunchDeadline
                     // launch site and holds the `RunExclusive "tests"` slot for its whole
                     // duration — see the `RunTestsRequested` case for why that matters.
                     match ctx.RunExclusive "tests" (commandForceRun ctx configs filter reply) with
-                    | Claimed -> return state
+                    | Claimed -> return { state with EvidenceReceipt = None }
                     | SlotBusy ->
                         // A busy slot QUEUES the run, never refuses it: a refusal that
                         // reads as success is a vacuous green. TestsFinished drains FIFO,

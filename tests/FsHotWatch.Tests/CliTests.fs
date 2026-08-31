@@ -2023,6 +2023,184 @@ let ``runIpcWithSelfHeal retries ONLY proven corrupted frames, once`` () =
     test <@ heal 1 (fun () -> raise (TimeoutException("busy"))) = (99, 1) @>
     test <@ restarts = 0 @>
 
+let private remoteIpcFault (typeName: string) (message: string) (stackTrace: string) : exn =
+    let data =
+        StreamJsonRpc.Protocol.CommonErrorData(TypeName = typeName, Message = message, StackTrace = stackTrace)
+
+    StreamJsonRpc.RemoteInvocationException(message, 0, null, data) :> exn
+
+let private remoteIpcFaultWithData (data: StreamJsonRpc.Protocol.CommonErrorData) : exn =
+    StreamJsonRpc.RemoteInvocationException(data.Message, 0, null, data) :> exn
+
+let private corruptedRemoteIpcFault () =
+    remoteIpcFault
+        "System.OutOfMemoryException"
+        "Insufficient memory to continue the execution of the program."
+        "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal restarts once and retries a corrupted remote fault`` () =
+    let mutable actionCalls = 0
+    let mutable restartCalls = 0
+    let mutable failureCalls = 0
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                true)
+            (fun _ ->
+                failureCalls <- failureCalls + 1
+                99)
+            (fun () ->
+                actionCalls <- actionCalls + 1
+
+                if actionCalls = 1 then
+                    raise (AggregateException(corruptedRemoteIpcFault ()))
+
+                42)
+
+    test <@ result = 42 @>
+    test <@ actionCalls = 2 @>
+    test <@ restartCalls = 1 @>
+    test <@ failureCalls = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal recognizes a corrupted remote fault inside AggregateException data`` () =
+    let inner =
+        StreamJsonRpc.Protocol.CommonErrorData(
+            TypeName = "System.OutOfMemoryException",
+            Message = "Insufficient memory to continue the execution of the program.",
+            StackTrace = "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+        )
+
+    let outer =
+        StreamJsonRpc.Protocol.CommonErrorData(
+            TypeName = "System.AggregateException",
+            Message = "One or more errors occurred.",
+            StackTrace = "at System.Threading.Tasks.Task.Wait()",
+            Inner = inner
+        )
+
+    let mutable actionCalls = 0
+    let mutable restartCalls = 0
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                true)
+            (fun _ -> 99)
+            (fun () ->
+                actionCalls <- actionCalls + 1
+
+                if actionCalls = 1 then
+                    raise (remoteIpcFaultWithData outer)
+
+                42)
+
+    test <@ result = 42 @>
+    test <@ actionCalls = 2 @>
+    test <@ restartCalls = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal reports the retry fault without restarting twice`` () =
+    let firstFault = corruptedRemoteIpcFault ()
+    let retryFault = corruptedRemoteIpcFault ()
+    let mutable actionCalls = 0
+    let mutable restartCalls = 0
+    let mutable failures: exn list = []
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                true)
+            (fun ex ->
+                failures <- ex :: failures
+                99)
+            (fun () ->
+                actionCalls <- actionCalls + 1
+                raise (if actionCalls = 1 then firstFault else retryFault))
+
+    test <@ result = 99 @>
+    test <@ actionCalls = 2 @>
+    test <@ restartCalls = 1 @>
+    test <@ failures.Length = 1 @>
+    test <@ obj.ReferenceEquals(failures.Head, retryFault) @>
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal does not restart for an unrelated remote fault`` () =
+    let fault =
+        remoteIpcFault "System.InvalidOperationException" "plugin failed" "at Plugin.Run()"
+
+    let mutable actionCalls = 0
+    let mutable restartCalls = 0
+    let mutable failures: exn list = []
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                true)
+            (fun ex ->
+                failures <- ex :: failures
+                99)
+            (fun () ->
+                actionCalls <- actionCalls + 1
+                raise fault)
+
+    test <@ result = 99 @>
+    test <@ actionCalls = 1 @>
+    test <@ restartCalls = 0 @>
+    test <@ failures.Length = 1 @>
+    test <@ obj.ReferenceEquals(failures.Head, fault) @>
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal reports the original fault when restart fails`` () =
+    let fault = corruptedRemoteIpcFault ()
+    let mutable actionCalls = 0
+    let mutable restartCalls = 0
+    let mutable failures: exn list = []
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                false)
+            (fun ex ->
+                failures <- ex :: failures
+                99)
+            (fun () ->
+                actionCalls <- actionCalls + 1
+                raise fault)
+
+    test <@ result = 99 @>
+    test <@ actionCalls = 1 @>
+    test <@ restartCalls = 1 @>
+    test <@ failures.Length = 1 @>
+    test <@ obj.ReferenceEquals(failures.Head, fault) @>
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal does not restart for a remote timeout`` () =
+    let fault = remoteIpcFault "System.TimeoutException" "daemon busy" "at Plugin.Run()"
+    let mutable restartCalls = 0
+    let mutable failedWith: exn option = None
+
+    let result =
+        runIpcWithSelfHeal
+            (fun () ->
+                restartCalls <- restartCalls + 1
+                true)
+            (fun ex ->
+                failedWith <- Some ex
+                99)
+            (fun () -> raise fault)
+
+    test <@ result = 99 @>
+    test <@ restartCalls = 0 @>
+    test <@ failedWith |> Option.exists (fun ex -> obj.ReferenceEquals(ex, fault)) @>
+
 // ---------------------------------------------------------------------------
 // `confirm`'s daemon commands (AUTOMATION-129)
 //

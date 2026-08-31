@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-608): recognize daemon-side corrupted-frame faults wrapped by
+  StreamJsonRpc so the CLI restarts the daemon and retries once.
+- fix: retain an executed test run when a same-tree convergence scan reports it
+  already verified, instead of discarding the earned scope and verdict.
+
 ## 0.14.0-alpha.35 - 2026-08-31
 
 - feat(AUTOMATION-358): add the bounded `fshw invalidate` command. It clears all
