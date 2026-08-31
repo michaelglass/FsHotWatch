@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.24 - 2026-08-31
+
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.10.0-alpha.23 - 2026-08-31
 
