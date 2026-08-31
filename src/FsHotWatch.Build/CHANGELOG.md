@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- AUTOMATION-358 Case 1: artifact freshness is now enforced in production. A stored
+  build success is never replayed over a missing DLL, an authored source newer than
+  its DLL, or a dependency copy that the producer has moved past. A nominally
+  successful build that leaves any of those attributable findings now becomes
+  `BuildArtifactsStale` instead of minting a success for the same cache key. The
+  AUTOMATION-368 observation flag remains accepted by `createWith` for source
+  compatibility but no longer disables the invariant; the daemon uses `create`.
+- A pending dependency copy is content-checked after the real build. Byte-identical
+  output with metadata drift remains green; different or unreadable bytes fail closed.
+  Repair controls remain pinned: a build that actually emits the DLL or settles the
+  copy returns to ordinary cached replay on the next dispatch.
+
 ## 0.7.0-alpha.30 - 2026-08-30
 
 - AUTOMATION-578: a nominally successful build now resolves each `MSB3026`

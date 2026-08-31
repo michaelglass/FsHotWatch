@@ -128,3 +128,18 @@ asked us to reconcile.
   to appending a throwaway marker line to bust the content hash. Refusing a run is
   only right if there is a supported way to fix it; otherwise every occurrence becomes
   a hand-rolled cache-busting edit.
+
+## Amendment: enforcement promoted (AUTOMATION-358 Case 1, 2026-08-31)
+
+The corrected detector is now enforced. Generated `bin/` and `obj/` compile items stay
+outside `GetMaxSourceMtime`, while an authored source newer than its canonical DLL is
+attributable stale output. BuildPlugin refuses a cache replay over that evidence and
+demotes a nominally successful subprocess that leaves it unresolved. Missing canonical
+outputs and byte-divergent dependency copies follow the same rule; metadata-only copy
+drift is content-checked and remains benign.
+
+This supersedes the temporary report-only decision and the promotion gate above. The
+supported recovery is the build the cache bypass launches; if that build does not repair
+the named artifact it stays red rather than licensing an old success. A build that does
+repair it returns immediately to the normal cached path, which is covered by paired
+positive controls.

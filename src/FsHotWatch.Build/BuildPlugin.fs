@@ -464,42 +464,12 @@ let internal describeCoverageGap (examinations: ArtifactExamination list) : stri
 let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : string option =
     describeCoverageGap (examineArtifacts graph)
 
-/// AUTOMATION-368 — `artifactGateReddens` decides whether a stale-artifact
-/// finding ACTS or is merely reported.
-///
-/// It exists because recording MSBuild's real `TargetPath` made this gate
-/// reachable for the first time. Before that, `GetCanonicalDllPath` returned
-/// `None` for every project in a live daemon (the TFM it needs arrives only via
-/// `RegisterFromFsproj`, which nothing in `src/` calls), so `verifyArtifactsFresh`
-/// returned `[]` unconditionally and both consumers — the post-build demotion and
-/// the cache-replay bypass — had never examined an artifact.
-///
-/// Switching a build-reddening predicate on for the first time, across every
-/// consuming repo at once, is not a thing to do in the same change that makes it
-/// possible: the failure mode is not "no protection", it is every build going red
-/// on a false staleness reading. So the daemon passes `false` and the finding is
-/// logged only, while the LOGIC stays exercised by the tests that pass `true`.
-///
-/// THE REPORT-ONLY WINDOW EARNED ITS KEEP. Read back over ~40 workspaces of the
-/// consuming repo (2026-08-18..23), the logs held **2090** stale findings — and
-/// **91%** of them fell within 90s of an `MSBuild evaluation` pass in the same
-/// daemon log. Cause: `obj/<cfg>/<tfm>/<Project>.AssemblyInfo.fs` is a compile
-/// item of every SDK project, every design-time evaluation rewrites it, and
-/// project DISCOVERY is a design-time evaluation — so each discovery restamped
-/// every project's newest "source" past the DLL the last build had just written.
-/// Promoting on that day would have reddened essentially every build in every
-/// workspace. `GetMaxSourceMtime` now excludes build output, which is what
-/// TestPrune's `ArtifactFreshness` had always done and the source of the
-/// BuildPlugin/TestPrune disagreement the promotion criteria asked about.
-///
-/// STILL `false`, deliberately. The corrected reading has never run against a real
-/// repository either, and promoting a reddening predicate in the change that fixes
-/// it repeats the mistake this flag was created to avoid. Promote after one
-/// observation window in which the corrected detector and `ArtifactFreshness`
-/// agree — the log line below is the instrument, and the discovery correlation
-/// above is the exact statistic to re-measure.
+/// AUTOMATION-358 Case 1 promotes the corrected AUTOMATION-368 detector. The boolean
+/// remains in this compatibility entry point so existing callers still compile, but
+/// there is no longer an unsafe report-only mode: attributable stale output always
+/// prevents both cache replay and a newly minted success.
 let createWith
-    (artifactGateReddens: bool)
+    (_artifactGateReddens: bool)
     (command: string)
     (args: string)
     (environment: (string * string) list)
@@ -532,44 +502,6 @@ let createWith
     // the output DLLs cannot bypass Update by replaying a cached BuildCompleted.
     // Both reads and writes happen on this plugin's serialized mailbox.
     let activeTestRunsForCache: Set<Guid> ref = ref Set.empty
-
-    /// Canonical DLL paths that a build reported SUCCESS without producing.
-    ///
-    /// THE FLOOR under the missing-output half of the replay gate below. That gate
-    /// refuses to replay a stored pass while a graph project's output is absent —
-    /// and on its own that refusal has no termination argument. A project the build
-    /// command never actually builds (outside the solution the build verb names, or
-    /// carrying a `TargetPath` from an evaluation that produces nothing) is absent
-    /// before the build and absent after it, so every lookup would bypass and the
-    /// repo would rebuild on every `check`: the inner-loop regression AUTOMATION-245's
-    /// own acceptance forbids, arrived at from the opposite direction.
-    ///
-    /// A build that ran and did not produce the file is proof the CACHE is not what
-    /// is wrong, so the file stops being a reason to distrust one. The bypass is
-    /// therefore worth at most ONE extra build per unproduced output, ever.
-    ///
-    /// RECOMPUTED, never accumulated, and only after a build that PASSED: a failed
-    /// build proves nothing about which outputs it would produce, and an output that
-    /// starts being produced has to be able to leave the set.
-    let unproducedOutputs: Set<string> ref = ref Set.empty
-
-    /// Dependency copies that a build RAN and did not settle.
-    ///
-    /// THE FLOOR under the copy half of the replay gate, and it exists for exactly the
-    /// reason `unproducedOutputs` does: a bypass with no termination argument is a
-    /// rebuild-every-time regression wearing a correctness fix's clothes.
-    ///
-    /// It has a second job the other floor does not. `isPending` asks MSBuild's own
-    /// skip predicate, so a build normally settles every pending copy — but a copy that
-    /// holds DIFFERENT bytes at the SAME size and mtime is one MSBuild will skip for
-    /// ever (measured: a plain `dotnet build` leaves it byte-for-byte as it found it).
-    /// Without this floor that copy would bypass the cache on every single lookup and
-    /// never be repaired by the thing the bypass paid for. With it, the bypass is worth
-    /// at most ONE extra build per copy — and `recordUnrepairedCopies` says out loud
-    /// what the build could not do and what actually does it.
-    ///
-    /// RECOMPUTED, never accumulated, and only after a build that PASSED — same reasons.
-    let unrepairedCopies: Set<string> ref = ref Set.empty
 
     let testProjectNameSet = testProjectNames |> Set.ofList
 
@@ -657,7 +589,7 @@ let createWith
     /// read — so it can sit on the cache-key lookup beside the mtime walk. The CONTENT
     /// question costs orders of magnitude more (157 MB across 37 pairs in one consuming
     /// repo, ~107 ms warm) and answers a question a rebuild cannot act on, so it is
-    /// asked once per build in `recordUnrepairedCopies`, never here.
+    /// asked once per real build in `verifyPendingCopiesAfterBuild`, never here.
     let pendingCopies () : FsHotWatch.OutputCopyFreshness.CopyPair list =
         allDependencyCopies () |> List.filter FsHotWatch.OutputCopyFreshness.isPending
 
@@ -668,18 +600,6 @@ let createWith
     let pendingCopyFindings () : StaleArtifact list =
         pendingCopies () |> List.map copyFinding
 
-    /// AUTOMATION-368's instrument: name a finding this mode is not acting on.
-    let reportWithoutActing (s: StaleArtifact) =
-        // Phrased inline rather than via `formatStaleArtifact`, which is declared
-        // below this point.
-        let detail =
-            match s.Reason with
-            | DllMissing path -> $"DLL missing at %s{path}"
-            | DllOlderThanSources(dllTime, srcTime) -> sprintf "DLL %O older than newest source %O" dllTime srcTime
-            | CopyPendingFromOrigin(origin, copy) -> $"%s{origin} not yet copied to %s{copy}"
-
-        info "build" $"artifact-gate (report-only, AUTOMATION-368): would have reported %s{s.Project}: %s{detail}"
-
     /// Post-build contract enforcement, over a walk the caller already took. For every
     /// project the graph knows about, compare the canonical DLL's mtime against the max
     /// source mtime. Returns the stale projects so the worker can demote BuildPassed to
@@ -687,145 +607,23 @@ let createWith
     /// signal instead of running against artifacts MSBuild's incremental cache silently
     /// failed to update.
     ///
-    /// This is the REDDENING consumer, and the only one `artifactGateReddens` governs in
-    /// full — `replayBlockers` below explains why refusing a replay is a different
-    /// question with a different answer.
+    /// AUTOMATION-358 Case 1: this is now an invariant, not an observation mode.
     let verifyArtifactsFresh (examinations: ArtifactExamination list) : StaleArtifact list =
-        let stale = staleArtifactsOf examinations
+        staleArtifactsOf examinations
 
-        // AUTOMATION-368 — REPORT-ONLY, DELIBERATELY.
-        //
-        // Until now this returned `[]` in every live daemon and neither of its two
-        // consumers — the post-build `BuildPassed -> BuildArtifactsStale` demotion
-        // and the cache-replay bypass — had ever examined a real artifact. The
-        // cause was upstream: `GetCanonicalDllPath` needs a TargetFramework, and a
-        // TFM only reached the graph through `RegisterFromFsproj`, which has zero
-        // callers in `src/`.
-        //
-        // Recording MSBuild's real `TargetPath` fixes that — and by fixing it,
-        // switches on a predicate that REDDENS BUILDS and has never run against a
-        // real repository. The failure mode of getting that wrong is not "no
-        // protection": it is every build in every consuming repo going red at once
-        // on a false staleness reading.
-        //
-        // So the finding is LOGGED and discarded. Behaviour is byte-identical to
-        // before — `[]`, as it has always effectively been — while the claim
-        // becomes observable. Promote to reddening only after these logs and
-        // TestPrune's independent `ArtifactFreshness` agree on a real tree over a
-        // real working week, which is the comparison this mode exists to enable.
-        //
-        // That comparison has now been RUN once, and it disagreed: 2090 findings
-        // over ~40 workspaces, 91% of them within 90s of a project-discovery pass,
-        // because `GetMaxSourceMtime` counted MSBuild's own regenerated
-        // `obj/**/AssemblyInfo.fs` as an edit. Fixed there. The window restarts on
-        // the corrected reading — see `createWith`'s doc comment.
-        if artifactGateReddens || stale.IsEmpty then
-            stale
-        else
-            for s in stale do
-                reportWithoutActing s
-
-            []
-
-    /// The findings that may REFUSE A CACHE REPLAY — a strictly different question
-    /// from `verifyArtifactsFresh`'s, and the reason the report-only flag does not
-    /// govern all of it.
+    /// The attributable findings that refuse a cache replay.
     ///
-    /// `artifactGateReddens` exists to stop a predicate turning builds RED across
-    /// every consuming repo at once on a reading that has never run for real. Refusing
-    /// a replay reddens nothing: it returns `None` from the cache key, which is the
-    /// framework's documented "skip the cache, run Update" bypass — the same one
-    /// `force-rebuild` uses (AUTOMATION-224). The worst case is one real build, whose
-    /// own result then decides the colour. So the flag's jurisdiction is the
-    /// post-build DEMOTION, and it is applied here only to the finding whose reading
-    /// can actually be wrong:
+    /// All three findings are attributable to concrete graph outputs. The corrected
+    /// source walk excludes generated `bin/` and `obj/` compile items, so an authored
+    /// source newer than its DLL is no longer confused with discovery churn. Dependency
+    /// copies use MSBuild's incremental-copy predicate (`SkipUnchangedFiles`: same size
+    /// and mtime): a pending copy forces one real build, after which
+    /// `verifyPendingCopiesAfterBuild` distinguishes benign metadata drift from content
+    /// that the build failed to repair. A divergent or unreadable copy therefore cannot
+    /// mint or retain cached success.
     ///
-    ///   * `DllOlderThanSources` is an MTIME COMPARISON, and mtime comparisons are
-    ///     exactly what the report-only window caught being wrong — 2090 findings over
-    ///     ~40 workspaces, 91% of them a design-time evaluation restamping
-    ///     `obj/**/AssemblyInfo.fs`. It stays behind the flag.
-    ///
-    ///   * `DllMissing` is not a reading at all. The file the graph names as this
-    ///     project's build output does not exist. There is no skew, no clock and no
-    ///     generated-file class to get wrong, and no stored "built N projects" can be
-    ///     true about an output that is absent. Serving that entry is precisely the
-    ///     thing AUTOMATION-245 exists to stop, and it is the highest-frequency
-    ///     instance of it: the first `check` in a brand-new `jj workspace add` has
-    ///     byte-identical sources to the workspace whose entry it therefore hits, and
-    ///     no `bin/` whatsoever — so `built N projects (cached)` gets asserted about
-    ///     outputs that have never existed in that checkout, and TestPrune correctly
-    ///     refuses to run `--no-build` against them. Every agent that opens a
-    ///     per-ticket workspace meets it.
-    ///
-    ///   * `CopyPendingFromOrigin` is not a reading either — it is MSBuild's OWN
-    ///     incremental-copy predicate (`SkipUnchangedFiles`: same size AND same
-    ///     mtime), asked of the graph's dependency copies. If it says the copy is
-    ///     pending, the next real build re-emits it; if it says the copy is settled,
-    ///     no build will touch it again. That is what makes it the one copy question
-    ///     a cache gate may ask: refusing over it costs exactly the build that clears
-    ///     it. MEASURED both ways — a plain build of the consumer restores a
-    ///     left-behind copy and leaves size and mtime equal again, and 37 of 37
-    ///     dependency copies in a healthy consuming-repo tree matched on both.
-    ///
-    ///     The BYTE comparison (`OutputCopyFreshness.verdict`) is deliberately NOT the
-    ///     gate. A copy that differs in content while matching on size and mtime is one
-    ///     MSBuild skips forever — measured: a plain `dotnet build` leaves it exactly as
-    ///     it found it, and only `--no-incremental` (or deleting the destination) re-emits
-    ///     it. Bypassing the cache over that class would buy a rebuild that provably
-    ///     cannot fix it, on every lookup, for ever: the rebuild-every-time regression
-    ///     AUTOMATION-245's own acceptance forbids, reached from the opposite direction.
-    ///     Content is asked on the COLD path instead — see `recordUnrepairedCopies`.
-    ///
-    /// `unproducedOutputs` and `unrepairedCopies` are what keep the two non-reddening
-    /// arms terminating — see them for why a bypass is worth at most one extra build.
     let replayBlockers () : StaleArtifact list =
-        let blocks (s: StaleArtifact) =
-            match s.Reason with
-            | DllMissing path -> not (unproducedOutputs.Value.Contains path)
-            | DllOlderThanSources _ -> artifactGateReddens
-            | CopyPendingFromOrigin(_, copy) -> not (unrepairedCopies.Value.Contains copy)
-
-        let findings = (examineNow () |> staleArtifactsOf) @ pendingCopyFindings ()
-        let acting, notActing = findings |> List.partition blocks
-
-        for s in notActing do
-            match s.Reason with
-            | DllOlderThanSources _ -> reportWithoutActing s
-            // Not report-only suppressions — the build itself declined to fix these,
-            // which `recordUnproducedOutputs` / `recordUnrepairedCopies` have already
-            // said out loud.
-            | DllMissing _
-            | CopyPendingFromOrigin _ -> ()
-
-        acting
-
-    /// After a build that PASSED: whatever outputs are still absent, it did not make.
-    ///
-    /// Said out loud the first time each one appears, because "the build reported
-    /// success and produced no output for this project" is a finding in its own right
-    /// — usually a project in the graph that the build verb's solution does not
-    /// contain — and this is the only place anything notices.
-    let recordUnproducedOutputs (stale: StaleArtifact list) =
-        let missing =
-            stale
-            |> List.choose (fun s ->
-                match s.Reason with
-                | DllMissing path -> Some path
-                | DllOlderThanSources _
-                // A copy has its own floor (`unrepairedCopies`) because "the build
-                // declined to settle it" has a second reading this one does not — see
-                // `recordUnrepairedCopies`.
-                | CopyPendingFromOrigin _ -> None)
-            |> Set.ofList
-
-        for path in Set.difference missing unproducedOutputs.Value do
-            warn
-                "build"
-                $"the build reported success but produced no output at %s{path} — the cache is not what is stale \
-                  here, so a replay will no longer be refused over it. If that project should be built, it is \
-                  missing from what the build command names."
-
-        unproducedOutputs.Value <- missing
+        (examineNow () |> staleArtifactsOf) @ pendingCopyFindings ()
 
     /// After a build that PASSED: whatever dependency copies it left pending, it did not
     /// settle — and THIS is where the byte comparison earns its cost, because a build
@@ -839,50 +637,44 @@ let createWith
     ///   * The bytes DIFFER. The build reported success while still owing a copy of code
     ///     that has moved on — so `built N projects` was true of the projects the build
     ///     command names and false of this destination. The usual cause is a consumer
-    ///     outside the solution the build verb builds, which is the same finding
-    ///     `recordUnproducedOutputs` reports for an output rather than a copy. Named per
-    ///     file, once, with the remedies measured to work when the build itself will
-    ///     not: `dotnet build --no-incremental`, or delete the named copy and build
-    ///     again (a missing destination is copied unconditionally, with no size/mtime
-    ///     comparison to get wrong).
-    ///
-    /// Either way the copy stops justifying a bypass — the bypass bought a build, the
-    /// build ran, and a second one would do no more. See `unrepairedCopies`.
-    let recordUnrepairedCopies () =
+    ///     outside the solution the build verb builds. It remains stale until repaired
+    ///     with `dotnet build --no-incremental`, or by deleting the named copy and
+    ///     building again.
+    let verifyPendingCopiesAfterBuild () : StaleArtifact list =
         let pending = pendingCopies ()
-        let stillPending = pending |> List.map (fun p -> p.Copy) |> Set.ofList
 
-        for pair in pending do
-            if not (unrepairedCopies.Value.Contains pair.Copy) then
-                match
-                    FsHotWatch.OutputCopyFreshness.verdict
-                        FsHotWatch.ContentHash.ofFile
-                        pair.Copy
-                        pair.PrimaryOrigin
-                        pair.OtherOrigins
-                with
-                | FsHotWatch.OutputCopyFreshness.MatchesAnOrigin ->
-                    info
-                        "build"
-                        $"%s{pair.Copy} already holds %s{pair.Producer}'s current bytes but disagrees with it on \
-                          size or timestamp — the run loads correct code, so this is bookkeeping rather than \
-                          staleness, and no longer a reason to refuse a cache replay."
-                | FsHotWatch.OutputCopyFreshness.DiffersFromOrigins origin ->
-                    warn
-                        "build"
-                        $"the build reported success but still owes the copy of %s{origin} to %s{pair.Copy}, which \
-                          holds different bytes — so this build does not make that copy, and re-running it will \
-                          not either. If %s{pair.Consumer} should be built, it is missing from what the build \
-                          command names; failing that, `dotnet build --no-incremental` or deleting %s{pair.Copy} \
-                          and building again both re-emit it. A replay will no longer be refused over it."
-                | FsHotWatch.OutputCopyFreshness.CopyUnreadable path
-                | FsHotWatch.OutputCopyFreshness.OriginUnreadable path ->
-                    warn
-                        "build"
-                        $"the build left %s{pair.Copy} disagreeing with %s{pair.PrimaryOrigin}, and %s{path} could \
-                          not be read to say whether the bytes differ. A replay will no longer be refused over it."
+        pending
+        |> List.choose (fun pair ->
+            match
+                FsHotWatch.OutputCopyFreshness.verdict
+                    FsHotWatch.ContentHash.ofFile
+                    pair.Copy
+                    pair.PrimaryOrigin
+                    pair.OtherOrigins
+            with
+            | FsHotWatch.OutputCopyFreshness.MatchesAnOrigin ->
+                info
+                    "build"
+                    $"%s{pair.Copy} already holds %s{pair.Producer}'s current bytes but disagrees with it on \
+                      size or timestamp — the run loads correct code, so this is bookkeeping rather than staleness."
 
-        unrepairedCopies.Value <- stillPending
+                None
+            | FsHotWatch.OutputCopyFreshness.DiffersFromOrigins origin ->
+                warn
+                    "build"
+                    $"the build reported success but still owes the copy of %s{origin} to %s{pair.Copy}, which \
+                      holds different bytes. Run `dotnet build --no-incremental`, or delete the named copy and \
+                      build again."
+
+                Some(copyFinding pair)
+            | FsHotWatch.OutputCopyFreshness.CopyUnreadable path
+            | FsHotWatch.OutputCopyFreshness.OriginUnreadable path ->
+                warn
+                    "build"
+                    $"the build left %s{pair.Copy} disagreeing with %s{pair.PrimaryOrigin}, and %s{path} could not \
+                      be read to verify the bytes."
+
+                Some(copyFinding pair))
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -976,16 +768,9 @@ let createWith
             // calls stay off the synchronous handler's capture window, and because a
             // build that FAILED is not evidence about either question.
             let examinations = examineNow ()
-            recordUnproducedOutputs (staleArtifactsOf examinations)
+            let stale = verifyArtifactsFresh examinations @ verifyPendingCopiesAfterBuild ()
 
-            // The copy floor, on the same "a build that ran is evidence about what it
-            // would do" footing. NOT folded into the demotion below: `verifyArtifactsFresh`
-            // reddens, and a copy the build declined to settle is TestPrune's preflight to
-            // repair (it holds the file pair and can write it) — reddening the build over
-            // it would refuse a run the repair would have let through.
-            recordUnrepairedCopies ()
-
-            match verifyArtifactsFresh examinations with
+            match stale with
             | [] -> outcome
             | stale -> BuildArtifactsStale(stale, out)
         | _ -> outcome
@@ -1520,13 +1305,8 @@ let createWith
             // (`verifyAndDemote`), so cache-hit and real-build become genuinely
             // indistinguishable downstream.
             //
-            // It is NOT the same MODE, and that is deliberate — see `replayBlockers`.
-            // Refusing a replay cannot turn anything red, so the report-only flag that
-            // holds back the mtime reading has no jurisdiction over a build output
-            // that is simply ABSENT. Without that split this whole gate was dead in
-            // every live daemon: production passes `artifactGateReddens = false`, so
-            // the arbiter returned `[]` unconditionally and the wedge stayed exactly
-            // as reachable as it was before the gate shipped.
+            // AUTOMATION-358 Case 1 removes the old report-only split: the same
+            // attributable findings govern replay and the post-build verdict.
             //
             // Cheap on the hot path, and it reads no file CONTENTS: two stats per
             // project (canonical DLL) and per graph source (`GetMaxSourceMtime` walks
@@ -1580,10 +1360,8 @@ let createWith
       // never earned it.
       Teardown = None }
 
-/// The reddening form. Kept as `create` so existing callers and every test that
-/// asserts the AUTOMATION-224/245 behaviour are unchanged — those tests are the
-/// only coverage the gate's logic has, and neutering them to ship report-only
-/// would leave a future promotion with nothing to stand on.
+/// The ordinary enforcing constructor. `createWith` retains its former boolean only
+/// for source compatibility; AUTOMATION-358 removed the unsafe report-only behavior.
 let create
     (command: string)
     (args: string)

@@ -1467,20 +1467,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             let buildTimeout = b.TimeoutSec |> Option.orElse config.TimeoutSec
 
             daemon.RegisterHandler(
-                // AUTOMATION-368: REPORT-ONLY in the daemon. Recording MSBuild's
-                // TargetPath made the artifact gate reachable for the first time;
-                // switching a build-reddening predicate on across every consuming
-                // repo in the same change that makes it possible is how you turn
-                // "no protection" into "every build red on a false reading".
-                //
-                // The first report-only window proved that concretely: 2090 stale
-                // findings across ~40 consuming workspaces, 91% of them within 90s
-                // of a project-discovery pass, all from MSBuild's own regenerated
-                // `obj/**/AssemblyInfo.fs` being read as an edit. Fixed in
-                // `ProjectGraph.GetMaxSourceMtime`; the window restarts on the
-                // corrected reading before this `false` becomes `true`.
-                FsHotWatch.Build.BuildPlugin.createWith
-                    false
+                // AUTOMATION-358 Case 1 promotes the corrected AUTOMATION-368
+                // detector: a cached or freshly returned success must describe the
+                // current graph outputs, not a deleted, older, or divergent artifact.
+                FsHotWatch.Build.BuildPlugin.create
                     b.Command
                     b.Args
                     []

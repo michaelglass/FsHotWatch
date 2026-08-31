@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- AUTOMATION-358 Case 1: the daemon now registers the enforcing BuildPlugin path.
+  Cached and freshly produced build success cannot outlive missing, older, or
+  byte-divergent graph artifacts; generated `bin/`/`obj/` compile items remain excluded
+  from the authored-source clock by the AUTOMATION-368 fix.
+
 ## 0.10.0-alpha.22 - 2026-08-30
 
 - fix: propagate `MSBUILDDISABLENODEREUSE=1` through shell and other wrapper
