@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.35 - 2026-08-31
+
 - feat(AUTOMATION-358): add the bounded `fshw invalidate` command. It clears all
   task-result cache entries for the current workspace and preserves the warm daemon.
 
