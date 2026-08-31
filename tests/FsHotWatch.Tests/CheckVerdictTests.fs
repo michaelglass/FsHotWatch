@@ -429,6 +429,18 @@ let ``parseTestRunReport: a filtered reply parses as ImpactFiltered`` () =
     let json = """{"scope":"filtered","ranProjects":1,"totalProjects":3}"""
     test <@ (parseTestRunReport json).Scope = ImpactFiltered(1, 3) @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData(0, 3)>]
+[<InlineData(-1, 3)>]
+[<InlineData(4, 3)>]
+let ``parseTestRunReport: a filtered reply with impossible project counts is unreadable`` ran total =
+    let json =
+        $"""{{"scope":"filtered","ranProjects":%d{ran},"totalProjects":%d{total}}}"""
+
+    match (parseTestRunReport json).Scope with
+    | ScopeUnreadable _ -> ()
+    | actual -> failwithf "expected ScopeUnreadable, got %A" actual
+
 [<Fact(Timeout = 15000)>]
 let ``parseTestRunReport: a none reply parses as (NoTestsRun NoTestsReason.Unstated)`` () =
     let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
