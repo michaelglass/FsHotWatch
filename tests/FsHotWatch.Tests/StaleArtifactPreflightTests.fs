@@ -143,6 +143,26 @@ let ``AUTOMATION-201: every remedy names a command that works, and none says 'st
         test <@ not (remedy.Contains "fshw stop") @>
         test <@ not (remedy.ToLowerInvariant().Contains "restart") @>
 
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-516: a stale copy reports build scope before exceptional incremental recovery`` () =
+    let stale =
+        ArtifactFreshness.CopyDiffersFromOrigin("/origin.dll", "/consumer/copy.dll")
+
+    let remedy = StaleArtifactPreflight.remedyFor stale
+
+    let breaker =
+        StaleArtifactPreflight.Reason.breakerTripped "/repo" "/consumer/copy.dll" 10
+
+    test <@ remedy.Contains "consumer" @>
+    test <@ remedy.Contains "plain `dotnet build`" @>
+    test <@ remedy.IndexOf("plain `dotnet build`") < remedy.IndexOf("--no-incremental") @>
+    test <@ breaker.Contains "origins without their consumers" @>
+
+    // CopyDiffersFromOrigin carries no timestamps. Neither surface may invent one.
+    for text in [ remedy; breaker ] do
+        test <@ not (text.Contains "timestamp") @>
+        test <@ not (text.Contains "mtime") @>
+
 /// Only the copy case is healable. Pinned as a fact about the DU rather than left to
 /// the reader, so adding a stale case forces a decision here instead of silently
 /// inheriting "not repairable".

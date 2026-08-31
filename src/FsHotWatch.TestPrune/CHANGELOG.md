@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- AUTOMATION-516: stale dependency-copy refusals now identify the usual producer—a
+  build that rebuilt an origin without its consumer—and recommend a plain consumer
+  build first. `--no-incremental` or deleting the copy is retained only as the
+  second-stage remedy when a successful consumer build still leaves different bytes;
+  no timestamp cause is invented from a verdict that carries no timestamps.
+
 ## 0.13.0-alpha.26 - 2026-08-31
 
 - fix(AUTOMATION-357): only a green run whose terminal receipt establishes the
