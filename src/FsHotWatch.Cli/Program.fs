@@ -390,8 +390,38 @@ let internal classifyIpcFaultAt (stackTrace: string option) (inner: exn) : IpcFa
     | :? TimeoutException as timeout -> IpcFault.TimedOut timeout
     | _ -> IpcFault.Other inner
 
+/// A fault thrown by the DAEMON's own RPC method arrives on the client as
+/// `RemoteInvocationException`, never as the daemon's own exception type —
+/// `JsonRpc.ExceptionStrategy` defaults to `ExceptionProcessing.CommonErrorData`,
+/// which serializes the remote exception's type name, message AND stack trace into
+/// `DeserializedErrorData` rather than preserving its .NET type or reconstructing a
+/// real cross-process stack trace. Without this, a corrupted-frame fault that
+/// happened server-side could never reach `classifyIpcFaultAt`'s
+/// `HeaderDelimitedMessageHandler` check — `RemoteInvocationException` is never
+/// `OutOfMemoryException`/`OverflowException`/`TimeoutException`, so it would fall
+/// to `IpcFault.Other` and self-heal would never fire on a fault the tool already
+/// knows how to recover from. Returns the reconstructed exception paired with the
+/// REMOTE stack trace (not the local one, which is empty on a never-thrown
+/// reconstruction) so `classifyIpcFaultAt` classifies it using the evidence from
+/// where the fault actually happened.
+let private remoteFaultDetails (remote: StreamJsonRpc.RemoteInvocationException) : (exn * string option) option =
+    match remote.DeserializedErrorData with
+    | :? StreamJsonRpc.Protocol.CommonErrorData as data ->
+        match data.TypeName with
+        | "System.OutOfMemoryException" ->
+            Some(OutOfMemoryException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
+        | "System.OverflowException" -> Some(OverflowException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
+        | "System.TimeoutException" -> Some(TimeoutException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
+        | _ -> None
+    | _ -> None
+
 let classifyIpcFault (inner: exn) : IpcFault =
-    classifyIpcFaultAt (inner.StackTrace |> Option.ofObj) inner
+    match inner with
+    | :? StreamJsonRpc.RemoteInvocationException as remote ->
+        match remoteFaultDetails remote with
+        | Some(reconstructed, remoteStackTrace) -> classifyIpcFaultAt remoteStackTrace reconstructed
+        | None -> IpcFault.Other inner
+    | _ -> classifyIpcFaultAt (inner.StackTrace |> Option.ofObj) inner
 
 /// Map an unwrapped IPC exception to a user-actionable hint, or None if the
 /// exception type isn't one we have a known recovery story for. Pure so it can
@@ -452,10 +482,14 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
         let inner = unwrapIpcException ex
 
         match classifyIpcFault inner with
-        | IpcFault.CorruptedFrame _ ->
+        | IpcFault.CorruptedFrame frameFault ->
+            // `frameFault`, not the outer `inner`, names the fault's real type — for a
+            // fault reconstructed from a RemoteInvocationException, `inner` would only
+            // ever say "RemoteInvocationException", hiding which corrupted-pipe shape
+            // (OOM vs Overflow) actually happened.
             eprintfn
                 "⚠ the daemon returned a corrupted IPC reply (%s) — restarting the daemon and retrying..."
-                (inner.GetType().Name)
+                (frameFault.GetType().Name)
 
             if forceRestart () then
                 try
