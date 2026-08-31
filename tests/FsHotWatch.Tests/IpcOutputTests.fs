@@ -9,6 +9,248 @@ open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 
+let private evidenceTree hash =
+    VerifiedTree
+        { FsHotWatch.TreeHash.Hash = hash
+          FileCount = 1
+          SkippedCount = 0
+          DeclaredCount = 0
+          AbsentDeclarationCount = 0 }
+
+let private evidenceReport scope runId =
+    { TestRunReport.ofScopeOnly scope with
+        RunId = runId
+        Seeds = [ "src/Changed.fs" ]
+        SeedCount = 1 }
+
+let private executedA =
+    evidenceReport (ImpactFiltered(2, 4)) (Some(System.Guid.Parse "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+
+let private executedB =
+    evidenceReport (FullSuite 4) (Some(System.Guid.Parse "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
+
+[<Fact>]
+let ``same-tree already-verified retains the executed report atomically`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+
+    let effective, retainedAfterQuiet =
+        TestRunEvidence.reconcile tree (TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)) retained
+
+    test <@ effective = executedA @>
+    test <@ retainedAfterQuiet = retained @>
+
+[<Fact>]
+let ``a genuinely zero-test command remains no evidence`` () =
+    let current = TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)
+
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:zero") current None
+
+    test <@ effective = current @>
+    test <@ retained = None @>
+
+[<Theory>]
+[<InlineData(0, 3)>]
+[<InlineData(-1, 3)>]
+[<InlineData(4, 3)>]
+let ``impossible filtered project counts are not retainable executed evidence`` ran total =
+    let report =
+        evidenceReport (ImpactFiltered(ran, total)) (Some(System.Guid.Parse "cccccccc-cccc-cccc-cccc-cccccccccccc"))
+
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:invalid-filtered") report None
+
+    test <@ effective = report @>
+    test <@ retained = None @>
+
+[<Fact>]
+let ``positive bounded filtered project counts are retainable executed evidence`` () =
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:valid-filtered") executedA None
+
+    test <@ effective = executedA @>
+
+    match retained with
+    | Some evidence -> test <@ evidence.Report = executedA @>
+    | None -> failwith "valid filtered evidence was not retained"
+
+[<Theory>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``an executed-looking scope without a run id is not retainable evidence`` (fullSuite: bool) =
+    let scope = if fullSuite then FullSuite 4 else ImpactFiltered(2, 4)
+
+    let scopeOnly = TestRunReport.ofScopeOnly scope
+
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:no-run") scopeOnly None
+
+    test <@ effective = scopeOnly @>
+    test <@ retained = None @>
+
+[<Fact>]
+let ``already-verified on a changed tree cannot reuse executed evidence`` () =
+    let _, retained = TestRunEvidence.reconcile (evidenceTree "sha256:a") executedA None
+    let current = TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)
+
+    let effective, retainedAfterMove =
+        TestRunEvidence.reconcile (evidenceTree "sha256:b") current retained
+
+    test <@ effective = current @>
+    test <@ retainedAfterMove = None @>
+
+[<Theory>]
+[<InlineData("changes-uncovered")>]
+[<InlineData("unstated")>]
+[<InlineData("unknown-reason")>]
+[<InlineData("unreadable")>]
+let ``only already-verified can reuse prior evidence`` (kind: string) =
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+
+    let scope =
+        match kind with
+        | "changes-uncovered" -> NoTestsRun(NoTestsReason.ChangesUncovered([ "M.f" ], 1))
+        | "unstated" -> NoTestsRun NoTestsReason.Unstated
+        | "unknown-reason" -> NoTestsRun(NoTestsReason.UnknownReason "future")
+        | _ -> ScopeUnreadable "broken reply"
+
+    let current = TestRunReport.ofScopeOnly scope
+
+    let effective, retainedAfterRefusal =
+        TestRunEvidence.reconcile tree current retained
+
+    test <@ effective = current @>
+    test <@ retainedAfterRefusal = None @>
+
+[<Fact>]
+let ``a later executed report wholly replaces the prior report`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retainedA = TestRunEvidence.reconcile tree executedA None
+    let effective, retainedB = TestRunEvidence.reconcile tree executedB retainedA
+    test <@ effective = executedB @>
+
+    match retainedB with
+    | Some evidence -> test <@ evidence.Report = executedB @>
+    | None -> failwith "the later executed report must itself be retained"
+
+[<Fact>]
+let ``a later filtered run cannot downgrade same-tree full-suite evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retainedFull = TestRunEvidence.reconcile tree executedB None
+
+    let effective, retainedAfterFiltered =
+        TestRunEvidence.reconcile tree executedA retainedFull
+
+    test <@ effective = executedB @>
+    test <@ retainedAfterFiltered = retainedFull @>
+
+[<Fact>]
+let ``a later full-suite run upgrades same-tree filtered evidence`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retainedFiltered = TestRunEvidence.reconcile tree executedA None
+
+    let effective, retainedFull =
+        TestRunEvidence.reconcile tree executedB retainedFiltered
+
+    test <@ effective = executedB @>
+
+    match retainedFull with
+    | Some evidence -> test <@ evidence.Report = executedB @>
+    | None -> failwith "full-suite evidence must replace filtered evidence"
+
+[<Fact>]
+let ``retained test evidence cannot hide a later plugin failure`` () =
+    let tree = evidenceTree "sha256:same"
+    let _, retained = TestRunEvidence.reconcile tree executedA None
+
+    let effective, _ =
+        TestRunEvidence.reconcile tree (TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)) retained
+
+    let inputs: CheckVerdict.CheckInputs =
+        { PluginStatuses =
+            Map.ofList
+                [ "lint",
+                  { Status = StatusView.Failed("late failure", System.DateTime.UtcNow)
+                    Subtasks = []
+                    ActivityTail = []
+                    LastRun = None
+                    Diagnostics = DiagnosticCounts.empty } ]
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
+          RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+          Coverage = Complete
+          Scope = effective.Scope }
+
+    let outcome = CheckVerdict.verdict CheckVerdict.InnerLoop inputs
+    test <@ outcome = CheckVerdict.CheckOutcome.FailuresFound @>
+    test <@ CheckVerdict.exitCode outcome = 1 @>
+
+let private writeEvidenceSuite (repoRoot: string) (runId: System.Guid) =
+    let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
+    System.IO.Directory.CreateDirectory(runDir) |> ignore
+
+    System.IO.File.WriteAllText(
+        System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
+        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+    )
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``daemon command retains executed evidence across a same-tree quiet convergence read`` (failSecondRead: bool) =
+    TestHelpers.withTempDir "ipcoutput-retained-command" (fun repoRoot ->
+        let runId = executedA.RunId.Value
+        writeEvidenceSuite repoRoot runId
+        let mutable errorReads = 0
+        let mutable scopeReads = 0
+
+        let getErrors () =
+            errorReads <- errorReads + 1
+
+            if errorReads = 1 then
+                """{"count":0,"files":{},"statuses":{},"unchecked":1}"""
+            elif failSecondRead then
+                """{"count":0,"files":{},"statuses":{"lint":{"status":{"tag":"failed","error":"late failure","at":"2026-08-31T12:00:00Z"},"subtasks":[],"activityTail":[],"lastRun":null}},"unchecked":0}"""
+            else
+                """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+        let getTestRun () =
+            scopeReads <- scopeReads + 1
+
+            if scopeReads = 1 then
+                executedA
+            else
+                TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)
+
+        let exitCode =
+            pollAndRender
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                (fun () -> "idle")
+                (fun () -> "{}")
+                getErrors
+                getTestRun
+                (fun () -> IpcParsing.ReachUnavailable "not used")
+                ignore
+                (fun () -> "idle")
+
+        test <@ exitCode = (if failSecondRead then 1 else 0) @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId = Some runId @>
+            test <@ verdict.Scope = executedA.Scope @>
+            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
+        | other -> failwithf "expected a published command verdict, got %A" other)
+
 [<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts count`` () =
     let json = """{"count":2,"files":{},"statuses":{}}"""
