@@ -2067,23 +2067,48 @@ type Daemon
 ///
 /// Pure of FCS and disk: `check` is injected, making the retry/convergence and
 /// honest-completion invariants unit-testable at the narrowest seam.
-let internal runChecksWithRetry
+[<NoComparison; NoEquality>]
+type internal CheckRetryMeasurements =
+    { Unchecked: int
+      Attempts: int64
+      Retries: int64 }
+
+/// `round` is zero-based, so round zero is the required initial check and each
+/// later allowed round is a retry. Keep the comparison wide: `maxRetries` is
+/// an `int`, but an `int` round counter would wrap after Int32.MaxValue and
+/// restart the loop indefinitely.
+let internal retryRoundIsWithinBudget (maxRetries: int) (round: int64) : bool = round <= int64 maxRetries
+
+let internal runChecksWithRetryMeasured
     (maxRetries: int)
     (check: AbsFilePath -> Async<'r option>)
     (emit: 'r -> unit)
     (files: AbsFilePath list)
-    : Async<int> =
+    : Async<CheckRetryMeasurements> =
+    if maxRetries < 0 then
+        raise (ArgumentOutOfRangeException(nameof maxRetries, maxRetries, "retry budget cannot be negative"))
+
     async {
         let mutable pending = files
-        let mutable round = 0
+        // Int64 keeps even Int32.MaxValue from wrapping the loop counter back
+        // below the caller's budget. Production uses three; the internal API
+        // still refuses to turn an extreme but valid int into an infinite loop.
+        let mutable round = 0L
+        // The maximum representable input can schedule more than Int32.MaxValue
+        // calls across retry rounds. A list length and retry budget are each at
+        // most Int32.MaxValue, so their product stays below Int64.MaxValue.
+        // Keep the measurement at that width rather than letting telemetry wrap
+        // into a lie.
+        let attempts = ref 0L
 
         // Initial pass plus up to `maxRetries` retry rounds over the residual
         // `None` set. Converges (pending shrinks or we hit the budget).
-        while not pending.IsEmpty && round <= maxRetries do
+        while not pending.IsEmpty && retryRoundIsWithinBudget maxRetries round do
             let! results =
                 pending
                 |> List.map (fun file ->
                     async {
+                        System.Threading.Interlocked.Increment(&attempts.contents) |> ignore
                         let! r = check file
                         return file, r
                     })
@@ -2097,10 +2122,34 @@ let internal runChecksWithRetry
                 | None -> stillPending <- file :: stillPending
 
             pending <- List.rev stillPending
-            round <- round + 1
+            round <- round + 1L
 
-        return pending.Length
+        return
+            { Unchecked = pending.Length
+              Attempts = attempts.contents
+              Retries = attempts.contents - int64 files.Length }
     }
+
+let internal runChecksWithRetry
+    (maxRetries: int)
+    (check: AbsFilePath -> Async<'r option>)
+    (emit: 'r -> unit)
+    (files: AbsFilePath list)
+    : Async<int> =
+    async {
+        let! measured = runChecksWithRetryMeasured maxRetries check emit files
+        return measured.Unchecked
+    }
+
+let internal formatScanCompletionSummary
+    checkedCount
+    tierCount
+    skippedCount
+    uncheckedCount
+    checkAttempts
+    retryAttempts
+    =
+    $"Checked %d{checkedCount} files (%d{tierCount} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}, check attempts %d{checkAttempts}, retries %d{retryAttempts}"
 
 /// Execute the full scan logic, returning the updated agent state.
 /// AUTOMATION-300 — split the registered set into what can still be scanned and
@@ -2199,6 +2248,8 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         // Surfaced in the scan-complete state and log so a truncated scan can
         // never read as clean. See `runChecksWithRetry`.
         let mutable uncheckedCount = 0
+        let mutable checkAttempts = 0L
+        let mutable retryAttempts = 0L
 
         if not files.IsEmpty then
             // Run preprocessors (e.g., formatter) before dispatching
@@ -2272,16 +2323,25 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                     completed <- completed + 1
                     scanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                let! tierUnchecked = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+                let! measured =
+                    runChecksWithRetryMeasured scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
-                uncheckedCount <- uncheckedCount + tierUnchecked
+                uncheckedCount <- uncheckedCount + measured.Unchecked
+                checkAttempts <- checkAttempts + measured.Attempts
+                retryAttempts <- retryAttempts + measured.Retries
 
             // Keep the existing "Checked N files (T tiers), skipped M" prefix
             // intact (external tooling greps it); append the unchecked count so
             // a truncated scan is never silently green in the log either.
             Logging.info
                 "scan"
-                $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
+                (formatScanCompletionSummary
+                    checkedCount
+                    tiers.Length
+                    skippedCount
+                    uncheckedCount
+                    checkAttempts
+                    retryAttempts)
 
         sw.Stop()
         let finalScanState = ScanComplete(sw.Elapsed)
