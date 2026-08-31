@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat(AUTOMATION-358): add the bounded `fshw invalidate` command. It clears all
+  task-result cache entries for the current workspace and preserves the warm daemon.
+
 ## 0.14.0-alpha.34 - 2026-08-31
 
 - Finish: AUTOMATION-357 refuse unexplained red verdicts

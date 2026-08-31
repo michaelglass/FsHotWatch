@@ -106,6 +106,7 @@ This matters more than the feature list, so it is stated up front:
 | `fshw format` | Format the code (Fantomas). |
 | `fshw test-rerun` | Rerun tests for an xUnit v3 `--filter-class` / `--filter-trait` slice. Add `--project <name>` (repeatable) to aim it at particular test projects — without it the filter is fanned out across every configured project, so a class living in one of them reports zero matches in all the others. |
 | `fshw rerun <plugin>` | Force one plugin to re-run, clearing its cached state. |
+| `fshw invalidate` | Clear every cached task result for this workspace without stopping its warm daemon. Intended for repository-side clean commands that remove `bin/` or `obj/`. |
 | `fshw init` | Generate a starter `.fshw.json`. |
 | `fshw config check` | Validate `.fshw.json` without starting the daemon. |
 
@@ -116,7 +117,8 @@ Add `-v` for debug logging or `-a` for agent-friendly, parseable output. Run
 > **If a check looks stuck or a result looks stale, do not run `fshw stop`.** The task
 > cache is on disk under `.fshw/` and survives a stop, a crash and a reboot, so a
 > restart throws away the warm compiler and then serves you the same cached answer. The
-> escape is **`fshw confirm`**, which forces a real build and refuses to replay a cached
+> cache-reset primitive is **`fshw invalidate`**, which clears this workspace's task
+> results and preserves the compiler process. The merge gate is **`fshw confirm`**, which forces a real build and refuses to replay a cached
 > verdict. If the cause is stale build *output*, `dotnet build` is the fix — and a copy
 > MSBuild skipped on equal timestamps needs `dotnet build --no-incremental`.
 

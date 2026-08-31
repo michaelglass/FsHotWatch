@@ -26,6 +26,7 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() }
+      InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> unchecked }
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host

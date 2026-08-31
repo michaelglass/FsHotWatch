@@ -32,6 +32,7 @@ let private fakeIpc () : IpcOps =
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
       RerunPlugin = fun _ _ -> async { return "{}" }
+      Invalidate = fun _ -> async { return "invalidated" }
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 

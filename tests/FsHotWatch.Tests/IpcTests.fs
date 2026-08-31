@@ -38,6 +38,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() }
+      InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0 }
 
 [<Fact(Timeout = 15000)>]
@@ -708,6 +709,32 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
 
     let target = DaemonRpcTarget(config)
     test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
+
+[<Fact(Timeout = 15000)>]
+let ``DaemonRpcTarget.Invalidate awaits cache invalidation and acknowledges it`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable called = false
+
+    let config =
+        { defaultRpcConfig host with
+            InvalidateCache = fun () -> task { called <- true } }
+
+    let target = DaemonRpcTarget(config)
+    test <@ target.Invalidate().Result = "invalidated" @>
+    test <@ called @>
+
+[<Fact(Timeout = 15000)>]
+let ``DaemonRpcTarget.Invalidate is bounded by the RPC seam`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            InvalidateCache = fun () -> TaskCompletionSource<unit>().Task }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 300.0)
+    let ex = Assert.Throws<AggregateException>(fun () -> target.Invalidate().Wait())
+    Assert.IsType<TimeoutException>(ex.InnerException) |> ignore
+    test <@ ex.InnerException.Message.Contains("Invalidate") @>
 
 [<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` () =

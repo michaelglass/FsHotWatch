@@ -74,6 +74,12 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- **AUTOMATION-358 Case 2:** `fshw invalidate` clears every cached plugin task
+  result for the current workspace through the live daemon. The RPC is bounded by
+  the common deadline and acknowledges completion, while the F# compiler service
+  remains warm. Repository-side clean commands can now remove `bin/`/`obj/` and
+  invalidate fshw without the ineffective stop/restart cycle.
+
 - Exclude CoverageRatchet's own portable-PDB sources from FsHotWatch coverage and
   remove stale floors for three deleted FsHotWatch source files. Release gates now
   fail only on live first-party coverage floors.

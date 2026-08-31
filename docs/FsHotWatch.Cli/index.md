@@ -70,6 +70,7 @@ a compatibility alias. Unknown or incomplete entries fail configuration.
 | `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. Exits 0 (tests ran and passed), 1 (failures), or **3** (the run executed **no tests** — see below). |
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
 | `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
+| `invalidate` | Clear every cached task result for this workspace without stopping the warm daemon. Repository-side clean commands should call this after removing `bin/` or `obj/`. |
 | `init` | Write a starter `.fshw.json` to the repo root. |
 | `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
 | `coverage refresh-baseline` | Delete the coverage baseline + partial JSON so the next full run rebuilds it from scratch. |
@@ -106,7 +107,7 @@ a ticket.
 > until you clear the cache:
 >
 > ```bash
-> rm -rf .fshw/cache     # then re-run `fshw confirm`
+> fshw invalidate        # preserves the warm daemon; then re-run `fshw confirm`
 > ```
 
 ### A run that executed nothing is not a pass

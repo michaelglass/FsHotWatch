@@ -7,6 +7,9 @@
   byte-divergent graph artifacts; generated `bin/`/`obj/` compile items remain excluded
   from the authored-source clock by the AUTOMATION-368 fix.
 
+- AUTOMATION-358: expose bounded daemon cache invalidation over IPC. The live
+  task-cache instance clears persisted and in-memory entries without restarting FCS.
+
 ## 0.10.0-alpha.22 - 2026-08-30
 
 - fix: propagate `MSBUILDDISABLENODEREUSE=1` through shell and other wrapper

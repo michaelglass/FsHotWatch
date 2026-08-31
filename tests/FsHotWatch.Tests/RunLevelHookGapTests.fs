@@ -69,6 +69,7 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "" }
       RerunPlugin = fun _ _ -> async { return "{}" }
+      Invalidate = fun _ -> async { return "invalidated" }
       IsRunning = isRunning
       LaunchDaemon = fun _ _ _ -> () }
 
