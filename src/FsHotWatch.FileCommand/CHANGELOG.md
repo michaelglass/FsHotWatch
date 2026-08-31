@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.7.0-alpha.19 - 2026-08-28
 
 - Do not cache `afterTests` command outcomes across test runs. Each run may publish

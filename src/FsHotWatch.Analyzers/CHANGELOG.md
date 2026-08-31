@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.7.0-alpha.27 - 2026-08-29
 
 - Fix: keep analyzer timeout visible behind execution fence

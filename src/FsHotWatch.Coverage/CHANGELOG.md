@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.7.0-alpha.20 - 2026-08-19
 
 - chore(deps): bump our dev tools, and adopt CoverageRatchet.Core covered-line counts
