@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.27 - 2026-08-31
+
 - AUTOMATION-516: stale dependency-copy refusals now identify the usual producer—a
   build that rebuilt an origin without its consumer—and recommend a plain consumer
   build first. `--no-incremental` or deleting the copy is retained only as the

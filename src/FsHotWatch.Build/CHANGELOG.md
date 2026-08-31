@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.31 - 2026-08-31
+
 - AUTOMATION-358 Case 1: artifact freshness is now enforced in production. A stored
   build success is never replayed over a missing DLL, an authored source newer than
   its DLL, or a dependency copy that the producer has moved past. A nominally
