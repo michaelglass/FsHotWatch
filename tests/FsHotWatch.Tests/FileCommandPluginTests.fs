@@ -1162,6 +1162,71 @@ let ``collectArgFiles accepts absolute paths`` () =
         with _ ->
             ()
 
+[<Fact(Timeout = 15000)>]
+let ``coverage partial transitions change the cache key of its declared baseline`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    let coverageDir = System.IO.Path.Combine(tmpDir, "coverage", "Unit")
+    let baseline = System.IO.Path.Combine(coverageDir, "coverage.baseline.cobertura.xml")
+    let partial = System.IO.Path.Combine(coverageDir, "coverage.partial.cobertura.xml")
+
+    try
+        System.IO.Directory.CreateDirectory(coverageDir) |> ignore
+        System.IO.File.WriteAllText(baseline, "full evidence")
+
+        let beforePartial =
+            computeArgsSalt tmpDir "coverage-gate" "coverage/Unit/coverage.baseline.cobertura.xml"
+
+        System.IO.File.WriteAllText(partial, "filtered evidence v1")
+
+        let withPartial =
+            computeArgsSalt tmpDir "coverage-gate" "coverage/Unit/coverage.baseline.cobertura.xml"
+
+        System.IO.File.WriteAllText(partial, "filtered evidence v2")
+
+        let changedPartial =
+            computeArgsSalt tmpDir "coverage-gate" "coverage/Unit/coverage.baseline.cobertura.xml"
+
+        System.IO.File.Delete(partial)
+
+        let withoutPartial =
+            computeArgsSalt tmpDir "coverage-gate" "coverage/Unit/coverage.baseline.cobertura.xml"
+
+        test <@ beforePartial <> withPartial @>
+        test <@ withPartial <> changedPartial @>
+        test <@ changedPartial <> withoutPartial @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``coverage baseline discovery accepts casing variants while retaining its canonical partial sibling`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    let coverageDir = System.IO.Path.Combine(tmpDir, "coverage", "Unit")
+    let baseline = System.IO.Path.Combine(coverageDir, "COVERAGE.BASELINE.COBERTURA.XML")
+    let partial = System.IO.Path.Combine(coverageDir, "coverage.partial.cobertura.xml")
+
+    try
+        System.IO.Directory.CreateDirectory(coverageDir) |> ignore
+        System.IO.File.WriteAllText(baseline, "full evidence")
+        System.IO.File.WriteAllText(partial, "filtered evidence")
+
+        let inputs =
+            collectArgFiles tmpDir "coverage/Unit/COVERAGE.BASELINE.COBERTURA.XML"
+
+        test <@ inputs |> List.contains baseline @>
+        test <@ inputs |> List.contains partial @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
 // --- argsStalerThan: arg-file paths whose mtime exceeds `referenceTime`. A non-empty
 // result means a cached run from before that time may not reflect current input. ---
 
@@ -1179,6 +1244,35 @@ let ``argsStalerThan flags files modified after the reference time`` () =
         System.IO.File.SetLastWriteTimeUtc(cfgPath, System.DateTime.UtcNow)
         let result = argsStalerThan tmpDir "--check cfg.json" oldMtime
         test <@ List.contains cfgPath result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``argsStalerThan flags a partial coverage sibling modified after the cached run`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    let coverageDir = System.IO.Path.Combine(tmpDir, "coverage", "Unit")
+    let baseline = System.IO.Path.Combine(coverageDir, "coverage.baseline.cobertura.xml")
+    let partial = System.IO.Path.Combine(coverageDir, "coverage.partial.cobertura.xml")
+
+    try
+        System.IO.Directory.CreateDirectory(coverageDir) |> ignore
+        System.IO.File.WriteAllText(baseline, "full evidence")
+
+        let cachedAt = System.DateTime.UtcNow
+        System.IO.File.SetLastWriteTimeUtc(baseline, cachedAt.AddSeconds(-1.0))
+
+        System.IO.File.WriteAllText(partial, "filtered evidence")
+        System.IO.File.SetLastWriteTimeUtc(partial, cachedAt.AddSeconds(1.0))
+
+        let stale =
+            argsStalerThan tmpDir "coverage/Unit/coverage.baseline.cobertura.xml" cachedAt
+
+        test <@ stale = [ partial ] @>
     finally
         try
             System.IO.Directory.Delete(tmpDir, true)

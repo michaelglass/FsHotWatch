@@ -157,30 +157,42 @@ let private tokenizeArgs (args: string) : string array =
         ||| System.StringSplitOptions.TrimEntries
     )
 
-/// Returns the absolute paths of arg tokens that resolve to an existing file
-/// (relative to repoRoot or absolute). Used by reporters to detect when a
-/// plugin's input has been edited after its last successful run.
+/// Files whose presence changes how a command reads a declared input, even
+/// though they are not command-line tokens themselves.
+let private derivedInputPaths (path: string) : string list =
+    if
+        System.String.Equals(
+            System.IO.Path.GetFileName path,
+            "coverage.baseline.cobertura.xml",
+            System.StringComparison.OrdinalIgnoreCase
+        )
+    then
+        [ System.IO.Path.Combine(System.IO.Path.GetDirectoryName path, "coverage.partial.cobertura.xml") ]
+    else
+        []
+
+/// Returns the absolute paths of existing command inputs: explicit arg tokens
+/// plus any file whose presence changes how one of those tokens is interpreted.
+/// Used by the cache salt and by reporters to detect inputs that were modified
+/// after the plugin's last successful run.
 let collectArgFiles (repoRoot: string) (args: string) : string list =
     tokenizeArgs args
-    |> Array.choose (fun tok ->
+    |> Array.collect (fun tok ->
         let resolved = resolveArgPath repoRoot tok
 
-        if System.IO.File.Exists(resolved) then
-            Some resolved
-        else
-            None)
+        Array.ofList (resolved :: derivedInputPaths resolved))
+    |> Array.filter System.IO.File.Exists
+    |> Array.distinct
     |> Array.toList
 
-/// Returns the absolute paths of arg-file tokens whose mtime exceeds
+/// Returns the absolute paths of existing command inputs whose mtime exceeds
 /// `referenceTime`. A non-empty result hints that a cached plugin run from
 /// before `referenceTime` may not reflect current input.
 let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.DateTime) : string list =
     let ref = referenceTime.ToUniversalTime()
 
-    tokenizeArgs args
-    |> Array.choose (fun tok ->
-        let path = resolveArgPath repoRoot tok
-
+    collectArgFiles repoRoot args
+    |> List.choose (fun path ->
         try
             if System.IO.File.GetLastWriteTimeUtc(path) > ref then
                 Some path
@@ -188,7 +200,6 @@ let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.Date
                 None
         with _ ->
             None)
-    |> Array.toList
 
 /// Salt computation with an injectable hash function — injectable so a test can
 /// deterministically exercise the `None` branch: a path that passes `File.Exists`
@@ -210,8 +221,8 @@ let internal computeArgsSaltWith
     |> FsHotWatch.Events.ContentHash.value
 
 /// Build the salt for this plugin's cache key. Includes the command, the args
-/// string, and a content hash of every whitespace-separated token in args
-/// that resolves to an existing file (relative to repoRoot or absolute).
+/// string, and a content hash of every existing file input: whitespace-separated
+/// arg tokens plus coverage reports derived from those declared baselines.
 /// This means editing a config file referenced in args invalidates the cache
 /// even when commit_id hasn't changed.
 let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =

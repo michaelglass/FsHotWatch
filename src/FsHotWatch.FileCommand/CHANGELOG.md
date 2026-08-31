@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Cache keys and cached-output staleness notices for a declared
+  `coverage.baseline.cobertura.xml` now also include its sibling
+  `coverage.partial.cobertura.xml`. Adding, replacing, or deleting the partial
+  coverage report therefore cannot replay a stale coverage-gate result or leave
+  an obsolete result unmarked.
+
 ## 0.7.0-alpha.18 - 2026-08-13
 
 - fix: unblock the release — coverage floor with real headroom, versions rolled back
