@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.28 - 2026-09-01
+
 - fix(AUTOMATION-608): keep one atomic run receipt for scope, run ID, seeds,
   and zero-selection evidence. Queued convergence runs can no longer replace a
   completed full-suite receipt with narrower evidence from the same check.
