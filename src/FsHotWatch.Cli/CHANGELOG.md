@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.36 - 2026-09-01
+
 - fix(AUTOMATION-608): recognize daemon-side corrupted-frame faults wrapped by
   StreamJsonRpc so the CLI restarts the daemon and retries once.
 - fix: retain an executed test run when a same-tree convergence scan reports it
