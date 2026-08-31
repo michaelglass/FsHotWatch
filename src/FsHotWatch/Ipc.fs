@@ -1,6 +1,7 @@
 module FsHotWatch.Ipc
 
 open System
+open System.Collections.Concurrent
 open System.IO.Pipes
 open System.Text.Json
 open System.Threading
@@ -189,7 +190,50 @@ let WedgeStatusKey = "fshw-wedge"
 /// (the IPC server keeps several acceptors running) and reads the watchdog, so
 /// `GetStatus`/`ScanStatus` report the wedge + stuck op + recovery instead of the
 /// consumer blindly timing out on the socket.
-type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog, ?deadline: TimeSpan) =
+[<NoComparison>]
+type private CheckSession =
+    { Lease: IDisposable
+      Gate: obj
+      mutable Expiry: CancellationTokenSource }
+
+type DaemonRpcTarget
+    (
+        config: DaemonRpcConfig,
+        ?watchdog: OperationWatchdog.Watchdog,
+        ?deadline: TimeSpan,
+        ?beginActiveWork: (unit -> IDisposable)
+    ) =
+
+    // Kept out of DaemonRpcConfig deliberately: that record is a public construction
+    // seam, so adding a required field would break every external host. The optional
+    // constructor argument leaves existing callers source-compatible.
+    let acquireWork () =
+        beginActiveWork
+        |> Option.map (fun beginWork -> beginWork ())
+        |> Option.defaultWith (fun () ->
+            { new IDisposable with
+                member _.Dispose() = () })
+
+    // A check crosses several independent pipe connections (scan, wait, settle,
+    // diagnostics and verdict publishing), so ownership must outlive each RPC.
+    // Expiry is finite so a crashed CLI cannot pin an otherwise-idle daemon forever.
+    let checkSessions = ConcurrentDictionary<string, CheckSession>()
+
+    let releaseCheckSession (sessionId: string) =
+        match checkSessions.TryGetValue(sessionId) with
+        | true, session ->
+            lock session.Gate (fun () ->
+                match checkSessions.TryRemove(sessionId) with
+                | true, removed ->
+                    // Normal completion must cancel the delayed continuation. Without
+                    // this, every finished check leaves a closure alive until its
+                    // deadline, and a future session-id bug could release the wrong
+                    // transaction.
+                    removed.Expiry.Cancel()
+                    removed.Expiry.Dispose()
+                    removed.Lease.Dispose()
+                | false, _ -> ())
+        | false, _ -> ()
 
     /// The seam deadline. A caller-supplied one is honoured only when it is a
     /// real, finite bound — `Infinite`/zero/negative would reintroduce exactly the
@@ -199,6 +243,41 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         match deadline with
         | Some d when d > TimeSpan.Zero && d <> Threading.Timeout.InfiniteTimeSpan -> d
         | _ -> ambientRpcDeadline () + RpcDeadlineGrace
+
+    let scheduleCheckSessionExpiry (sessionId: string) (session: CheckSession) (expiry: CancellationTokenSource) =
+        Task
+            .Delay(seamDeadline (), expiry.Token)
+            .ContinueWith(fun completed ->
+                // Cancellation is the normal renewal/end path. Only the currently armed
+                // expiry may release a session: an earlier timer racing a renewal must not
+                // reclaim live work.
+                if completed.Status = TaskStatus.RanToCompletion then
+                    lock session.Gate (fun () ->
+                        if obj.ReferenceEquals(session.Expiry, expiry) then
+                            match checkSessions.TryRemove(sessionId) with
+                            | true, removed ->
+                                expiry.Dispose()
+                                removed.Lease.Dispose()
+                            | false, _ -> ()))
+        |> ignore
+
+    let renewCheckSession (sessionId: string) =
+        match checkSessions.TryGetValue(sessionId) with
+        | true, session ->
+            lock session.Gate (fun () ->
+                // A concurrent End/expiry wins. Do not resurrect a session that has
+                // already released its lease.
+                match checkSessions.TryGetValue(sessionId) with
+                | true, current when obj.ReferenceEquals(current, session) ->
+                    let priorExpiry = session.Expiry
+                    let nextExpiry = new CancellationTokenSource()
+                    session.Expiry <- nextExpiry
+                    priorExpiry.Cancel()
+                    priorExpiry.Dispose()
+                    scheduleCheckSessionExpiry sessionId session nextExpiry
+                    true
+                | _ -> false)
+        | false, _ -> false
 
     /// Bracket a unit of RPC work: the watchdog tracks it, AND it is bounded.
     ///
@@ -218,6 +297,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         let token = watchdog |> Option.map (fun w -> w.Begin name)
 
         task {
+            use _work = acquireWork ()
+
             try
                 let work = f ()
                 let d = seamDeadline ()
@@ -268,6 +349,39 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             | None -> entries
 
         JsonSerializer.Serialize(withWedge)
+
+    /// Start the daemon half of a multi-RPC `check`/`confirm` transaction.
+    /// The client ends it after producing the terminal verdict response. A bounded
+    /// backstop releases the lease if the client disappears before that point.
+    member _.BeginCheckSession() : string =
+        let sessionId = Guid.NewGuid().ToString("N")
+        let lease = acquireWork ()
+        let expiry = new CancellationTokenSource()
+
+        let session =
+            { Lease = lease
+              Gate = obj ()
+              Expiry = expiry }
+
+        if checkSessions.TryAdd(sessionId, session) then
+            scheduleCheckSessionExpiry sessionId session expiry
+            sessionId
+        else
+            expiry.Dispose()
+            lease.Dispose()
+            failwith "could not allocate check session"
+
+    /// Renew the bounded orphan deadline for a still-live check transaction.
+    /// A live client renews periodically; a crashed client sends no renewals and its
+    /// final lease is still reclaimed at the last finite deadline.
+    member _.RenewCheckSession(sessionId: string) : string =
+        if renewCheckSession sessionId then "renewed" else "missing"
+
+    /// End a multi-RPC `check`/`confirm` transaction. Idempotent so client cleanup
+    /// racing the bounded backstop cannot underflow the shared work count.
+    member _.EndCheckSession(sessionId: string) : string =
+        releaseCheckSession sessionId
+        "ended"
 
     /// Returns a single plugin's status as a single-entry tagged JSON map,
     /// or an empty map JSON object when the plugin is not registered.
@@ -513,7 +627,12 @@ module IpcServer =
     /// Owns the `OperationWatchdog.Watchdog` (see `DaemonRpcTarget`): a background
     /// timer logs the structured "operation exceeded Ns" record plus a periodic
     /// heartbeat. Disposed when the server loop exits (daemon shutdown).
-    let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
+    let startWithActiveWork
+        (pipeName: string)
+        (config: DaemonRpcConfig)
+        (cts: CancellationTokenSource)
+        (beginActiveWork: (unit -> IDisposable) option)
+        : Async<unit> =
         async {
             use watchdog =
                 new OperationWatchdog.Watchdog(
@@ -523,7 +642,7 @@ module IpcServer =
                     log = Logging.info "watchdog"
                 )
 
-            let target = DaemonRpcTarget(config, watchdog)
+            let target = DaemonRpcTarget(config, watchdog, ?beginActiveWork = beginActiveWork)
 
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []
@@ -563,6 +682,11 @@ module IpcServer =
                     // daemon's IPC over one bad cycle is worse than a logged retry.
                     Logging.error "ipc" $"IPC accept loop error: %s{ex.ToString()}"
         }
+
+    /// Start without explicit daemon-work ownership. Preserves the established public
+    /// server API for hosts that do not have an idle-exit work counter.
+    let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
+        startWithActiveWork pipeName config cts None
 
 /// IPC client that connects to the daemon's named pipe and calls methods via StreamJsonRpc.
 module IpcClient =
@@ -615,6 +739,24 @@ module IpcClient =
     /// timeoutMs <= 0 means no client-imposed timeout.
     let waitForComplete (pipeName: string) (timeoutMs: int) : Async<string> =
         invoke pipeName "WaitForComplete" [| timeoutMs |]
+
+    /// Acquire daemon ownership for one complete multi-RPC check transaction.
+    let beginCheckSession (pipeName: string) : Async<string> =
+        invoke pipeName "BeginCheckSession" [||]
+
+    /// Renew an active multi-RPC check transaction before its bounded orphan timeout.
+    let renewCheckSession (pipeName: string) (sessionId: string) : Async<string> =
+        invoke pipeName "RenewCheckSession" [| sessionId |]
+
+    /// Renew well before either the ambient deadline or its grace period expires,
+    /// while capping the idle traffic from a legitimately long check.
+    let checkSessionRenewCadence () =
+        let deadline = ambientRpcDeadline () + RpcDeadlineGrace
+        TimeSpan.FromMilliseconds(max 250.0 (min 30000.0 (deadline.TotalMilliseconds / 3.0)))
+
+    /// Release daemon ownership after the CLI has rendered its terminal verdict.
+    let endCheckSession (pipeName: string) (sessionId: string) : Async<string> =
+        invoke pipeName "EndCheckSession" [| sessionId |]
 
     /// Trigger a build and wait for it to complete.
     let triggerBuild (pipeName: string) : Async<string> = invoke pipeName "TriggerBuild" [||]

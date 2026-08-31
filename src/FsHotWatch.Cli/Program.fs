@@ -311,6 +311,34 @@ type IpcOps =
       IsRunning: string -> bool
       LaunchDaemon: string -> string -> string -> unit }
 
+/// Internal transport for the daemon-owned lifetime around a complete check
+/// transaction. It stays separate from `IpcOps`: that record is a longstanding
+/// public test seam, and making these three RPCs required fields would break all
+/// existing in-memory clients even though only the real pipe client owns sessions.
+type internal CheckSessionTransport =
+    {
+        Begin: string -> Async<string>
+        Renew: string -> string -> Async<string>
+        End: string -> string -> Async<string>
+        RenewCadence: unit -> TimeSpan
+        /// A terminal check must establish a fresh lease immediately before it writes a
+        /// verdict. This is deliberately bounded so a wedged renewal cannot hold the
+        /// terminal path open behind the normal IPC deadline.
+        FinalRenewWait: TimeSpan
+        ShutdownWait: TimeSpan
+    }
+
+let private defaultCheckSessionTransport: CheckSessionTransport =
+    { Begin = IpcClient.beginCheckSession
+      Renew = IpcClient.renewCheckSession
+      End = IpcClient.endCheckSession
+      RenewCadence = IpcClient.checkSessionRenewCadence
+      FinalRenewWait = TimeSpan.FromMilliseconds(250.0)
+      // Cancellation interrupts the normal delay immediately, but an in-flight
+      // StreamJsonRpc call can still be waiting on its remote response. Cleanup
+      // must never inherit that RPC's full deadline.
+      ShutdownWait = TimeSpan.FromMilliseconds(250.0) }
+
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
     { Shutdown = IpcClient.shutdown
@@ -343,9 +371,188 @@ let defaultIpcOps: IpcOps =
                 )
 
             psi.WorkingDirectory <- repoRoot
+
             psi.UseShellExecute <- false
             let proc = System.Diagnostics.Process.Start(psi)
             proc.WaitForExit() }
+
+/// Run the CLI half of a daemon-owned check session. A failed renewal means the
+/// daemon has already reclaimed the lease, so its terminal response is no longer
+/// trustworthy and the caller must fail closed instead of returning green.
+let internal withDaemonCheckSessionWith
+    (transport: CheckSessionTransport)
+    (pipeName: string)
+    (action: (unit -> string option) -> (unit -> string option) -> int)
+    : int =
+    // Session cleanup is a terminal-path backstop, never a caller-controlled way to
+    // wait forever. The transport is an internal test seam, but accepting zero,
+    // negative, or Infinite here would make a bad seam value turn a verdict write or
+    // End RPC into an unbounded client hang.
+    let boundedTerminalWait (configured: TimeSpan) =
+        if configured > TimeSpan.Zero && configured <> Threading.Timeout.InfiniteTimeSpan then
+            min configured (TimeSpan.FromMilliseconds(250.0))
+        else
+            TimeSpan.FromMilliseconds(250.0)
+
+    let sessionId = transport.Begin pipeName |> Async.RunSynchronously
+    use renewCts = new CancellationTokenSource()
+
+    let renewalFailure =
+        System.Threading.Tasks.TaskCompletionSource<string>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let recordRenewalFailure (reason: string) =
+        if not renewCts.IsCancellationRequested then
+            renewalFailure.TrySetResult(reason) |> ignore
+
+    let renewTask: System.Threading.Tasks.Task<unit> =
+        Async.StartAsTask(
+            async {
+                try
+                    while not renewCts.IsCancellationRequested && not renewalFailure.Task.IsCompleted do
+                        do!
+                            System.Threading.Tasks.Task.Delay(transport.RenewCadence(), renewCts.Token)
+                            |> Async.AwaitTask
+
+                        if not renewCts.IsCancellationRequested then
+                            try
+                                let! reply = transport.Renew pipeName sessionId
+
+                                if reply <> "renewed" then
+                                    recordRenewalFailure "the daemon no longer owns this check session"
+                            with
+                            | :? OperationCanceledException when renewCts.IsCancellationRequested -> ()
+                            | ex -> recordRenewalFailure $"could not renew check session: %s{ex.Message}"
+                with
+                | :? OperationCanceledException when renewCts.IsCancellationRequested -> ()
+                | ex -> recordRenewalFailure $"check-session renewal worker failed: %s{ex.Message}"
+            },
+            cancellationToken = renewCts.Token
+        )
+
+    let stopRenewal () =
+        renewCts.Cancel()
+        let wait = boundedTerminalWait transport.ShutdownWait
+
+        let completed =
+            System.Threading.Tasks.Task
+                .WhenAny(
+                    renewTask :> System.Threading.Tasks.Task,
+                    System.Threading.Tasks.Task.Delay(wait)
+                )
+                .GetAwaiter()
+                .GetResult()
+
+        if not (obj.ReferenceEquals(completed, renewTask :> System.Threading.Tasks.Task)) then
+            FsHotWatch.Logging.warn
+                "cli-check"
+                $"check-session renewal did not stop within %d{int wait.TotalMilliseconds}ms; continuing terminal cleanup"
+
+    let sessionFailure () =
+        match renewalFailure.Task.Status with
+        | System.Threading.Tasks.TaskStatus.RanToCompletion -> Some renewalFailure.Task.Result
+        | _ -> None
+
+    let finalRenewalFence () =
+        match sessionFailure () with
+        | Some reason -> Some reason
+        | None ->
+            // The heartbeat proves liveness only while it is running. A check can spend
+            // long enough rendering/converging after its last successful heartbeat for
+            // the daemon to reclaim the lease just before verdict publication. Renew
+            // once more at that boundary, but never wait beyond the terminal budget.
+            let wait = boundedTerminalWait transport.FinalRenewWait
+            use fenceCts = new CancellationTokenSource()
+
+            let fenceTask =
+                Async.StartAsTask(transport.Renew pipeName sessionId, cancellationToken = fenceCts.Token)
+
+            let completed =
+                System.Threading.Tasks.Task
+                    .WhenAny(fenceTask :> System.Threading.Tasks.Task, System.Threading.Tasks.Task.Delay(wait))
+                    .GetAwaiter()
+                    .GetResult()
+
+            if obj.ReferenceEquals(completed, fenceTask :> System.Threading.Tasks.Task) then
+                try
+                    let reply = fenceTask.GetAwaiter().GetResult()
+
+                    if reply = "renewed" then
+                        sessionFailure ()
+                    else
+                        let reason = "the daemon no longer owns this check session"
+                        recordRenewalFailure reason
+                        Some reason
+                with
+                | :? OperationCanceledException ->
+                    let reason = "the final check-session renewal was cancelled"
+                    recordRenewalFailure reason
+                    Some reason
+                | ex ->
+                    let reason =
+                        $"could not renew check session before verdict publication: %s{ex.Message}"
+
+                    recordRenewalFailure reason
+                    Some reason
+            else
+                fenceCts.Cancel()
+
+                let reason =
+                    $"final check-session renewal timed out after %d{int wait.TotalMilliseconds}ms"
+
+                recordRenewalFailure reason
+                Some reason
+
+    let result =
+        try
+            action sessionFailure finalRenewalFence
+        finally
+            stopRenewal ()
+
+            try
+                let wait = boundedTerminalWait transport.ShutdownWait
+
+                let endTask =
+                    Async.StartAsTask(transport.End pipeName sessionId)
+
+                let completed =
+                    System.Threading.Tasks.Task
+                        .WhenAny(endTask :> System.Threading.Tasks.Task, System.Threading.Tasks.Task.Delay(wait))
+                        .GetAwaiter()
+                        .GetResult()
+
+                if obj.ReferenceEquals(completed, endTask :> System.Threading.Tasks.Task) then
+                    endTask.GetAwaiter().GetResult() |> ignore
+                else
+                    FsHotWatch.Logging.warn
+                        "cli-check"
+                        $"check-session End did not complete within %d{int wait.TotalMilliseconds}ms; the daemon-side expiry will release it"
+            with ex ->
+                // The lease has a daemon-side deadline backstop. Do not replace an
+                // already-rendered verdict with cleanup noise if the daemon exited.
+                FsHotWatch.Logging.warn "cli-check" $"could not end check session: %s{ex.Message}"
+
+    match sessionFailure () with
+    | Some reason ->
+        FsHotWatch.Logging.error "cli-check" $"%s{reason}; refusing a terminal check verdict"
+        eprintfn "Check session was lost before its terminal response — refusing a verdict: %s" reason
+        2
+    | _ -> result
+
+/// Keep a daemon-side work lease over the complete check protocol, not merely a
+/// single Scan/WaitForComplete RPC. `IpcOps` is an established public test seam;
+/// only the real pipe transport opens this additive session, so in-memory test
+/// transports remain backward-compatible.
+let private withDaemonCheckSession
+    (ipc: IpcOps)
+    (pipeName: string)
+    (action: (unit -> string option) -> (unit -> string option) -> int)
+    : int =
+    if obj.ReferenceEquals(ipc, defaultIpcOps) then
+        withDaemonCheckSessionWith defaultCheckSessionTransport pipeName action
+    else
+        action (fun () -> None) (fun () -> None)
 
 /// Unwrap nested AggregateException down to the most informative inner exception
 /// so we don't print "One or more errors occurred. (...)" wrapping the real message.
@@ -691,51 +898,31 @@ let private ensureAndQueryErrors
 
             2
         | DaemonReadiness.Ready ->
-            // `confirm` declares its scope BEFORE anything runs: the scan below provokes
-            // the test run, and that run must already be unfiltered — asking afterwards
-            // would only learn that it wasn't.
-            if checkMode = CheckVerdict.Confirmation then
-                requestFullSuiteScope ipc pipeName
-                // Ordered BEFORE the forced scan below: the scan is what triggers the
-                // build, so the flag has to be set by the time the build plugin computes
-                // its cache key. A forced scan alone does not help — it re-reads the same
-                // bytes, so the source merkle is unchanged and the cache hits again.
-                forceRealBuild ipc pipeName
-
             withCheckIpc forceRestart (fun () ->
-                IpcOutput.pollAndRender
-                    mode
-                    checkMode
-                    repoRoot
-                    excludePatterns
-                    (renderLines mode (not noWarnFail))
-                    noWarnFail
-                    // Force a fresh from-disk scan up front — do NOT merely WAIT for one;
-                    // see `forceScanAndWait`.
-                    (fun () -> forceScanAndWait ipc pipeName)
-                    // Authoritative settle: block until the daemon reports its sound
-                    // verdict (`waitForVerdict`). `-1` = no client-imposed timeout; the
-                    // daemon bounds the wait with its hard verdict deadline
-                    // (`resolveVerdictDeadline`, FSHW_VERDICT_DEADLINE_SEC, default 60
-                    // min) so this can never block forever — a breach surfaces via
-                    // `isVerdictWaitTimeout` as a diagnostic exit 2 naming the wedged
-                    // plugin.
-                    (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
-                    (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
-                    (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
-                    // What the last completed run actually covered. Read fresh at every
-                    // verdict point, from the daemon, never inferred from what we asked
-                    // for. The inner loop reads it too — and ignores it — so there is one
-                    // verdict path, not two that can drift.
-                    (fun () -> readTestRun ipc pipeName)
-                    // What `check` would have reached in the run this
-                    // confirm did not have to escalate. Read at publish time, not here.
-                    (fun () -> readCheckReach ipc pipeName)
-                    // `confirm`'s teeth — see `CheckVerdict.confirmNeedsFullRun`.
-                    (fun () -> forceFullSuiteRun ipc pipeName)
-                    // Convergence re-scan: the same helper as the initial scan above, so
-                    // there is ONE definition of "make the tree fresh".
-                    (fun () -> forceScanAndWait ipc pipeName))
+                withDaemonCheckSession ipc pipeName (fun sessionFailure finalRenewalFence ->
+                    // `confirm` declares its scope BEFORE anything runs: the scan below
+                    // provokes the test run, and that run must already be unfiltered.
+                    if checkMode = CheckVerdict.Confirmation then
+                        requestFullSuiteScope ipc pipeName
+                        forceRealBuild ipc pipeName
+
+                    IpcOutput.pollAndRenderWithSession
+                        mode
+                        checkMode
+                        repoRoot
+                        excludePatterns
+                        (renderLines mode (not noWarnFail))
+                        noWarnFail
+                        (fun () -> forceScanAndWait ipc pipeName)
+                        (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
+                        (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
+                        (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
+                        (fun () -> readTestRun ipc pipeName)
+                        (fun () -> readCheckReach ipc pipeName)
+                        (fun () -> forceFullSuiteRun ipc pipeName)
+                        (fun () -> forceScanAndWait ipc pipeName)
+                        (Some sessionFailure)
+                        (Some finalRenewalFence)))
 
 /// Compute a hash of the `.fshw.json` config content for restart-on-config-change
 /// detection (injectable). The CLI BINARY is deliberately NOT part of this hash:

@@ -1,6 +1,8 @@
 module FsHotWatch.Tests.IpcTests
 
 open System
+open System.Diagnostics
+open System.IO
 open System.IO.Pipes
 open System.Text
 open System.Threading
@@ -12,9 +14,11 @@ open FsHotWatch.Ipc
 open FsHotWatch.Cli
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.PluginHost
+open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.Events
 open FsHotWatch.Daemon
+open FsHotWatch.IdleExit
 open FsHotWatch.Tests.TestHelpers
 
 let private waitForServer (pipeName: string) =
@@ -26,6 +30,45 @@ let private waitForServer (pipeName: string) =
             with _ ->
                 false)
         5000
+
+let private runProcessIn (fileName: string) (workingDirectory: string) (args: string list) : int * string * string =
+    // ArgumentList avoids shell-quoting differences on paths with spaces.
+    let psi = ProcessStartInfo(fileName)
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.WorkingDirectory <- workingDirectory
+
+    for arg in args do
+        psi.ArgumentList.Add(arg)
+
+    use proc = Process.Start(psi)
+
+    let stdout = proc.StandardOutput.ReadToEndAsync()
+    let stderr = proc.StandardError.ReadToEndAsync()
+
+    if not (proc.WaitForExit(90000)) then
+        try
+            proc.Kill(entireProcessTree = true)
+        with _ ->
+            ()
+
+        proc.WaitForExit()
+
+        failwithf
+            "%s %s did not exit within 90 seconds\nstdout:\n%s\nstderr:\n%s"
+            fileName
+            (String.concat " " args)
+            (stdout.GetAwaiter().GetResult())
+            (stderr.GetAwaiter().GetResult())
+
+    proc.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult()
+
+let private runCliIn (workingDirectory: string) (args: string list) : int * string * string =
+    // Exercise the packaged CLI entry assembly, so `check` starts its daemon as a
+    // separate process just as a caller does.
+    let cliAssembly = typeof<FsHotWatch.Cli.Program.Command>.Assembly.Location
+    runProcessIn "dotnet" workingDirectory (cliAssembly :: args)
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
@@ -40,6 +83,546 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0 }
+
+type private BlockingPreprocessor(entered: ManualResetEventSlim, release: ManualResetEventSlim) =
+    interface IFsHotWatchPreprocessor with
+        member _.Name = "hold-cold-fcs"
+
+        member _.Process (changedFiles: string list) (_repoRoot: string) =
+            entered.Set()
+
+            if not (release.Wait(TimeSpan.FromSeconds(10.0))) then
+                failwith "test did not release the cold scan preprocessor"
+
+            changedFiles
+
+        member _.Dispose() = ()
+
+[<Fact(Timeout = 15000)>]
+let ``tracked RPC owns and releases the idle-exit work lease`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration =
+                fun _ ->
+                    entered.TrySetResult(()) |> ignore
+                    release.Task }
+
+    let target =
+        DaemonRpcTarget(
+            config,
+            deadline = TimeSpan.FromSeconds(5.0),
+            beginActiveWork = fun () -> WorkLease.acquire work
+        )
+
+    let wait = target.WaitForScan(0L)
+
+    entered.Task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+    test <@ WorkLease.count work = 1 @>
+
+    release.TrySetResult(()) |> ignore
+    wait.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+    test <@ WorkLease.count work = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``check session owns the idle-exit lease through its terminal response`` () =
+    // Catches a check protocol that releases after Scan/WaitForScan but before
+    // WaitForComplete, diagnostics, completeness, and verdict publication.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let target =
+        DaemonRpcTarget(defaultRpcConfig host, beginActiveWork = (fun () -> WorkLease.acquire work))
+
+    let session = target.BeginCheckSession()
+    test <@ WorkLease.count work = 1 @>
+
+    target.EndCheckSession(session) |> ignore
+    test <@ WorkLease.count work = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``abandoned check session releases its lease at the bounded deadline`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let target =
+        DaemonRpcTarget(
+            defaultRpcConfig host,
+            deadline = TimeSpan.FromMilliseconds(100.0),
+            beginActiveWork = (fun () -> WorkLease.acquire work)
+        )
+
+    target.BeginCheckSession() |> ignore
+    test <@ WorkLease.count work = 1 @>
+    test <@ waitUntilTrue (fun () -> WorkLease.count work = 0) 2000 @>
+
+[<Fact(Timeout = 5000)>]
+let ``renewed check session holds its lease across a multi-step transaction`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let target =
+        DaemonRpcTarget(
+            defaultRpcConfig host,
+            deadline = TimeSpan.FromMilliseconds(250.0),
+            beginActiveWork = (fun () -> WorkLease.acquire work)
+        )
+
+    let session = target.BeginCheckSession()
+
+    // Three protocol steps span beyond the original 250ms lease. Each renewal
+    // moves the bounded orphan deadline forward, rather than letting a live
+    // check lose ownership midway through its terminal response.
+    for _ in 1..3 do
+        Task.Delay(120).GetAwaiter().GetResult()
+        target.RenewCheckSession(session) |> ignore
+        test <@ WorkLease.count work = 1 @>
+
+    target.EndCheckSession(session) |> ignore
+    test <@ WorkLease.count work = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``cancelling a parked session renewal does not hold terminal cleanup hostage`` () =
+    // A renewal is a real RPC and can be parked in its remote invoke when the
+    // client begins normal terminal cleanup. That cleanup must not wait for the
+    // ambient IPC deadline before it can release the process.
+    let renewEntered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let endCalled =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let parkedRenew =
+        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew =
+            fun _ _ ->
+                async {
+                    renewEntered.TrySetResult(()) |> ignore
+                    return! parkedRenew.Task |> Async.AwaitTask
+                }
+          End =
+            fun _ _ ->
+                async {
+                    endCalled.TrySetResult(()) |> ignore
+                    return "ended"
+                }
+          RenewCadence = fun () -> TimeSpan.FromMilliseconds(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let stopwatch = Stopwatch.StartNew()
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-parked-renewal" (fun _ _ ->
+            test <@ renewEntered.Task.Wait(TimeSpan.FromSeconds(1.0)) @>
+            0)
+
+    stopwatch.Stop()
+    parkedRenew.TrySetResult("renewed") |> ignore
+
+    test <@ exitCode = 0 @>
+    test <@ endCalled.Task.Wait(TimeSpan.FromSeconds(1.0)) @>
+    test <@ stopwatch.Elapsed < TimeSpan.FromMilliseconds(500.0) @>
+
+[<Fact(Timeout = 5000)>]
+let ``a check whose session expires before its terminal response fails closed`` () =
+    // A long transaction that missed its renewal deadline must not still return
+    // the action's green result: the daemon has already reclaimed its lease.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let target =
+        DaemonRpcTarget(
+            defaultRpcConfig host,
+            deadline = TimeSpan.FromMilliseconds(50.0),
+            beginActiveWork = (fun () -> WorkLease.acquire work)
+        )
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return target.BeginCheckSession() }
+          Renew = fun _ session -> async { return target.RenewCheckSession(session) }
+          End = fun _ session -> async { return target.EndCheckSession(session) }
+          RenewCadence = fun () -> TimeSpan.FromMilliseconds(100.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-expired-session" (fun sessionFailure _ ->
+            test <@ waitUntilTrue (fun () -> WorkLease.count work = 0) 1000 @>
+            // Let the renewal see the daemon's missing reply before the action
+            // attempts to publish a terminal result.
+            Task.Delay(150).GetAwaiter().GetResult()
+            test <@ sessionFailure().IsSome @>
+            0)
+
+    test <@ exitCode = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a final renewal fence catches expiry after a prior successful heartbeat`` () =
+    // The first heartbeat is deliberately successful, then the check spends longer
+    // than the lease deadline preparing its terminal answer. Only the final fence can
+    // observe that reclamation; accepting the earlier heartbeat would mint a stale green.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+
+    let firstRenewed =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let mutable cadenceCalls = 0
+
+    let target =
+        DaemonRpcTarget(
+            defaultRpcConfig host,
+            deadline = TimeSpan.FromMilliseconds(50.0),
+            beginActiveWork = (fun () -> WorkLease.acquire work)
+        )
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return target.BeginCheckSession() }
+          Renew =
+            fun _ session ->
+                async {
+                    let reply = target.RenewCheckSession(session)
+
+                    if reply = "renewed" then
+                        firstRenewed.TrySetResult(()) |> ignore
+
+                    return reply
+                }
+          End = fun _ session -> async { return target.EndCheckSession(session) }
+          RenewCadence =
+            fun () ->
+                cadenceCalls <- cadenceCalls + 1
+
+                if cadenceCalls = 1 then
+                    TimeSpan.FromMilliseconds(1.0)
+                else
+                    TimeSpan.FromSeconds(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-final-fence-expiry" (fun _ finalFence ->
+            test <@ firstRenewed.Task.Wait(TimeSpan.FromSeconds(1.0)) @>
+            Task.Delay(150).GetAwaiter().GetResult()
+
+            match finalFence () with
+            | Some reason -> test <@ reason.Contains("no longer owns") @>
+            | None -> failwith "expected the final renewal fence to observe lease expiry"
+
+            0)
+
+    test <@ exitCode = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a timed out final renewal fence refuses a terminal green`` () =
+    let parkedRenew =
+        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let endCalled =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew = fun _ _ -> async { return! parkedRenew.Task |> Async.AwaitTask }
+          End =
+            fun _ _ ->
+                async {
+                    endCalled.TrySetResult(()) |> ignore
+                    return "ended"
+                }
+          RenewCadence = fun () -> TimeSpan.FromHours(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(25.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-final-fence-timeout" (fun _ finalFence ->
+            match finalFence () with
+            | Some reason -> test <@ reason.Contains("timed out") @>
+            | None -> failwith "expected the parked final renewal to time out"
+
+            0)
+
+    parkedRenew.TrySetResult("renewed") |> ignore
+    test <@ exitCode = 2 @>
+    test <@ endCalled.Task.Wait(TimeSpan.FromSeconds(1.0)) @>
+
+[<Fact(Timeout = 5000)>]
+let ``an infinite final renewal wait is clamped before a terminal green`` () =
+    let parkedRenew =
+        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew = fun _ _ -> async { return! parkedRenew.Task |> Async.AwaitTask }
+          End = fun _ _ -> async { return "ended" }
+          RenewCadence = fun () -> TimeSpan.FromHours(1.0)
+          FinalRenewWait = Timeout.InfiniteTimeSpan
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let stopwatch = Stopwatch.StartNew()
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-final-fence-infinite" (fun _ finalFence ->
+            test <@ finalFence().IsSome @>
+            0)
+
+    stopwatch.Stop()
+    parkedRenew.TrySetResult("renewed") |> ignore
+    test <@ exitCode = 2 @>
+    test <@ stopwatch.Elapsed < TimeSpan.FromSeconds(1.0) @>
+
+[<Fact(Timeout = 5000)>]
+let ``a parked End cleanup is bounded and preserves the action result`` () =
+    let parkedEnd =
+        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew = fun _ _ -> async { return "renewed" }
+          End = fun _ _ -> async { return! parkedEnd.Task |> Async.AwaitTask }
+          RenewCadence = fun () -> TimeSpan.FromHours(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = Timeout.InfiniteTimeSpan }
+
+    let stopwatch = Stopwatch.StartNew()
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-parked-end" (fun _ _ -> 0)
+
+    stopwatch.Stop()
+    parkedEnd.TrySetResult("ended") |> ignore
+
+    test <@ exitCode = 0 @>
+    test <@ stopwatch.Elapsed < TimeSpan.FromSeconds(1.0) @>
+
+[<Fact(Timeout = 5000)>]
+let ``a failed final renewal fence refuses a terminal green`` () =
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew = fun _ _ -> async { return raise (InvalidOperationException "final renew transport failed") }
+          End = fun _ _ -> async { return "ended" }
+          RenewCadence = fun () -> TimeSpan.FromHours(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith transport "fshw-final-fence-exception" (fun _ finalFence ->
+            match finalFence () with
+            | Some reason -> test <@ reason.Contains("transport failed") @>
+            | None -> failwith "expected the failed final renewal to refuse the terminal result"
+
+            0)
+
+    test <@ exitCode = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a successful final renewal fence preserves a terminal green`` () =
+    let mutable renewCalls = 0
+
+    let transport: FsHotWatch.Cli.Program.CheckSessionTransport =
+        { Begin = fun _ -> async { return "session" }
+          Renew =
+            fun _ _ ->
+                async {
+                    renewCalls <- renewCalls + 1
+                    return "renewed"
+                }
+          End = fun _ _ -> async { return "ended" }
+          RenewCadence = fun () -> TimeSpan.FromHours(1.0)
+          FinalRenewWait = TimeSpan.FromMilliseconds(50.0)
+          ShutdownWait = TimeSpan.FromMilliseconds(50.0) }
+
+    let exitCode =
+        FsHotWatch.Cli.Program.withDaemonCheckSessionWith
+            transport
+            "fshw-final-fence-green"
+            (fun sessionFailure finalFence ->
+                test <@ sessionFailure().IsNone @>
+                test <@ finalFence().IsNone @>
+                0)
+
+    test <@ exitCode = 0 @>
+    test <@ renewCalls = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``check session holds a real pipe lease until the client ends it`` () =
+    // Regression for the wire protocol, not merely the target object: check opens a
+    // fresh pipe per RPC, so the server must retain ownership across connections.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let work = WorkLease.create ()
+    use cts = new CancellationTokenSource()
+    // macOS maps named pipes to Unix-domain sockets with a 104-byte path cap.
+    let pipeName = $"fshw-s-{Guid.NewGuid():N}"
+
+    let server =
+        Async.StartAsTask(
+            IpcServer.startWithActiveWork pipeName (defaultRpcConfig host) cts (Some(fun () -> WorkLease.acquire work))
+        )
+
+    waitForServer pipeName
+
+    try
+        let session = IpcClient.beginCheckSession pipeName |> Async.RunSynchronously
+        IpcClient.getStatus pipeName |> Async.RunSynchronously |> ignore
+        test <@ WorkLease.count work = 1 @>
+
+        IpcClient.endCheckSession pipeName session |> Async.RunSynchronously |> ignore
+        test <@ WorkLease.count work = 0 @>
+    finally
+        cts.Cancel()
+
+        try
+            server.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+[<Fact(Timeout = 120000)>]
+let ``check returns a terminal verdict from a separately launched daemon process`` () =
+    // This goes through the executable's normal `check` route, rather than calling
+    // IpcClient in-process: that route owns the multi-RPC check session and only
+    // releases it after it has rendered the daemon's terminal verdict.
+    withTempDir "fshw-process-verdict" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "App")
+        Directory.CreateDirectory(projDir) |> ignore
+        // Program.findRepoRoot requires a VCS-root marker. Tree hashing is
+        // filesystem-based, so a directory marker is sufficient for this fixture.
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(projDir, "App.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="Program.fs" /></ItemGroup>
+</Project>
+"""
+        )
+
+        File.WriteAllText(Path.Combine(projDir, "Program.fs"), "module App\nlet value = 42\n")
+
+        // The fixture's tiny real build gives the daemon a terminal plugin and
+        // satisfies its post-build artifact verifier. With no handlers at all,
+        // WaitForComplete has no terminal cohort to observe.
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".fshw.json"),
+            """{"build":{"command":"dotnet","args":"build src/App/App.fsproj"},"format":false,"lint":false,"cache":false}"""
+        )
+
+        let restoreExit, _, restoreErr =
+            runProcessIn "dotnet" projDir [ "restore"; "--nologo" ]
+
+        Assert.True((restoreExit = 0), $"fixture restore failed (exit {restoreExit}): {restoreErr}")
+
+        try
+            let exitCode, stdout, stderr = runCliIn tmpDir [ "check" ]
+            let verdictPath = Path.Combine(tmpDir, ".fshw", "verdict.json")
+
+            Assert.True(
+                (exitCode = 0),
+                $"process check did not return green (exit {exitCode})\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )
+
+            Assert.True(File.Exists verdictPath, "process check returned without publishing verdict.json")
+
+            use document = System.Text.Json.JsonDocument.Parse(File.ReadAllText verdictPath)
+
+            let outcome =
+                document.RootElement.GetProperty("outcome").GetProperty("kind").GetString()
+
+            Assert.Equal("green", outcome)
+        finally
+            // The test owns this temporary daemon even when the assertion fails.
+            try
+                runCliIn tmpDir [ "stop" ] |> ignore
+            with _ ->
+                ())
+
+[<Fact(Timeout = 30000)>]
+let ``pressure idle exit waits for real cold ScanAll and check terminal response`` () =
+    // Catches both omissions that made pressure reclaim a daemon mid-check: a cold
+    // scan has no plugin transition yet, and a check spans multiple pipe requests.
+    withTempDir "fshw-pressure-cold" (fun tmpDir ->
+        let source = Path.Combine(tmpDir, "Cold.fs")
+        let sourceText = "module Cold\nlet value = 42\n"
+        File.WriteAllText(source, sourceText)
+
+        let checker = sharedChecker.Value
+
+        let projectOptions, _ =
+            checker.GetProjectOptionsFromScript(source, FSharp.Compiler.Text.SourceText.ofString sourceText)
+            |> Async.RunSynchronously
+
+        let mutable capturedDeps: IdleExitDeps option = None
+
+        let timerFactory (deps: IdleExitDeps) : IDisposable =
+            capturedDeps <- Some deps
+
+            { new IDisposable with
+                member _.Dispose() = () }
+
+        let daemon =
+            Daemon.createWithIdleExitTimer
+                checker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleExitMin = Some 30
+                    PressureIdleFloorMin = Some 2 }
+                timerFactory
+
+        daemon.RegisterProject(Path.Combine(tmpDir, "Cold.fsproj"), projectOptions)
+
+        use entered = new ManualResetEventSlim(false)
+        use release = new ManualResetEventSlim(false)
+        daemon.RegisterPreprocessor(BlockingPreprocessor(entered, release))
+
+        use cts = new CancellationTokenSource()
+        let pipeName = Program.computePipeName tmpDir
+        let daemonTask = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+
+        try
+            waitForServer pipeName
+            let session = IpcClient.beginCheckSession pipeName |> Async.RunSynchronously
+
+            test <@ entered.Wait(TimeSpan.FromSeconds(8.0)) @>
+            test <@ capturedDeps.IsSome @>
+
+            let liveDeps = capturedDeps.Value
+
+            let pressuredDeps =
+                { liveDeps with
+                    Now = fun () -> liveDeps.LastActivityAt().AddMinutes(3.0)
+                    Pressure = fun () -> true
+                    Shutdown = fun () -> cts.Cancel()
+                    Log = ignore }
+
+            let latch = FireLatch.create ()
+            test <@ not (runTick pressuredDeps latch) @>
+            test <@ not cts.IsCancellationRequested @>
+
+            release.Set()
+            IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously |> ignore
+
+            // The scan is terminal, but the client still owns the check transaction
+            // until it has rendered the terminal verdict.
+            test <@ not (runTick pressuredDeps latch) @>
+            IpcClient.endCheckSession pipeName session |> Async.RunSynchronously |> ignore
+            test <@ runTick pressuredDeps latch @>
+            test <@ daemonTask.Wait(TimeSpan.FromSeconds(8.0)) @>
+        finally
+            release.Set()
+            cts.Cancel()
+            (daemon :> IDisposable).Dispose())
 
 [<Fact(Timeout = 15000)>]
 let ``server responds to GetStatus`` () =

@@ -55,8 +55,8 @@ let render (at: DateTime) : string =
 
 /// True when the daemon is actively executing work — either any plugin has
 /// work in flight (mailbox events OR an exclusive background run, both
-/// observed by `PluginHost.AnyPluginBusy`) or a client is blocked waiting for
-/// a verdict (`WaitForComplete`).
+/// observed by `PluginHost.AnyPluginBusy`) or explicit daemon work is owned by
+/// an attached RPC/scan.
 ///
 /// Both legs are needed:
 ///   * `anyPluginBusy` survives LONG QUIET PHASES. A plugin's inflight counter is
@@ -65,13 +65,13 @@ let render (at: DateTime) : string =
 ///     `inflightCount` doc comment). So a suite that runs for ten minutes emitting
 ///     nothing keeps this true throughout: the beat tracks "a run is in progress",
 ///     not log output.
-///   * `activeVerdictWaits` covers the instants where no plugin work is in flight but
-///     a `fshw check` client is still connected and waiting.
+///   * `activeWork` covers the cold scan and request-owned phases where no plugin
+///     transition is yet in flight.
 ///
 /// Deliberately separate from `IdleExit.busyForIdleExit` despite the identical body:
 /// they answer different questions (shut myself down? vs. tell the world I'm
 /// working?), and a change to one must not silently redefine the other.
-let runActive (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
+let runActive (anyPluginBusy: bool) (activeWork: int) : bool = anyPluginBusy || activeWork > 0
 
 /// Dependencies a live heartbeat needs, all injectable so the beat/no-beat
 /// decision is unit-tested without a PluginHost, a real clock, a real timer,

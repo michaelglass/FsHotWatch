@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- daemon idle-exit and the activity heartbeat now hold an
+  explicit lease for attached RPCs, the full multi-RPC `check`/`confirm`
+  transaction, and cold FCS scans. The pressure-shortened timeout remains
+  available after terminal completion, but cannot cancel live discovery, scan,
+  settle, or verdict-response work.
+
 ## 0.10.0-alpha.23 - 2026-08-31
 
 - Case 1: the daemon now registers the enforcing BuildPlugin path.

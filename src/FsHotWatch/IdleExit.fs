@@ -124,14 +124,33 @@ module FireLatch =
     /// True once the latch has fired (or is firing). Read for diagnostics/tests.
     let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.state) = 1
 
-/// The daemon is "busy" for idle-exit purposes when EITHER any plugin mailbox is in
-/// flight OR at least one client is actively blocked on a verdict wait
-/// (`WaitForComplete`). The wait leg matters: a background `RunExclusive` run holds a
-/// plugin Running in a way that mailbox-inflight (`AnyPluginBusy`) does not observe,
-/// so without it idle-exit could fire out from under a connected `fshw check` and drop
-/// the client with a connection error instead of a verdict. Pure; the daemon injects
-/// the two live signals.
-let busyForIdleExit (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
+/// Reference-counted ownership of daemon work that the plugin host cannot see.
+///
+/// Cold FCS scans spend most of their time in discovery, preprocessors, build
+/// settlement, and FCS itself — none is a plugin-mailbox transition. The lease is
+/// acquired before scheduling such work and released in the task's `finally`, so the
+/// idle timer can never mistake that quiet interval for an unused daemon.
+[<NoComparison; NoEquality>]
+type WorkLease = private { mutable Count: int }
+
+module WorkLease =
+    let create () : WorkLease = { Count = 0 }
+
+    let count (work: WorkLease) : int = Volatile.Read(&work.Count)
+
+    let acquire (work: WorkLease) : IDisposable =
+        Interlocked.Increment(&work.Count) |> ignore
+        let mutable released = 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(&released, 1) = 0 then
+                    Interlocked.Decrement(&work.Count) |> ignore }
+
+/// The daemon is "busy" for idle-exit purposes when any plugin mailbox is in flight
+/// OR explicit daemon work is owned by an attached RPC/scan. The lease leg covers
+/// discovery and FCS work, which do not themselves create plugin transitions.
+let busyForIdleExit (anyPluginBusy: bool) (activeWork: int) : bool = anyPluginBusy || activeWork > 0
 
 /// Pure decision: fire when the idle duration has met the threshold, no work is
 /// running, and the latch has not already fired. `busy` collapses "any plugin running /
