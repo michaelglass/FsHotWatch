@@ -742,6 +742,93 @@ let ``ipcErrorHint returns None for unrecognized exceptions`` () =
     let ex = InvalidOperationException("something else") :> exn
     test <@ ipcErrorHint ex = None @>
 
+// --- classifyIpcFault: a fault that happened DAEMON-side arrives wrapped in
+// RemoteInvocationException, never as the daemon's own exception type. ---
+
+let private remoteFault (typeName: string) (message: string) (stackTrace: string) : exn =
+    let data =
+        StreamJsonRpc.Protocol.CommonErrorData(TypeName = typeName, Message = message, StackTrace = stackTrace)
+
+    StreamJsonRpc.RemoteInvocationException(message, 0, null, data) :> exn
+
+[<Fact(Timeout = 15000)>]
+let ``classifyIpcFault reconstructs a daemon-side OOM from RemoteInvocationException, using the REMOTE stack trace``
+    ()
+    =
+    // The reconstructed exception is freshly constructed, never thrown — its OWN
+    // .StackTrace is empty. Classification must use the remote CommonErrorData's
+    // stack trace, not the (useless) local one, or a genuine corrupted-frame fault
+    // that happened on the daemon would always misclassify as ClientOutOfMemory.
+    let remote =
+        remoteFault
+            "System.OutOfMemoryException"
+            "Insufficient memory to continue the execution of the program."
+            "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+
+    match classifyIpcFault remote with
+    | IpcFault.CorruptedFrame actual ->
+        test <@ actual :? OutOfMemoryException @>
+        test <@ actual.Message = "Insufficient memory to continue the execution of the program." @>
+    | actual -> failwithf "expected CorruptedFrame, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``classifyIpcFault reconstructs a daemon-side overflow from RemoteInvocationException`` () =
+    let remote =
+        remoteFault
+            "System.OverflowException"
+            "Arithmetic operation resulted in an overflow."
+            "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+
+    match classifyIpcFault remote with
+    | IpcFault.CorruptedFrame actual -> test <@ actual :? OverflowException @>
+    | actual -> failwithf "expected CorruptedFrame, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``classifyIpcFault reconstructs a daemon-side timeout from RemoteInvocationException`` () =
+    let remote = remoteFault "System.TimeoutException" "daemon unresponsive" ""
+
+    match classifyIpcFault remote with
+    | IpcFault.TimedOut actual -> test <@ actual.Message = "daemon unresponsive" @>
+    | actual -> failwithf "expected TimedOut, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``classifyIpcFault leaves an unrecognized RemoteInvocationException as Other, never misreported as recoverable``
+    ()
+    =
+    // A real daemon-side bug unrelated to the corrupted-pipe family (e.g. a genuine
+    // InvalidOperationException in a plugin) must not be treated as a recoverable
+    // pipe corruption — only the three known types get reconstructed.
+    let remote =
+        remoteFault "System.InvalidOperationException" "some real daemon-side bug" ""
+
+    match classifyIpcFault remote with
+    | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, remote) @>
+    | actual -> failwithf "expected Other, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``classifyIpcFault treats a RemoteInvocationException with no deserialized data as Other`` () =
+    let remote =
+        StreamJsonRpc.RemoteInvocationException("opaque failure", 0, (null: obj)) :> exn
+
+    match classifyIpcFault remote with
+    | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, remote) @>
+    | actual -> failwithf "expected Other, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon-side corrupted-frame OOM reaches the SAME self-heal hint as a local one`` () =
+    // End-to-end: the whole point of reconstructing type + remote stack trace is so
+    // the existing recovery messaging treats a daemon-side fault identically to a
+    // client-side one, rather than falling through to "Other" with no hint at all.
+    let remote =
+        remoteFault
+            "System.OutOfMemoryException"
+            "Insufficient memory to continue the execution of the program."
+            "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
+
+    let hint = ipcErrorHint remote
+    test <@ hint.IsSome @>
+    test <@ hint.Value.Contains("corrupted") @>
+
 [<Fact(Timeout = 15000)>]
 let ``tryDeleteForCleanup returns Some on successful delete`` () =
     let path =
