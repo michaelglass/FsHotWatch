@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.23 - 2026-08-31
+
 - AUTOMATION-358 Case 1: the daemon now registers the enforcing BuildPlugin path.
   Cached and freshly produced build success cannot outlive missing, older, or
   byte-divergent graph artifacts; generated `bin/`/`obj/` compile items remain excluded
