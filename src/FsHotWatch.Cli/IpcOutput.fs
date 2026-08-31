@@ -940,7 +940,7 @@ let internal publishTerminalIncomplete
 /// Every terminal path — clean, red, incomplete, wedged plugin, daemon teardown —
 /// publishes a verdict file, so the machine-readable answer exists on the failures
 /// too, not only the greens.
-let pollAndRender
+let internal pollAndRenderWithSession
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
     (repoRoot: string)
@@ -963,6 +963,13 @@ let pollAndRender
     // block below.
     (forceFullRun: unit -> unit)
     (triggerScan: unit -> string)
+    /// A daemon-owned check session can be reclaimed while this client is still
+    /// settling. In that case, do not publish a terminal answer as if the client
+    /// still owned the transaction.
+    (sessionFailure: (unit -> string option) option)
+    /// A final bounded renewal immediately before terminal publication closes the gap
+    /// between the heartbeat's last success and the durable verdict write.
+    (sessionFence: (unit -> string option) option)
     : int =
     // Run `fn` under a spinner when interactive, else announce it with a plain
     // console line first. Centralizes the interactive/non-interactive split so
@@ -1117,17 +1124,26 @@ let pollAndRender
         // the check: the file recorded `incomplete`/2 while this returned 0, so CI —
         // the only consumer that gates on the exit code — read that as a pass.
         let publishedExitCode =
-            publishVerdict
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                checkScoped
-                finalStatuses.Value
-                finalCauses.Value
-                settledTree.Value
-                outcome
+            match
+                sessionFailure |> Option.bind (fun failure -> failure ()),
+                sessionFence |> Option.bind (fun fence -> fence ())
+            with
+            | Some reason, _
+            | _, Some reason ->
+                UI.fail $"Check session was lost before its terminal response — refusing a verdict: %s{reason}"
+                publishTerminalIncomplete repoRoot excludePatterns checkMode reason settledTree.Value
+            | None, None ->
+                publishVerdict
+                    repoRoot
+                    excludePatterns
+                    checkMode
+                    noWarnFail
+                    finalRun.Value
+                    checkScoped
+                    finalStatuses.Value
+                    finalCauses.Value
+                    settledTree.Value
+                    outcome
 
         // `Verdict.CheckProse.explainOutcome`, not a local match: the daemon-less path
         // (`RunOnceCheck`) prints the very same call, so whether a daemon served the check
@@ -1186,6 +1202,7 @@ let pollAndRender
             $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect logs/daemon.log, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
 
         abortExitCode
+
     | ex when isDaemonShutdownDuringWait ex ->
         // AUTOMATION-167: return the code the verdict FILE records, not a literal.
         let abortExitCode =
@@ -1215,3 +1232,40 @@ let pollAndRender
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
 
         abortExitCode
+
+/// Ordinary check rendering has no daemon-session failure signal. Keep this
+/// established surface stable for the daemonless and direct unit-test callers;
+/// the daemon-backed `check` path uses `pollAndRenderWithSession` above.
+let pollAndRender
+    (mode: ProgressRenderer.RenderMode)
+    (checkMode: CheckVerdict.CheckMode)
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (waitForScan: unit -> string)
+    (waitForComplete: unit -> string)
+    (getStatus: unit -> string)
+    (getErrors: unit -> string)
+    (getTestRun: unit -> TestRunReport)
+    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    (forceFullRun: unit -> unit)
+    (triggerScan: unit -> string)
+    : int =
+    pollAndRenderWithSession
+        mode
+        checkMode
+        repoRoot
+        excludePatterns
+        renderStatuses
+        noWarnFail
+        waitForScan
+        waitForComplete
+        getStatus
+        getErrors
+        getTestRun
+        getCheckReach
+        forceFullRun
+        triggerScan
+        None
+        None

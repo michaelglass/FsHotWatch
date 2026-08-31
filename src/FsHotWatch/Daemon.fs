@@ -1598,6 +1598,9 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
+        // Internal deterministic seam for the daemon-level idle/pressure test. Normal
+        // construction supplies None and always uses IdleExit.createTimer.
+        idleExitTimerFactory: (IdleExit.IdleExitDeps -> IDisposable) option,
         // Per-daemon process registry. Plugin-spawned children (test runners,
         // playwright drivers, file-command processes) register against it, and
         // Dispose kills everything still tracked — that is how `fshw stop` and
@@ -1813,8 +1816,28 @@ type Daemon
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             try
-                let onScan () =
-                    Async.StartAsTask(this.ScanAll()) |> ignore
+                let activeWork = IdleExit.WorkLease.create ()
+
+                let startScan () =
+                    // A scan is daemon work even when no plugin is currently active:
+                    // discovery, preprocessors, build settlement and FCS checking run
+                    // outside the plugin-host counter. Acquire before scheduling so the
+                    // idle timer has no race in which it can observe an attached cold
+                    // scan as idle; `use` releases on cancellation and every exception.
+                    let lease = IdleExit.WorkLease.acquire activeWork
+
+                    try
+                        Async.StartAsTask(
+                            async {
+                                use _lease = lease
+                                do! this.ScanAll()
+                            }
+                        )
+                    with ex ->
+                        lease.Dispose()
+                        reraise ()
+
+                let onScan () = startScan () |> ignore
 
                 let triggerBuild () =
                     async {
@@ -1842,15 +1865,6 @@ type Daemon
                 // definition of "registered minus checked" — shared with
                 // FormatScanStatus via the daemon-level `liveCoverage`.
                 let getUncheckedCount () = snd (liveCoverage ())
-
-                // Count of in-flight `WaitForComplete`/verdict waits (connected
-                // check clients blocked on the daemon's authoritative settle).
-                // Feeds the idle-exit `Busy` predicate below so the daemon is NEVER
-                // treated as idle while a client is waiting for a verdict — a
-                // client can be blocked on one even while every plugin is
-                // momentarily quiet, and idle-exit firing mid-wait drops it with a
-                // connection error instead of a verdict.
-                let activeVerdictWaits = ref 0
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
@@ -1883,26 +1897,14 @@ type Daemon
                             }
                       // requireVerdict=true: this is the WaitForComplete RPC
                       // path — it must not report a vacuous clean on a cold /
-                      // never-ran daemon (block until a real verdict). Bracketed
-                      // with the `activeVerdictWaits` counter so an in-flight
-                      // client wait inhibits idle-exit (see `Busy` below); the
-                      // increment runs synchronously as the task is started and
-                      // the decrement is guaranteed by `finally` on every exit
-                      // (verdict, timeout, or shutdown cancellation).
+                      // never-ran daemon. `DaemonRpcTarget.trackedTask` holds an
+                      // active-work lease around the whole RPC, including this
+                      // quiet settle/convergence phase.
                       WaitForAllTerminal =
                         fun timeout ->
                             waitForVerdictUnlessDiscoveryFailed
                                 this.WaitForDiscoveryAdmission
-                                (fun timeout ->
-                                    task {
-                                        System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
-
-                                        try
-                                            return! waitForVerdict host timeout cts.Token
-                                        finally
-                                            System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents)
-                                            |> ignore
-                                    })
+                                (fun timeout -> waitForVerdict host timeout cts.Token)
                                 timeout
                       RerunPlugin = rerunPlugin
                       InvalidateCache =
@@ -1910,7 +1912,14 @@ type Daemon
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount }
 
-                let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
+                let ipcTask =
+                    Async.StartAsTask(
+                        IpcServer.startWithActiveWork
+                            pipeName
+                            rpcConfig
+                            cts
+                            (Some(fun () -> IdleExit.WorkLease.acquire activeWork))
+                    )
 
                 // Idle-exit scheduler. When a threshold is configured, arm a 30s
                 // timer that gracefully shuts the daemon down once it has been idle
@@ -1936,22 +1945,21 @@ type Daemon
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readGcPressure
                               Now = fun () -> System.DateTime.UtcNow
-                              // Busy when any plugin has work in flight (mailbox
-                              // events or an exclusive background run) OR a client
-                              // is blocked on a verdict wait. The wait leg keeps
-                              // idle-exit from firing out from under a connected
-                              // `fshw check` in the instants where no plugin work
-                              // is in flight (e.g. between convergence attempts).
+                              // Busy when any plugin has work in flight or any
+                              // request/scan owns explicit daemon work. The latter
+                              // spans cold FCS work and quiet convergence phases.
                               Busy =
                                 fun () ->
                                     IdleExit.busyForIdleExit
                                         (host.AnyPluginBusy())
-                                        (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                        (IdleExit.WorkLease.count activeWork)
                               LastActivityAt = host.LastActivityAt
                               Shutdown = fun () -> cts.Cancel()
                               Log = fun message -> Logging.info "idle-exit" message }
 
-                        IdleExit.createTimer deps :> IDisposable
+                        match idleExitTimerFactory with
+                        | Some createTimer -> createTimer deps
+                        | None -> IdleExit.createTimer deps :> IDisposable
                     | _ ->
                         // No-op disposable when idle-exit is off.
                         { new IDisposable with
@@ -1967,16 +1975,11 @@ type Daemon
                 use _heartbeat: IDisposable =
                     Heartbeat.createBeat
                         { Now = fun () -> System.DateTime.UtcNow
-                          // Same two live signals idle-exit reads. `AnyPluginBusy`
-                          // is the leg that spans long quiet phases: a plugin's
-                          // inflight count is held for the whole lifetime of an
-                          // exclusive run, so a ten-minute silent browser suite
-                          // keeps beating without emitting anything.
+                          // Same live signals idle-exit reads. `AnyPluginBusy` is
+                          // the plugin leg; the explicit lease covers cold scans
+                          // before a plugin begins work.
                           RunActive =
-                            fun () ->
-                                Heartbeat.runActive
-                                    (host.AnyPluginBusy())
-                                    (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                            fun () -> Heartbeat.runActive (host.AnyPluginBusy()) (IdleExit.WorkLease.count activeWork)
                           Write = Heartbeat.writeTo repoRoot
                           Log = Logging.warn "heartbeat"
                           Cadence = Heartbeat.DefaultCadence }
@@ -2025,7 +2028,7 @@ type Daemon
                 use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
                 // Race against cancellation so a slow scan doesn't block shutdown.
-                let scanTask = Async.StartAsTask(this.ScanAll())
+                let scanTask = startScan ()
 
                 do!
                     [| scanTask :> System.Threading.Tasks.Task
@@ -2376,6 +2379,7 @@ module Daemon =
         (opts: DaemonOptions)
         (workspaceLoader: IWorkspaceLoader option)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (idleExitTimerFactory: (IdleExit.IdleExitDeps -> IDisposable) option)
         =
         // This MUST be the first thing that happens (AUTOMATION-147).
         //
@@ -2630,6 +2634,7 @@ module Daemon =
                 excludePatterns,
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
+                idleExitTimerFactory,
                 processRegistry
             )
         with _ ->
@@ -2638,7 +2643,16 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) None
+
+    /// Deterministic idle-exit construction seam used only by daemon lifecycle tests.
+    let internal createWithIdleExitTimer
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (timerFactory: IdleExit.IdleExitDeps -> IDisposable)
+        =
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) (Some timerFactory)
 
     /// Deterministic loader/mapping seam for discovery concurrency tests.
     let internal createWithWorkspaceLoader
@@ -2648,7 +2662,7 @@ module Daemon =
         (loader: IWorkspaceLoader)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
-        createWithCore checker repoRoot opts (Some loader) mapProjectOptions
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

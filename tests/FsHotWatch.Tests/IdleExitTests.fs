@@ -9,7 +9,16 @@ open FsHotWatch.IdleExit
 
 let private threshold = TimeSpan.FromMinutes(30.0)
 
-// --- busyForIdleExit (in-flight verdict wait inhibits idle-exit) ---
+// --- busyForIdleExit (scan and verdict ownership inhibit idle-exit) ---
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``busyForIdleExit is true while FCS scan ownership is in flight`` () =
+    // A cold scan's discovery/build settlement/FCS work is not itself a plugin
+    // mailbox event. It must therefore hold an explicit lease, otherwise a
+    // pressure-shortened timer can read a quiet host as idle and kill the caller.
+    test <@ busyForIdleExit false 1 = true @>
+    test <@ busyForIdleExit false 3 = true @>
 
 [<Fact>]
 let ``busyForIdleExit is true while a verdict wait is in flight`` () =
@@ -27,6 +36,52 @@ let ``busyForIdleExit is true when a plugin mailbox is in flight`` () =
 [<Fact>]
 let ``busyForIdleExit is idle only when nothing is in flight and no client waits`` () =
     test <@ busyForIdleExit false 0 = false @>
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``work lease releases on an exceptional scan exit and only once`` () =
+    let work = WorkLease.create ()
+
+    try
+        use _lease = WorkLease.acquire work
+        test <@ WorkLease.count work = 1 @>
+        raise (OperationCanceledException "scan cancelled")
+    with :? OperationCanceledException ->
+        ()
+
+    test <@ WorkLease.count work = 0 @>
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``pressure idle exit defers a cold scan lease then fires after terminal release`` () =
+    // Deterministic regression for AUTOMATION-609: the pressure floor has
+    // elapsed, host plugins are quiet, and FCS scan ownership is the only live
+    // signal. That ownership must veto shutdown; once the scan reaches a terminal
+    // response and releases, the same genuinely idle daemon is reclaimable.
+    let work = WorkLease.create ()
+    let lease = WorkLease.acquire work
+    let now = DateTime(2026, 8, 31, 12, 0, 0, DateTimeKind.Utc)
+    let shutdowns = ref 0
+
+    let deps: IdleExitDeps =
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          Pressure = fun () -> true
+          Now = fun () -> now
+          Busy = fun () -> busyForIdleExit false (WorkLease.count work)
+          LastActivityAt = fun () -> now.AddMinutes(-2.0)
+          Shutdown = fun () -> Interlocked.Increment(shutdowns) |> ignore
+          Log = ignore }
+
+    let latch = FireLatch.create ()
+
+    test <@ runTick deps latch = false @>
+    test <@ shutdowns.Value = 0 @>
+
+    lease.Dispose()
+
+    test <@ runTick deps latch = true @>
+    test <@ shutdowns.Value = 1 @>
 
 // --- shouldFire (pure decision) ---
 

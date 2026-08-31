@@ -513,6 +513,79 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
 
     test <@ exitCode = 0 @>
 
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``a lost daemon check session publishes an incomplete verdict instead of green`` () =
+    // A late renewal can discover that the daemon reclaimed the lease while a
+    // long check was settling. The terminal publisher must record that loss, not
+    // the otherwise-clean daemon response.
+    let exitCode, verdict =
+        TestHelpers.withTempDir "ipcoutput-lost-session" (fun repoRoot ->
+            let exitCode =
+                pollAndRenderWithSession
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    (fun () -> "idle")
+                    (fun () -> "{}")
+                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+                    (Some(fun () -> Some "renewal reported missing"))
+                    None
+
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found verdict -> exitCode, verdict
+            | other -> failwith $"Expected an incomplete verdict, got %A{other}")
+
+    test <@ exitCode = 2 @>
+
+    match verdict.Outcome with
+    | Verdict.Incomplete reason -> test <@ reason.Contains("renewal reported missing") @>
+    | other -> failwith $"Expected an incomplete verdict, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``a final session renewal fence refuses green after an earlier heartbeat succeeded`` () =
+    // The background renewal can have succeeded while rendering was still in flight.
+    // A lease that expires in that final gap must not mint a durable clean verdict.
+    let exitCode, verdict =
+        TestHelpers.withTempDir "ipcoutput-final-session-fence" (fun repoRoot ->
+            let exitCode =
+                pollAndRenderWithSession
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    (fun () -> "idle")
+                    (fun () -> "{}")
+                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+                    (Some(fun () -> None))
+                    (Some(fun () -> Some "the daemon no longer owns this check session"))
+
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found verdict -> exitCode, verdict
+            | other -> failwith $"Expected an incomplete verdict, got %A{other}")
+
+    test <@ exitCode = 2 @>
+
+    match verdict.Outcome with
+    | Verdict.Incomplete reason -> test <@ reason.Contains("no longer owns") @>
+    | other -> failwith $"Expected an incomplete verdict, got %A{other}"
+
 // --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
 // AUTOMATION-65: a WaitForComplete that faults because the daemon shut down or the pipe
 // dropped mid-wait must be recognised, so the check yields a diagnostic verdict (exit 2)

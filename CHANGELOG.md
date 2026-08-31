@@ -4,6 +4,11 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- **AUTOMATION-609:** Idle-exit now treats attached daemon requests, the whole
+  multi-RPC `check`/`confirm` transaction, and cold FCS scan ownership as active
+  work. Under memory pressure, the shortened timeout still reclaims genuinely
+  quiescent daemons but cannot terminate a discovery/FCS scan or verdict response.
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —

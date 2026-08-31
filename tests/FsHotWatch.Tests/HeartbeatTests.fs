@@ -270,9 +270,9 @@ let ``runActive is true while any plugin has work in flight`` () =
     test <@ runActive true 0 = true @>
 
 [<Fact>]
-let ``runActive is true while a client waits for a verdict`` () =
-    // Covers the instants where no plugin work is in flight but a `fshw check`
-    // client is still connected and blocked.
+[<Trait("Issue", "AUTOMATION-609")>]
+let ``runActive is true while explicit daemon work is owned`` () =
+    // Covers a cold scan before the plugin host records a transition.
     test <@ runActive false 1 = true @>
     test <@ runActive false 3 = true @>
 
