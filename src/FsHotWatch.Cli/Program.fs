@@ -405,14 +405,17 @@ let internal classifyIpcFaultAt (stackTrace: string option) (inner: exn) : IpcFa
 /// reconstruction) so `classifyIpcFaultAt` classifies it using the evidence from
 /// where the fault actually happened.
 let private remoteFaultDetails (remote: StreamJsonRpc.RemoteInvocationException) : (exn * string option) option =
-    match remote.DeserializedErrorData with
-    | :? StreamJsonRpc.Protocol.CommonErrorData as data ->
+    let rec fromCommonErrorData (data: StreamJsonRpc.Protocol.CommonErrorData) =
         match data.TypeName with
         | "System.OutOfMemoryException" ->
             Some(OutOfMemoryException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
         | "System.OverflowException" -> Some(OverflowException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
         | "System.TimeoutException" -> Some(TimeoutException(data.Message) :> exn, data.StackTrace |> Option.ofObj)
+        | "System.AggregateException" -> data.Inner |> Option.ofObj |> Option.bind fromCommonErrorData
         | _ -> None
+
+    match remote.DeserializedErrorData with
+    | :? StreamJsonRpc.Protocol.CommonErrorData as data -> fromCommonErrorData data
     | _ -> None
 
 let classifyIpcFault (inner: exn) : IpcFault =
