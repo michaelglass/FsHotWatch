@@ -169,6 +169,7 @@ type Command =
     | [<CmdArg("plugin name (optional)"); CmdExample("", "build", "test-prune"); Cmd("Show current status")>] Status of
         plugin: string option
     | [<Cmd("Scan for file changes")>] Scan
+    | [<Cmd("Invalidate cached task results without stopping the daemon")>] Invalidate
     | [<CmdArg("plugin name");
         CmdExample("build", "test-prune", "analyzers");
         Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
@@ -306,6 +307,7 @@ type IpcOps =
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
       RerunPlugin: string -> string -> Async<string>
+      Invalidate: string -> Async<string>
       IsRunning: string -> bool
       LaunchDaemon: string -> string -> string -> unit }
 
@@ -323,6 +325,7 @@ let defaultIpcOps: IpcOps =
       TriggerBuild = IpcClient.triggerBuild
       FormatAll = IpcClient.formatAll
       RerunPlugin = IpcClient.rerunPlugin
+      Invalidate = IpcClient.invalidate
       IsRunning = IpcClient.isRunning
       LaunchDaemon =
         fun repoRoot extraArgs logFile ->
@@ -1377,6 +1380,7 @@ let executeCommand
         | Verdict
         | Stop
         | Scan
+        | Invalidate
         | Status _
         | Init
         | Config _
@@ -1634,6 +1638,14 @@ let executeCommand
             withIpc (fun () ->
                 let result = ipc.Scan pipeName |> Async.RunSynchronously
                 UI.success $"Scan: %s{result}"
+                0)
+        | Invalidate ->
+            // Cache invalidation is daemon-owned: clearing it through IPC updates
+            // the live cache instance as well as its persisted files, while keeping
+            // the expensive compiler service warm for the next check.
+            withDaemonAndIpc (fun () ->
+                let result = ipc.Invalidate pipeName |> Async.RunSynchronously
+                UI.success $"Cache %s{result}; daemon preserved"
                 0)
         | Status pluginName ->
             // Say it in words: a status computed by a daemon built from different code

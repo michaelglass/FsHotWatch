@@ -1905,6 +1905,9 @@ type Daemon
                                     })
                                 timeout
                       RerunPlugin = rerunPlugin
+                      InvalidateCache =
+                        fun () ->
+                            task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)

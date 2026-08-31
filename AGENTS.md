@@ -56,6 +56,11 @@ every test project in the solution.
 **Cached output looks stale (e.g. coverage didn't re-run after a config edit).**
 `fshw rerun <plugin>` clears the cache key and re-fires. fshw also auto-warns `cached output may be stale → run fshw rerun <plugin>` when arg-file mtimes outpace the last run — heed it.
 
+**A repository clean removed `bin/` / `obj/`.**
+`fshw invalidate` clears every cached task result for this workspace without stopping
+the daemon. Use it from repo-side clean commands; the next check rebuilds while FCS
+stays warm.
+
 **Renamed / moved / added files and they aren't being checked.**
 `fshw scan` re-discovers the tree. Edits to `.fshw.json` trigger this automatically.
 

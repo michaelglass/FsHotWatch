@@ -163,6 +163,9 @@ type DaemonRpcConfig =
         WaitForScanGeneration: int64 -> Task<unit>
         WaitForAllTerminal: TimeSpan -> Task<unit>
         RerunPlugin: string -> Async<Result<unit, string>>
+        /// Drop every persisted task-result entry for this workspace. The task
+        /// boundary keeps filesystem enumeration off the RPC dispatch thread.
+        InvalidateCache: unit -> Task<unit>
         /// Request-time count of registered files that currently lack a valid
         /// full-check result (the completeness signal carried in the check
         /// response). Computed from the live PluginHost coverage set against the
@@ -433,6 +436,16 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                 | Result.Error msg -> return JsonSerializer.Serialize {| error = msg |}
             })
 
+    /// Invalidate every cached plugin task result without stopping the daemon.
+    /// The shared RPC seam supplies the hard deadline and keeps a wedged cache
+    /// backend from holding the caller forever; the FCS process stays warm.
+    member _.Invalidate() : Task<string> =
+        trackedTask "Invalidate" (fun () ->
+            task {
+                do! config.InvalidateCache()
+                return "invalidated"
+            })
+
     /// Clear task cache entries. Optionally filter by plugin and/or file.
     [<JsonRpcMethod("cache-clear")>]
     member _.CacheClear(plugin: string, file: string) : string =
@@ -623,6 +636,9 @@ module IpcClient =
     /// Force a named plugin to re-run, then return the full status.
     let rerunPlugin (pipeName: string) (name: string) : Async<string> =
         invoke pipeName "RerunPlugin" [| name |]
+
+    /// Invalidate all task-result cache entries while preserving the daemon.
+    let invalidate (pipeName: string) : Async<string> = invoke pipeName "Invalidate" [||]
 
     /// Quick probe to check if a daemon is listening on the named pipe.
     let isRunning (pipeName: string) : bool =

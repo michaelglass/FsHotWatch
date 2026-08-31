@@ -119,6 +119,10 @@ let ``parse scan returns Scan`` () =
     | other -> failwith $"Expected Ok Scan, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
+let ``parse invalidate returns Invalidate`` () =
+    test <@ CommandTree.parse tree [| "invalidate" |] = Ok Invalidate @>
+
+[<Fact(Timeout = 15000)>]
 let ``parse rerun <name> returns Rerun`` () =
     test <@ CommandTree.parse tree [| "rerun"; "coverage-ratchet" |] = Ok(Rerun "coverage-ratchet") @>
 
@@ -664,6 +668,7 @@ let private fakeIpc () : IpcOps =
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
       RerunPlugin = fun _ _ -> async { return "{}" }
+      Invalidate = fun _ -> async { return "invalidated" }
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
@@ -1451,6 +1456,30 @@ let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
 
     test <@ result = 0 @>
     test <@ calledWithName = "coverage-ratchet" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Invalidate clears the live workspace cache without shutdown`` () =
+    let mutable invalidated = false
+    let mutable shutdown = false
+
+    let ipc =
+        { fakeIpc () with
+            Invalidate =
+                fun _ ->
+                    async {
+                        invalidated <- true
+                        return "invalidated"
+                    }
+            Shutdown =
+                fun _ ->
+                    async {
+                        shutdown <- true
+                        return "shutting down"
+                    } }
+
+    test <@ exec ipc Invalidate = 0 @>
+    test <@ invalidated @>
+    test <@ not shutdown @>
 
 // --- Regression tests for bug fixes ---
 
