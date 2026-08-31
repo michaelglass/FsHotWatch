@@ -2990,6 +2990,7 @@ let private executeTests
     (ctx: PluginCtx<'msg> option)
     (emitStarted: TestRunStarted -> unit)
     (repoRoot: string)
+    (launchDeadline: TimeSpan)
     (beforeRun: (unit -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (coverageIngestFailed: CoverageIngestFailure -> unit)
@@ -3015,16 +3016,6 @@ let private executeTests
         | :? IOException
         | :? UnauthorizedAccessException as ex ->
             Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
-
-        // Launch-liveness deadline (AUTOMATION-65 QA finding). Between a test
-        // config's spawn and its first sign of life, `ProcessBounds.streaming`
-        // bounds the wait so an overloaded box / a sleep-killed child can never
-        // wedge the plugin at `Running` forever. Default 5 min, overridable with
-        // `FSHW_LAUNCH_DEADLINE_SEC` (read once per run).
-        let launchDeadline =
-            Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
-            |> Option.ofObj
-            |> resolveLaunchDeadline
 
         let isFilteredRun = not affectedClassesByProject.IsEmpty || Option.isSome rawFilter
 
@@ -4084,7 +4075,8 @@ let internal cacheKeyFor
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
 /// to a different DB than the plugin's.
-let create
+let internal createWithLaunchDeadline
+    (launchDeadline: TimeSpan)
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
@@ -5125,6 +5117,7 @@ let create
                             (Some ctx)
                             emitStarted
                             repoRoot
+                            launchDeadline
                             beforeRun
                             coveragePaths
                             coverageIngestFailed
@@ -5225,6 +5218,7 @@ let create
                             None
                             emitStarted
                             repoRoot
+                            launchDeadline
                             beforeRun
                             coveragePaths
                             coverageIngestFailed
@@ -7120,3 +7114,35 @@ let create
 
         Some cacheKey
       Teardown = None }
+
+/// Create a TestPrune handler with the launch policy captured at construction.
+/// Environment configuration is process-global, so reading it lazily at run time can
+/// retroactively change already-created handlers (and made a short-deadline regression
+/// kill unrelated in-flight test children under parallel CI). A handler's policy is now
+/// immutable for its lifetime; tests inject it through `createWithLaunchDeadline` without
+/// mutating process-global state.
+let create
+    (dbPath: string)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (unit -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (dependsOn: string list)
+    =
+    let launchDeadline =
+        Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
+        |> Option.ofObj
+        |> resolveLaunchDeadline
+
+    createWithLaunchDeadline
+        launchDeadline
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn

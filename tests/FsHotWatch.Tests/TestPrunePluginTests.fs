@@ -7211,50 +7211,47 @@ let ``incident: a test child that never becomes a live process drives the run to
     // the wait, so an overloaded box left an infinite `WaitForExit` hanging with no child
     // ever appearing — the plugin stayed Running and `check` streamed "Waiting for
     // plugins" for hours. `sleep 30` reproduces it: no output, no exit, so with a tiny
-    // `FSHW_LAUNCH_DEADLINE_SEC` the watchdog kills the tree and raises
+    // a handler-scoped launch deadline the watchdog kills the tree and raises
     // `LaunchStalledException`, which the command's catch turns into the same Aborted
     // lifecycle a beforeRun throw does.
     //
-    // The env override is process-global, but only `executeTests` reads it and every test
-    // that reaches `executeTests` is in this class (one xUnit collection, so sequential);
-    // echo-based configs emit within milliseconds and are immune to a 1s deadline anyway.
+    // The deadline is injected into THIS handler. A process-global env mutation here used
+    // to retroactively shorten already-created handlers' deadlines while the full suite
+    // ran in parallel, killing unrelated silent children on Linux and cascading into four
+    // false state-machine failures.
     withTempDir "tp-launch-gap-stall" (fun tmpDir ->
-        let key = "FSHW_LAUNCH_DEADLINE_SEC"
-        let prior = Environment.GetEnvironmentVariable key
-        Environment.SetEnvironmentVariable(key, "1")
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sleep"
+                Args = "30"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
-        try
-            let configs =
-                [ { Project = "TestProject"
-                    Command = "sleep"
-                    Args = "30"
-                    Group = "default"
-                    Environment = []
-                    FilterTemplate = None
-                    ClassJoin = " "
-                    TimeoutSec = None
-                    ReportVerificationFormat = AutoDetect } ]
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-            let handler = create ":memory:" tmpDir (Some configs) None None None None []
-            host.RegisterHandler(handler)
+        let handler =
+            createWithLaunchDeadline (TimeSpan.FromSeconds 1.0) ":memory:" tmpDir (Some configs) None None None None []
 
-            let await = beginAwaitNextTerminal host "test-prune"
-            let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
-            await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        host.RegisterHandler(handler)
 
-            test <@ result.IsSome @>
-            test <@ result.Value.Contains("no live process") @>
+        let await = beginAwaitNextTerminal host "test-prune"
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
-            // Failed, naming the config and the launch gap — not a stale green, and not a
-            // plugin stuck Running.
-            match host.GetStatus("test-prune") with
-            | Some(Failed(msg, _, _)) ->
-                test <@ msg.Contains("no live process") @>
-                test <@ msg.Contains("TestProject") @>
-            | other -> Assert.Fail($"expected Failed for a launch-stalled run, got %A{other}")
-        finally
-            Environment.SetEnvironmentVariable(key, prior))
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("no live process") @>
+
+        // Failed, naming the config and the launch gap — not a stale green, and not a
+        // plugin stuck Running.
+        match host.GetStatus("test-prune") with
+        | Some(Failed(msg, _, _)) ->
+            test <@ msg.Contains("no live process") @>
+            test <@ msg.Contains("TestProject") @>
+        | other -> Assert.Fail($"expected Failed for a launch-stalled run, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =

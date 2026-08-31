@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix: capture the test-child launch deadline when a TestPrune handler is created
+  and expose a handler-scoped test seam. A short deadline used by one regression can
+  no longer leak through process-global environment state and kill unrelated silent
+  test children running concurrently in CI.
+
 ## 0.13.0-alpha.27 - 2026-08-31
 
 - AUTOMATION-516: stale dependency-copy refusals now identify the usual producer—a
