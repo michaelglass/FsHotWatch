@@ -307,7 +307,16 @@ let runOnceAndVerdictWith
         // run, a convergence re-scan) — never carried over from an earlier snapshot,
         // which is how a verdict ends up describing a run that isn't the one it graded.
         let finalStatuses = ref (snapshotHost daemon.Host statuses)
-        let finalRun = ref (readTestRun daemon.Host)
+        let finalRun = ref (TestRunReport.ofScopeOnly ScopeUnknown)
+        let retainedTestRun: IpcOutput.RetainedTestRun option ref = ref None
+
+        let observeTestRun (run: TestRunReport) : TestRunReport =
+            let effective, retained =
+                IpcOutput.TestRunEvidence.reconcile settledTree.Value run retainedTestRun.Value
+
+            retainedTestRun.Value <- retained
+            finalRun.Value <- effective
+            effective
 
         /// Read the current state of the host. NO scan — the caller decides when work
         /// happens, so a read can never be mistaken for one.
@@ -320,7 +329,7 @@ let runOnceAndVerdictWith
             // atomic completed discovery outcome at every convergence reading.
             awaitDiscovery ()
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
-            finalRun.Value <- readTestRun daemon.Host
+            let run = readTestRun daemon.Host |> observeTestRun
 
             { PluginStatuses = finalStatuses.Value
               FailingDiagnostics = failingCount daemon noWarnFail pluginName
@@ -328,7 +337,7 @@ let runOnceAndVerdictWith
               WaitingOnBuild = waitingOnBuild daemon pluginName
               RunnerAborted = runnerAborted daemon pluginName
               Coverage = liveCoverage daemon
-              Scope = finalRun.Value.Scope }
+              Scope = run.Scope }
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
