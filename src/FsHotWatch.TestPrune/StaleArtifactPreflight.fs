@@ -13,8 +13,7 @@
 ///
 /// `CopyDiffersFromOrigin` IS healed. It names both files, and the repair is provably
 /// complete rather than a guess: the build's job at that destination was to copy
-/// `origin` to `copy`; MSBuild's incremental copy skipped it because the two mtimes
-/// compared equal; writing the origin's bytes across leaves precisely the tree a
+/// `origin` to `copy`; writing the origin's bytes across leaves precisely the tree a
 /// build would have left. Nothing is inferred, and the destination is regenerable
 /// build output, so the repair is idempotent and destroys nothing.
 ///
@@ -26,8 +25,8 @@
 ///     Repairing a tree we cannot describe is how silent degradation starts.
 /// Both refuse, and both name `dotnet build` — the remedy that actually works.
 ///
-/// A heal is NEVER silent. Repeated same-mtime/different-bytes inversions mean
-/// something upstream keeps producing them, and a repair that absorbs that forever
+/// A heal is NEVER silent. Repeated origin/copy disagreements mean something upstream
+/// keeps rebuilding origins without their consumers, and a repair that absorbs that forever
 /// destroys the only signal it leaves. So every heal is logged AND recorded to a
 /// durable ledger, and the ledger drives a circuit breaker: past `Threshold` repairs
 /// of ONE file inside `Window`, the preflight stops repairing and refuses instead,
@@ -154,8 +153,9 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
 let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
     match stale with
     | ArtifactFreshness.CopyDiffersFromOrigin _ ->
-        "run `dotnet build`; if it reports success while this persists, the copy is timestamp-inverted and only \
-         `dotnet build --no-incremental` will re-emit it"
+        "build the consumer (normally with a plain `dotnet build`) so its copy target runs. If that consumer build \
+         reports success and the bytes still differ, run `dotnet build --no-incremental` or delete the named copy \
+         and build again"
     | ArtifactFreshness.AssemblyOlderThanSource _ ->
         "run `dotnet build` — the compile has not run since that edit, so there is nothing on disk to copy from"
     | ArtifactFreshness.InputsUndeterminable _ ->
@@ -284,9 +284,9 @@ module Reason =
     /// about.
     let breakerTripped (repoRoot: string) (file: string) (count: int) : string =
         $"%s{StaleOutputMarker}auto-repair has already fired %d{count} times for %s{file} within the last \
-          %.0f{Window.TotalDays} days, so this run REFUSES to repair it again. Something upstream keeps producing \
-          same-timestamp/different-bytes copies, and repairing it silently forever would hide that — root-cause the \
-          inversion instead. To resume auto-repair: delete %s{ledgerPath repoRoot} (the count also ages out on its \
+          %.0f{Window.TotalDays} days, so this run REFUSES to repair it again. Something upstream keeps rebuilding \
+          origins without their consumers, and repairing that build-scope gap silently forever would hide it — \
+          root-cause the producing build scope and make it include the consumer. To resume auto-repair: delete %s{ledgerPath repoRoot} (the count also ages out on its \
           own %.0f{Window.TotalDays} days after the last repair)."
 
 /// One sample of every refusal shape `Reason` can build, for a test that asserts each
