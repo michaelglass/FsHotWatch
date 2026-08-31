@@ -713,10 +713,33 @@ module AgentHints =
         let recallMissLines =
             match v.Divergence with
             | Verdict.Divergence.CheckMissedFailures ->
+                let evidence =
+                    match v.ImpactScopedRun with
+                    | Some { Missed = Verdict.MissedFailures.Enumerated failures } ->
+                        failures
+                        |> List.map (fun failure ->
+                            let cause =
+                                match failure.Cause with
+                                | IpcParsing.ProjectNotSelected -> "project was not selected"
+                                | IpcParsing.ClassNotInFilter -> "class was not in the generated filter"
+                                | IpcParsing.UnknownMissCause token -> $"cause '%s{token}'"
+
+                            $"             missed: %s{failure.Project} :: %s{failure.Class} — %s{cause}")
+                    | _ -> [ "             missed failures were not enumerable from this reading" ]
+
+                let trigger =
+                    if List.isEmpty v.Trigger then
+                        [ "             change-set: not recorded" ]
+                    else
+                        let listed = String.concat ", " v.Trigger
+                        [ $"             change-set: %s{listed}" ]
+
                 [ "    RECALL   ⚠ SELECTION BUG — the impact-scoped run was GREEN over a tree the full suite finds RED."
                   "             `check` told someone this change was fine and it was not. This is an fshw defect,"
-                  "             NOT a merge saved: fix the selector, not only the test. See checkComparison in"
-                  "             .fshw/verdict.json for the scoped run's own scope and failing suites." ]
+                  "             NOT a merge saved: fix the selector, not only the test." ]
+                @ evidence
+                @ trigger
+                @ [ "             See checkComparison in .fshw/verdict.json for the persisted evidence." ]
             | Verdict.Divergence.Agreed
             | Verdict.Divergence.CheckOnlyFailures
             | Verdict.Divergence.NoImpactScopedRun

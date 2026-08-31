@@ -518,7 +518,10 @@ let parseTestRunReport (json: string) : TestRunReport =
                 | true, value when value.ValueKind = JsonValueKind.Array ->
                     value.EnumerateArray()
                     |> Seq.choose (fun item ->
-                        if item.ValueKind = JsonValueKind.String then Some(item.GetString()) else None)
+                        if item.ValueKind = JsonValueKind.String then
+                            Some(item.GetString())
+                        else
+                            None)
                     |> Seq.toList
                 | _ -> []
 
@@ -593,7 +596,7 @@ type CheckReach =
     /// The run saw tests fail; the retained selection reaches NONE of them. `check` would
     /// have gone green over a tree with a real failure in it — AUTOMATION-160's defect,
     /// caught on the same tree that produced it.
-    | ReachedNoFailure
+    | ReachedNoFailure of missed: MissedFailure list
     /// No test failed, so there was no failure for a selection to reach. Distinct from
     /// `ReachedNoFailure`: nothing was missed because nothing was there.
     | NoFailuresToReach
@@ -601,6 +604,16 @@ type CheckReach =
     /// in either direction invents a comparison, and a guess in the reaching direction
     /// invents an AGREEMENT — the one reading this record must never manufacture.
     | ReachUnknown of reason: string
+
+and MissCause =
+    | ProjectNotSelected
+    | ClassNotInFilter
+    | UnknownMissCause of token: string
+
+and MissedFailure =
+    { Project: string
+      Class: string
+      Cause: MissCause }
 
 type FailureRecall =
     | FailureRecallMeasured of reached: int * total: int * threshold: float * acceptable: bool
@@ -672,6 +685,28 @@ let parseCheckReach (json: string) : CheckReachReading =
                     |> Seq.toList
                 | _ -> []
 
+            let missed =
+                match root.TryGetProperty("missed") with
+                | true, value when value.ValueKind = JsonValueKind.Array ->
+                    value.EnumerateArray()
+                    |> Seq.choose (fun item ->
+                        match tryGetStringProp item "project", tryGetStringProp item "class" with
+                        | Some project, Some className ->
+                            let cause =
+                                match tryGetStringProp item "cause" with
+                                | Some "project-not-selected" -> ProjectNotSelected
+                                | Some "class-not-in-filter" -> ClassNotInFilter
+                                | Some token -> UnknownMissCause token
+                                | None -> UnknownMissCause "unstated"
+
+                            Some
+                                { Project = project
+                                  Class = className
+                                  Cause = cause }
+                        | _ -> None)
+                    |> Seq.toList
+                | _ -> []
+
             let reach =
                 match tryGetStringProp root "reach" with
                 | Some "reached-a-failure" when not (List.isEmpty failingSuites) -> ReachedAFailure failingSuites
@@ -680,7 +715,7 @@ let parseCheckReach (json: string) : CheckReachReading =
                 // together or not at all.
                 | Some "reached-a-failure" ->
                     ReachUnknown "the daemon reported a reached failure but named no failing suite"
-                | Some "reached-no-failure" -> ReachedNoFailure
+                | Some "reached-no-failure" -> ReachedNoFailure missed
                 | Some "no-failures-to-reach" -> NoFailuresToReach
                 | Some "unknown" -> ReachUnknown reason
                 | Some other ->

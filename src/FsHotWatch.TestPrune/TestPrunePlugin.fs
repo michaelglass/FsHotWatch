@@ -811,7 +811,8 @@ type UncoveredChanges =
     | AllUncovered of symbols: string list
 
 module UncoveredChanges =
-    let isAll = function
+    let isAll =
+        function
         | UncoveredChanges.No -> false
         | UncoveredChanges.AllUncovered _ -> true
 
@@ -822,15 +823,27 @@ type ZeroSelection =
     | ChangesUncovered of symbols: string list
 
 module ZeroSelection =
-    let token = function
+    let token =
+        function
         | ZeroSelection.NotAZero -> None
         | ZeroSelection.AlreadyVerified -> Some "already-verified"
         | ZeroSelection.ChangesUncovered _ -> Some "changes-uncovered"
 
-    let symbols = function
+    let symbols =
+        function
         | ZeroSelection.ChangesUncovered symbols -> symbols
         | ZeroSelection.NotAZero
         | ZeroSelection.AlreadyVerified -> []
+
+[<RequireQualifiedAccess>]
+type MissCause =
+    | ProjectNotSelected
+    | ClassNotInFilter
+
+type MissedFailure =
+    { Project: string
+      Class: string
+      Cause: MissCause }
 
 /// AUTOMATION-259. Would the impact selection `check` WOULD have used have EXECUTED a
 /// test this run saw fail?
@@ -851,7 +864,7 @@ type CheckReach =
     | ReachedAFailure of projects: string list
     /// This run saw tests fail and the retained selection reaches NONE of them. The
     /// selector did not choose a failing test — the case the whole record exists for.
-    | ReachedNoFailure
+    | ReachedNoFailure of missed: MissedFailure list
     /// This run saw no test fail at all, so there was no failure for a selection to
     /// reach. NOT the same as `ReachedNoFailure`: nothing was missed, because nothing
     /// was there.
@@ -1380,7 +1393,7 @@ module CheckReach =
     let token (r: CheckReach) : string =
         match r with
         | ReachedAFailure _ -> "reached-a-failure"
-        | ReachedNoFailure -> "reached-no-failure"
+        | ReachedNoFailure _ -> "reached-no-failure"
         | NoFailuresToReach -> "no-failures-to-reach"
         | ReachUnknown _ -> "unknown"
 
@@ -1389,14 +1402,20 @@ module CheckReach =
     /// `None` where it cannot be decided. A project ABSENT from the selection is decided
     /// — `check` would not have launched it at all — but a project selected under a
     /// CLASS filter cannot be asked about a failure that names no class.
-    let private reaches (selection: Map<string, ProjectSelection>) (failure: OutstandingFailure) : bool option =
+    type private Reach =
+        | Reached
+        | Missed of MissCause
+        | Undecidable
+
+    let private reaches (selection: Map<string, ProjectSelection>) (failure: OutstandingFailure) : Reach =
         match Map.tryFind failure.Project selection with
-        | None -> Some false
-        | Some ProjectInFull -> Some true
+        | None -> Missed MissCause.ProjectNotSelected
+        | Some ProjectInFull -> Reached
         | Some(ProjectClasses classes) ->
             match failure.Class with
-            | Some cls -> Some(Set.contains cls classes)
-            | None -> None
+            | Some cls when Set.contains cls classes -> Reached
+            | Some _ -> Missed MissCause.ClassNotInFilter
+            | None -> Undecidable
 
     /// Measure the retained selection against every distinct failure the full run
     /// observed. Zero failures is no sample, not perfect recall. One undecidable
@@ -1426,7 +1445,7 @@ module CheckReach =
                 let decisions =
                     distinctFailures |> List.map (fun failure -> failure, reaches selection failure)
 
-                match decisions |> List.tryFind (fun (_, decision) -> Option.isNone decision) with
+                match decisions |> List.tryFind (fun (_, decision) -> decision = Undecidable) with
                 | Some(failure, _) ->
                     RecallNotMeasurable
                         $"the %s{failure.Project} failure cannot be projected through the retained selection"
@@ -1435,7 +1454,7 @@ module CheckReach =
 
                     let reached =
                         decisions
-                        |> List.sumBy (fun (_, decision) -> if decision = Some true then 1 else 0)
+                        |> List.sumBy (fun (_, decision) -> if decision = Reached then 1 else 0)
 
                     let recall = float reached / float total
                     RecallMeasured(reached, total, recallThreshold, recall >= recallThreshold)
@@ -1453,19 +1472,28 @@ module CheckReach =
         | Some selection ->
             let decided = failures |> List.map (fun f -> f, reaches selection f)
 
-            match decided |> List.tryFind (fun (_, r) -> r = None) with
+            match decided |> List.tryFind (fun (_, r) -> r = Undecidable) with
             | Some(undecidable, _) ->
                 ReachUnknown
                     $"the %s{undecidable.Project} red names no test class (a timeout, an errored host, or unparseable                        failure output) and the retained selection runs that project under a CLASS filter, so whether                        `check` would have executed it cannot be decided"
             | None ->
                 let reached =
                     decided
-                    |> List.choose (fun (f, r) -> if r = Some true then Some f.Project else None)
+                    |> List.choose (fun (f, r) -> if r = Reached then Some f.Project else None)
                     |> List.distinct
                     |> List.sort
 
                 if List.isEmpty reached then
-                    ReachedNoFailure
+                    decided
+                    |> List.choose (fun (failure, reach) ->
+                        match failure.Class, reach with
+                        | Some className, Missed cause ->
+                            Some
+                                { Project = failure.Project
+                                  Class = className
+                                  Cause = cause }
+                        | _ -> None)
+                    |> ReachedNoFailure
                 else
                     ReachedAFailure reached
 
@@ -5536,15 +5564,29 @@ let internal createWithLaunchDeadline
                             let failingSuites =
                                 match reach with
                                 | ReachedAFailure ps -> List.toArray ps
-                                | ReachedNoFailure
+                                | ReachedNoFailure _
                                 | NoFailuresToReach
                                 | ReachUnknown _ -> [||]
+
+                            let missed =
+                                match reach with
+                                | ReachedNoFailure failures ->
+                                    failures
+                                    |> List.map (fun failure ->
+                                        {| project = failure.Project
+                                           ``class`` = failure.Class
+                                           cause =
+                                            (match failure.Cause with
+                                             | MissCause.ProjectNotSelected -> "project-not-selected"
+                                             | MissCause.ClassNotInFilter -> "class-not-in-filter") |})
+                                    |> List.toArray
+                                | _ -> [||]
 
                             let reason =
                                 match reach with
                                 | ReachUnknown r -> box r
                                 | ReachedAFailure _
-                                | ReachedNoFailure
+                                | ReachedNoFailure _
                                 | NoFailuresToReach -> null
 
                             let (recallMeasured,
@@ -5567,6 +5609,7 @@ let internal createWithLaunchDeadline
                                        totalProjects = totalProjects
                                        reach = CheckReach.token reach
                                        failingSuites = failingSuites
+                                       missed = missed
                                        reason = reason
                                        conditionalFailureRecall =
                                         {| measured = recallMeasured

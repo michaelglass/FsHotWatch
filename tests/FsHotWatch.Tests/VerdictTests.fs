@@ -431,7 +431,7 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
             <> Verdict.Green
         @>
 
-    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated)) @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated)) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope ScopeUnknown) @>
     test <@ incomplete (CheckVerdict.CheckOutcome.UnearnedScope(FullSuite 2)) @>
     // AUTOMATION-294. A killed test host is INCOMPLETE, never Red: nothing failed there.
@@ -1711,7 +1711,8 @@ let ``every comparison round-trips through the verdict JSON`` () =
                     { Scope = ImpactFiltered(5, 6)
                       Outcome = Verdict.Red
                       FailingSuites = [ "Lib.Tests"; "Api.Tests" ]
-                      Basis = Verdict.SampleBasis.Executed }
+                      Basis = Verdict.SampleBasis.Executed
+                      Missed = Verdict.MissedFailures.NotEnumerable }
               FailureRecall = None }
 
         let cases =
@@ -1792,7 +1793,8 @@ let ``a verdict cannot claim a comparison it did not make`` () =
             { Scope = ImpactFiltered(5, 6)
               Outcome = Verdict.Green
               FailingSuites = []
-              Basis = Verdict.SampleBasis.Executed }
+              Basis = Verdict.SampleBasis.Executed
+              Missed = Verdict.MissedFailures.NotEnumerable }
 
     // Claims a comparison, records nothing to have compared against.
     raises<ArgumentException>
@@ -2460,7 +2462,7 @@ let ``every Report case has its own exit code, and none of them is a silent 0`` 
 [<Fact>]
 let ``a verdict that says NO TESTS RAN is incomplete, and says so in words`` () =
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated))
+        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
 
     match outcome with
     | Verdict.Incomplete reason ->
@@ -2615,7 +2617,7 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
     // ...and it is still never green.
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated))
+            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
             <> Verdict.Green
         @>
 
@@ -3351,7 +3353,8 @@ let private comparisonWith (d: Verdict.Divergence) : Verdict.CheckComparison =
             { Scope = ImpactFiltered(5, 6)
               Outcome = Verdict.Green
               FailingSuites = []
-              Basis = Verdict.SampleBasis.Executed }
+              Basis = Verdict.SampleBasis.Executed
+              Missed = Verdict.MissedFailures.NotEnumerable }
       FailureRecall = None }
 
 [<Fact>]
@@ -3549,6 +3552,63 @@ let ``the gaps are stated on every scope kind, because they are a fact about the
           ScopeUnreadable "faulted" ] do
         test <@ (gapsOn scope).Contains "tests/X" @>
 
+[<Fact>]
+let ``AUTOMATION-111 named selection misses survive the verdict file and render as actionable evidence`` () =
+    withTempDir "a111-missed-roundtrip" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        let misses =
+            [ { Project = "Jobs.Tests"
+                Class = "Jobs.ReflectionGuard"
+                Cause = ProjectNotSelected }
+              { Project = "Api.Tests"
+                Class = "Api.ContractTests"
+                Cause = ClassNotInFilter }
+              { Project = "Future.Tests"
+                Class = "Future.Guard"
+                Cause = UnknownMissCause "generated-edge" } ]
+
+        let spec =
+            { greenVerdict tree.Hash tree.FileCount with
+                Tree =
+                    { Hash = tree.Hash
+                      FileCount = tree.FileCount
+                      SkippedCount = 0
+                      DeclaredCount = 0
+                      AbsentDeclarationCount = 0 }
+                Outcome = Verdict.Red
+                ExitCode = 1
+                RedCauses = [ structuralRedCause ]
+                Seeds = [ "Jobs.definitions" ]
+                SeedTotal = 1
+                Comparison =
+                    { Divergence = Verdict.Divergence.CheckMissedFailures
+                      ImpactScoped =
+                        Some
+                            { Scope = ImpactFiltered(1, 3)
+                              Outcome = Verdict.Green
+                              FailingSuites = []
+                              Basis = Verdict.SampleBasis.ProjectedFromFullRun
+                              Missed = Verdict.MissedFailures.Enumerated misses }
+                      FailureRecall = None } }
+
+        let verdict = build spec
+        Verdict.write root verdict
+
+        match Verdict.read root with
+        | Verdict.Reading.Found reread ->
+            test <@ reread.ImpactScopedRun.Value.Missed = Verdict.MissedFailures.Enumerated misses @>
+
+            let rendered =
+                ProgressRenderer.AgentHints.forVerdict None reread |> String.concat "\n"
+
+            test <@ rendered.Contains "Jobs.ReflectionGuard — project was not selected" @>
+            test <@ rendered.Contains "Api.ContractTests — class was not in the generated filter" @>
+            test <@ rendered.Contains "Future.Guard — cause 'generated-edge'" @>
+            test <@ rendered.Contains "change-set: Jobs.definitions" @>
+        | other -> failwithf "expected a readable verdict, got %A" other)
+
 // ---------------------------------------------------------------------------
 // AUTOMATION-259 (rework) — the PROJECTED check-scoped reading.
 //
@@ -3606,7 +3666,8 @@ let ``AUTOMATION-67 escalated confirm evidence also carries full-run conditional
         { Scope = ImpactFiltered(2, 6)
           Outcome = Verdict.Green
           FailingSuites = []
-          Basis = Verdict.SampleBasis.Executed }
+          Basis = Verdict.SampleBasis.Executed
+          Missed = Verdict.MissedFailures.NotEnumerable }
 
     let comparison =
         Verdict.comparisonOf
@@ -3646,7 +3707,8 @@ let ``AUTOMATION-67 executed recall without the graded run id is not measurable`
         { Scope = ImpactFiltered(2, 6)
           Outcome = Verdict.Green
           FailingSuites = []
-          Basis = Verdict.SampleBasis.Executed }
+          Basis = Verdict.SampleBasis.Executed
+          Missed = Verdict.MissedFailures.NotEnumerable }
 
     let comparison =
         Verdict.comparisonOf
@@ -3731,7 +3793,7 @@ let ``the selection missing the failure is CHECK-MISSED-FAILURES, which is the w
     // AUTOMATION-160, caught on the tree that produced it: the suite is red, and the
     // tests `check` would have chosen do not include the one that failed.
     let c =
-        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune" ]
+        classify (reachOf (ReachedNoFailure [])) Verdict.Red Map.empty [ aboutThisTree "test-prune" ]
 
     test <@ c.Divergence = Verdict.Divergence.CheckMissedFailures @>
 
@@ -3760,12 +3822,16 @@ let ``a red that is not about the tests reddens check too, so the sample AGREES`
     // failures it would not have run does not remove a failing lint plugin or an FCS
     // diagnostic — those redden it for the same reason `confirm` was red.
     let viaPlugin =
-        classify (reachOf ReachedNoFailure) Verdict.Red (Map.ofList [ failedPlugin "lint" ]) []
+        classify (reachOf (ReachedNoFailure [])) Verdict.Red (Map.ofList [ failedPlugin "lint" ]) []
 
     test <@ viaPlugin.Divergence = Verdict.Divergence.Agreed @>
 
     let viaDiagnostic =
-        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune"; aboutThisTree "fcs" ]
+        classify
+            (reachOf (ReachedNoFailure []))
+            Verdict.Red
+            Map.empty
+            [ aboutThisTree "test-prune"; aboutThisTree "fcs" ]
 
     test <@ viaDiagnostic.Divergence = Verdict.Divergence.Agreed @>
 
@@ -3773,7 +3839,7 @@ let ``a red that is not about the tests reddens check too, so the sample AGREES`
     // read as a red beyond the tests — otherwise every missed failure would agree, and
     // the classification above would be unreachable.
     let viaTestPrune =
-        classify (reachOf ReachedNoFailure) Verdict.Red (Map.ofList [ failedPlugin "test-prune" ]) []
+        classify (reachOf (ReachedNoFailure [])) Verdict.Red (Map.ofList [ failedPlugin "test-prune" ]) []
 
     test <@ viaTestPrune.Divergence = Verdict.Divergence.CheckMissedFailures @>
 
@@ -3790,7 +3856,7 @@ let ``a red made only of causes fshw cannot attribute is INCOMPARABLE, never agr
           Kind = Verdict.CheckerFault }
 
     let c =
-        classify (reachOf ReachedNoFailure) Verdict.Red Map.empty [ aboutThisTree "test-prune"; unattributable ]
+        classify (reachOf (ReachedNoFailure [])) Verdict.Red Map.empty [ aboutThisTree "test-prune"; unattributable ]
 
     match c.Divergence with
     | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "NO VERDICT" @>
@@ -3822,7 +3888,7 @@ let ``every way of not being able to decide lands somewhere that is NOT agreemen
                 Recall = FailureRecallNotMeasurable "test fixture" },
           Verdict.Green
           "the escalated run reached no verdict", reachOf NoFailuresToReach, Verdict.Incomplete "the tree moved"
-          "the run says failures exist and green at once", reachOf ReachedNoFailure, Verdict.Green ]
+          "the run says failures exist and green at once", reachOf (ReachedNoFailure []), Verdict.Green ]
 
     for label, reading, earned in undecidable do
         let c = classify reading earned Map.empty []
@@ -3849,7 +3915,8 @@ let ``a PROJECTION may never claim a check-only failure`` () =
         { Scope = ImpactFiltered(2, 6)
           Outcome = Verdict.Red
           FailingSuites = [ "Lib.Tests" ]
-          Basis = Verdict.SampleBasis.ProjectedFromFullRun }
+          Basis = Verdict.SampleBasis.ProjectedFromFullRun
+          Missed = Verdict.MissedFailures.NotEnumerable }
 
     match (Verdict.CheckComparison.ofRun (Some projected) Verdict.Green).Divergence with
     | Verdict.Divergence.Incomparable reason -> test <@ reason.Contains "projection" @>
@@ -3861,7 +3928,8 @@ let ``a PROJECTION may never claim a check-only failure`` () =
         (Verdict.CheckComparison.ofRun
             (Some
                 { projected with
-                    Basis = Verdict.SampleBasis.Executed })
+                    Basis = Verdict.SampleBasis.Executed
+                    Missed = Verdict.MissedFailures.NotEnumerable })
             Verdict.Green)
             .Divergence
     with
@@ -3885,7 +3953,8 @@ let ``the sample's BASIS round-trips, and a verdict that predates the field read
                                 { Scope = ImpactFiltered(2, 6)
                                   Outcome = Verdict.Green
                                   FailingSuites = []
-                                  Basis = basis }
+                                  Basis = basis
+                                  Missed = Verdict.MissedFailures.NotEnumerable }
                                 : Verdict.ImpactScopedRun
                             )
                           FailureRecall = None } }

@@ -11161,7 +11161,16 @@ let ``CheckReach.classify decides reach per failure, and refuses what it cannot 
     test <@ CheckReach.classify (Some inFull) [] = NoFailuresToReach @>
 
     // A project the selection never launches — the ordinary miss.
-    test <@ CheckReach.classify (Some inFull) [ a259Failure "Beta.Tests" (Some "Beta.OneTests") ] = ReachedNoFailure @>
+    let projectMiss =
+        CheckReach.classify (Some inFull) [ a259Failure "Beta.Tests" (Some "Beta.OneTests") ]
+
+    test
+        <@
+            projectMiss = ReachedNoFailure
+                [ { Project = "Beta.Tests"
+                    Class = "Beta.OneTests"
+                    Cause = MissCause.ProjectNotSelected } ]
+        @>
 
     // A project it launches in full reaches every failure in it, named class or not.
     test
@@ -11179,8 +11188,16 @@ let ``CheckReach.classify decides reach per failure, and refuses what it cannot 
                 [ "Alpha.Tests" ]
         @>
 
+    let classMiss =
+        CheckReach.classify (Some filtered) [ a259Failure "Alpha.Tests" (Some "Alpha.TwoTests") ]
+
     test
-        <@ CheckReach.classify (Some filtered) [ a259Failure "Alpha.Tests" (Some "Alpha.TwoTests") ] = ReachedNoFailure @>
+        <@
+            classMiss = ReachedNoFailure
+                [ { Project = "Alpha.Tests"
+                    Class = "Alpha.TwoTests"
+                    Cause = MissCause.ClassNotInFilter } ]
+        @>
 
     // A PROJECT-LEVEL red (a timeout, an errored host, unparseable output) names no
     // class, so a class-filtered selection cannot be asked whether it reaches it. Refused

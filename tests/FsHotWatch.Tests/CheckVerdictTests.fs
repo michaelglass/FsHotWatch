@@ -332,9 +332,10 @@ let ``Confirmation: a run that executed no tests at all cannot yield Clean`` () 
     // AUTOMATION-108's shape: the daemon skipped the run (cached/baseline-equivalent)
     // and nothing ran. 35 tests were red on `main` throughout. "No tests ran" is not
     // evidence of a green suite.
-    let outcome = verdict Confirmation (inputs false Complete (NoTestsRun NoTestsReason.Unstated))
+    let outcome =
+        verdict Confirmation (inputs false Complete (NoTestsRun NoTestsReason.Unstated))
 
-    test <@ outcome = CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated) @>
+    test <@ outcome = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated) @>
     test <@ exitCode outcome <> 0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -374,8 +375,18 @@ let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, n
     // So it is refused in BOTH modes: impact filtering is a question of HOW MUCH we
     // tested, this is a question of WHETHER WE TESTED AT ALL. The inner loop may test
     // less; it may not test nothing and call it green.
-    test <@ verdict InnerLoop (inputs false Complete (NoTestsRun NoTestsReason.Unstated)) = CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated) @>
-    test <@ verdict Confirmation (inputs false Complete (NoTestsRun NoTestsReason.Unstated)) = CheckOutcome.UnearnedScope (NoTestsRun NoTestsReason.Unstated) @>
+    test
+        <@
+            verdict InnerLoop (inputs false Complete (NoTestsRun NoTestsReason.Unstated)) = CheckOutcome.UnearnedScope(
+                NoTestsRun NoTestsReason.Unstated
+            )
+        @>
+
+    test
+        <@
+            verdict Confirmation (inputs false Complete (NoTestsRun NoTestsReason.Unstated)) = CheckOutcome
+                .UnearnedScope(NoTestsRun NoTestsReason.Unstated)
+        @>
 
     // ...but a REAL failure still outranks it: a red is a red, and reporting "no
     // verdict" would bury it.
@@ -518,7 +529,9 @@ let ``parseTestRunReport: a full reply that did not actually cover every project
 // ----------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
-let ``InnerLoop: a scope read that FAULTED is never Clean — it cannot rule out (NoTestsRun NoTestsReason.Unstated)`` () =
+let ``InnerLoop: a scope read that FAULTED is never Clean — it cannot rule out (NoTestsRun NoTestsReason.Unstated)``
+    ()
+    =
     let faulted = ScopeUnreadable "the `test-scope` command threw: SQLITE_BUSY"
 
     test <@ verdict InnerLoop (inputs false Complete faulted) = CheckOutcome.UnearnedScope faulted @>

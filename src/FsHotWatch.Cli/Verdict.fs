@@ -617,6 +617,11 @@ module SampleBasis =
 ///     `projectedImpactScopedRun`.
 ///
 /// Graded in `InnerLoop` mode on the executed path, deliberately — see `impactScopedRun`.
+[<RequireQualifiedAccess>]
+type MissedFailures =
+    | NotEnumerable
+    | Enumerated of IpcParsing.MissedFailure list
+
 type ImpactScopedRun =
     {
         Scope: TestScope
@@ -632,6 +637,7 @@ type ImpactScopedRun =
         /// EXECUTED or PROJECTED — see `SampleBasis`. A verdict written before this field
         /// existed reads as `Executed`, which is what those samples were.
         Basis: SampleBasis
+        Missed: MissedFailures
     }
 
 /// How the impact-scoped reading compared with the full-suite verdict `confirm` went on to
@@ -1293,11 +1299,27 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
        impactScopedRun =
         (match c.ImpactScoped with
          | Some r ->
+             let missed =
+                 match r.Missed with
+                 | MissedFailures.NotEnumerable -> null
+                 | MissedFailures.Enumerated failures ->
+                     failures
+                     |> List.map (fun failure ->
+                         {| project = failure.Project
+                            ``class`` = failure.Class
+                            cause =
+                             (match failure.Cause with
+                              | ProjectNotSelected -> "project-not-selected"
+                              | ClassNotInFilter -> "class-not-in-filter"
+                              | UnknownMissCause token -> token) |})
+                     |> box
+
              box
                  {| scope = scopeJson excluded r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites
-                    basis = SampleBasis.token r.Basis |}
+                    basis = SampleBasis.token r.Basis
+                    missed = missed |}
          | None -> null) |}
     :> obj
 
@@ -1423,7 +1445,11 @@ let private parseScope (el: JsonElement) : TestScope =
             match tryProp el "uncoveredSymbols" with
             | Some value when value.ValueKind = JsonValueKind.Array ->
                 value.EnumerateArray()
-                |> Seq.choose (fun item -> if item.ValueKind = JsonValueKind.String then Some(item.GetString()) else None)
+                |> Seq.choose (fun item ->
+                    if item.ValueKind = JsonValueKind.String then
+                        Some(item.GetString())
+                    else
+                        None)
                 |> Seq.toList
             | _ -> []
 
@@ -1440,7 +1466,11 @@ let private parseScope (el: JsonElement) : TestScope =
 
         let token =
             tryProp el "reason"
-            |> Option.bind (fun value -> if value.ValueKind = JsonValueKind.String then Some(value.GetString()) else None)
+            |> Option.bind (fun value ->
+                if value.ValueKind = JsonValueKind.String then
+                    Some(value.GetString())
+                else
+                    None)
 
         NoTestsRun(NoTestsReason.ofToken token symbols total)
     | Some "unknown", _, _ -> ScopeUnknown
@@ -1517,6 +1547,29 @@ let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
                 |> List.ofSeq
             | _ -> []
 
+        let missed =
+            match tryProp el "missed" with
+            | Some arr when arr.ValueKind = JsonValueKind.Array ->
+                arr.EnumerateArray()
+                |> Seq.choose (fun item ->
+                    match tryString item "project", tryString item "class" with
+                    | Some project, Some className ->
+                        let cause =
+                            match tryString item "cause" with
+                            | Some "project-not-selected" -> ProjectNotSelected
+                            | Some "class-not-in-filter" -> ClassNotInFilter
+                            | Some token -> UnknownMissCause token
+                            | None -> UnknownMissCause "unstated"
+
+                        Some
+                            { Project = project
+                              Class = className
+                              Cause = cause }
+                    | _ -> None)
+                |> Seq.toList
+                |> MissedFailures.Enumerated
+            | _ -> MissedFailures.NotEnumerable
+
         Some
             { Scope = tryProp el "scope" |> Option.map parseScope |> Option.defaultValue ScopeUnknown
               // Fails CLOSED, like every other outcome read in this file: an outcome this
@@ -1536,7 +1589,8 @@ let private parseImpactScopedRun (el: JsonElement) : ImpactScopedRun option =
               Basis =
                 tryString el "basis"
                 |> Option.map SampleBasis.ofToken
-                |> Option.defaultValue SampleBasis.Executed }
+                |> Option.defaultValue SampleBasis.Executed
+              Missed = missed }
 
 /// The whole `checkComparison` block. An ABSENT block is `NotRecorded` — the verdict
 /// predates AUTOMATION-259, which is not corruption and is not agreement.
@@ -2131,7 +2185,8 @@ let impactScopedRun (repoRoot: string) (runReport: TestRunReport) (inputs: Check
         |> List.map (fun s -> s.Project)
       // A second RUN, not arithmetic over this one: `confirm` graded it before it
       // escalated, so it carries whatever a narrower execution would have done.
-      Basis = SampleBasis.Executed }
+      Basis = SampleBasis.Executed
+      Missed = MissedFailures.NotEnumerable }
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-259 (rework) — the PROJECTED reading.
@@ -2218,13 +2273,15 @@ let projectedImpactScopedRun
         { Scope = ScopeUnreadable reason
           Outcome = Incomplete reason
           FailingSuites = []
-          Basis = SampleBasis.ProjectedFromFullRun }
+          Basis = SampleBasis.ProjectedFromFullRun
+          Missed = MissedFailures.NotEnumerable }
 
-    let recorded (scope: TestScope) (outcome: Outcome) (failingSuites: string list) : ImpactScopedRun =
+    let recorded scope outcome failingSuites missed : ImpactScopedRun =
         { Scope = scope
           Outcome = outcome
           FailingSuites = failingSuites
-          Basis = SampleBasis.ProjectedFromFullRun }
+          Basis = SampleBasis.ProjectedFromFullRun
+          Missed = missed }
 
     match reading with
     | ReachUnavailable why -> refuse why
@@ -2250,13 +2307,13 @@ let projectedImpactScopedRun
                 // `check` would have executed a test this run saw fail, so `check` would
                 // have been red. The suites are the ones its selection REACHES — not every
                 // suite that failed, which is what the run already records above.
-                recorded report.Scope Red suites
+                recorded report.Scope Red suites (MissedFailures.Enumerated [])
             | NoFailuresToReach ->
                 // Nothing failed anywhere, so removing what `check` would not have run
                 // removes nothing: its reading is this run's own, whatever that is. An
                 // `Incomplete` here is refused by `ofRun` on the earned side.
-                recorded report.Scope earned []
-            | ReachedNoFailure ->
+                recorded report.Scope earned [] (MissedFailures.Enumerated [])
+            | ReachedNoFailure missed ->
                 match earned with
                 // A run whose tests failed cannot be GREEN. If it reads that way the two
                 // sources disagree about the same run, and a comparison built on a
@@ -2268,8 +2325,8 @@ let projectedImpactScopedRun
                 | Incomplete why -> refuse why
                 | Red ->
                     match NonTestRed.classify statuses causes with
-                    | NoneBeyondTheTests -> recorded report.Scope Green []
-                    | AttributableBeyondTheTests -> recorded report.Scope Red []
+                    | NoneBeyondTheTests -> recorded report.Scope Green [] (MissedFailures.Enumerated missed)
+                    | AttributableBeyondTheTests -> recorded report.Scope Red [] (MissedFailures.Enumerated missed)
                     | OnlyUnattributableBeyondTheTests ->
                         refuse
                             "with the unreachable test failures set aside, every remaining red is one fshw cannot \

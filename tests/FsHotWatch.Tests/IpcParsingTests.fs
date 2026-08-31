@@ -322,6 +322,22 @@ let ``AUTOMATION-111 none scope preserves why no tests ran`` () =
     test <@ unstated = (NoTestsRun NoTestsReason.Unstated) @>
 
 [<Fact(Timeout = 10000)>]
+let ``AUTOMATION-111 zero reasons are total across known unknown and truncated evidence`` () =
+    let already = NoTestsReason.describe NoTestsReason.AlreadyVerified
+    let uncovered = NoTestsReason.describe (NoTestsReason.ChangesUncovered([ "A" ], 3))
+    let unknown = NoTestsReason.describe (NoTestsReason.UnknownReason "future-zero")
+
+    test <@ already.Contains "test-equivalent" @>
+    test <@ uncovered.Contains "A" && uncovered.Contains "and 2 more" @>
+    test <@ unknown.Contains "future-zero" && unknown.Contains "does not understand" @>
+
+    let widenedCount = NoTestsReason.ofToken (Some "changes-uncovered") [ "A"; "B" ] 0
+    let future = NoTestsReason.ofToken (Some "future-zero") [] 0
+
+    test <@ widenedCount = NoTestsReason.ChangesUncovered([ "A"; "B" ], 2) @>
+    test <@ future = NoTestsReason.UnknownReason "future-zero" @>
+
+[<Fact(Timeout = 10000)>]
 let ``parseTaggedOutcome parses timedOut with its reason`` () =
     let el = parseEl """{"tag":"timedOut","reason":"620s"}"""
     test <@ parseTaggedOutcome el = Some(TimedOut "620s") @>
@@ -371,13 +387,56 @@ let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
         | ReachRecorded r -> r.Reach
         | other -> failwithf "expected a recorded projection, got %A" other
 
-    test <@ reachOf (replyWith "reached-no-failure") = ReachedNoFailure @>
+    test <@ reachOf (replyWith "reached-no-failure") = ReachedNoFailure [] @>
     test <@ reachOf (replyWith "no-failures-to-reach") = NoFailuresToReach @>
     test <@ reachOf (replyWith "unknown") = ReachUnknown "a project-level red" @>
 
     match replyWith "no-failures-to-reach" with
     | ReachRecorded r -> test <@ r.Scope = FullSuite 6 @>
     | other -> failwithf "expected a recorded projection, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-111 check-reach carries named misses and their causes`` () =
+    let reading =
+        parseCheckReach
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+                "ranProjects":1,"totalProjects":2,"reach":"reached-no-failure","failingSuites":[],
+                "missed":[{"project":"Jobs.Tests","class":"Jobs.ReflectionGuard","cause":"project-not-selected"},
+                          {"project":"Api.Tests","class":"Api.ContractTests","cause":"class-not-in-filter"}]}"""
+
+    match reading with
+    | ReachRecorded report ->
+        test
+            <@
+                report.Reach = ReachedNoFailure
+                    [ { Project = "Jobs.Tests"
+                        Class = "Jobs.ReflectionGuard"
+                        Cause = ProjectNotSelected }
+                      { Project = "Api.Tests"
+                        Class = "Api.ContractTests"
+                        Cause = ClassNotInFilter } ]
+            @>
+    | other -> failwithf "expected named missed failures, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-111 missed evidence preserves unknown causes and drops malformed rows`` () =
+    let reading =
+        parseCheckReach
+            """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"filtered",
+                "ranProjects":1,"totalProjects":2,"reach":"reached-no-failure","failingSuites":[],
+                "missed":[{"project":"Future.Tests","class":"Future.Guard","cause":"generated-edge"},
+                          {"project":"Broken.Tests","cause":"project-not-selected"}]}"""
+
+    match reading with
+    | ReachRecorded report ->
+        test
+            <@
+                report.Reach = ReachedNoFailure
+                    [ { Project = "Future.Tests"
+                        Class = "Future.Guard"
+                        Cause = UnknownMissCause "generated-edge" } ]
+            @>
+    | other -> failwithf "expected future missed evidence, got %A" other
 
 [<Fact(Timeout = 10000)>]
 let ``every unreadable check-reach reply refuses, and none of them reads as a reach`` () =
