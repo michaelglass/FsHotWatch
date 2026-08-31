@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.10.0-alpha.23 - 2026-08-31
 
 - Case 1: the daemon now registers the enforcing BuildPlugin path.
