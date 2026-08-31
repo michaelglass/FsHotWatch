@@ -739,6 +739,21 @@ module internal TestRunEvidence =
         (retained: RetainedTestRun option)
         : TestRunReport * RetainedTestRun option =
         match settledTree, current.Scope with
+        | VerifiedTree tree, ImpactFiltered _ ->
+            match retained with
+            | Some evidence when
+                String.Equals(evidence.TreeHash, tree.Hash, StringComparison.Ordinal)
+                && (match evidence.Report.Scope with
+                    | FullSuite _ -> true
+                    | _ -> false)
+                ->
+                evidence.Report, retained
+            | _ when executed current ->
+                current,
+                Some
+                    { Report = current
+                      TreeHash = tree.Hash }
+            | _ -> current, None
         | VerifiedTree tree, _ when executed current ->
             current,
             Some
