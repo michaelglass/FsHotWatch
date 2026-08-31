@@ -51,6 +51,31 @@ let ``a genuinely zero-test command remains no evidence`` () =
     test <@ retained = None @>
 
 [<Theory>]
+[<InlineData(0, 3)>]
+[<InlineData(-1, 3)>]
+[<InlineData(4, 3)>]
+let ``impossible filtered project counts are not retainable executed evidence`` ran total =
+    let report =
+        evidenceReport (ImpactFiltered(ran, total)) (Some(System.Guid.Parse "cccccccc-cccc-cccc-cccc-cccccccccccc"))
+
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:invalid-filtered") report None
+
+    test <@ effective = report @>
+    test <@ retained = None @>
+
+[<Fact>]
+let ``positive bounded filtered project counts are retainable executed evidence`` () =
+    let effective, retained =
+        TestRunEvidence.reconcile (evidenceTree "sha256:valid-filtered") executedA None
+
+    test <@ effective = executedA @>
+
+    match retained with
+    | Some evidence -> test <@ evidence.Report = executedA @>
+    | None -> failwith "valid filtered evidence was not retained"
+
+[<Theory>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``an executed-looking scope without a run id is not retainable evidence`` (fullSuite: bool) =

@@ -533,7 +533,8 @@ let parseTestRunReport (json: string) : TestRunReport =
         let scope =
             match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
             | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
-            | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
+            | Some "filtered", Some ran, Some total when ran > 0 && total > 0 && ran <= total ->
+                ImpactFiltered(ran, total)
             | Some "none", _, _ -> NoTestsRun(noTestsReason ())
             | Some "running", _, _ -> ScopeUnknown
             | _ -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply is not a scope this build recognizes"

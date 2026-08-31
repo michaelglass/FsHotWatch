@@ -727,8 +727,8 @@ module internal TestRunEvidence =
     let private executed (report: TestRunReport) =
         match report.RunId, report.Scope with
         | None, _ -> false
-        | Some _, FullSuite _
-        | Some _, ImpactFiltered _ -> true
+        | Some _, FullSuite _ -> true
+        | Some _, ImpactFiltered(ran, total) -> ran > 0 && total > 0 && ran <= total
         | Some _, NoTestsRun _
         | Some _, ScopeUnknown
         | Some _, ScopeUnreadable _ -> false
