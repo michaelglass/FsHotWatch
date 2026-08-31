@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.7.0-alpha.19 - 2026-08-17
 
 - fix!: **a cached format-check verdict can no longer claim files its cache key never

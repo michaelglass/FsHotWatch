@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
 ## 0.7.0-alpha.31 - 2026-08-31
 
 - AUTOMATION-358 Case 1: artifact freshness is now enforced in production. A stored
