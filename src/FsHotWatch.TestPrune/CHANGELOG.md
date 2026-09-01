@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.29 - 2026-09-01
+
 - fix(AUTOMATION-111): derive the selection alarm and recall metric from the
   same typed run receipt. Non-executing outcomes, missing/unreadable/incomplete
   CTRF, and any failed row whose structured trace/stack/exception field carries
