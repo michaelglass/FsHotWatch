@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.37 - 2026-09-01
+
 - fix(AUTOMATION-440): discover the checkout root from a linked Git worktree's
   `.git` pointer file, while rejecting malformed or dangling Git metadata.
 
