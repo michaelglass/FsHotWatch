@@ -67,6 +67,17 @@ let ``parse check returns Check with no flags`` () =
 let ``parse check --run-once returns Check RunOnce`` () =
     test <@ CommandTree.parse tree [| "check"; "--run-once" |] = Ok(Check [ RunOnce ]) @>
 
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``only run-once check and confirm disable file watching`` () =
+    test <@ not (watchFilesForCommand (Check [ RunOnce ])) @>
+    test <@ not (watchFilesForCommand (Confirm [ RunOnce ])) @>
+    test <@ not (watchFilesForCommand (Format [ RunOnce ])) @>
+    test <@ watchFilesForCommand (Check []) @>
+    test <@ watchFilesForCommand (Confirm []) @>
+    test <@ watchFilesForCommand (Format []) @>
+    test <@ watchFilesForCommand Start @>
+
 [<Fact(Timeout = 15000)>]
 let ``parse test-rerun returns TestRerun with no flags`` () =
     test <@ CommandTree.parse tree [| "test-rerun" |] = Ok(TestRerun []) @>
