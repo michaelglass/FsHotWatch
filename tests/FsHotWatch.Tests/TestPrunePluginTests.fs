@@ -2349,15 +2349,13 @@ let ``skip tests when 0 affected classes and not cold start`` () =
 // that project past the zero-affected skip gate — while a build with no dependency change
 // still skips.
 
-/// Emit a BuildSucceeded and fully serialize: catch THIS build's terminal transition, then
-/// wait for idle so the async run (and any rerun it queues) has drained. The fanout tests
-/// need each build's fingerprint comparison to see the prior build's committed state, not
-/// a half-applied pipelined one.
+/// Emit a BuildSucceeded and wait for idle so the event, its async run, and any rerun it
+/// queues have drained. An equivalent late build deliberately preserves prior terminal
+/// evidence without reporting another terminal, so waiting for a new transition would
+/// manufacture a 15-second delay for the successful no-work path.
 let private emitBuildAndSettle (host: PluginHost) =
-    let await = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
-    await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-    waitForSettled host "test-prune" 15000
+    waitForQuiescent host 15000
 
 /// A fake project graph for a single test project `TestProj` that references one
 /// library project whose compiled DLL is `opsDllPath`. The test mutates that
@@ -7520,6 +7518,57 @@ let ``AUTOMATION-228: a rerun queued for debt the active run clears preserves th
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ Set.isEmpty queue @>)
 
+[<Fact(Timeout = 30000)>]
+let ``same-scan late equivalent BuildSucceeded preserves the completed test evidence`` () =
+    // A scan can finish its build after the test-prune convergence run has already
+    // discharged every obligation. That late BuildSucceeded is not new work: launching
+    // a baseline-equivalent zero-test lifecycle for it replaces the real run's terminal
+    // evidence with NoProjectsSelected, and `check` consequently exits 3 even though the
+    // preceding run executed and passed.
+    withTempDir "tp-late-equivalent-build" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.foo")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = "-c \"exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // The cohort seal drains the test obligation before the scan's later build
+        // completion reaches this plugin: the exact ordering from the incident.
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+        waitForQuiescent host 10000
+        let first = getCompleted () |> List.exactlyOne
+        test <@ not (RunVerification.verifiedNothing first.Verification) @>
+
+        // No FileChecked/BatchChecked work arrived between builds. This is the late
+        // equivalent build completion observed in the preserved alpha.38 incident.
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForQuiescent host 10000
+
+        let completed = getCompleted ()
+        Assert.Single(completed) |> ignore
+        test <@ completed.Head.RunId = first.RunId @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed(_, verdict)) -> test <@ not (RunSummary.saysNothingVerified verdict.Summary) @>
+        | other -> Assert.Fail($"expected the executed passing evidence to remain terminal, got %A{other}"))
+
 type private A163ScenarioOutcome =
     { RunCount: int
       Queue: Set<string>
@@ -9076,6 +9125,86 @@ let private ledgerFilesOf
     |> Seq.filter (fun kv -> not kv.Value.IsEmpty)
     |> Seq.map (fun kv -> kv.Key)
     |> Seq.toList
+
+[<Fact>]
+let ``late build evidence is reusable only across the exact no-work boundary`` () =
+    let reusable =
+        { PendingRerun = false
+          HasEquivalentReceipt = true
+          HasDebt = false
+          HasFanout = false
+          HasOutstandingRed = false
+          HasAnalysisFallback = false
+          HasUncoveredChanges = false
+          FullSuiteRequested = false }
+
+    test <@ classifyLateBuild reusable = PreserveEquivalentEvidence @>
+
+    let boundaries =
+        [ PendingRecovery, { reusable with PendingRerun = true }
+          MissingEquivalentReceipt,
+          { reusable with
+              HasEquivalentReceipt = false }
+          VerificationDebt, { reusable with HasDebt = true }
+          DependencyFanout, { reusable with HasFanout = true }
+          OutstandingRed,
+          { reusable with
+              HasOutstandingRed = true }
+          AnalysisFallback,
+          { reusable with
+              HasAnalysisFallback = true }
+          UncoveredChanges,
+          { reusable with
+              HasUncoveredChanges = true }
+          FullSuiteRequested,
+          { reusable with
+              FullSuiteRequested = true } ]
+
+    for expected, facts in boundaries do
+        match classifyLateBuild facts with
+        | RunVerification requirements -> test <@ requirements = [ expected ] @>
+        | PreserveEquivalentEvidence ->
+            Assert.Fail($"%A{expected} must require verification rather than reuse prior evidence")
+
+[<Theory>]
+[<InlineData("artifact")>]
+[<InlineData("host")>]
+let ``a failed test launch followed by BuildSucceeded cannot reuse the older passing receipt`` failureKind =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+    let passedState =
+        handler.Update ctx handler.Init (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    let failedLaunch =
+        if failureKind = "artifact" then
+            Custom(ArtifactsUnavailable("stale artifact", None))
+        else
+            Custom(TestHostUnavailable("host missing", None))
+
+    let recoveryState =
+        handler.Update ctx passedState failedLaunch |> Async.RunSynchronously
+
+    test <@ recoveryState.PendingRerun @>
+    test <@ recoveryState.EvidenceReceipt.IsNone @>
+
+    let mutable claims = 0
+
+    let recoveryCtx =
+        { ctx with
+            RunExclusiveShared =
+                fun _ _ _ _ _ ->
+                    claims <- claims + 1
+                    FsHotWatch.PluginFramework.SharedClaimed }
+
+    handler.Update recoveryCtx recoveryState (BuildCompleted BuildSucceeded)
+    |> Async.RunSynchronously
+    |> ignore
+
+    test <@ claims = 1 @>
 
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed project's red`` () =
