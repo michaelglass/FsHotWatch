@@ -9713,6 +9713,88 @@ let ``AUTOMATION-67 recall denominator requires every CTRF failed row promised b
 
     test <@ failedTestsOfReport omittedRow = None @>
 
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 non-executing and shared-infrastructure runs cannot produce exact recall evidence`` () =
+    withTempDir "a111-typed-run-evidence" (fun repoRoot ->
+        let runId = Guid.NewGuid()
+        let project = "Database.Tests"
+
+        let errored =
+            { Results = Map.ofList [ project, TestsErrored "host exited 139" ]
+              Elapsed = TimeSpan.Zero }
+
+        match failedTestsOfRun repoRoot runId errored with
+        | Error reason -> test <@ reason.Contains "did not produce an executable test result" @>
+        | Ok evidence -> failwithf "errored host produced exact evidence: %A" evidence
+
+        let dir = Path.Combine(repoRoot, ".fshw", "test-runs", runId.ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+
+        let report =
+            """{"results":{"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Database.Tests.Query.loads","status":"failed","duration":1,"message":"Npgsql.NpgsqlException: connection failed","trace":"System.Net.Sockets.SocketException"}]}}"""
+
+        File.WriteAllText(Path.Combine(dir, project + ".ctrf.json"), report)
+
+        let failed =
+            { Results = Map.ofList [ project, TestsFailed("failed", false, TimeSpan.Zero) ]
+              Elapsed = TimeSpan.Zero }
+
+        match failedTestsOfRun repoRoot runId failed with
+        | Error reason -> test <@ reason.Contains "shared infrastructure" @>
+        | Ok evidence -> failwithf "shared-infrastructure failures produced selector evidence: %A" evidence)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 one typed infrastructure exception invalidates a mixed failure sample`` () =
+    let mixed =
+        """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Api.Tests.Contract.asserts","status":"failed","message":"expected true"},{"name":"Database.Tests.Query.loads","status":"failed","trace":"Npgsql.NpgsqlException: connection failed"}]}}"""
+
+    test <@ sharedInfrastructureFailureOfReport mixed = Some "NpgsqlException" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 infrastructure tokens in names and assertion messages are not exception evidence`` () =
+    let assertionOnly =
+        """{"results":{"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Api.Tests.NpgsqlExceptionExamples.render","status":"failed","message":"expected the text SocketException"}]}}"""
+
+    test <@ sharedInfrastructureFailureOfReport assertionOnly = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 structured exception objects and stack arrays carry infrastructure evidence`` () =
+    let structured =
+        """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Database.Tests.One.loads","status":"failed","exception":{"type":"Npgsql.NpgsqlException","message":"connection failed"}},{"name":"Database.Tests.Two.loads","status":"failed","stack":["at connector","System.Net.Sockets.SocketException: refused"]}]}}"""
+
+    test <@ sharedInfrastructureFailureOfReport structured = Some "NpgsqlException/SocketException" @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 an assertion trace naming a SocketException test class is not infrastructure evidence`` () =
+    let ordinaryTrace =
+        """{"results":{"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Api.Tests.SocketExceptionExamples.renders","status":"failed","trace":"at Api.Tests.SocketExceptionExamples.renders()"}]}}"""
+
+    test <@ sharedInfrastructureFailureOfReport ordinaryTrace = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 longer identifiers containing exception type names are not infrastructure evidence`` () =
+    let longerIdentifiers =
+        """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Api.Tests.One.asserts","status":"failed","trace":"at Npgsql.NpgsqlExceptionExamples.renders()"},{"name":"Api.Tests.Two.asserts","status":"failed","trace":"at System.Net.Sockets.SocketExceptionExamples.renders()"}]}}"""
+
+    test <@ sharedInfrastructureFailureOfReport longerIdentifiers = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 malformed parseable CTRF structure becomes unknown evidence`` () =
+    withTempDir "a111-malformed-structure" (fun repoRoot ->
+        let runId = Guid.NewGuid()
+        let project = "Database.Tests"
+        let dir = Path.Combine(repoRoot, ".fshw", "test-runs", runId.ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+        File.WriteAllText(Path.Combine(dir, project + ".ctrf.json"), """{"results":{"tests":{}}}""")
+
+        let failed =
+            { Results = Map.ofList [ project, TestsFailed("failed", false, TimeSpan.Zero) ]
+              Elapsed = TimeSpan.Zero }
+
+        match failedTestsOfRun repoRoot runId failed with
+        | Error _ -> ()
+        | Ok evidence -> failwithf "malformed CTRF produced exact evidence: %A" evidence)
+
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-67 completion publishes real CTRF recall through check-reach IPC`` () =
     withTempDir "a67-recall-ipc" (fun repoRoot ->
@@ -11404,6 +11486,31 @@ let ``CheckReach.classify decides reach per failure, and refuses what it cannot 
     match CheckReach.classify None [ a259Failure "Alpha.Tests" (Some "Alpha.OneTests") ] with
     | ReachUnknown reason -> test <@ reason.Contains "no retained impact selection" @>
     | other -> failwithf "a run with no retained selection must be UNKNOWN, got %A" other
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("Database.Tests failed but wrote no current-run CTRF report")>]
+[<InlineData("Database.Tests's CTRF failed rows do not reconcile to its summary")>]
+[<InlineData("Database.Tests's CTRF report could not be read")>]
+let ``AUTOMATION-111 incomplete failure evidence cannot become a selection alarm`` reason =
+    let selection = Some(Map.ofList [ "Unit.Tests", ProjectInFull ])
+    let reach, recall = CheckReach.classifyEvidence selection (Error reason)
+
+    test <@ reach = ReachUnknown reason @>
+    test <@ recall = RecallNotMeasurable reason @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-111 complete evidence preserves genuine mass selection misses`` () =
+    let selection = Some(Map.ofList [ "Unit.Tests", ProjectInFull ])
+
+    let failures =
+        [ 1..600 ]
+        |> List.map (fun index -> a259Failure "Database.Tests" (Some $"Database.Case%d{index}"))
+
+    let reach, _ = CheckReach.classifyEvidence selection (Ok failures)
+
+    match reach with
+    | ReachedNoFailure missed -> test <@ missed.Length = 600 @>
+    | other -> failwithf "complete mass misses remain actionable, got %A" other
 
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-67 failure recall is an exact numerator over full-run failures and never vacuous`` () =

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-111): derive the selection alarm and recall metric from the
+  same typed run receipt. Non-executing outcomes, missing/unreadable/incomplete
+  CTRF, and any failed row whose structured trace/stack/exception field carries
+  a fully qualified Npgsql or socket exception now make the whole comparison
+  unmeasurable. Those fields may use string, object, or array shapes; test names
+  and assertion messages are not inspected. Complete assertion-only receipts
+  still report genuine mass misses.
+
 ## 0.13.0-alpha.28 - 2026-09-01
 
 - fix(AUTOMATION-608): keep one atomic run receipt for scope, run ID, seeds,

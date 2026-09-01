@@ -4,6 +4,15 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- **Database and socket outages no longer masquerade as TestPrune recall
+  misses.** The alarm and metric now share one typed run receipt: non-executing
+  outcomes, incomplete reports, and any failed row carrying an Npgsql/socket
+  fully qualified exception in a structured trace/stack/exception field produce
+  an explicit non-answer. String, object, and array field shapes are supported;
+  names and assertion messages cannot trigger it. Complete assertion-only
+  failures still report genuine misses of any size
+  (AUTOMATION-111).
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —

@@ -1513,6 +1513,19 @@ module CheckReach =
                 else
                     ReachedAFailure reached
 
+    /// A selection alarm and its recall metric must be based on the same complete,
+    /// per-test receipt. A runner/host/infrastructure failure that leaves no report,
+    /// an incomplete report, or an unreadable report is typed as `Error` by
+    /// `failedTestsOfRun`; it is evidence that the run failed, not evidence that the
+    /// selector missed each apparent failure.
+    let classifyEvidence
+        (wouldHaveRun: Map<string, ProjectSelection> option)
+        (failures: Result<OutstandingFailure list, string>)
+        : CheckReach * FailureRecall =
+        match failures with
+        | Ok exactFailures -> classify wouldHaveRun exactFailures, measure wouldHaveRun exactFailures
+        | Error reason -> ReachUnknown reason, RecallNotMeasurable reason
+
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
@@ -2863,6 +2876,90 @@ let internal failedTestsOfReport (json: string) : (string * string) list option 
         else
             failed |> List.map (fun record -> splitTestName record.Name) |> Some
 
+let internal sharedInfrastructureFailureOfReport (json: string) : string option =
+    try
+        use document = JsonDocument.Parse json
+        let mutable results = Unchecked.defaultof<JsonElement>
+        let mutable tests = Unchecked.defaultof<JsonElement>
+
+        if
+            document.RootElement.TryGetProperty("results", &results)
+            && results.TryGetProperty("tests", &tests)
+            && tests.ValueKind = JsonValueKind.Array
+        then
+            let failedRows =
+                tests.EnumerateArray()
+                |> Seq.filter (fun row ->
+                    let mutable status = Unchecked.defaultof<JsonElement>
+                    row.TryGetProperty("status", &status) && status.GetString() = "failed")
+                |> Seq.toList
+
+            let rec stringDescendants (element: JsonElement) =
+                seq {
+                    match element.ValueKind with
+                    | JsonValueKind.String -> yield element.GetString()
+                    | JsonValueKind.Object ->
+                        for property in element.EnumerateObject() do
+                            yield! stringDescendants property.Value
+                    | JsonValueKind.Array ->
+                        for item in element.EnumerateArray() do
+                            yield! stringDescendants item
+                    | _ -> ()
+                }
+
+            let exceptionTexts (row: JsonElement) =
+                seq {
+                    for property in row.EnumerateObject() do
+                        if
+                            property.Name.Equals("trace", StringComparison.OrdinalIgnoreCase)
+                            || property.Name.Equals("stack", StringComparison.OrdinalIgnoreCase)
+                            || property.Name.Equals("exception", StringComparison.OrdinalIgnoreCase)
+                        then
+                            yield! stringDescendants property.Value
+                }
+
+            let containsTypeIdentity (identity: string) (text: string) =
+                let isIdentifierCharacter c =
+                    Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '`'
+
+                let rec search start =
+                    let index = text.IndexOf(identity, start, StringComparison.Ordinal)
+
+                    if index < 0 then
+                        false
+                    else
+                        let beforeIsBoundary = index = 0 || not (isIdentifierCharacter text[index - 1])
+                        let after = index + identity.Length
+                        let afterIsBoundary = after = text.Length || not (isIdentifierCharacter text[after])
+
+                        if beforeIsBoundary && afterIsBoundary then
+                            true
+                        else
+                            search (index + 1)
+
+                search 0
+
+            let causesOf (row: JsonElement) =
+                exceptionTexts row
+                |> Seq.collect (fun text ->
+                    [ if containsTypeIdentity "Npgsql.NpgsqlException" text then
+                          "NpgsqlException"
+                      if containsTypeIdentity "System.Net.Sockets.SocketException" text then
+                          "SocketException" ])
+                |> Seq.toList
+
+            match failedRows with
+            | [] -> None
+            | rows ->
+                match rows |> List.collect causesOf |> List.distinct with
+                | [] -> None
+                | causes -> Some(String.concat "/" causes)
+        else
+            None
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> None
+
 let internal failedTestsOfRun
     (repoRoot: string)
     (runId: Guid)
@@ -2875,11 +2972,6 @@ let internal failedTestsOfRun
 
     results.Results
     |> Map.toList
-    |> List.filter (fun (_, result) ->
-        match result with
-        | TestsFailed _
-        | TestsTimedOut _ -> true
-        | _ -> false)
     |> List.fold
         (fun state (project, result) ->
             state
@@ -2887,13 +2979,22 @@ let internal failedTestsOfRun
                 if TestResult.isTimedOut result then
                     Error $"%s{project} timed out, so no complete failing-test denominator exists"
                 else
-                    match Map.tryFind project reports with
-                    | None -> Error $"%s{project} failed but wrote no current-run CTRF report"
-                    | Some report ->
+                    match result, Map.tryFind project reports with
+                    | TestsErrored reason, _ ->
+                        Error $"%s{project} did not produce an executable test result: %s{reason}"
+                    | TestsDeferred reason, _ -> Error $"%s{project} tests were deferred: %s{reason}"
+                    | TestsNoMatch _, _ -> Error $"%s{project} executed no tests"
+                    | TestsPassed _, _ -> Ok accumulated
+                    | (TestsFailed _ | TestsTimedOut _), None ->
+                        Error $"%s{project} failed but wrote no current-run CTRF report"
+                    | _, Some report ->
                         try
-                            match File.ReadAllText(report.Path) |> failedTestsOfReport with
-                            | None -> Error $"%s{project}'s CTRF failed rows do not reconcile to its summary"
-                            | Some identities ->
+                            let json = File.ReadAllText report.Path
+
+                            match sharedInfrastructureFailureOfReport json, failedTestsOfReport json with
+                            | Some cause, _ -> Error $"%s{project} failed through shared infrastructure (%s{cause})"
+                            | None, None -> Error $"%s{project}'s CTRF failed rows do not reconcile to its summary"
+                            | None, Some identities ->
                                 identities
                                 |> List.map (fun (className, methodName) ->
                                     { Project = project
@@ -6426,10 +6527,9 @@ let internal createWithLaunchDeadline
 
                     let foundFailures = failuresOf state.TestClassFiles testResults
 
-                    let conditionalFailureRecall =
-                        match failedTestsOfRun repoRoot completed.RunId testResults with
-                        | Ok exactFailures -> CheckReach.measure launch.WouldHaveRun exactFailures
-                        | Error reason -> RecallNotMeasurable reason
+                    let checkReach, conditionalFailureRecall =
+                        failedTestsOfRun repoRoot completed.RunId testResults
+                        |> CheckReach.classifyEvidence launch.WouldHaveRun
 
                     // AUTOMATION-259. Classified HERE, against THIS run's failures and the
                     // selection retained at its launch, and written before the branch
@@ -6437,12 +6537,7 @@ let internal createWithLaunchDeadline
                     // and nothing is re-read: both inputs are already in hand.
                     Volatile.Write(
                         &checkReachRef,
-                        Some(
-                            completed.RunId,
-                            launch.WouldHaveRun,
-                            CheckReach.classify launch.WouldHaveRun foundFailures,
-                            conditionalFailureRecall
-                        )
+                        Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
                     )
 
                     let carriedFailures =
