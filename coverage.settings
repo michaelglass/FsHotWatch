@@ -5,7 +5,10 @@
       <Exclude>
         <ModulePath>.*Tests\.dll$</ModulePath>
         <ModulePath>.*ExampleAnalyzer\.dll$</ModulePath>
-        <ModulePath>.*xunit.*</ModulePath>
+        <!-- ModulePath sees the absolute path. Anchor xUnit matching to the file
+             name so a checkout/worktree directory containing "xunit" does not
+             accidentally exclude every first-party assembly. -->
+        <ModulePath>.*[/\\]xunit[^/\\]*\.dll$</ModulePath>
         <ModulePath>.*Unquote.*</ModulePath>
         <!-- External TestPrune packages. Their sources show up in cobertura with
              0% coverage from this side; exclude so the ratchet doesn't gate on
