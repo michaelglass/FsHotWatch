@@ -4627,7 +4627,7 @@ let ``externalDependencyHash: deterministic and content-sensitive; missing files
 // from 0 to 1.
 
 [<Fact(Timeout = 10000)>]
-let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
+let ``cacheKeyFor: a FileChecked key reads only the cheap outstanding-red guard`` () =
     let mutable dependsOnCalls = 0
     let mutable pendingQueueCalls = 0
     let mutable changedSymbolsCalls = 0
@@ -4670,7 +4670,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     test <@ pendingQueueCalls = 0 @>
     test <@ changedSymbolsCalls = 0 @>
     test <@ fullSuiteScopeCalls = 0 @>
-    test <@ outstandingCalls = 0 @>
+    test <@ outstandingCalls = 1 @>
     test <@ sessionEvidenceCalls = 0 @>
     // AUTOMATION-303's structure hash is a FULL-REPO WALK plus a SHA-256 of every
     // project file. Paid once per BuildCompleted it is nothing; paid once per checked
@@ -4678,6 +4678,21 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     // BuildCompleted test below, which pins the same thunk at 3 calls — an absence over
     // a thunk nothing ever calls would be worth nothing.
     test <@ structureCalls = 0 @>
+
+[<Fact(Timeout = 10000)>]
+let ``a prior test failure makes FileChecked uncacheable so it cannot relabel the fresh red`` () =
+    let key =
+        cacheKeyFor
+            (fun () -> "symbols")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> "structure")
+            (fun () -> None)
+            (fun () -> true)
+            (fun () -> true)
+            (FileChecked(fakeFileCheckResult "/src/TestHelper.fs"))
+
+    test <@ key.IsNone @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
@@ -4977,6 +4992,60 @@ let private checkSourceForReal (tmpDir: string) (fileName: string) (source: stri
         let! result = pipeline.CheckFile(AbsFilePath.create filePath)
         return result
     }
+
+[<Fact(Timeout = 30000)>]
+let ``a cached helper-file analysis cannot relabel a freshly executed test failure as cached`` () =
+    withTempDir "tp-fresh-red-provenance" (fun tmpDir ->
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let checkedFile =
+            checkSourceForReal tmpDir "TestHelper.fsx" "module TestHelper\nlet value = 42\n"
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        let configs =
+            [ { Project = "Failing.Tests"
+                Command = "sh"
+                Args = "-c \"echo 'failed Failing.Tests.Example.still_fails (1ms)'; exit 1\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = Disabled } ]
+
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
+        host.RegisterHandler(create (Path.Combine(tmpDir, "test.db")) tmpDir (Some configs) None None None None [])
+
+        host.EmitFileChecked checkedFile
+        waitForPluginTerminal host "test-prune" 12.0
+
+        // Positive control: the same helper analysis remains cacheable while healthy.
+        host.EmitFileChecked checkedFile
+        test <@ waitForCachedReplay host "test-prune" 10000 @>
+
+        host.EmitBuildCompleted BuildSucceeded
+
+        let freshRed =
+            waitUntilTrue
+                (fun () ->
+                    not (host.GetErrorsByPlugin("test-prune") |> Map.isEmpty)
+                    && (terminalSummaryOf host "test-prune").Contains "failed")
+                15000
+
+        test <@ freshRed @>
+        let fresh = terminalSummaryOf host "test-prune"
+        let freshStatus = host.GetStatus("test-prune")
+        let freshLedger = host.GetErrorsByPlugin("test-prune")
+        test <@ not (fresh.Contains "(cached)") @>
+
+        host.EmitFileChecked checkedFile
+        waitForQuiescent host 10000
+
+        test <@ terminalSummaryOf host "test-prune" = fresh @>
+        test <@ host.GetStatus("test-prune") = freshStatus @>
+        test <@ host.GetErrorsByPlugin("test-prune") = freshLedger @>)
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked analyzes its existing FCS payload without re-entering the checker`` () =

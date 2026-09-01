@@ -4366,22 +4366,30 @@ let internal cacheKeyFor
         // pending-queue/dependsOn entries can never split across the two.
         Some(outcomeKey ("failed:" + String.concat "|" (List.sort errs)))
     | FileChecked r ->
-        // `fcs-signature` captures cross-file FCS state so upstream symbol changes
-        // invalidate this file's cached symbol-diff.
-        //
-        // Note what this arm does NOT read: not the changed symbols, not the pending
-        // queue, not the dependsOn globs. It is a pure function of THIS file — which is
-        // why all three are thunks.
-        let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+        // A per-file cache hit derives a terminal summary from the plugin's whole live
+        // ledger and labels it `(cached)`. While a fresh test failure is outstanding,
+        // that would falsely relabel the test run as replayed merely because a helper
+        // file's earlier symbol analysis hit its cache. Refuse the per-file replay until
+        // a covering test run clears the red; healthy trees keep the hot path.
+        if hasOutstandingFailures () then
+            None
+        else
+            // `fcs-signature` captures cross-file FCS state so upstream symbol changes
+            // invalidate this file's cached symbol-diff.
+            //
+            // Note what this arm does NOT read: not the changed symbols, not the pending
+            // queue, not the dependsOn globs. It is a pure function of THIS file — which is
+            // why all three are thunks.
+            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
 
-        Some(
-            FsHotWatch.TaskCache.merkleCacheKey
-                [ "plugin-version", "test-prune-merkle-v2"
-                  "event", "FileChecked"
-                  "file", AbsFilePath.value r.File
-                  "source", r.Source
-                  "fcs-signature", fcsSignature ]
-        )
+            Some(
+                FsHotWatch.TaskCache.merkleCacheKey
+                    [ "plugin-version", "test-prune-merkle-v2"
+                      "event", "FileChecked"
+                      "file", AbsFilePath.value r.File
+                      "source", r.Source
+                      "fcs-signature", fcsSignature ]
+            )
     | _ -> None
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
@@ -6350,17 +6358,20 @@ let internal createWithLaunchDeadline
 
                             updateFreshness updatedFreshness
 
-                            // No per-plugin idle guard needed; see `markUnanalysable`.
+                            // A helper analysis is not new evidence about a test red. Keep
+                            // the fresh run's terminal provenance until a covering run
+                            // clears the outstanding failure.
                             let analysisFinished = DateTime.UtcNow
 
-                            ctx.ReportStatus(
-                                Completed(
-                                    analysisFinished,
-                                    RunVerdict.create
-                                        $"symbol analysis: %s{relPath}, %d{List.length changedNames} changed symbol(s); no run due"
-                                        (analysisFinished - analysisStarted)
+                            if List.isEmpty (Volatile.Read(&outstandingFailuresRef)) then
+                                ctx.ReportStatus(
+                                    Completed(
+                                        analysisFinished,
+                                        RunVerdict.create
+                                            $"symbol analysis: %s{relPath}, %d{List.length changedNames} changed symbol(s); no run due"
+                                            (analysisFinished - analysisStarted)
+                                    )
                                 )
-                            )
 
                             return newState
                         | Error msg ->
