@@ -268,6 +268,7 @@ let runOnceAndReport
         let daemon = createDaemon repoRoot
         DaemonConfig.registerPlugins daemon repoRoot config
         let statuses = runOnceWithProgress daemon
+        daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
 
         let allErrors =
             match pluginName with

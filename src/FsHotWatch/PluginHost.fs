@@ -27,6 +27,7 @@ type PluginHost
     let statusChanged = Event<string * PluginStatus>()
 
     let ledger = ErrorLedger(?reporters = reporters)
+    let normalizedRepoRoot = System.IO.Path.GetFullPath(repoRoot)
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
@@ -341,6 +342,61 @@ type PluginHost
                 if wanted.Contains file then
                     for (pluginName, _) in entries do
                         ledger.Clear(pluginName, file)
+
+    /// Remove diagnostics keyed to repository files that no longer exist.
+    ///
+    /// Keys outside the repository and angle-bracket pseudo-keys (for example
+    /// `<build>`) are opaque plugin identities, not files owned by this host.
+    /// Relative keys are repository-relative file paths. The ledger revision in
+    /// the snapshot makes deletion conditional: a report that arrives while the
+    /// filesystem is inspected survives the atomic compare-and-remove.
+    member internal _.PruneVanishedErrors(fileExists: string -> bool) =
+        let tryRepoFile (key: string) =
+            if
+                key.StartsWith("<", System.StringComparison.Ordinal)
+                && key.EndsWith(">", System.StringComparison.Ordinal)
+            then
+                None
+            else
+                try
+                    let fullPath =
+                        if System.IO.Path.IsPathRooted(key) then
+                            System.IO.Path.GetFullPath(key)
+                        else
+                            System.IO.Path.GetFullPath(key, normalizedRepoRoot)
+
+                    let relative = System.IO.Path.GetRelativePath(normalizedRepoRoot, fullPath)
+
+                    if
+                        relative = ".."
+                        || relative.StartsWith(
+                            $"..%c{System.IO.Path.DirectorySeparatorChar}",
+                            System.StringComparison.Ordinal
+                        )
+                        || System.IO.Path.IsPathRooted(relative)
+                    then
+                        None
+                    else
+                        Some fullPath
+                with
+                | :? System.ArgumentException
+                | :? System.NotSupportedException
+                | :? System.IO.PathTooLongException -> None
+
+        let snapshots = ledger.SnapshotKeys()
+
+        let existence =
+            snapshots
+            |> Seq.map (fun snapshot -> snapshot.File)
+            |> Seq.distinct
+            |> Seq.choose (fun key -> tryRepoFile key |> Option.map (fun fullPath -> key, fileExists fullPath))
+            |> Map.ofSeq
+
+        let vanished =
+            snapshots
+            |> List.filter (fun snapshot -> Map.tryFind snapshot.File existence = Some false)
+
+        ledger.PruneIfCurrent(vanished)
 
     /// Single-file convenience over `ClearFilesEverywhere`.
     member this.ClearFileEverywhere(filePath: string) = this.ClearFilesEverywhere [ filePath ]
