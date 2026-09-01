@@ -1311,6 +1311,51 @@ type TestPruneState =
         EvidenceReceipt: TestEvidenceReceipt option
     }
 
+type internal LateBuildRequirement =
+    | PendingRecovery
+    | MissingEquivalentReceipt
+    | VerificationDebt
+    | DependencyFanout
+    | OutstandingRed
+    | AnalysisFallback
+    | UncoveredChanges
+    | FullSuiteRequested
+
+type internal LateBuildDisposition =
+    | PreserveEquivalentEvidence
+    | RunVerification of LateBuildRequirement list
+
+type internal LateBuildFacts =
+    { PendingRerun: bool
+      HasEquivalentReceipt: bool
+      HasDebt: bool
+      HasFanout: bool
+      HasOutstandingRed: bool
+      HasAnalysisFallback: bool
+      HasUncoveredChanges: bool
+      FullSuiteRequested: bool }
+
+let internal classifyLateBuild (facts: LateBuildFacts) : LateBuildDisposition =
+    [ if facts.PendingRerun then
+          PendingRecovery
+      if not facts.HasEquivalentReceipt then
+          MissingEquivalentReceipt
+      if facts.HasDebt then
+          VerificationDebt
+      if facts.HasFanout then
+          DependencyFanout
+      if facts.HasOutstandingRed then
+          OutstandingRed
+      if facts.HasAnalysisFallback then
+          AnalysisFallback
+      if facts.HasUncoveredChanges then
+          UncoveredChanges
+      if facts.FullSuiteRequested then
+          FullSuiteRequested ]
+    |> function
+        | [] -> PreserveEquivalentEvidence
+        | requirements -> RunVerification requirements
+
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
 /// The run is an `Async` handed to `RunExclusive` and lives as long as the suite does:
@@ -6643,35 +6688,75 @@ let internal createWithLaunchDeadline
                                     // then clear the pending set (it's being run).
                                     let forceRunProjects = Set.union fanoutNow stateWithAffected.PendingForceRunProjects
 
-                                    let launchState =
-                                        { stateWithAffected with
-                                            PendingForceRunProjects = Set.empty
-                                            EvidenceReceipt = None }
+                                    // A late BuildSucceeded from the same scan can arrive
+                                    // after the convergence run has already passed and
+                                    // discharged every obligation. Starting the
+                                    // baseline-equivalent zero-selection path here emits a
+                                    // second lifecycle whose NoProjectsSelected receipt and
+                                    // NOTHING VERIFIED status overwrite that executed
+                                    // evidence. With no queue, runtime obligation, fanout,
+                                    // prior red, analysis fallback, or explicit full-suite
+                                    // request, this build has introduced no runnable work;
+                                    // preserve the terminal evidence already earned.
+                                    let hasEquivalentReceipt =
+                                        match stateWithAffected.LastRunId, stateWithAffected.EvidenceReceipt with
+                                        | Some lastRunId, Some receipt ->
+                                            receipt.RunId = lastRunId
+                                            && not (Map.isEmpty receipt.Coverage)
+                                            && receipt.ZeroSelection = ZeroSelection.NotAZero
+                                        | _ -> false
 
-                                    match
-                                        runTestHostExclusive
-                                            ctx
-                                            None
-                                            (runTestsWithImpact
-                                                ctx
-                                                configs
-                                                (TestRunInputs.ofState launchState)
-                                                hasCachedResults
-                                                forceRunProjects)
-                                    with
-                                    | Claimed -> return launchState
-                                    | SlotBusy ->
-                                        // Raced by another launch between the IsRunning
-                                        // fast-path above and this claim. Same treatment:
-                                        // queue the rerun, retain the un-consumed fanout.
+                                    let lateBuildDisposition =
+                                        classifyLateBuild
+                                            { PendingRerun = stateWithAffected.PendingRerun
+                                              HasEquivalentReceipt = hasEquivalentReceipt
+                                              HasDebt = not (nothingOwed ())
+                                              HasFanout = not (Set.isEmpty forceRunProjects)
+                                              HasOutstandingRed =
+                                                not (List.isEmpty stateWithAffected.OutstandingFailures)
+                                              HasAnalysisFallback =
+                                                not (Map.isEmpty stateWithAffected.UnanalyzableFiles)
+                                              HasUncoveredChanges =
+                                                UncoveredChanges.isAll stateWithAffected.ChangedSymbolsAllUncovered
+                                              FullSuiteRequested = Volatile.Read(&fullSuiteScopeRef) }
+
+                                    match lateBuildDisposition with
+                                    | PreserveEquivalentEvidence ->
                                         Logging.info
                                             "test-prune"
-                                            "BuildSucceeded: tests slot already held — queueing re-run"
+                                            "BuildSucceeded introduced no verification work — preserving the completed test evidence"
 
-                                        return
+                                        return stateWithAffected
+                                    | RunVerification _ ->
+                                        let launchState =
                                             { stateWithAffected with
-                                                PendingRerun = true
-                                                PendingForceRunProjects = forceRunProjects }
+                                                PendingForceRunProjects = Set.empty
+                                                EvidenceReceipt = None }
+
+                                        match
+                                            runTestHostExclusive
+                                                ctx
+                                                None
+                                                (runTestsWithImpact
+                                                    ctx
+                                                    configs
+                                                    (TestRunInputs.ofState launchState)
+                                                    hasCachedResults
+                                                    forceRunProjects)
+                                        with
+                                        | Claimed -> return launchState
+                                        | SlotBusy ->
+                                            // Raced by another launch between the IsRunning
+                                            // fast-path above and this claim. Same treatment:
+                                            // queue the rerun, retain the un-consumed fanout.
+                                            Logging.info
+                                                "test-prune"
+                                                "BuildSucceeded: tests slot already held — queueing re-run"
+
+                                            return
+                                                { stateWithAffected with
+                                                    PendingRerun = true
+                                                    PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected

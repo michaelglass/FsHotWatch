@@ -4,6 +4,9 @@
 
 - test-selection cache identities now use portable repository
   paths, so equivalent checkouts can reuse the same content evidence safely.
+- fix: late build completions with the same content identity no
+  longer erase the already-earned test receipt or trigger redundant convergence
+  runs; genuinely newer build evidence still invalidates the prior receipt.
 
 - fix: derive the selection alarm and recall metric from the
   same typed run receipt. Non-executing outcomes, missing/unreadable/incomplete
