@@ -1575,6 +1575,22 @@ let internal formatScanStatusWith (registered: int) (unchecked: int) (scanState:
         else
             $"complete: %d{registered} files checked in %.1f{elapsed.TotalSeconds}s"
 
+/// A terminal polling watcher has stopped observing source changes. Keeping the
+/// IPC daemon alive would make every later check look authoritative while its
+/// input stream is dead, so use the same graceful cancellation path as `fshw
+/// stop`, idle exit, and wedge recovery.
+let internal cancelWhenWatcherFails
+    (terminalFailure: System.Threading.Tasks.Task<exn>)
+    (shutdown: CancellationTokenSource)
+    : System.Threading.Tasks.Task =
+    terminalFailure.ContinueWith(
+        Action<System.Threading.Tasks.Task<exn>>(fun failed ->
+            let ex = failed.Result
+            Logging.error "watcher" $"polling watcher stopped: %s{ex.Message}; shutting down daemon"
+            shutdown.Cancel()),
+        System.Threading.Tasks.TaskScheduler.Default
+    )
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 type Daemon
@@ -1598,6 +1614,7 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
+        watcherTerminalFailure: System.Threading.Tasks.Task<exn>,
         // Per-daemon process registry. Plugin-spawned children (test runners,
         // playwright drivers, file-command processes) register against it, and
         // Dispose kills everything still tracked — that is how `fshw stop` and
@@ -1813,6 +1830,8 @@ type Daemon
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             try
+                cancelWhenWatcherFails watcherTerminalFailure cts |> ignore
+
                 let onScan () =
                     Async.StartAsTask(this.ScanAll()) |> ignore
 
@@ -2370,6 +2389,9 @@ module Daemon =
     let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
         configured |> Option.defaultValue [] |> Set.ofList
 
+    type private WatcherFactory =
+        string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> (exn -> unit) -> FileWatcher
+
     let private createWithCore
         (checker: FSharpChecker)
         (repoRoot: string)
@@ -2378,7 +2400,7 @@ module Daemon =
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         (watcherIsMacOSOverride: bool option)
         (watchFiles: bool)
-        (watcherFactory: string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher)
+        (watcherFactory: WatcherFactory)
         =
         // This MUST be the first thing that happens (AUTOMATION-147).
         //
@@ -2569,9 +2591,20 @@ module Daemon =
                 Logging.debug "watcher" $"%O{change}"
                 changeAgent.Post(Choice1Of2 change)
 
+            let watcherTerminalFailure =
+                System.Threading.Tasks.TaskCompletionSource<exn>(
+                    System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                )
+
             let watcher =
                 if watchFiles then
-                    watcherFactory repoRoot onChange watcherIsMacOSOverride extraWatchPatterns fsEventsLatencySeconds
+                    watcherFactory
+                        repoRoot
+                        onChange
+                        watcherIsMacOSOverride
+                        extraWatchPatterns
+                        fsEventsLatencySeconds
+                        (fun ex -> watcherTerminalFailure.TrySetResult(ex) |> ignore)
                 else
                     { Disposables = [] }
 
@@ -2636,6 +2669,7 @@ module Daemon =
                 excludePatterns,
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
+                watcherTerminalFailure.Task,
                 processRegistry
             )
         with _ ->
@@ -2652,7 +2686,7 @@ module Daemon =
             (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
             None
             true
-            FileWatcher.create
+            FileWatcher.createWithTerminal
 
     /// Deterministic watcher-platform seam for daemon integration tests. Native
     /// FSEvents behavior has dedicated tests; scoped daemon tests use the
@@ -2672,14 +2706,14 @@ module Daemon =
             (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
             isMacOSOverride
             true
-            FileWatcher.create
+            FileWatcher.createWithTerminal
 
     /// Deterministic seam proving watcher-disabled hosts never touch watcher construction.
     let internal createWithoutWatcherWithFactory
         (checker: FSharpChecker)
         (repoRoot: string)
         (opts: DaemonOptions)
-        (watcherFactory: string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher)
+        (watcherFactory: WatcherFactory)
         =
         createWithCore
             checker
@@ -2699,7 +2733,7 @@ module Daemon =
         (loader: IWorkspaceLoader)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
-        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None true FileWatcher.create
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None true FileWatcher.createWithTerminal
 
     /// Create a watcher-free one-shot execution host. Internal so the public
     /// DaemonOptions record remains source- and binary-compatible for consumers.
@@ -2720,7 +2754,7 @@ module Daemon =
             (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
             None
             false
-            FileWatcher.create
+            FileWatcher.createWithTerminal
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.
