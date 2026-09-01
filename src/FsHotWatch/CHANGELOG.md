@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.25 - 2026-09-01
+
 - AUTOMATION-300: authoritative daemon and run-once verdict reads now remove late
   findings for renamed-away repository files. Cleanup is revision-conditional, so a
   concurrent report for a recreated same-name file is retained; outside-repository and
