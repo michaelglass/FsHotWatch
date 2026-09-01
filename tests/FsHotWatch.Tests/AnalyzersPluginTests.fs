@@ -353,6 +353,183 @@ let ``analyzerAssemblyIdentity does not throw on a missing path`` () =
     test <@ id1 = id2 @>
 
 [<Fact(Timeout = 15000)>]
+let ``unchanged analyzer assemblies reuse their content identity without rereading DLLs`` () =
+    let dir = analyzerBinWith "StableMemo" [| 1uy; 2uy; 3uy |]
+    let mutable reads = 0
+
+    let readBytes path =
+        reads <- reads + 1
+        System.IO.File.ReadAllBytes path
+
+    try
+        let identity =
+            analyzerAssemblyIdentityMemoWith
+                (System.IO.Directory.GetCurrentDirectory())
+                knownNonAnalyzerPrefixes
+                [ dir ]
+                readBytes
+
+        let first = identity.Current()
+        let second = identity.Current()
+
+        test <@ first.IsSome @>
+        test <@ first = second @>
+        test <@ reads = 1 @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``new analyzer generation rehashes same-length DLL bytes even when timestamp is restored`` () =
+    let dir = analyzerBinWith "RebuiltMemo" [| 1uy; 2uy; 3uy |]
+    let dll = System.IO.Path.Combine(dir, "RebuiltMemo.dll")
+    let timestamp = System.IO.File.GetLastWriteTimeUtc dll
+    let mutable reads = 0
+
+    let readBytes path =
+        reads <- reads + 1
+        System.IO.File.ReadAllBytes path
+
+    try
+        let identity =
+            analyzerAssemblyIdentityMemoWith
+                (System.IO.Directory.GetCurrentDirectory())
+                knownNonAnalyzerPrefixes
+                [ dir ]
+                readBytes
+
+        let before = identity.Current()
+        System.IO.File.WriteAllBytes(dll, [| 9uy; 8uy; 7uy |])
+        System.IO.File.SetLastWriteTimeUtc(dll, timestamp)
+        identity.Invalidate()
+        let after = identity.Current()
+
+        test <@ before.IsSome @>
+        test <@ after.IsSome @>
+        test <@ before <> after @>
+        test <@ reads = 2 @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``an unreadable analyzer DLL identity is retried even when metadata is unchanged`` () =
+    let dir = analyzerBinWith "RetryMemo" [| 1uy; 2uy; 3uy |]
+    let mutable reads = 0
+
+    let readBytes path =
+        reads <- reads + 1
+
+        if reads = 1 then
+            raise (System.IO.IOException "fixture lock")
+
+        System.IO.File.ReadAllBytes path
+
+    try
+        let identity =
+            analyzerAssemblyIdentityMemoWith
+                (System.IO.Directory.GetCurrentDirectory())
+                knownNonAnalyzerPrefixes
+                [ dir ]
+                readBytes
+
+        let unreadable = identity.Current()
+        let readable = identity.Current()
+
+        test <@ unreadable = None @>
+        test <@ readable.IsSome @>
+        test <@ reads = 2 @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``an unreadable analyzer directory enumeration is retried instead of cached`` () =
+    let dir = analyzerBinWith "EnumerateMemo" [| 1uy; 2uy; 3uy |]
+    let dll = System.IO.Path.Combine(dir, "EnumerateMemo.dll")
+    let mutable enumerations = 0
+
+    let enumerate _ =
+        enumerations <- enumerations + 1
+
+        if enumerations = 1 then
+            raise (System.IO.IOException "fixture directory removal race")
+
+        [| dll |]
+
+    try
+        let identity =
+            analyzerAssemblyIdentityMemoWithIO
+                (fun _ -> true)
+                enumerate
+                System.IO.File.ReadAllBytes
+                (System.IO.Directory.GetCurrentDirectory())
+                knownNonAnalyzerPrefixes
+                [ dir ]
+
+        let unreadable = identity.Current()
+        let readable = identity.Current()
+
+        test <@ unreadable = None @>
+        test <@ readable.IsSome @>
+        test <@ enumerations = 2 @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``construction generation ends before first file so preserved metadata still reloads`` () =
+    let dir = analyzerBinWith "ConstructionMemo" [| 1uy; 2uy; 3uy |]
+    let dll = System.IO.Path.Combine(dir, "ConstructionMemo.dll")
+    let timestamp = System.IO.File.GetLastWriteTimeUtc dll
+    let mutable reloads = 0
+
+    try
+        let identity =
+            analyzerAssemblyIdentityMemoWith
+                (System.IO.Directory.GetCurrentDirectory())
+                knownNonAnalyzerPrefixes
+                [ dir ]
+                System.IO.File.ReadAllBytes
+
+        let loaded = identity.Current()
+        identity.Invalidate()
+        System.IO.File.WriteAllBytes(dll, [| 9uy; 8uy; 7uy |])
+        System.IO.File.SetLastWriteTimeUtc(dll, timestamp)
+
+        let current, reloaded =
+            reloadAnalyzerIdentityIfStale identity.Current loaded (fun () -> reloads <- reloads + 1)
+
+        test <@ loaded.IsSome @>
+        test <@ current.IsSome @>
+        test <@ current <> loaded @>
+        test <@ reloaded @>
+        test <@ reloads = 1 @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
+let ``first file cache key sees analyzer rebuilt immediately after construction`` () =
+    let dir = analyzerBinWith "ConstructionKey" [| 1uy; 2uy; 3uy |]
+    let dll = System.IO.Path.Combine(dir, "ConstructionKey.dll")
+    let timestamp = System.IO.File.GetLastWriteTimeUtc dll
+
+    try
+        let handlerBuiltBeforeChange = create None [ dir ] None DiagnosticSeverity.Hint
+
+        System.IO.File.WriteAllBytes(dll, [| 9uy; 8uy; 7uy |])
+        System.IO.File.SetLastWriteTimeUtc(dll, timestamp)
+
+        let event = FileChecked(fakeResult $"{dir}/Subject.fs")
+        let firstKey = (handlerBuiltBeforeChange.CacheKey.Value) event
+
+        // A handler built after the change is an independent oracle for the key
+        // that the first handler must observe on its first file.
+        let handlerBuiltAfterChange = create None [ dir ] None DiagnosticSeverity.Hint
+        let currentKey = (handlerBuiltAfterChange.CacheKey.Value) event
+
+        test <@ firstKey.IsSome @>
+        test <@ firstKey = currentKey @>
+    finally
+        System.IO.Directory.Delete(dir, true)
+
+[<Fact(Timeout = 15000)>]
 let ``regression: warm handler cache key changes when the analyzer DLL is rebuilt`` () =
     // One long-lived handler sees the DLL change. Capturing the assembly hash during
     // construction would leave this key unchanged and replay a stale clean result.
@@ -363,8 +540,26 @@ let ``regression: warm handler cache key changes when the analyzer DLL is rebuil
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
         let key1 = (handler.CacheKey.Value) event
 
-        // The rebuild: same path, new content.
-        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "RuleChanged.dll"), [| 9uy; 9uy; 9uy; 9uy |])
+        // The rebuild: same path, same length, and restored timestamp. Only the
+        // next completed-batch generation boundary makes rehashing authoritative.
+        let dll = System.IO.Path.Combine(dir, "RuleChanged.dll")
+        let timestamp = System.IO.File.GetLastWriteTimeUtc dll
+        System.IO.File.WriteAllBytes(dll, [| 9uy; 9uy; 9uy |])
+        System.IO.File.SetLastWriteTimeUtc(dll, timestamp)
+
+        let now = DateTime.UtcNow
+
+        let boundary =
+            BatchChecked
+                { Trigger = InSessionBatch []
+                  Files = []
+                  Generation = 1L
+                  StartedAt = now
+                  CompletedAt = now }
+
+        test <@ handler.Subscriptions.Contains FsHotWatch.PluginFramework.SubscribeBatchChecked @>
+        let boundaryKey = (handler.CacheKey.Value) boundary
+        test <@ boundaryKey.IsNone @>
 
         let key2 = (handler.CacheKey.Value) event
 
