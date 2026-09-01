@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.38 - 2026-09-01
+
 - fix(AUTOMATION-464): bundle the TestPrune runner-family resolver so CLI users
   receive valid CTRF switches with both xUnit 3 and xUnit 4. Unknown or
   conflicting restored runner metadata receives no guessed report switches.
