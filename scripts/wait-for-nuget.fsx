@@ -70,13 +70,17 @@ let singleProjectValue (project: XDocument) projectPath elementName =
         Error $"%s{projectPath} has ambiguous <%s{elementName}> values: %s{renderedValues}"
 
 let processOutput (task: Threading.Tasks.Task<string>) =
-    if task.Wait(TimeSpan.FromSeconds 5.) then task.Result.Trim() else "output drain did not finish within 5s"
+    if task.Wait(TimeSpan.FromSeconds 5.) then
+        task.Result.Trim()
+    else
+        "output drain did not finish within 5s"
 
 let runRestore config probeProject probeConfig probePackages =
     let start = ProcessStartInfo(config.DotnetExecutable)
     start.UseShellExecute <- false
     start.RedirectStandardOutput <- true
     start.RedirectStandardError <- true
+    start.Environment.Remove("NUGET_FALLBACK_PACKAGES") |> ignore
 
     [ "restore"
       probeProject
@@ -101,12 +105,19 @@ let runRestore config probeProject probeConfig probePackages =
                 |> List.filter (String.IsNullOrWhiteSpace >> not)
                 |> String.concat " | "
 
-            if child.ExitCode = 0 then Restored else RestoreFailed detail
+            if child.ExitCode = 0 then
+                Restored
+            else
+                RestoreFailed detail
         else
             let killDetail =
                 try
                     child.Kill(true)
-                    if child.WaitForExit(5000) then "process tree killed" else "process tree kill did not exit within 5s"
+
+                    if child.WaitForExit(5000) then
+                        "process tree killed"
+                    else
+                        "process tree kill did not exit within 5s"
                 with ex ->
                     $"process-tree kill failed: %s{ex.Message}"
 
@@ -119,6 +130,63 @@ let runRestore config probeProject probeConfig probePackages =
     with ex ->
         RestoreFailed $"could not start restore process: %s{ex.Message}"
 
+let runToolInstall config packageId version probeConfig probePackages probeTools =
+    let start = ProcessStartInfo(config.DotnetExecutable)
+    start.UseShellExecute <- false
+    start.RedirectStandardOutput <- true
+    start.RedirectStandardError <- true
+    start.Environment["NUGET_PACKAGES"] <- probePackages
+    start.Environment["NUGET_HTTP_CACHE_PATH"] <- Path.Combine(probePackages, "http-cache")
+    start.Environment.Remove("NUGET_FALLBACK_PACKAGES") |> ignore
+
+    [ "tool"
+      "install"
+      packageId
+      "--version"
+      version
+      "--tool-path"
+      probeTools
+      "--configfile"
+      probeConfig
+      "--no-cache" ]
+    |> List.iter start.ArgumentList.Add
+
+    try
+        use child = Process.Start start
+        let stdout = child.StandardOutput.ReadToEndAsync()
+        let stderr = child.StandardError.ReadToEndAsync()
+
+        if child.WaitForExit(config.ProcessTimeoutMs) then
+            let detail =
+                [ processOutput stdout; processOutput stderr ]
+                |> List.filter (String.IsNullOrWhiteSpace >> not)
+                |> String.concat " | "
+
+            if child.ExitCode = 0 then
+                Restored
+            else
+                RestoreFailed detail
+        else
+            let killDetail =
+                try
+                    child.Kill(true)
+
+                    if child.WaitForExit(5000) then
+                        "process tree killed"
+                    else
+                        "process tree kill did not exit within 5s"
+                with ex ->
+                    $"process-tree kill failed: %s{ex.Message}"
+
+            let detail =
+                [ killDetail; processOutput stdout; processOutput stderr ]
+                |> List.filter (String.IsNullOrWhiteSpace >> not)
+                |> String.concat " | "
+
+            RestoreTimedOut detail
+    with ex ->
+        RestoreFailed $"could not start tool-install process: %s{ex.Message}"
+
 let writeProbeFiles packageId version probeProject probeConfig =
     let escapedPackage = SecurityElement.Escape packageId
     let escapedVersion = SecurityElement.Escape version
@@ -129,7 +197,7 @@ let writeProbeFiles packageId version probeProject probeConfig =
 <configuration>
   <packageSources>
     <clear />
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
   </packageSources>
 </configuration>
 """
@@ -148,67 +216,116 @@ let probe config packageId projectPath =
     if not (File.Exists projectPath) then
         Error $"project does not exist: %s{projectPath}"
     else
-        try
-            let project = XDocument.Load projectPath
+        let loadedProject =
+            try
+                Ok(XDocument.Load projectPath)
+            with ex ->
+                Error $"could not read release project %s{projectPath}: %s{ex.Message}"
 
-            match singleProjectValue project projectPath "PackageId", singleProjectValue project projectPath "Version" with
+        match loadedProject with
+        | Error error -> Error error
+        | Ok project ->
+            match
+                singleProjectValue project projectPath "PackageId", singleProjectValue project projectPath "Version"
+            with
             | Error error, _
             | _, Error error -> Error error
-            | Ok declaredPackageId, Ok _ when not (String.Equals(packageId, declaredPackageId, StringComparison.Ordinal)) ->
+            | Ok declaredPackageId, Ok _ when
+                not (String.Equals(packageId, declaredPackageId, StringComparison.Ordinal))
+                ->
                 Error $"requested %s{packageId}, but %s{projectPath} declares PackageId %s{declaredPackageId}"
             | Ok _, Ok version ->
+                let isTool =
+                    project.Descendants(XName.Get "PackAsTool")
+                    |> Seq.exists (fun value ->
+                        String.Equals(value.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase))
+
                 Directory.CreateDirectory config.ProbeParent |> ignore
                 let probeId = Guid.NewGuid().ToString("N")
                 let probeRoot = Path.Combine(config.ProbeParent, $"fshw-nuget-probe-%s{probeId}")
                 let probeProject = Path.Combine(probeRoot, "probe.csproj")
                 let probeConfig = Path.Combine(probeRoot, "NuGet.Config")
                 let probePackages = Path.Combine(probeRoot, "packages")
+                let probeTools = Path.Combine(probeRoot, "tools")
                 Directory.CreateDirectory probeRoot |> ignore
+                Directory.CreateDirectory probePackages |> ignore
+                Directory.CreateDirectory(Path.Combine(probePackages, "http-cache")) |> ignore
+                let capability = if isTool then "tool-installable" else "restorable"
+                let action = if isTool then "tool install" else "restore"
 
-                try
-                    writeProbeFiles packageId version probeProject probeConfig
+                let probeResult =
+                    try
+                        writeProbeFiles packageId version probeProject probeConfig
 
-                    let rec wait attempt lastDetail =
-                        if attempt > config.Attempts then
-                            Error
-                                $"%s{packageId} %s{version} was still not restorable from nuget.org after %d{config.Attempts} attempts. Last restore result: %s{lastDetail}"
-                        else
-                            match runRestore config probeProject probeConfig probePackages with
-                            | Restored ->
-                                Ok $"NuGet publication barrier: %s{packageId} %s{version} is restorable from nuget.org"
-                            | RestoreFailed detail ->
-                                if attempt < config.Attempts then
-                                    printfn
-                                        "NuGet publication barrier: %s %s unavailable (attempt %d/%d); retrying in %dms"
-                                        packageId
-                                        version
-                                        attempt
-                                        config.Attempts
-                                        config.DelayMs
+                        let runProbe () =
+                            if isTool then
+                                runToolInstall config packageId version probeConfig probePackages probeTools
+                            else
+                                runRestore config probeProject probeConfig probePackages
 
-                                    Thread.Sleep config.DelayMs
+                        let rec wait attempt lastDetail =
+                            if attempt > config.Attempts then
+                                Error
+                                    $"%s{packageId} %s{version} was still not %s{capability} from nuget.org after %d{config.Attempts} attempts. Last %s{action} result: %s{lastDetail}"
+                            else
+                                match runProbe () with
+                                | Restored ->
+                                    Ok
+                                        $"NuGet publication barrier: %s{packageId} %s{version} is %s{capability} from nuget.org"
+                                | RestoreFailed detail when
+                                    detail.Contains("NU1212", StringComparison.OrdinalIgnoreCase)
+                                    ->
+                                    Error
+                                        $"probe defect: %s{packageId} %s{version} resolved, but the selected probe shape is incompatible (NU1212): %s{detail}"
+                                | RestoreFailed detail ->
+                                    if attempt < config.Attempts then
+                                        printfn
+                                            "NuGet publication barrier: %s %s unavailable (attempt %d/%d); retrying in %dms"
+                                            packageId
+                                            version
+                                            attempt
+                                            config.Attempts
+                                            config.DelayMs
 
-                                wait (attempt + 1) ($"restore failed: %s{detail}")
-                            | RestoreTimedOut detail ->
-                                if attempt < config.Attempts then
-                                    printfn
-                                        "NuGet publication barrier: %s %s restore timed out (attempt %d/%d); retrying in %dms"
-                                        packageId
-                                        version
-                                        attempt
-                                        config.Attempts
-                                        config.DelayMs
+                                        Thread.Sleep config.DelayMs
 
-                                    Thread.Sleep config.DelayMs
+                                    wait (attempt + 1) ($"%s{action} failed: %s{detail}")
+                                | RestoreTimedOut detail ->
+                                    if attempt < config.Attempts then
+                                        printfn
+                                            "NuGet publication barrier: %s %s %s timed out (attempt %d/%d); retrying in %dms"
+                                            packageId
+                                            version
+                                            action
+                                            attempt
+                                            config.Attempts
+                                            config.DelayMs
 
-                                wait (attempt + 1) ($"restore timed out: %s{detail}")
+                                        Thread.Sleep config.DelayMs
 
-                    wait 1 "no restore attempted"
-                finally
-                    if Directory.Exists probeRoot then
-                        Directory.Delete(probeRoot, true)
-        with ex ->
-            Error $"could not read release project %s{projectPath}: %s{ex.Message}"
+                                    wait (attempt + 1) ($"%s{action} timed out: %s{detail}")
+
+                        wait 1 "no restore attempted"
+                    with ex ->
+                        Error $"publication probe failed: %s{ex.Message}"
+
+                let rec clean attempt =
+                    try
+                        if Directory.Exists probeRoot then
+                            Directory.Delete(probeRoot, true)
+
+                        Ok()
+                    with
+                    | ex when attempt < 5 ->
+                        Thread.Sleep 50
+                        clean (attempt + 1)
+                    | ex -> Error $"could not remove probe directory %s{probeRoot}: %s{ex.Message}"
+
+                match probeResult, clean 1 with
+                | Ok value, Ok() -> Ok value
+                | Error error, Ok() -> Error error
+                | Ok _, Error cleanupError -> Error cleanupError
+                | Error error, Error cleanupError -> Error $"%s{error}; cleanup also failed: %s{cleanupError}"
 
 let result =
     match fsi.CommandLineArgs |> Array.skip 1 with
