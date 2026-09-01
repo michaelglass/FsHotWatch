@@ -1398,7 +1398,9 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
     // green the same binary already earned over this unchanged tree. Otherwise the
     // next `confirm` loses the only evidence it is entitled to reuse.
     TestHelpers.withTempDir "ipcoutput-643-preserve-prior-green" (fun repoRoot ->
-        let fullRun = TestRunReport.ofScopeOnly (FullSuite 1)
+        let runId = System.Guid.Parse "64364364-3643-4643-8643-643643643643"
+        writeEvidenceSuite repoRoot runId
+        let fullRun = evidenceReport (FullSuite 1) (Some runId)
 
         let initialExitCode =
             publishVerdict
@@ -1454,7 +1456,15 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         match Verdict.priorConfirmation repoRoot [] with
         | Verdict.PriorConfirmation.StillApplies _ -> ()
         | Verdict.PriorConfirmation.MustEarn ->
-            failwith "the zero-test re-scan erased a full-suite green that still applies")
+            failwith "the zero-test re-scan erased a full-suite green that still applies"
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId = Some runId @>
+            test <@ verdict.Scope = FullSuite 1 @>
+            test <@ verdict.Suites |> List.map (fun suite -> suite.Project) = [ "A.Tests" ] @>
+            test <@ verdict.Suites |> List.map (fun suite -> suite.Total) = [ 3 ] @>
+        | other -> failwithf "the preserved full-suite verdict must remain readable, got %A" other)
 
 [<Fact(Timeout = 15000)>]
 let ``a zero-test convergence never preserves a full-suite green from a different tree`` () =
