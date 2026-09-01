@@ -16,6 +16,18 @@ open FsHotWatch.ProcessHelper
 let internal cachePathIdentity repoRoot path =
     FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
 
+let private hashIdentityParts domain (parts: string list) =
+    parts
+    |> List.sort
+    |> List.mapi (fun index value -> $"item-%08d{index}", value)
+    |> fun items -> FsHotWatch.TaskCache.merkleCacheKey (("domain", domain) :: items)
+    |> ContentHash.value
+
+/// Hashes already-canonical analyzer path identities without a delimiter grammar:
+/// paths may legally contain the old `|` separator, so concatenation was ambiguous.
+let internal hashAnalyzerPathIdentities identities =
+    hashIdentityParts "analyzer-paths-v1" identities
+
 [<Literal>]
 let internal cacheVersion = "analyzers-merkle-v4"
 
@@ -121,11 +133,10 @@ let internal analyzerAssemblyIdentityForRoot repoRoot (prefixes: string array) (
                             // never a throw that aborts plugin construction.
                             $"unreadable:%s{ex.Message}"
 
-                    $"%s{name}:%s{contentHash}")
+                    $"%s{cachePathIdentity repoRoot dll}=>%s{name}:%s{contentHash}")
                 |> Array.toList)
-        |> List.sort
 
-    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" perFile)
+    hashIdentityParts "analyzer-assemblies-v1" perFile
 
 let internal analyzerAssemblyIdentity prefixes paths =
     analyzerAssemblyIdentityForRoot (Directory.GetCurrentDirectory()) prefixes paths
@@ -600,9 +611,7 @@ let internal createWithSlowHookForRepo
         let analyzerPathsHash =
             analyzerPaths
             |> List.map (cachePathIdentity cacheRepoRoot)
-            |> List.sort
-            |> String.concat "|"
-            |> FsHotWatch.CheckCache.sha256Hex
+            |> hashAnalyzerPathIdentities
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with

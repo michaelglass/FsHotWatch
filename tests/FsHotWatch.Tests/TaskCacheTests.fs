@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.TaskCacheTests
 
 open System
+open System.IO
 open System.Threading
 open Xunit
 open Swensen.Unquote
@@ -27,6 +28,36 @@ let private makeResult (cacheKey: string) =
       Errors = []
       Status = cachedFileDone
       EmittedEvents = [] }
+
+[<Fact(Timeout = 15000)>]
+let ``file cache replays a repo-relative entry and ledger under an equivalent checkout root`` () =
+    withTempDir "ftc-portable-root" (fun cacheDir ->
+        let rootA = Path.Combine(cacheDir, "checkout-a")
+        let rootB = Path.Combine(cacheDir, "checkout-b")
+        let relative = Path.Combine("src", "Feature.fs")
+        let fileA = Path.Combine(rootA, relative)
+        let fileB = Path.Combine(rootB, relative)
+        let cacheKey = hash "same-content"
+        let entry = errorEntry "portable finding" DiagnosticSeverity.Warning
+
+        let stored =
+            { CacheKey = cacheKey
+              Errors = [ fileA, [ entry ] ]
+              Status = cachedFileDone
+              EmittedEvents = [] }
+
+        let writer = FileTaskCache(cacheDir, rootA) :> ITaskCache
+        writer.Set (ck "lint" fileA) cacheKey stored
+
+        let cacheFile = Directory.GetFiles(cacheDir, "*.json") |> Array.exactlyOne
+        let persisted = File.ReadAllText cacheFile
+        test <@ not (persisted.Contains(rootA, StringComparison.Ordinal)) @>
+        test <@ persisted.Contains("repo:src/Feature.fs", StringComparison.Ordinal) @>
+
+        let reader = FileTaskCache(cacheDir, rootB) :> ITaskCache
+        let replayed = reader.TryGet (ck "lint" fileB) cacheKey
+
+        test <@ replayed = Some { stored with Errors = [ fileB, [ entry ] ] } @>)
 
 [<Fact(Timeout = 15000)>]
 let ``TryGet returns None for unknown key`` () =
@@ -683,13 +714,25 @@ let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
     // earlier daemon would keep its dead siblings forever. The constructor's one-time sweep
     // seeds the memo from disk, so the first write to a key collects what was left under it.
     withTempDir "ftc-prune-prior-process" (fun tmpDir ->
-        // Entries a previous process left behind, for two different keys.
-        let priorA1 = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@aaaaaaaaaaaa.json")
-        let priorA2 = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@bbbbbbbbbbbb.json")
-        let priorB = System.IO.Path.Combine(tmpDir, "lint---src-B.fs@cccccccccccc.json")
+        let seed = FileTaskCache(tmpDir) :> ITaskCache
+        let seedResult h =
+            { CacheKey = hash h
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents = [] }
 
-        for f in [ priorA1; priorA2; priorB ] do
-            System.IO.File.WriteAllText(f, "{}")
+        seed.Set (ck "lint" "/src/A.fs") (hash "a1") (seedResult "a1")
+        let priorA1 = System.IO.Directory.GetFiles(tmpDir, "*.json") |> Array.exactlyOne
+        let at = priorA1.LastIndexOf('@')
+        let priorA2 = priorA1.Substring(0, at) + "@bbbbbbbbbbbb.json"
+        System.IO.File.Copy(priorA1, priorA2)
+
+        seed.Set (ck "lint" "/src/B.fs") (hash "b1") (seedResult "b1")
+
+        let priorB =
+            System.IO.Directory.GetFiles(tmpDir, "*.json")
+            |> Array.filter (fun path -> path <> priorA1 && path <> priorA2)
+            |> Array.exactlyOne
 
         // A FRESH cache over that directory — a new process, as after a daemon restart.
         let cache = FileTaskCache(tmpDir) :> ITaskCache

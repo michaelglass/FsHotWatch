@@ -2435,7 +2435,7 @@ module Daemon =
 
             fileReporter.ClearAll()
             let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
-            let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
+            let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir, repoRoot)
             let stats = taskCache.Stats
 
             Logging.info
