@@ -113,6 +113,11 @@ let private serializeTestResult (key: string) (result: TestResult) =
         // only for exhaustiveness.
         obj["result"] <- "errored"
         obj["output"] <- reason
+    | TestsInvalidEvidence reason ->
+        // Non-passing and normally uncacheable, retained only for exhaustive wire
+        // handling should an older caller persist a completed invalid report.
+        obj["result"] <- "invalid-evidence"
+        obj["output"] <- reason
     | TestsNoMatch(output, elapsed) ->
         // Its own stored tag, so a replayed entry comes back as the case it was
         // written as. Entries predating this tag are reconstructed by the legacy read
@@ -177,6 +182,7 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
             TestsTimedOut(output, TimeSpan.FromSeconds secs, obj["wasFiltered"].GetValue<bool>(), elapsed)
         | "deferred" -> TestsDeferred output
         | "errored" -> TestsErrored output
+        | "invalid-evidence" -> TestsInvalidEvidence output
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result

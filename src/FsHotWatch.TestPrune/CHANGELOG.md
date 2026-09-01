@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-617): refuse a requested CTRF report whose clean summary is
+  missing, unreadable, or contradicted by its test rows. The gate now reports
+  incomplete evidence (exit 2), rather than certifying a pass or inventing a
+  test failure; red reports remain valid when MTP omits a raw-exception row.
+
 ## 0.13.0-alpha.28 - 2026-09-01
 
 - fix(AUTOMATION-608): keep one atomic run receipt for scope, run ID, seeds,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-617): a completed test runner whose requested CTRF report is
+  missing, unreadable, or self-contradictory now produces the distinct
+  `CheckOutcome.InvalidEvidence` result and an incomplete exit (`2`). It cannot
+  certify a pass, and it remains distinct from a test failure or a killed host.
+
 ## 0.14.0-alpha.36 - 2026-09-01
 
 - fix(AUTOMATION-608): recognize daemon-side corrupted-frame faults wrapped by

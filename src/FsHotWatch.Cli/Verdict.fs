@@ -394,6 +394,14 @@ module CheckProse =
 
         $"NO VERDICT — %d{List.length aborts} test host(s) were KILLED mid-run, so their tests did not            finish.%s{listed}\nNOTHING WAS VERIFIED: nothing is reported broken — do NOT go looking for a            regression — and nothing is reported sound either. Any per-test lines in the run output are a            TRANSCRIPT of a killed run, not findings: a test the host never reached is written out the same way as            one that ran, which is why they are not counted here.\nRemedy: re-run on a machine with headroom            (`dotnet fshw test-rerun`, or the whole gate). Re-running under the same load will abort again, and a            host that keeps dying on an IDLE machine is a real defect — that one is worth chasing."
 
+    /// A completed runner supplied no coherent report. It is not a host death and not a
+    /// test failure, but it cannot certify a green result.
+    let invalidEvidence (evidence: string list) =
+        let listed =
+            evidence |> List.map (fun item -> $"\n  · %s{item}") |> String.concat ""
+
+        $"NO VERDICT — %d{List.length evidence} test project(s) produced INVALID EVIDENCE.%s{listed}\nNOTHING WAS VERIFIED: the process completed, but its requested structured report was missing, unreadable, or self-contradictory. This is NOT a test failure and NOT a runner abort.\nRemedy: repair or re-run the report producer, then re-run the gate."
+
     /// AUTOMATION-303 AC5. The gate's own answer to "is `fshw stop` still needed?" —
     /// stated by the tool, at the moment it is needed, instead of left in a ticket.
     ///
@@ -471,6 +479,7 @@ module CheckProse =
         // is looking at a transcript that LOOKS like a list of failures, and the whole
         // point is to tell them it is not).
         | CheckVerdict.CheckOutcome.RunnerAborted aborts -> Some(runnerAborted aborts)
+        | CheckVerdict.CheckOutcome.InvalidEvidence evidence -> Some(invalidEvidence evidence)
         // Refused in BOTH modes, so it must not borrow `confirm`'s words: this is not
         // "the run was too narrow", it is "we could not see what the run was".
         | CheckVerdict.CheckOutcome.UnearnedScope(ScopeUnreadable reason) -> Some(scopeUnreadable reason)
@@ -514,6 +523,7 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     // with a reason that names the abort, so it never has to infer "0ms means never
     // ran" from a suite listing. Exit 2 beside it, from the SAME `CheckOutcome`.
     | CheckVerdict.CheckOutcome.RunnerAborted aborts -> Incomplete(CheckProse.runnerAborted aborts)
+    | CheckVerdict.CheckOutcome.InvalidEvidence evidence -> Incomplete(CheckProse.invalidEvidence evidence)
     | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason) ->
         // "0 projects selected" is an INCOMPLETE check, never a pass, and must not be
         // renderable as a green on any surface.
@@ -2155,7 +2165,7 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
     match runId with
     | None -> []
     | Some id ->
-        Ctrf.reportsForRun repoRoot id
+        Ctrf.verdictReportsForRun repoRoot id
         |> List.map (fun r ->
             { Project = r.Project
               Ctrf = Path.GetRelativePath(repoRoot, r.Path).Replace('\\', '/')

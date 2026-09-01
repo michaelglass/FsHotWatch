@@ -88,7 +88,8 @@ let internal failingDiagnosticEntries (noWarnFail: bool) (resp: DiagnosticsRespo
         // Nor is `HostAborted` ("the test host died"): it routes to `RunnerAborted`/exit 2
         // via `RunnerAbort`. Counting it here is precisely how a killed host used to
         // report as a red (AUTOMATION-294).
-        | HostAborted -> false
+        | HostAborted
+        | InvalidEvidence -> false
 
     resp.Files
     |> Map.toList
@@ -154,6 +155,14 @@ let private runnerAborted (resp: DiagnosticsResponse) : CheckVerdict.RunnerAbort
     |> List.ofSeq
     |> CheckVerdict.RunnerAbort.classify
 
+let private invalidEvidence (resp: DiagnosticsResponse) : string list =
+    resp.Files
+    |> Map.toSeq
+    |> Seq.collect snd
+    |> Seq.filter (fun (e: DiagnosticEntry) -> e.Severity = InvalidEvidence)
+    |> Seq.map (fun e -> e.Message)
+    |> List.ofSeq
+
 /// The daemon transport's observations, as `CheckVerdict.verdict` consumes them.
 ///
 /// This is the daemon's half of "one verdict, two transports"; the in-process half is
@@ -165,6 +174,7 @@ let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: Diagnostic
       UnattributableDiagnostics = unattributableCountOf noWarnFail resp
       WaitingOnBuild = waitingOnBuild resp
       RunnerAborted = runnerAborted resp
+      InvalidEvidence = invalidEvidence resp
       Coverage = resp.Coverage
       Scope = scope }
 

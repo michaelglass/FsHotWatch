@@ -459,6 +459,7 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     // truncated list would make the `forall` below vacuously true.
     test <@ List.length all >= 6 @>
     test <@ all |> List.contains HostAborted @>
+    test <@ all |> List.contains InvalidEvidence @>
 
     test
         <@
@@ -482,6 +483,12 @@ let ``DiagnosticSeverity: every severity round-trips through its wire name, and 
     test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order HostAborted @>
     test <@ DiagnosticSeverity.order HostAborted < DiagnosticSeverity.order Warning @>
 
+    // AUTOMATION-617. Invalid evidence has the same non-failing rank while retaining
+    // its own wire identity and diagnosis.
+    test <@ DiagnosticSeverity.toString InvalidEvidence = "invalid-evidence" @>
+    test <@ DiagnosticSeverity.fromString "invalid-evidence" = Some InvalidEvidence @>
+    test <@ DiagnosticSeverity.order InvalidEvidence = DiagnosticSeverity.order Deferred @>
+
 /// AUTOMATION-294. `DiagnosticCounts` is the projection the status renderer and the
 /// verdict read to decide "completed with issues", and it tallies only `Error` and
 /// `Warning`. A severity whose whole meaning is "this DID NOT RUN" — `Deferred`,
@@ -502,6 +509,7 @@ let ``DiagnosticCounts.ofEntries tallies only Error and Warning; a severity that
     test <@ List.length all >= 6 @>
     test <@ all |> List.contains Deferred @>
     test <@ all |> List.contains HostAborted @>
+    test <@ all |> List.contains InvalidEvidence @>
 
     // One entry of EVERY severity at once: exactly one error and exactly one warning.
     let counts =

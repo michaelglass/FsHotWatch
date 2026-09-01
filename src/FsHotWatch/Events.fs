@@ -246,6 +246,11 @@ type TestResult =
     /// stale verdict. `reason` documents what aborted (exit code + "no report
     /// written").
     | TestsErrored of reason: string
+    /// The runner completed, but a requested structured report was absent, unreadable,
+    /// or self-contradictory. This is distinct from `TestsErrored`: no host death was
+    /// observed, so the remedy is to repair/retry the evidence producer, not diagnose a
+    /// killed process. It verifies nothing and is never cacheable.
+    | TestsInvalidEvidence of reason: string
     /// The runner RAN, discovered the project's tests, and the active filter matched
     /// NONE of them — Microsoft.Testing.Platform's exit 8 / "Zero tests ran". Nothing
     /// executed, so nothing was verified.
@@ -313,7 +318,8 @@ module TestResult =
         | TestsTimedOut(o, _, _, _) -> o
         | TestsNoMatch(o, _) -> o
         | TestsDeferred reason
-        | TestsErrored reason -> reason
+        | TestsErrored reason
+        | TestsInvalidEvidence reason -> reason
 
     let wasFiltered =
         function
@@ -324,7 +330,8 @@ module TestResult =
         // filtered so `ranFullSuite` can't class the run as a full suite that
         // would lower a coverage baseline.
         | TestsDeferred _
-        | TestsErrored _ -> true
+        | TestsErrored _
+        | TestsInvalidEvidence _ -> true
         // A zero match arises ONLY under a filter, and reporting it as filtered is
         // the safe direction: `ranFullSuite` must never class a run that executed
         // nothing as a full suite entitled to overwrite a coverage baseline.
@@ -340,7 +347,8 @@ module TestResult =
         | TestsNoMatch(_, e) -> e
         // Nothing usable ran, so there's no wall-clock duration to report.
         | TestsDeferred _
-        | TestsErrored _ -> System.TimeSpan.Zero
+        | TestsErrored _
+        | TestsInvalidEvidence _ -> System.TimeSpan.Zero
 
     /// THE per-project derivation. Every fold over a `TestResult` routes here, so
     /// there is exactly one place in the tree where these six cases are told apart.
@@ -366,7 +374,8 @@ module TestResult =
         // three is a test failure to report either.
         | TestsNoMatch _
         | TestsDeferred _
-        | TestsErrored _ -> NothingVerified
+        | TestsErrored _
+        | TestsInvalidEvidence _ -> NothingVerified
 
     /// Did this project EXECUTE tests and find them all green? The one bool offered
     /// over `verdict`, and the safe direction by construction: it is TRUE only for
@@ -391,7 +400,8 @@ module TestResult =
         | TestsFailed _
         | TestsTimedOut _
         | TestsDeferred _
-        | TestsErrored _ -> false
+        | TestsErrored _
+        | TestsInvalidEvidence _ -> false
 
     /// Did this project actually EXECUTE at least one test?
     ///
@@ -430,6 +440,14 @@ module TestResult =
     let isErrored =
         function
         | TestsErrored _ -> true
+        | _ -> false
+
+    /// True for a completed runner whose requested structured evidence was invalid.
+    /// Distinct from `TestsErrored`: the host did not die, but its claimed result still
+    /// cannot support a pass verdict.
+    let isInvalidEvidence =
+        function
+        | TestsInvalidEvidence _ -> true
         | _ -> false
 
     /// Did this run EXECUTE anything? The run-level half of `executedTests`.

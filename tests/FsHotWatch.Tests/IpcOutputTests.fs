@@ -181,6 +181,7 @@ let ``retained test evidence cannot hide a later plugin failure`` () =
           UnattributableDiagnostics = 0
           WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = effective.Scope }
 
@@ -270,6 +271,21 @@ let ``parseDiagnosticsResponse extracts files with entries`` () =
     test <@ entries[0].Message = "bad name" @>
     test <@ entries[0].Severity = Warning @>
     test <@ entries[0].Line = 17 @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``daemon invalid evidence produces an incomplete verdict, never RunnerAborted`` () =
+    let response =
+        parseDiagnosticsResponse
+            """{"count":1,"files":{"tests/ProjA":[{"plugin":"test-prune","message":"ProjA: requested CTRF report is invalid","severity":"invalid-evidence","line":0,"column":0,"detail":null}]},"unchecked":0,"statuses":{}}"""
+
+    let inputs = checkInputs false (FullSuite 1) response
+
+    match CheckVerdict.verdict CheckVerdict.InnerLoop inputs with
+    | CheckVerdict.CheckOutcome.InvalidEvidence [ reason ] ->
+        test <@ reason.Contains("requested CTRF report is invalid") @>
+        test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.InvalidEvidence [ reason ]) = 2 @>
+    | other -> failwithf "expected InvalidEvidence/exit 2, got %A" other
 
 [<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts statuses`` () =

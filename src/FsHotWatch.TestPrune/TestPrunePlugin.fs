@@ -1841,6 +1841,7 @@ let private formatTestResultsJson
                 | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
                 | TestsDeferred reason -> ("deferred", reason)
                 | TestsErrored reason -> ("errored", reason)
+                | TestsInvalidEvidence reason -> ("invalid-evidence", reason)
 
             // `null`, not zeros. `total: 0, failed: 0` reads as "this suite ran
             // cleanly", so manufacturing counts from an absent report is the very
@@ -2393,10 +2394,12 @@ type ReportEvidence =
     /// No report was requested (an unknown / unsupported runner) — the process
     /// exit code is the only pass/fail signal available.
     | NoReportRequested
-    /// A report WAS requested from a capable runner. `Some` carries the parsed
-    /// summary; `None` means the file was absent / unreadable / unparseable —
-    /// the host aborted before flushing, or wrote a truncated report.
-    | ReportRequested of report: Flakiness.TestReport option
+    /// A requested CTRF report that supplied coherent, parsed summary evidence.
+    | ReportProvided of report: Flakiness.TestReport
+    /// A capable runner was asked for CTRF, but the file was absent, unreadable, or
+    /// self-contradictory. This remains distinct from an unknown runner that was never
+    /// asked for evidence, so a successful process cannot turn invalid evidence green.
+    | InvalidReport of reason: string
 
 /// Decide a single project's verdict. The structured test report (when present and
 /// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
@@ -2410,13 +2413,11 @@ type ReportEvidence =
 ///   1. report has any failed/other result → `TestsFailed` (red). Exit irrelevant.
 ///   2. report is all-clear (no failed/other) AND ran ≥1 test → `TestsPassed`
 ///      (green) EVEN IF the process exited non-zero — the flake case.
-///   3. no usable report (absent / unparseable / no summary) AND exit ≠ 0:
-///        - report WAS requested from a capable runner → `TestsErrored`: the host
-///          aborted before writing results; nothing was verified. Never green,
-///          never the misleading "tests failed".
-///        - report NOT requested (unknown runner) → exit code is the only signal
-///          we have → `TestsFailed`.
-///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
+///   3. invalid report (absent / unparseable / self-contradictory) from a capable
+///      runner → `TestsInvalidEvidence`, regardless of exit code: the host completed,
+///      but its evidence cannot support a verdict, so nothing was verified.
+///   4. no report requested from an unknown runner → the exit code is the only signal:
+///        a non-zero exit is `TestsFailed`; a clean exit is `TestsPassed`.
 ///
 ///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
 ///      A killed host did not finish, so nothing it wrote is a result — including a
@@ -2465,9 +2466,9 @@ let internal classifyTestOutcome
         // not a verdict, or they will open it and find their "mass regression".
         let reportNote =
             match evidence with
-            | ReportRequested(Some r) ->
+            | ReportProvided r ->
                 $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
-            | ReportRequested None -> " It wrote no parseable report."
+            | InvalidReport reason -> $" Its requested CTRF report was invalid: {reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 
         TestsErrored(
@@ -2478,13 +2479,15 @@ let internal classifyTestOutcome
         let succeeded = isSucceeded outcome
 
         match evidence with
-        | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
+        | InvalidReport reason ->
+            TestsInvalidEvidence $"test host wrote an invalid requested CTRF report — nothing verified: {reason}"
+        | ReportProvided r when r.Failed > 0 || r.Other > 0 ->
             // Outcome 1.
             TestsFailed(output, wasFiltered, elapsed)
-        | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
+        | ReportProvided r when Flakiness.TestReport.allClear r && r.Total > 0 ->
             // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
             TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested(Some _) ->
+        | ReportProvided _ ->
             // Total == 0: an unfiltered zero-test run. Defer to the exit code so an
             // empty suite stays red.
             if succeeded then
@@ -2494,10 +2497,6 @@ let internal classifyTestOutcome
         | _ when succeeded ->
             // Outcome 4.
             TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested None ->
-            // Outcome 3 — the host aborted before writing results, so nothing was
-            // verified. Never green, never the misleading "tests failed".
-            TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
         | NoReportRequested ->
             // Unknown runner we never asked for a report: the exit code is all there is.
             TestsFailed(output, wasFiltered, elapsed)
@@ -3001,6 +3000,15 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                   ErrorLedger.ErrorEntry.abortedWithDetail
                       $"%s{project}: aborted — %s{reason}"
                       $"The %s{project} test host did not finish, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass. Any per-test lines in the captured output are a TRANSCRIPT of a killed run, not findings: a test the host never reached is written out the same way as one that ran, which is why an abort must never be counted as failures. Re-run on a machine with headroom (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green."
+              ) ]
+        | TestsInvalidEvidence reason ->
+            // The process completed, so this is not a `HostAborted` runner death. Its
+            // requested report is still not evidence of a pass, so emit an explicit
+            // incomplete-evidence diagnostic rather than laundering it into green.
+            [ projectLevel (
+                  ErrorLedger.ErrorEntry.invalidEvidenceWithDetail
+                      $"%s{project}: invalid test evidence — %s{reason}"
+                      $"The %s{project} runner completed, but its requested structured report was missing, unreadable, or self-contradictory. No test result can be certified from that evidence, so this is incomplete (not a test failure and not a runner abort). Repair or re-run the report producer before trusting a green result."
               ) ]
         // No ledger entry, same as a pass. A filter matching nothing in THIS project is
         // not this project's error — the run-level verdict is where a workspace-wide
@@ -3554,7 +3562,13 @@ let private executeTests
                             let reportEvidence =
                                 match ctrfPath with
                                 | None -> NoReportRequested
-                                | Some _ -> ReportRequested(reportJson |> Option.bind Flakiness.tryParseReport)
+                                | Some _ ->
+                                    match reportJson with
+                                    | None -> InvalidReport "the requested report was not written or could not be read"
+                                    | Some json ->
+                                        match Flakiness.tryParseVerdictReport json with
+                                        | Ok report -> ReportProvided report
+                                        | Error reason -> InvalidReport reason
 
                             let result =
                                 if apphostMissing then
@@ -3602,6 +3616,12 @@ let private executeTests
                                 Logging.error
                                     "test-prune"
                                     $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
+                            | TestsInvalidEvidence reason ->
+                                logToCtx $"{config.Project}: INVALID TEST EVIDENCE (nothing verified) — {reason}"
+
+                                Logging.error
+                                    "test-prune"
+                                    $"%s{config.Project}: INVALID TEST EVIDENCE — %s{reason} Nothing was verified; this is NOT a test failure and NOT a runner abort — repair or re-run the report producer."
                             | TestsFailed _
                             | TestsTimedOut _ ->
                                 logToCtx $"{config.Project}: failed"
@@ -3621,6 +3641,8 @@ let private executeTests
                             | TestsErrored reason ->
                                 for line in formatAbortReport config.Project runLog.Ref reason output do
                                     Logging.error "test-prune" line
+                            | TestsInvalidEvidence reason ->
+                                Logging.error "test-prune" $"%s{config.Project}: INVALID TEST EVIDENCE — %s{reason}"
                             | TestsPassed _
                             | TestsDeferred _
                             | TestsNoMatch _ -> ()
@@ -5323,7 +5345,7 @@ let internal createWithLaunchDeadline
                     // run-dir means the run executed no tests, and that is exactly the
                     // fact the CLI has to be able to state.
                     let runReports =
-                        FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
+                        FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
                         |> List.map (fun r -> r.Project, r.Summary)
                         |> Map.ofList
 
@@ -5728,7 +5750,8 @@ let internal createWithLaunchDeadline
                                                     // `--only-failed` (rerun non-green projects) must pick
                                                     // them up.
                                                     | TestsDeferred _
-                                                    | TestsErrored _ -> Some name
+                                                    | TestsErrored _
+                                                    | TestsInvalidEvidence _ -> Some name
                                                     | _ -> None)
                                                 |> Set.ofList
                                             | None -> Set.empty
@@ -6737,14 +6760,24 @@ let internal createWithLaunchDeadline
                             // exact shape a reader mistakes for a mass regression.
                             let abortedList = nonGreen |> List.filter (fun (_, r) -> TestResult.isErrored r)
 
+                            // Contradictory requested CTRF evidence is neither a failed
+                            // test nor a killed host. Keep it in its own bucket so the
+                            // plugin status agrees with the verdict transport's exit-2
+                            // `InvalidEvidence` outcome.
+                            let invalidEvidenceList =
+                                nonGreen |> List.filter (fun (_, r) -> TestResult.isInvalidEvidence r)
+
                             let failedList =
                                 nonGreen
                                 |> List.filter (fun (_, r) ->
-                                    not (TestResult.isDeferred r) && not (TestResult.isErrored r))
+                                    not (TestResult.isDeferred r)
+                                    && not (TestResult.isErrored r)
+                                    && not (TestResult.isInvalidEvidence r))
 
                             let failed = failedList.Length
                             let deferred = deferredList.Length
                             let aborted = abortedList.Length
+                            let invalidEvidence = invalidEvidenceList.Length
 
                             // Zero-match projects are counted OUT of `passed`. `passed` is
                             // derived by exclusion, and the `nonGreen` fold above
@@ -6755,7 +6788,7 @@ let internal createWithLaunchDeadline
                             let noMatch =
                                 results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
 
-                            let passed = total - failed - deferred - aborted - noMatch
+                            let passed = total - failed - deferred - aborted - invalidEvidence - noMatch
 
                             let noMatchSuffix = if noMatch = 0 then "" else $", %d{noMatch} matched nothing"
 
@@ -6803,7 +6836,14 @@ let internal createWithLaunchDeadline
                                 else
                                     ""
 
+                            let invalidEvidenceSuffix =
+                                if invalidEvidence > 0 then
+                                    $", %d{invalidEvidence} INVALID EVIDENCE (nothing verified)"
+                                else
+                                    ""
+
                             let abortedNames = abortedList |> List.map fst |> String.concat ", "
+                            let invalidEvidenceNames = invalidEvidenceList |> List.map fst |> String.concat ", "
 
                             if not timedOutProjects.IsEmpty then
                                 let names = timedOutProjects |> String.concat ", "
@@ -6819,7 +6859,7 @@ let internal createWithLaunchDeadline
                                 )
                             else
                                 let runSummary =
-                                    $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+                                    $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{invalidEvidenceSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
                                 // EVERY terminal below CARRIES the run's evidence —
                                 // `runSummary` + measured duration — on the status
@@ -6828,6 +6868,7 @@ let internal createWithLaunchDeadline
                                 if
                                     failed = 0
                                     && aborted = 0
+                                    && invalidEvidence = 0
                                     && deferred = 0
                                     && Set.isEmpty queueAfterCommit
                                     && carriedCount = 0
@@ -6859,7 +6900,13 @@ let internal createWithLaunchDeadline
                                     ctx.ReportStatus(
                                         Completed(DateTime.UtcNow, RunVerdict.create verdictSummary results.Elapsed)
                                     )
-                                elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                                elif
+                                    failed = 0
+                                    && aborted = 0
+                                    && invalidEvidence = 0
+                                    && deferred = 0
+                                    && Set.isEmpty queueAfterCommit
+                                then
                                     // AUTOMATION-125. Everything this run RAN passed, the
                                     // queue is drained — and yet an earlier failure it did
                                     // not execute is still outstanding. A narrower run
@@ -6873,7 +6920,7 @@ let internal createWithLaunchDeadline
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
-                                elif failed = 0 && aborted = 0 && deferred = 0 then
+                                elif failed = 0 && aborted = 0 && invalidEvidence = 0 && deferred = 0 then
                                     // Everything that RAN passed, but the pending queue
                                     // still holds symbols this (e.g. filtered) run did not
                                     // cover green — NOT test-equivalent to a green run yet.
@@ -6885,7 +6932,7 @@ let internal createWithLaunchDeadline
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )
-                                elif failed = 0 && aborted = 0 then
+                                elif failed = 0 && aborted = 0 && invalidEvidence = 0 then
                                     // Only deferred projects — nothing FAILED, but
                                     // nothing was verified either. Non-green, honest
                                     // "waiting on build" (never "failed").
@@ -6916,6 +6963,23 @@ let internal createWithLaunchDeadline
                                                 $"%s{runSummary}%s{carriedNote}"
                                                 results.Elapsed
                                         )
+                                elif failed = 0 && aborted = 0 then
+                                    let invalidLine =
+                                        $"%d{invalidEvidence} test project(s) produced INVALID EVIDENCE — nothing verified (NOT a test failure): %s{invalidEvidenceNames}"
+
+                                    if carriedCount = 0 then
+                                        ctx.ReportStatus(
+                                            PluginStatus.completedNow
+                                                (RunSummary.nothingVerified invalidLine)
+                                                results.Elapsed
+                                        )
+                                    else
+                                        ctx.ReportStatus(
+                                            PluginStatus.failedNow
+                                                $"%s{invalidLine}%s{carriedNote}"
+                                                $"%s{runSummary}%s{carriedNote}"
+                                                results.Elapsed
+                                        )
                                 elif failed = 0 then
                                     // AUTOMATION-294. Nothing failed — a test HOST DIED.
                                     // Killed by a signal under load, or gone before it
@@ -6940,7 +7004,7 @@ let internal createWithLaunchDeadline
                                             ""
 
                                     let abortLine =
-                                        $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{deferredNote}"
+                                        $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{invalidEvidenceSuffix}%s{deferredNote}"
 
                                     if carriedCount = 0 then
                                         ctx.ReportStatus(
@@ -6980,9 +7044,15 @@ let internal createWithLaunchDeadline
                                         else
                                             ""
 
+                                    let invalidEvidenceNote =
+                                        if invalidEvidence > 0 then
+                                            $" (+%d{invalidEvidence} INVALID EVIDENCE, nothing verified: %s{invalidEvidenceNames})"
+                                        else
+                                            ""
+
                                     ctx.ReportStatus(
                                         PluginStatus.failedNow
-                                            $"%d{failed} failed: %s{names}%s{abortNote}%s{deferredNote}%s{carriedNote}"
+                                            $"%d{failed} failed: %s{names}%s{abortNote}%s{invalidEvidenceNote}%s{deferredNote}%s{carriedNote}"
                                             $"%s{runSummary}%s{carriedNote}"
                                             results.Elapsed
                                     )

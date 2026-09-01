@@ -71,6 +71,109 @@ let private tryGetNumber (node: JsonNode) (key: string) : float option =
         with _ ->
             None
 
+let private trySummaryNode (root: JsonNode) : Summary option =
+    let summary =
+        match root.["results"] with
+        | null -> root.["summary"]
+        | results -> results.["summary"]
+
+    match summary with
+    | null -> None
+    | s ->
+        let getInt key =
+            tryGetNumber s key |> Option.map int |> Option.defaultValue 0
+
+        Some
+            { Total = getInt "tests"
+              Passed = getInt "passed"
+              Failed = getInt "failed"
+              Skipped = getInt "skipped"
+              Other = getInt "other" }
+
+let private requiredCounter (summary: JsonNode) (name: string) : Result<int, string> =
+    match summary.[name] with
+    | null -> Error $"CTRF summary is missing required '{name}' counter"
+    | value ->
+        try
+            let count = value.GetValue<decimal>()
+
+            if count < 0M || Decimal.Truncate(count) <> count || count > decimal Int32.MaxValue then
+                Error $"CTRF summary '{name}' counter must be a nonnegative integer"
+            else
+                Ok(int count)
+        with
+        | :? InvalidOperationException
+        | :? FormatException
+        | :? OverflowException -> Error $"CTRF summary '{name}' counter must be a nonnegative integer"
+
+/// A row can support a clean summary only when it explicitly says that its test was
+/// passed or skip-like. Red reports intentionally do not use rows as evidence because
+/// MTP can omit raw-exception rows, but a clean row claiming failure or no status is a
+/// direct contradiction that must not authorize a pass.
+let private hasCleanStatus (node: JsonNode) =
+    match node with
+    | :? JsonObject as entry ->
+        match entry.["status"] with
+        | null -> false
+        | status ->
+            try
+                match status.GetValue<string>() with
+                | "passed"
+                | "pending"
+                | "skipped" -> true
+                | _ -> false
+            with _ ->
+                false
+    | _ -> false
+
+let private cleanStatusCounts (tests: JsonArray) : int * int * int =
+    tests
+    |> Seq.fold
+        (fun (passed, pending, skipped) row ->
+            match row with
+            | :? JsonObject as entry ->
+                match entry.["status"] with
+                | null -> passed, pending, skipped
+                | status ->
+                    try
+                        match status.GetValue<string>() with
+                        | "passed" -> passed + 1, pending, skipped
+                        | "pending" -> passed, pending + 1, skipped
+                        | "skipped" -> passed, pending, skipped + 1
+                        | _ -> passed, pending, skipped
+                    with _ ->
+                        passed, pending, skipped
+            | _ -> passed, pending, skipped)
+        (0, 0, 0)
+
+let private tryVerdictSummaryNode (root: JsonNode) : Result<Summary * int, string> =
+    let summary =
+        match root.["results"] with
+        | null -> root.["summary"]
+        | results -> results.["summary"]
+
+    match summary with
+    | null -> Error "CTRF report has no usable summary"
+    | summary ->
+        requiredCounter summary "tests"
+        |> Result.bind (fun total ->
+            requiredCounter summary "passed"
+            |> Result.bind (fun passed ->
+                requiredCounter summary "failed"
+                |> Result.bind (fun failed ->
+                    requiredCounter summary "pending"
+                    |> Result.bind (fun pending ->
+                        requiredCounter summary "skipped"
+                        |> Result.bind (fun skipped ->
+                            requiredCounter summary "other"
+                            |> Result.map (fun other ->
+                                { Total = total
+                                  Passed = passed
+                                  Failed = failed
+                                  Skipped = skipped
+                                  Other = other },
+                                pending))))))
+
 /// Parse a CTRF report's SUMMARY counts. `None` when the JSON is unparseable or
 /// carries no summary object — the signal the verdict logic reads as "no usable
 /// report", so a truncated or never-flushed report is never mistaken for a clean
@@ -81,32 +184,60 @@ let trySummary (json: string) : Summary option =
     try
         match JsonNode.Parse(json) with
         | null -> None
-        | root ->
-            let summary =
-                match root.["results"] with
-                | null -> root.["summary"]
-                | results -> results.["summary"]
-
-            match summary with
-            | null -> None
-            | s ->
-                let getInt key =
-                    tryGetNumber s key |> Option.map int |> Option.defaultValue 0
-
-                Some
-                    { Total = getInt "tests"
-                      Passed = getInt "passed"
-                      Failed = getInt "failed"
-                      Skipped = getInt "skipped"
-                      Other = getInt "other" }
+        | root -> trySummaryNode root
     with
     | :? JsonException
     | :? InvalidOperationException -> None
 
-/// Read one report file. `None` for anything that is not a well-formed fshw CTRF
-/// report — unreadable, unparseable, or carrying no summary. A report we cannot
-/// read is not evidence, and is never counted as a zero-failure pass.
-let tryReadReport (runId: string) (path: string) : Report option =
+/// Parse the CTRF evidence used to decide a test run's verdict. The summary remains
+/// authoritative for red reports because MTP can omit a raw-exception row. A clean
+/// summary has no such explanation, however, so its declared total must reconcile
+/// with `results.tests`; otherwise a partial flush could falsely turn a run green.
+let tryVerdictSummary (json: string) : Result<Summary, string> =
+    try
+        match JsonNode.Parse(json) with
+        | null -> Error "CTRF report is empty"
+        | root ->
+            match tryVerdictSummaryNode root with
+            | Error reason -> Error reason
+            | Ok(summary, summaryPending) ->
+                let entries =
+                    match root.["results"] with
+                    | null -> root.["tests"]
+                    | results -> results.["tests"]
+
+                match entries with
+                | :? JsonArray as tests when summary.Failed = 0 && summary.Other = 0 && tests.Count <> summary.Total ->
+                    Error $"CTRF summary says {summary.Total} test(s), but results.tests lists {tests.Count}"
+                | :? JsonArray as tests when
+                    summary.Failed = 0
+                    && summary.Other = 0
+                    && (tests |> Seq.exists (fun row -> not (hasCleanStatus row)))
+                    ->
+                    Error "CTRF clean summary has a test row without a clean status"
+                | :? JsonArray as tests when summary.Failed = 0 && summary.Other = 0 ->
+                    let passed, pending, skipped = cleanStatusCounts tests
+
+                    // `Summary` intentionally omits a public Pending field, but verdict
+                    // parsing retains the declared counter long enough to reconcile all
+                    // three clean statuses exactly against their rows.
+                    if
+                        passed <> summary.Passed
+                        || pending <> summaryPending
+                        || skipped <> summary.Skipped
+                    then
+                        Error
+                            $"CTRF clean summary counters do not match results.tests (summary passed/pending/skipped: {summary.Passed}/{summaryPending}/{summary.Skipped}; rows: {passed}/{pending}/{skipped})"
+                    else
+                        Ok summary
+                | :? JsonArray -> Ok summary
+                | _ -> Error "CTRF report has no results.tests array"
+    with
+    | :? JsonException
+    | :? FormatException
+    | :? InvalidOperationException -> Error "CTRF report is not valid JSON"
+
+let private tryReadReportWith (parse: string -> Summary option) (runId: string) (path: string) : Report option =
     let fileName = Path.GetFileName(path)
 
     if not (fileName.EndsWith(ReportSuffix, StringComparison.Ordinal)) then
@@ -120,12 +251,23 @@ let tryReadReport (runId: string) (path: string) : Report option =
             | :? UnauthorizedAccessException -> None
 
         json
-        |> Option.bind trySummary
+        |> Option.bind parse
         |> Option.map (fun summary ->
             { Project = fileName.Substring(0, fileName.Length - ReportSuffix.Length)
               RunId = runId
               Path = path
               Summary = summary })
+
+/// Read one report file. `None` for anything that is not a well-formed fshw CTRF
+/// report — unreadable, unparseable, or carrying no summary. A report we cannot
+/// read is not evidence, and is never counted as a zero-failure pass.
+let tryReadReport (runId: string) (path: string) : Report option = tryReadReportWith trySummary runId path
+
+/// Read one report only when it is coherent enough to be verdict evidence. This is
+/// deliberately narrower than `tryReadReport`: red reports may have a raw-exception
+/// row omitted by MTP, but a clean report must reconcile its summary with its rows.
+let tryReadVerdictReport (runId: string) (path: string) : Report option =
+    tryReadReportWith (fun contents -> tryVerdictSummary contents |> Result.toOption) runId path
 
 /// Did this run happen at all? The run-dir is created before anything executes, so its
 /// existence records that a run took place, whether or not it produced a report.
@@ -143,6 +285,23 @@ let reportsForRun (repoRoot: string) (runId: Guid) : Report list =
             Directory.GetFiles(dir, "*" + ReportSuffix)
             |> Array.toList
             |> List.choose (tryReadReport (runId.ToString("N")))
+            |> List.sortBy (fun r -> r.Project)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> []
+
+/// The reports from this run that can support an emitted pass verdict. Invalid clean
+/// reports remain on disk for diagnostics, but do not contribute counts to a response.
+let verdictReportsForRun (repoRoot: string) (runId: Guid) : Report list =
+    let dir = runDir repoRoot runId
+
+    if not (Directory.Exists dir) then
+        []
+    else
+        try
+            Directory.GetFiles(dir, "*" + ReportSuffix)
+            |> Array.toList
+            |> List.choose (tryReadVerdictReport (runId.ToString("N")))
             |> List.sortBy (fun r -> r.Project)
         with
         | :? IOException

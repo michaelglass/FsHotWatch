@@ -143,7 +143,8 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 // showing (it explains a non-green run), so render it too — and an
                 // abort all the more so: it is the whole reason the run has no verdict.
                 | Deferred
-                | HostAborted -> true
+                | HostAborted
+                | InvalidEvidence -> true
                 | Info
                 | Hint -> false))
         |> Map.filter (fun _ entries -> not entries.IsEmpty)
@@ -174,6 +175,7 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                     // that a reader can tell a dead runner from a broken test at a
                     // glance (AUTOMATION-294).
                     | HostAborted -> $"%s{Color.yellow}ABORTED (nothing verified)%s{Color.reset}: "
+                    | InvalidEvidence -> $"%s{Color.yellow}INVALID EVIDENCE%s{Color.reset}: "
                     | Info
                     | Hint -> ""
 

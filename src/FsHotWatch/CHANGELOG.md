@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING (API):** AUTOMATION-617 adds `InvalidEvidence` to
+  `ErrorLedger.DiagnosticSeverity` and `TestsInvalidEvidence of reason: string`
+  to `Events.TestResult`. A requested CTRF report that is absent, unreadable, or
+  self-contradictory is now represented as incomplete evidence, rather than a
+  test failure or a killed runner. Pattern-match consumers must handle both new
+  cases; `FileTaskCache` persists the test-result case as `"invalid-evidence"`.
+
 ## 0.10.0-alpha.24 - 2026-08-31
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

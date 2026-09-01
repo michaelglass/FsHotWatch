@@ -35,6 +35,7 @@ let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) :
       UnattributableDiagnostics = 0
       WaitingOnBuild = BuildWait.NotWaiting
       RunnerAborted = RunnerAbort.NoAbort
+      InvalidEvidence = []
       Coverage = coverage
       Scope = scope }
 
@@ -55,6 +56,7 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -72,6 +74,7 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -88,6 +91,7 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -112,6 +116,7 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -119,6 +124,42 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
     test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild [] @>
     test <@ exitCode (verdict InnerLoop waiting) = 2 @>
     test <@ exitCode (verdict Confirmation waiting) = 2 @>
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``verdict: invalid requested test evidence is distinct incomplete, not RunnerAborted`` () =
+    let invalid =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = [ "ProjA: CTRF summary says 7 test(s), but results.tests lists 1" ]
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    match verdict InnerLoop invalid with
+    | CheckOutcome.InvalidEvidence [ reason ] ->
+        test <@ reason.Contains("summary says 7") @>
+        test <@ exitCode (verdict InnerLoop invalid) = 2 @>
+    | other -> failwith $"expected InvalidEvidence/exit 2, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``verdict: a killed runner remains the primary diagnosis beside invalid evidence`` () =
+    let observed =
+        { PluginStatuses = statusOf (StatusView.Completed DateTime.UtcNow)
+          FailingDiagnostics = 0
+          UnattributableDiagnostics = 0
+          WaitingOnBuild = BuildWait.NotWaiting
+          RunnerAborted = RunnerAbort.HostDied [ "ProjA: killed by SIGKILL" ]
+          InvalidEvidence = [ "ProjB: CTRF summary contradicts its rows" ]
+          Coverage = Complete
+          Scope = FullSuite 4 }
+
+    match verdict InnerLoop observed with
+    | CheckOutcome.RunnerAborted [ reason ] -> test <@ reason.Contains("SIGKILL") @>
+    | other -> failwith $"expected RunnerAborted to retain precedence, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: a REAL failure alongside waiting on build still short-circuits to FailuresFound / exit 1`` () =
@@ -130,6 +171,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -599,6 +641,7 @@ let ``AUTOMATION-303: an all-unattributable ledger is NO VERDICT (exit 3), not a
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -619,6 +662,7 @@ let ``AUTOMATION-303: ONE attributable diagnostic among them keeps the red`` () 
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -638,6 +682,7 @@ let ``AUTOMATION-303: a FAILING PLUGIN beside a stale ledger keeps the red`` () 
           UnattributableDiagnostics = 51
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -656,6 +701,7 @@ let ``AUTOMATION-303: a CLEAN ledger is still Clean, never stale-daemon-state`` 
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -674,6 +720,7 @@ let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
           UnattributableDiagnostics = 7
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 6 }
 
@@ -740,6 +787,7 @@ let ``AUTOMATION-201: the verdict carries the stale deferrals, still exit 2, sti
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.StaleOutput stale
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 
@@ -765,6 +813,7 @@ let ``AUTOMATION-201: a real failure beside a stale-output defer is still Failur
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.StaleOutput [ "stale build output — x" ]
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 
@@ -789,6 +838,7 @@ let ``AUTOMATION-294: a killed test host is RunnerAborted — exit 2, never the 
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 
@@ -821,6 +871,7 @@ let ``AUTOMATION-294: THE OTHER DIRECTION — a real failure beside an abort is 
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 
@@ -846,6 +897,7 @@ let ``AUTOMATION-294: NoAbort changes nothing — a clean run is still Clean`` (
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = Complete
           Scope = FullSuite 4 }
 
@@ -871,6 +923,7 @@ let ``AUTOMATION-294: an abort DOMINATES a concurrent build defer`` () =
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.HostDied abortMessages
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 
@@ -890,6 +943,7 @@ let ``AUTOMATION-294: converge does NOT retry an abort — no automatic retry to
           UnattributableDiagnostics = 0
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
+          InvalidEvidence = []
           Coverage = Complete
           Scope = anyScope }
 

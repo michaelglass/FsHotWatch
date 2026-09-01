@@ -230,6 +230,20 @@ let private runnerAborted (daemon: Daemon.Daemon) (pluginName: string option) : 
     |> List.map (fun (_, e) -> e.Message)
     |> CheckVerdict.RunnerAbort.classify
 
+let private invalidEvidence (daemon: Daemon.Daemon) (pluginName: string option) : string list =
+    let allErrors =
+        match pluginName with
+        | Some name ->
+            daemon.Host.GetErrorsByPlugin(name)
+            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
+        | None -> daemon.Host.GetErrors()
+
+    allErrors
+    |> Map.toList
+    |> List.collect snd
+    |> List.filter (fun (_, e) -> ErrorEntry.isInvalidEvidence e)
+    |> List.map (fun (_, e) -> e.Message)
+
 /// Did the in-process run actually check every file it is responsible for?
 ///
 /// The SAME question, from the SAME computation, as the daemon's `GetUncheckedCount`.
@@ -336,6 +350,7 @@ let runOnceAndVerdictWith
               UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
               WaitingOnBuild = waitingOnBuild daemon pluginName
               RunnerAborted = runnerAborted daemon pluginName
+              InvalidEvidence = invalidEvidence daemon pluginName
               Coverage = liveCoverage daemon
               Scope = run.Scope }
 

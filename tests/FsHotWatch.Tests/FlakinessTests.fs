@@ -95,6 +95,94 @@ let ``tryParseReport reads summary counts, not the per-test array length`` () =
         test <@ not (TestReport.allClear r) @>
 
 [<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport keeps the captured raw-exception report valid`` () =
+    // MTP omits raw exceptions from results.tests. A red report therefore cannot use
+    // entry count as its coherence rule; its summary is still authoritative evidence
+    // that the run failed.
+    match tryParseVerdictReport realCtrf with
+    | Ok report -> test <@ report.Total = 3 @>
+    | Error reason -> failwith $"expected a valid red report, got: {reason}"
+
+[<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport rejects a clean summary whose entries are incomplete`` () =
+    // A clean verdict has no raw exception to explain omitted rows. Letting this
+    // report override exit code would turn a one-row partial flush into "7 passed".
+    let contradictoryCleanReport =
+        """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed","duration":1}]}}"""
+
+    match tryParseVerdictReport contradictoryCleanReport with
+    | Ok _ -> failwith "expected the contradictory clean report to be rejected"
+    | Error reason -> test <@ reason.Contains("summary says 7") @>
+
+[<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport requires integral nonnegative summary counters`` () =
+    // Missing, textual, fractional, or negative values must not silently turn into
+    // zero: this parser decides whether a successful process may become a pass.
+    let reports =
+        [ "missing",
+          "missing required",
+          """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0},"tests":[{}]}}"""
+          "textual",
+          "nonnegative integer",
+          """{"results":{"summary":{"tests":"one","passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{}]}}"""
+          "fractional",
+          "nonnegative integer",
+          """{"results":{"summary":{"tests":1.5,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{}]}}"""
+          "negative",
+          "nonnegative integer",
+          """{"results":{"summary":{"tests":-1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{}]}}""" ]
+
+    for label, expectedReason, json in reports do
+        match tryParseVerdictReport json with
+        | Ok _ -> failwith $"expected {label} counter report to be rejected"
+        | Error reason -> test <@ reason.Contains(expectedReason, StringComparison.Ordinal) @>
+
+[<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport rejects clean summaries with a non-clean test row`` () =
+    // Row count alone cannot support a clean verdict: a fully written array can still
+    // contain a failed, unknown, or incomplete row that contradicts its zero-failure
+    // summary. Removing the clean-row guard would turn each case into a false green.
+    let reports =
+        [ "failed",
+          """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"failed"}]}}"""
+          "unknown",
+          """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"future-status"}]}}"""
+          "missing",
+          """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one"}]}}""" ]
+
+    for label, json in reports do
+        match tryParseVerdictReport json with
+        | Ok _ -> failwith $"expected {label} clean row contradiction to be rejected"
+        | Error _ -> ()
+
+[<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport rejects clean summaries whose passed count disagrees with rows`` () =
+    let contradictoryCleanReport =
+        """{"results":{"summary":{"tests":1,"passed":0,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+
+    match tryParseVerdictReport contradictoryCleanReport with
+    | Ok _ -> failwith "expected the contradictory clean counters to be rejected"
+    | Error reason -> test <@ reason.Contains("counters do not match") @>
+
+[<Fact(Timeout = 5000)>]
+[<Trait("Issue", "AUTOMATION-617")>]
+let ``tryParseVerdictReport rejects clean summaries whose skip counters disagree with rows`` () =
+    // A matching total and passed-row count is insufficient: the declared pending and
+    // skipped counters must describe the rows too, or impossible clean counters can be
+    // accepted as verdict evidence.
+    let contradictoryCleanReport =
+        """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":999,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+
+    match tryParseVerdictReport contradictoryCleanReport with
+    | Ok _ -> failwith "expected the contradictory clean skip counters to be rejected"
+    | Error reason -> test <@ reason.Contains("counters do not match") @>
+
+[<Fact(Timeout = 5000)>]
 let ``tryParseReport reports allClear for a clean run`` () =
     let json =
         """{"results":{"summary":{"tests":15,"passed":15,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1}}}"""

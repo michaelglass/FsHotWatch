@@ -24,6 +24,10 @@ type DiagnosticSeverity =
     /// settles" describes a race that settles on its own, and a host killed under load
     /// does not settle, it needs a quieter box (AUTOMATION-294).
     | HostAborted
+    /// NOT a defect and NOT a pass: the runner finished, but the structured evidence it
+    /// was asked to provide was missing or self-contradictory. It denies a green verdict
+    /// as `Incomplete`/exit 2, distinct from `HostAborted`: no host death was observed.
+    | InvalidEvidence
 
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
@@ -52,6 +56,7 @@ module DiagnosticSeverity =
         | Hint -> "hint"
         | Deferred -> "deferred"
         | HostAborted -> "aborted"
+        | InvalidEvidence -> "invalid-evidence"
 
     let fromString (s: string) =
         match s with
@@ -61,6 +66,7 @@ module DiagnosticSeverity =
         | "hint" -> Some Hint
         | "deferred" -> Some Deferred
         | "aborted" -> Some HostAborted
+        | "invalid-evidence" -> Some InvalidEvidence
         | _ -> None
 
     let order (severity: DiagnosticSeverity) =
@@ -73,12 +79,13 @@ module DiagnosticSeverity =
         // Ranks with `Deferred`, and for the same reason: both say "this did not run".
         // Louder than informational, quieter than a defect — because nothing failed.
         | HostAborted -> 2
+        | InvalidEvidence -> 2
         | Warning -> 3
         | Error -> 4
 
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
-    /// Neither `Deferred` nor `HostAborted` is ever a failure — see the DU cases.
+    /// `Deferred`, `HostAborted`, and `InvalidEvidence` are never failures — see the DU cases.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
         match e.Severity with
         | Error -> true
@@ -86,7 +93,8 @@ module ErrorEntry =
         | Info
         | Hint
         | Deferred
-        | HostAborted -> false
+        | HostAborted
+        | InvalidEvidence -> false
 
     /// True iff this entry is a "waiting on build" deferral: tests did not run because
     /// a build artifact wasn't ready. Not a failure; see `isFailing`.
@@ -96,6 +104,9 @@ module ErrorEntry =
     /// mid-run, so nothing it was asked to verify was verified. Not a failure; see
     /// `isFailing`.
     let isRunnerAbort (e: ErrorEntry) : bool = e.Severity = HostAborted
+
+    /// True iff this entry says the runner's requested structured evidence was invalid.
+    let isInvalidEvidence (e: ErrorEntry) : bool = e.Severity = InvalidEvidence
 
     /// Create an Error-severity entry with no source location.
     let error (message: string) : ErrorEntry =
@@ -138,6 +149,15 @@ module ErrorEntry =
     let abortedWithDetail (message: string) (detail: string) : ErrorEntry =
         { Message = message
           Severity = HostAborted
+          Line = 0
+          Column = 0
+          Detail = Some detail }
+
+    /// Create an `InvalidEvidence` entry with detail — the process completed, but its
+    /// requested report cannot support a pass verdict.
+    let invalidEvidenceWithDetail (message: string) (detail: string) : ErrorEntry =
+        { Message = message
+          Severity = InvalidEvidence
           Line = 0
           Column = 0
           Detail = Some detail }
