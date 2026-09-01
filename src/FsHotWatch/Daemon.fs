@@ -2376,6 +2376,7 @@ module Daemon =
         (opts: DaemonOptions)
         (workspaceLoader: IWorkspaceLoader option)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherIsMacOSOverride: bool option)
         =
         // This MUST be the first thing that happens (AUTOMATION-147).
         //
@@ -2567,7 +2568,7 @@ module Daemon =
                 changeAgent.Post(Choice1Of2 change)
 
             let watcher =
-                FileWatcher.create repoRoot onChange None extraWatchPatterns fsEventsLatencySeconds
+                FileWatcher.create repoRoot onChange watcherIsMacOSOverride extraWatchPatterns fsEventsLatencySeconds
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
@@ -2638,7 +2639,19 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) None
+
+    /// Deterministic watcher-platform seam for daemon integration tests. Native
+    /// FSEvents behavior has dedicated tests; scoped daemon tests use the
+    /// FileSystemWatcher path so stale pre-subscription events cannot enter their
+    /// project-selection assertions.
+    let internal createWithWatcherPlatform
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (isMacOSOverride: bool option)
+        =
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) isMacOSOverride
 
     /// Deterministic loader/mapping seam for discovery concurrency tests.
     let internal createWithWorkspaceLoader
@@ -2648,7 +2661,7 @@ module Daemon =
         (loader: IWorkspaceLoader)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
-        createWithCore checker repoRoot opts (Some loader) mapProjectOptions
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

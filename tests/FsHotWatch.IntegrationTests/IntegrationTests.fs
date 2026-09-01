@@ -2319,7 +2319,10 @@ let private withRunningDaemon
     (body: Daemon -> unit)
     =
     use cts = new CancellationTokenSource()
-    let daemon = Daemon.createWith checker repoRoot Daemon.DaemonOptions.defaults
+
+    let daemon =
+        Daemon.createWithWatcherPlatform checker repoRoot Daemon.DaemonOptions.defaults (Some false)
+
     configure daemon
     let task = Async.StartAsTask(daemon.Run(cts.Token))
 
@@ -2740,6 +2743,23 @@ let ``scoped: changing one project leaves an independent project warm (not re-ch
                         sprintf "Baseline: both projects should be checked on boot (A=%d B=%d)" (getA ()) (getB ())
                     )
 
+                // Restore completed before the daemon started, but watcher backends
+                // may deliver its queued project.assets.json event after the explicit
+                // boot scan. Send a post-start project-tier edit and wait for its check;
+                // this exercises the SAME watcher/filter path as the assertion below,
+                // and drains older project-tier work before taking the warmth baseline.
+                let watcherProbeA = getA ()
+
+                File.WriteAllText(
+                    aFsproj,
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- watcher-ready --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
+                )
+
+                waitUntil (fun () -> getA () > watcherProbeA) 60000
+
+                if getA () <= watcherProbeA then
+                    Assert.Fail("Watcher did not deliver the post-start project probe within 60s")
+
                 let baselineB = getB ()
 
                 // Touch A's .fsproj only.
@@ -2807,7 +2827,9 @@ let ``scoped: changing a project re-checks its dependent (correctness over warmt
 
         let checker = FSharpChecker.Create(projectCacheSize = 50)
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        let daemon =
+            Daemon.createWithWatcherPlatform checker tmpDir Daemon.DaemonOptions.defaults (Some false)
 
         try
             daemon.RegisterHandler(counterB)

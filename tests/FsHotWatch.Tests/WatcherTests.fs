@@ -634,6 +634,44 @@ type RealFileWatcherTests() =
         test <@ changes.Count >= 1 @>
         Directory.Delete(tmpDir, true)
 
+[<Fact(Timeout = 60000)>]
+let ``FileWatcher fallback delivers every built-in recursive filter through one root watcher`` () =
+    withTempDir "watcher-fsw-filters" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+
+        use watcher = FileWatcher.create tmpDir received.Add (Some false) [] 0.05
+
+        let cases =
+            [ Path.Combine(srcDir, "BuiltIn.fs"), SourceChanged []
+              Path.Combine(srcDir, "BuiltIn.fsx"), SourceChanged []
+              Path.Combine(srcDir, "BuiltIn.fsproj"), ProjectChanged []
+              Path.Combine(srcDir, "BuiltIn.props"), ProjectChanged []
+              Path.Combine(objDir, "project.assets.json"), ProjectChanged [] ]
+
+        for path, expectedKind in cases do
+            let hasPathWithKind () =
+                received
+                |> Seq.exists (fun change ->
+                    match change, expectedKind with
+                    | SourceChanged paths, SourceChanged _
+                    | ProjectChanged paths, ProjectChanged _ -> paths |> List.contains path
+                    | _ -> false)
+
+            probeLoop (fun n -> File.WriteAllText(path, string n)) hasPathWithKind 10000
+            test <@ hasPathWithKind () @>
+
+        // The broad subscription is still one owned native resource: disposing
+        // the wrapper must stop every built-in kind, not leave a per-filter tail.
+        Thread.Sleep(500)
+        (watcher :> IDisposable).Dispose()
+        let countAfterDispose = received.Count
+        File.WriteAllText(Path.Combine(srcDir, "AfterDispose.fsproj"), "<Project />")
+        Thread.Sleep(500)
+        test <@ received.Count = countAfterDispose @>)
+
 [<Fact(Timeout = 15000)>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
     withTempDir "watcher-nosrc" (fun tmpDir ->

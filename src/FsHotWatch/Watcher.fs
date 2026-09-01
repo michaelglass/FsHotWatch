@@ -346,11 +346,21 @@ module FileWatcher =
         try
             watcher.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
             watcher.IncludeSubdirectories <- spec.IncludeSubdirectories
+            // FileSystemWatcher.Filters silently misses later patterns on some
+            // platforms. One broad native subscription keeps the handle/buffer
+            // footprint constant; apply the exact pattern set in-process.
+            watcher.Filter <- "*"
 
-            for filter in spec.Filters do
-                watcher.Filters.Add(filter)
+            let handleEvent (event: FileSystemEventArgs) =
+                let fileName = Path.GetFileName(event.FullPath)
 
-            let handleEvent (event: FileSystemEventArgs) = handle event.FullPath
+                if
+                    spec.Filters
+                    |> List.exists (fun filter ->
+                        System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(filter, fileName, true))
+                then
+                    handle event.FullPath
+
             watcher.Changed.Add(handleEvent)
             watcher.Created.Add(handleEvent)
             watcher.Deleted.Add(handleEvent)
