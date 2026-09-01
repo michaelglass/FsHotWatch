@@ -820,14 +820,29 @@ let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm
     test <@ text.Contains "fshw confirm" @>
 
 [<Fact>]
-let ``a check that ran no tests is pointed at confirm too — the emptiest evidence needs the loudest hint`` () =
+let ``a check that ran no tests is told to converge check rather than redirect its workflow`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
             Scope = (NoTestsRun NoTestsReason.Unstated) }
 
     let text = hintsFor v |> String.concat "\n"
-    test <@ text.Contains "fshw confirm" @>
+    test <@ text.Contains "Re-run `fshw check`" @>
+    test <@ text.Contains "convergence loop can earn a verdict" @>
+    test <@ text.Contains "explicitly need unfiltered full-suite evidence" @>
+    test <@ not (text.Contains "for a MERGE verdict use `fshw confirm`") @>
+
+[<Fact>]
+let ``a check whose scope reply was unreadable is told to converge check rather than redirect its workflow`` () =
+    let v =
+        { greenVerdict "sha256:abc" 12 with
+            Command = Verdict.Check
+            Scope = ScopeUnreadable "the daemon reply faulted" }
+
+    let text = hintsFor v |> String.concat "\n"
+    test <@ text.Contains "NO VERDICT" @>
+    test <@ text.Contains "Re-run `fshw check`" @>
+    test <@ not (text.Contains "for a MERGE verdict use `fshw confirm`") @>
 
 [<Fact>]
 let ``a full-suite check is not nagged, and a confirm never is`` () =
@@ -2171,15 +2186,28 @@ let ``a confirm that ran the full suite is told nothing extra — the hint is a 
     test <@ not (text.Contains "did not establish") @>
 
 [<Fact>]
-let ``an UNKNOWN scope on a check is nudged toward confirm too — an unknown scope is not a full one`` () =
+let ``an UNKNOWN scope on an inner-loop check stays consistent with its clean exit`` () =
+    let outcome =
+        CheckVerdict.verdict
+            CheckVerdict.InnerLoop
+            { PluginStatuses = Map.empty
+              FailingDiagnostics = 0
+              UnattributableDiagnostics = 0
+              WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
+              RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+              Coverage = Complete
+              Scope = ScopeUnknown }
+
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
             Scope = ScopeUnknown }
 
     let text = hintsFor v |> String.concat "\n"
-    test <@ text.Contains "did not establish a full-suite scope" @>
-    test <@ text.Contains "fshw confirm" @>
+    test <@ outcome = CheckVerdict.CheckOutcome.Clean @>
+    test <@ CheckVerdict.exitCode outcome = 0 @>
+    test <@ not (text.Contains "NO VERDICT") @>
+    test <@ not (text.Contains "Re-run `fshw check`") @>
 
 // ---------------------------------------------------------------------------
 // A MISSING NUMBER IS NOT ZERO.
