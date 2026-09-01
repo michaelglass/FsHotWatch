@@ -35,13 +35,13 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
 
 [<Fact(Timeout = 15000)>]
 let ``successful build is refused when an MSB3026 migration copy remains unresolved`` () =
-    let source = "/repo/src/Database/bin/Debug/net10.0/Thellma.Database.Migrations.dll"
+    let source = "/repo/src/Database/bin/Debug/net10.0/Acme.Database.Migrations.dll"
 
     let destination =
-        "/repo/tests/Integration/bin/Debug/net10.0/Thellma.Database.Migrations.dll"
+        "/repo/tests/Integration/bin/Debug/net10.0/Acme.Database.Migrations.dll"
 
     let output =
-        "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net10.0/Thellma.Database.Migrations.dll\" to \"bin/Debug/net10.0/Thellma.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
+        "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net10.0/Acme.Database.Migrations.dll\" to \"bin/Debug/net10.0/Acme.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
 
     let rawOutcome, entries = decideBuildOutcome true output
 

@@ -22,7 +22,7 @@ across the rebuild for an unchanged source file. A long-lived daemon therefore
 **replayed the pre-rebuild verdict**: the new/changed rule never re-ran on files
 whose source bytes hadn't changed.
 
-Observed downstream (thellma/intelligence): a file with a real, un-suppressed
+Observed downstream (a large private F# codebase): a file with a real, un-suppressed
 custom-analyzer violation reported CLEAN on a long-lived daemon, while a fresh
 workspace/daemon (empty cache) correctly flagged it — same source bytes, same
 analyzer DLL on disk. A stale-green false negative on the gate: the worst
