@@ -408,6 +408,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                         TimeSpan.FromMilliseconds(float timeoutMs)
 
                 do! config.WaitForAllTerminal(timeout)
+                config.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
                 Logging.info "rpc" "WaitForComplete() resolved"
                 return this.GetStatus()
             })

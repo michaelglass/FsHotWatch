@@ -798,6 +798,53 @@ let ``DaemonRpcTarget.GetDiagnostics returns zero count when no errors`` () =
     test <@ json.Contains("\"count\":0") @>
 
 [<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``GetDiagnostics drops a late finding for the old side of a rename`` () =
+    withTempDir "rename-diagnostics" (fun root ->
+        let oldPath = System.IO.Path.Combine(root, "OldName.fs")
+        let newPath = System.IO.Path.Combine(root, "NewName.fs")
+        System.IO.File.WriteAllText(oldPath, "module OldName")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        // Model the race the scan-only tests miss: the scan has already seen
+        // the rename and cleared the old path, but an earlier plugin callback
+        // completes afterwards and puts its finding back in the ledger.
+        System.IO.File.Move(oldPath, newPath)
+
+        host.ReportErrors(
+            "test-prune",
+            oldPath,
+            [ { Message = "symbol analysis failed — Parse errors"
+                Severity = DiagnosticSeverity.Error
+                Line = 1
+                Column = 0
+                Detail = None } ]
+        )
+
+        host.ReportErrors(
+            "test-prune",
+            newPath,
+            [ { Message = "current finding"
+                Severity = DiagnosticSeverity.Error
+                Line = 1
+                Column = 0
+                Detail = None } ]
+        )
+
+        test <@ host.GetErrors() |> Map.containsKey oldPath @>
+
+        let target = DaemonRpcTarget(defaultRpcConfig host)
+        target.WaitForComplete(0).GetAwaiter().GetResult() |> ignore
+        let json = target.GetDiagnostics("")
+
+        test <@ json.Contains("\"count\":1") @>
+        test <@ not (json.Contains(oldPath)) @>
+        test <@ json.Contains(newPath) @>
+        test <@ host.GetErrors() |> Map.containsKey oldPath |> not @>
+        test <@ host.GetErrors() |> Map.containsKey newPath @>)
+
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 

@@ -1643,3 +1643,44 @@ let ``clearing a vanished file leaves findings for files that still exist`` () =
     let remaining = host.GetErrors()
     test <@ remaining |> Map.tryFind ghost = None @>
     test <@ remaining |> Map.find alive |> List.length = 1 @>
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``vanished-diagnostic pruning cannot erase a newer report for a recreated path`` () =
+    withTempDir "rename-recreate" (fun root ->
+        let file = System.IO.Path.Combine(root, "Renamed.fs")
+        let host = PluginHost.create nullChecker root
+        host.ReportErrors("test-prune", file, ghostEntry "old generation")
+
+        host.PruneVanishedErrors(fun candidate ->
+            test <@ candidate = file @>
+            host.ReportErrors("test-prune", file, ghostEntry "new generation")
+            false)
+        |> ignore
+
+        let remaining = host.GetErrors() |> Map.find file
+        test <@ remaining |> List.exists (fun (_, entry) -> entry.Message = "new generation") @>)
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``vanished-diagnostic pruning only treats repository paths as files`` () =
+    withTempDir "diagnostic-key-semantics" (fun root ->
+        let host = PluginHost.create nullChecker root
+        let insideAbsolute = System.IO.Path.Combine(root, "Gone.fs")
+        let insideRelative = "AlsoGone.fs"
+
+        let outside =
+            System.IO.Path.Combine(System.IO.Path.GetDirectoryName(root), "outside.fs")
+
+        let pseudo = "<build>"
+
+        for key in [ insideAbsolute; insideRelative; outside; pseudo ] do
+            host.ReportErrors("test-prune", key, ghostEntry key)
+
+        host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
+
+        let remaining = host.GetErrors()
+        test <@ not (remaining |> Map.containsKey insideAbsolute) @>
+        test <@ not (remaining |> Map.containsKey insideRelative) @>
+        test <@ remaining |> Map.containsKey outside @>
+        test <@ remaining |> Map.containsKey pseudo @>)

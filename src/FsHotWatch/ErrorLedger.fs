@@ -173,13 +173,22 @@ module DiagnosticCounts =
 
 type private LedgerState =
     { Errors: Map<struct (string * string), ErrorEntry list>
-      Versions: Map<struct (string * string), int64> }
+      Versions: Map<struct (string * string), int64>
+      EntryRevisions: Map<struct (string * string), int64>
+      NextRevision: int64 }
+
+type internal LedgerKeyRevision =
+    { Plugin: string
+      File: string
+      Revision: int64 }
 
 [<NoComparison; NoEquality>]
 type private LedgerMsg =
     | Report of plugin: string * file: string * entries: ErrorEntry list * version: int64 option
     | Clear of plugin: string * file: string * version: int64 option
     | ClearPlugin of plugin: string
+    | SnapshotKeys of AsyncReplyChannel<LedgerKeyRevision list>
+    | PruneIfCurrent of candidates: LedgerKeyRevision list * AsyncReplyChannel<int>
     | GetAll of AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | GetByPlugin of plugin: string * AsyncReplyChannel<Map<string, ErrorEntry list>>
     | GetCountsByPlugin of AsyncReplyChannel<Map<string, DiagnosticCounts>>
@@ -222,6 +231,17 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
         true,
         { state with
             Versions = Map.add key v state.Versions }
+
+let private markPresent key (state: LedgerState) =
+    let revision = state.NextRevision + 1L
+
+    { state with
+        EntryRevisions = Map.add key revision state.EntryRevisions
+        NextRevision = revision }
+
+let private markAbsent key (state: LedgerState) =
+    { state with
+        EntryRevisions = Map.remove key state.EntryRevisions }
 
 /// Accumulates per-file errors from plugins. Errors auto-clear when a file
 /// is re-checked and passes. Thread-safe via MailboxProcessor agent.
@@ -284,6 +304,8 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
                                     { state' with
                                         Errors = state'.Errors |> Map.remove key |> Map.remove failureKey }
+                                    |> markAbsent key
+                                    |> markAbsent failureKey
                                 else
                                     let failures = notifyReporters (fun r -> r.Report plugin file entries)
 
@@ -301,7 +323,12 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
                                             Map.add failureKey [ synthetic ] errors
 
-                                    { state' with Errors = errors }
+                                    let next = { state' with Errors = errors } |> markPresent key
+
+                                    if List.isEmpty failures then
+                                        next |> markAbsent failureKey
+                                    else
+                                        next |> markPresent failureKey
                             else
                                 state'
 
@@ -322,6 +349,7 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
                                 { state' with
                                     Errors = Map.remove key state'.Errors }
+                                |> markAbsent key
                             else
                                 state'
 
@@ -335,8 +363,43 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
                             // false-green, so it is logged but not self-reported.
                             notifyReporters (fun r -> r.ClearPlugin plugin) |> ignore
 
-                            { Errors = newErrors
-                              Versions = newVersions }
+                            { state with
+                                Errors = newErrors
+                                Versions = newVersions
+                                EntryRevisions =
+                                    state.EntryRevisions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin) }
+
+                        | SnapshotKeys rc ->
+                            let result =
+                                state.EntryRevisions
+                                |> Map.toList
+                                |> List.map (fun (struct (plugin, file), revision) ->
+                                    { Plugin = plugin
+                                      File = file
+                                      Revision = revision })
+
+                            rc.Reply(result)
+                            state
+
+                        | PruneIfCurrent(candidates, rc) ->
+                            let mutable next = state
+                            let mutable removed = 0
+
+                            for candidate in candidates do
+                                let key = struct (candidate.Plugin, candidate.File)
+
+                                if Map.tryFind key next.EntryRevisions = Some candidate.Revision then
+                                    notifyReporters (fun r -> r.Clear candidate.Plugin candidate.File) |> ignore
+
+                                    next <-
+                                        { next with
+                                            Errors = Map.remove key next.Errors }
+                                        |> markAbsent key
+
+                                    removed <- removed + 1
+
+                            rc.Reply(removed)
+                            next
 
                         | GetAll rc ->
                             let result =
@@ -417,7 +480,9 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
             loop
                 { Errors = Map.empty
-                  Versions = Map.empty })
+                  Versions = Map.empty
+                  EntryRevisions = Map.empty
+                  NextRevision = 0L })
 
     do
         agent.Error.Add(fun ex ->
@@ -439,6 +504,16 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
     /// Clear all errors for a plugin.
     member _.ClearPlugin(pluginName: string) = agent.Post(ClearPlugin pluginName)
+
+    /// Snapshot each currently-present plugin/file key with an opaque mutation
+    /// revision for a later compare-and-remove operation.
+    member internal _.SnapshotKeys() : LedgerKeyRevision list =
+        agent.PostAndReply(fun rc -> SnapshotKeys rc)
+
+    /// Remove only keys that have not been reported or cleared since the caller's
+    /// snapshot. One mailbox operation makes the comparison and removal atomic.
+    member internal _.PruneIfCurrent(candidates: LedgerKeyRevision list) : int =
+        agent.PostAndReply(fun rc -> PruneIfCurrent(candidates, rc))
 
     /// Get all errors grouped by file path. Each entry includes the plugin name.
     member _.GetAll() : Map<string, (string * ErrorEntry) list> = agent.PostAndReply(fun rc -> GetAll rc)

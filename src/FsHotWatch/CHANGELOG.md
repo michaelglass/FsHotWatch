@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- AUTOMATION-300: authoritative daemon and run-once verdict reads now remove late
+  findings for renamed-away repository files. Cleanup is revision-conditional, so a
+  concurrent report for a recreated same-name file is retained; outside-repository and
+  angle-bracket diagnostic keys remain opaque.
+
 ## 0.10.0-alpha.24 - 2026-08-31
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

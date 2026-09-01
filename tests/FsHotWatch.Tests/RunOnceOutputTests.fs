@@ -548,6 +548,47 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         (noTestProjectsConfig ())
         None
 
+let private daemonWithLateVanishedDiagnostic (root: string) =
+    let daemon =
+        Daemon.createWith
+            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+            root
+            Daemon.DaemonOptions.defaults
+
+    daemon.Host.ReportErrors("test-prune", "RenamedAway.fs", [ ErrorEntry.error "late old-path finding" ])
+    daemon
+
+[<Fact(Timeout = 60000)>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``generic run-once report prunes a late vanished diagnostic before grading`` () =
+    withProjectOnlyRepo "runonce-report-rename" (fun repoRoot ->
+        let exitCode =
+            runOnceAndReport
+                (fun _ -> "")
+                false
+                daemonWithLateVanishedDiagnostic
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        test <@ exitCode = 0 @>)
+
+[<Fact(Timeout = 60000)>]
+[<Trait("Issue", "AUTOMATION-300")>]
+let ``check run-once prunes a late vanished diagnostic before grading`` () =
+    withProjectOnlyRepo "runonce-check-rename" (fun repoRoot ->
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+                (fun _ -> "")
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+                false
+                daemonWithLateVanishedDiagnostic
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        test <@ exitCode = 0 @>)
+
 [<Fact(Timeout = 60000)>]
 let ``run-once command retains executed evidence across a same-tree quiet convergence read`` () =
     withProjectOnlyRepo "runonce-retained-command" (fun repoRoot ->

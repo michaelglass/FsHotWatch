@@ -298,6 +298,7 @@ let runOnceAndVerdictWith
         let scanAndSettle () : Map<string, PluginStatus> =
             let statuses = runScan daemon
             awaitDiscovery ()
+            daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
             settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
             statuses
 
