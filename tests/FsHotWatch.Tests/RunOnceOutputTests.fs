@@ -553,7 +553,7 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
 [<InlineData(true)>]
 let ``run-once check and confirm never construct a file watcher`` (confirm: bool) =
     withProjectOnlyRepo "runonce-no-watcher" (fun repoRoot ->
-        let watcherFactory _ _ _ _ _ =
+        let watcherFactory _ _ _ _ _ _ =
             failwith "the watcher factory must not be invoked by --run-once"
 
         let createDaemon (root: string) =
@@ -585,7 +585,7 @@ let ``run-once check and confirm never construct a file watcher`` (confirm: bool
 [<Fact(Timeout = 60000)>]
 let ``run-once format never constructs a file watcher`` () =
     withProjectOnlyRepo "runonce-format-no-watcher" (fun repoRoot ->
-        let watcherFactory _ _ _ _ _ =
+        let watcherFactory _ _ _ _ _ _ =
             failwith "the watcher factory must not be invoked by format --run-once"
 
         let createDaemon (root: string) =

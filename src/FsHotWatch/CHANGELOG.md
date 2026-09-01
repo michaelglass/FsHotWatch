@@ -7,6 +7,10 @@
   deterministic factory seam proves watcher-disabled hosts never invoke native
   or managed watcher construction.
 
+- the macOS polling fallback now treats three consecutive snapshot
+  failures as terminal and gracefully shuts down the daemon. A dead watcher can no
+  longer leave IPC serving authoritative-looking checks from an unobserved tree.
+
 - authoritative daemon and run-once verdict reads now remove late
   findings for renamed-away repository files. Cleanup is revision-conditional, so a
   concurrent report for a recreated same-name file is retained; outside-repository and

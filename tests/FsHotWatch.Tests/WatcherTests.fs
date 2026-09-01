@@ -457,6 +457,224 @@ let ``automatic polling rearms after snapshot failure and stops rearming after d
     test <@ arms |> Seq.toList = [ 1000; 1000; 1000 ] @>
 
 [<Fact(Timeout = 15000)>]
+let ``third consecutive polling snapshot failure is terminal exactly once`` () =
+    let mutable tick = ignore
+    let mutable baseline = true
+    let mutable disposed = 0
+    let terminal = ResizeArray<string>()
+
+    let timerFactory onTick =
+        tick <- onTick
+
+        { Arm = ignore
+          Dispose = fun () -> disposed <- disposed + 1 }
+
+    let snapshot () =
+        if baseline then
+            baseline <- false
+
+            { Files = Map.empty
+              UnreadableFiles = Set.empty
+              Holes = Set.empty }
+        else
+            raise (IOException("snapshot unavailable"))
+
+    let watcher =
+        new PollingFileWatcher(
+            "/repo",
+            ignore,
+            [],
+            true,
+            Some snapshot,
+            Some timerFactory,
+            Some(fun ex -> terminal.Add(ex.Message))
+        )
+
+    tick ()
+    tick ()
+    test <@ terminal.Count = 0 @>
+    tick ()
+    test <@ terminal |> Seq.toList = [ "snapshot unavailable" ] @>
+    test <@ disposed = 1 @>
+    tick ()
+    test <@ terminal.Count = 1 @>
+    (watcher :> IDisposable).Dispose()
+    test <@ disposed = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``successful poll resets two prior snapshot failures`` () =
+    let mutable tick = ignore
+    let terminal = ResizeArray<string>()
+
+    let outcomes =
+        System.Collections.Generic.Queue<Result<unit, exn>>(
+            [ Ok()
+              Error(IOException("first") :> exn)
+              Error(IOException("second") :> exn)
+              Ok()
+              Error(IOException("after reset 1") :> exn)
+              Error(IOException("after reset 2") :> exn)
+              Error(IOException("after reset 3") :> exn) ]
+        )
+
+    let snapshot () =
+        match outcomes.Dequeue() with
+        | Ok() ->
+            { Files = Map.empty
+              UnreadableFiles = Set.empty
+              Holes = Set.empty }
+        | Error ex -> raise ex
+
+    let timerFactory onTick =
+        tick <- onTick
+        { Arm = ignore; Dispose = ignore }
+
+    use _watcher =
+        new PollingFileWatcher(
+            "/repo",
+            ignore,
+            [],
+            true,
+            Some snapshot,
+            Some timerFactory,
+            Some(fun ex -> terminal.Add(ex.Message))
+        )
+
+    for _ in 1..5 do
+        tick ()
+
+    test <@ terminal.Count = 0 @>
+    tick ()
+    test <@ terminal |> Seq.toList = [ "after reset 3" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``disposal during the third failed snapshot suppresses the stale terminal callback`` () =
+    let mutable tick = ignore
+    let mutable disposeWatcher = ignore
+    let mutable snapshots = 0
+    let mutable terminals = 0
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        if snapshots = 1 then
+            { Files = Map.empty
+              UnreadableFiles = Set.empty
+              Holes = Set.empty }
+        else
+            if snapshots = 4 then
+                disposeWatcher ()
+
+            raise (IOException("snapshot unavailable"))
+
+    let timerFactory onTick =
+        tick <- onTick
+        { Arm = ignore; Dispose = ignore }
+
+    let watcher =
+        new PollingFileWatcher(
+            "/repo",
+            ignore,
+            [],
+            true,
+            Some snapshot,
+            Some timerFactory,
+            Some(fun _ -> terminals <- terminals + 1)
+        )
+
+    disposeWatcher <- fun () -> (watcher :> IDisposable).Dispose()
+
+    tick ()
+    tick ()
+    tick ()
+    test <@ terminals = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``concurrent callbacks at the terminal threshold emit once`` () =
+    let mutable tick = ignore
+    let entered = new ManualResetEventSlim(false)
+    let release = new ManualResetEventSlim(false)
+    let mutable snapshots = 0
+    let mutable terminals = 0
+
+    let snapshot () =
+        snapshots <- snapshots + 1
+
+        if snapshots = 1 then
+            { Files = Map.empty
+              UnreadableFiles = Set.empty
+              Holes = Set.empty }
+        else
+            if snapshots = 4 then
+                entered.Set()
+                release.Wait()
+
+            raise (IOException("snapshot unavailable"))
+
+    let timerFactory onTick =
+        tick <- onTick
+        { Arm = ignore; Dispose = ignore }
+
+    use _watcher =
+        new PollingFileWatcher(
+            "/repo",
+            ignore,
+            [],
+            true,
+            Some snapshot,
+            Some timerFactory,
+            Some(fun _ -> Interlocked.Increment(&terminals) |> ignore)
+        )
+
+    tick ()
+    tick ()
+    let first = Thread(ThreadStart tick)
+    let second = Thread(ThreadStart tick)
+    first.Start()
+    test <@ entered.Wait(TimeSpan.FromSeconds 10.0) @>
+    second.Start()
+    release.Set()
+    first.Join()
+    second.Join()
+    test <@ terminals = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``timer rearm failure is immediately terminal`` () =
+    let mutable tick = ignore
+    let mutable arms = 0
+    let terminal = ResizeArray<string>()
+
+    let timerFactory onTick =
+        tick <- onTick
+
+        { Arm =
+            fun _ ->
+                arms <- arms + 1
+
+                if arms = 2 then
+                    raise (IOException("timer unavailable"))
+          Dispose = ignore }
+
+    use _watcher =
+        new PollingFileWatcher(
+            "/repo",
+            ignore,
+            [],
+            true,
+            Some(fun () ->
+                { Files = Map.empty
+                  UnreadableFiles = Set.empty
+                  Holes = Set.empty }),
+            Some timerFactory,
+            Some(fun ex -> terminal.Add(ex.Message))
+        )
+
+    tick ()
+    test <@ terminal |> Seq.toList = [ "timer unavailable" ] @>
+    tick ()
+    test <@ terminal.Count = 1 @>
+
+[<Fact(Timeout = 15000)>]
 let ``automatic polling default timer performs a poll`` () =
     let mutable snapshots = 0
 

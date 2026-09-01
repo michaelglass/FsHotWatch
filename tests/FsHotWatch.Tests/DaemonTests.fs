@@ -592,6 +592,15 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         test <@ daemon.RepoRoot = tmpDir @>)
 
 [<Fact(Timeout = 20000)>]
+let ``terminal polling watcher failure cancels the daemon shutdown source`` () =
+    let failed =
+        System.Threading.Tasks.Task.FromResult<exn>(IOException("polling snapshot unavailable"))
+
+    use cts = new CancellationTokenSource()
+    cancelWhenWatcherFails failed cts |> fun task -> task.Wait()
+    test <@ cts.IsCancellationRequested @>
+
+[<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

@@ -203,12 +203,14 @@ type internal PollingFileWatcher
         extraPatterns: FilePattern list,
         startAutomatically: bool,
         snapshotOverride: (unit -> PollingSnapshot) option,
-        timerFactoryOverride: PollTimerFactory option
+        timerFactoryOverride: PollTimerFactory option,
+        onTerminalOverride: (exn -> unit) option
     ) =
     let syncRoot = obj ()
     let roots = Discovery.existingDiscoveryRoots repoRoot
     let mutable disposed = false
     let mutable polling = false
+    let mutable consecutiveFailures = 0
     let mutable timer: PollTimer option = None
 
     let takeFilesystemSnapshot () =
@@ -275,6 +277,8 @@ type internal PollingFileWatcher
             emit SolutionChanged
 
     let tryPoll () =
+        let mutable completed = false
+
         if Monitor.TryEnter(syncRoot) then
             try
                 if not disposed && not polling then
@@ -282,15 +286,66 @@ type internal PollingFileWatcher
 
                     try
                         pollUnsafe ()
+                        consecutiveFailures <- 0
+                        completed <- true
                     finally
                         polling <- false
             finally
                 Monitor.Exit(syncRoot)
 
+        completed
+
     let scheduleNext () =
         lock syncRoot (fun () ->
             if not disposed then
                 timer |> Option.iter (fun handle -> handle.Arm(1000)))
+
+    let terminate (ex: exn) =
+        let won, handle =
+            lock syncRoot (fun () ->
+                if disposed then
+                    false, None
+                else
+                    disposed <- true
+                    let handle = timer
+                    timer <- None
+                    true, handle)
+
+        if won then
+            handle
+            |> Option.iter (fun activeTimer ->
+                try
+                    activeTimer.Dispose()
+                with disposeEx ->
+                    Logging.warn "polling-watcher" $"terminal timer disposal failed: %s{disposeEx.Message}")
+
+            onTerminalOverride |> Option.iter (fun onTerminal -> onTerminal ex)
+
+    let snapshotFailed (ex: exn) =
+        let terminalCount =
+            lock syncRoot (fun () ->
+                if disposed then
+                    None
+                else
+                    consecutiveFailures <- consecutiveFailures + 1
+                    Some consecutiveFailures)
+
+        match terminalCount with
+        | Some failures when failures >= 3 ->
+            Logging.error
+                "polling-watcher"
+                $"snapshot failed %d{failures} consecutive times; watcher is terminal: %s{ex.Message}"
+
+            terminate ex
+        | Some _ ->
+            Logging.warn "polling-watcher" $"snapshot failed: %s{ex.Message}"
+
+            try
+                scheduleNext ()
+            with armEx ->
+                Logging.error "polling-watcher" $"failed to schedule the next snapshot: %s{armEx.Message}"
+                terminate armEx
+        | None -> ()
 
     do
         if startAutomatically then
@@ -306,18 +361,37 @@ type internal PollingFileWatcher
             timer <-
                 Some(
                     timerFactory (fun () ->
-                        try
-                            tryPoll ()
-                        with ex ->
-                            Logging.warn "polling-watcher" $"snapshot failed: %s{ex.Message}"
+                        let succeeded =
+                            try
+                                tryPoll () |> ignore
+                                true
+                            with ex ->
+                                snapshotFailed ex
+                                false
 
-                        scheduleNext ())
+                        if succeeded then
+                            try
+                                scheduleNext ()
+                            with ex ->
+                                Logging.error "polling-watcher" $"failed to schedule the next snapshot: %s{ex.Message}"
+                                terminate ex)
                 )
 
             scheduleNext ()
 
+    new(repoRoot, onChange, extraPatterns, startAutomatically, snapshotOverride, timerFactoryOverride) =
+        new PollingFileWatcher(
+            repoRoot,
+            onChange,
+            extraPatterns,
+            startAutomatically,
+            snapshotOverride,
+            timerFactoryOverride,
+            None
+        )
+
     /// Run one snapshot/diff cycle. Overlapping or re-entrant polls are skipped.
-    member _.Poll() = tryPoll ()
+    member _.Poll() = tryPoll () |> ignore
 
     interface IDisposable with
         member _.Dispose() =
@@ -371,8 +445,8 @@ module FileWatcher =
             watcher.Dispose()
             raise ex
 
-    let private defaultPollingWatcherFactory repoRoot onChange extraPatterns =
-        new PollingFileWatcher(repoRoot, onChange, extraPatterns, true, None, None) :> IDisposable
+    let private defaultPollingWatcherFactory onTerminal repoRoot onChange extraPatterns =
+        new PollingFileWatcher(repoRoot, onChange, extraPatterns, true, None, None, Some onTerminal) :> IDisposable
 
     let private createMacOS
         (repoRoot: string)
@@ -455,7 +529,7 @@ module FileWatcher =
             latencySeconds
             nativeStreamFactory
             defaultSystemWatcherFactory
-            defaultPollingWatcherFactory
+            (defaultPollingWatcherFactory ignore)
 
     /// Complete setup seam used to prove native-first ordering and transactional rollback.
     let internal createWithFactories
@@ -483,12 +557,13 @@ module FileWatcher =
     /// Pass isMacOSOverride to force a specific code path (useful for testing).
     /// `latencySeconds` is the macOS FSEvents coalescing window (ignored on
     /// non-macOS, where .NET FileSystemWatcher has no equivalent knob).
-    let create
+    let internal createWithTerminal
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
         (isMacOSOverride: bool option)
         (extraPatterns: FilePattern list)
         (latencySeconds: float)
+        (onTerminal: exn -> unit)
         : FileWatcher =
         let handle (path: string) =
             if isRelevantFileOrExtra extraPatterns path then
@@ -510,7 +585,7 @@ module FileWatcher =
                 (fun dirs onFile onCoalesced latency ->
                     MacFsEvents.createWithCoalesced dirs onFile onCoalesced latency :> IDisposable)
                 defaultSystemWatcherFactory
-                defaultPollingWatcherFactory
+                (defaultPollingWatcherFactory onTerminal)
         else
             let slnWatcher =
                 defaultSystemWatcherFactory
@@ -547,3 +622,12 @@ module FileWatcher =
                 |> List.choose id
 
             { Disposables = watchers @ extraWatchers }
+
+    let create
+        (repoRoot: string)
+        (onChange: FileChangeKind -> unit)
+        (isMacOSOverride: bool option)
+        (extraPatterns: FilePattern list)
+        (latencySeconds: float)
+        : FileWatcher =
+        createWithTerminal repoRoot onChange isMacOSOverride extraPatterns latencySeconds ignore
