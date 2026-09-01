@@ -5,6 +5,13 @@
 - fix(AUTOMATION-440): discover the checkout root from a linked Git worktree's
   `.git` pointer file, while rejecting malformed or dangling Git metadata.
 
+- AUTOMATION-643: an otherwise-clean convergence that ran no tests now remains an
+  exit-3 refusal for that invocation without discarding an applicable full-suite
+  green already earned by the same fshw binary over the unchanged tree. `confirm`
+  can therefore continue to reuse that exact prior evidence; a changed tree,
+  different producer, non-full scope, red, or incomplete verdict is still replaced
+  and must be re-earned.
+
 ## 0.14.0-alpha.36 - 2026-09-01
 
 - fix(AUTOMATION-608): recognize daemon-side corrupted-frame faults wrapped by

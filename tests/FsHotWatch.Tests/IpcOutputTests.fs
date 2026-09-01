@@ -1391,6 +1391,218 @@ let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderi
     test <@ v.ExitCode = 0 @>
     test <@ v.Outcome = Verdict.Green @>
 
+[<Fact(Timeout = 15000)>]
+let ``a zero-test convergence result preserves a prior applicable full-suite green`` () =
+    // A re-scan can settle successfully while TestPrune has no test work to do. That
+    // result is correctly refused as NEW evidence, but it must not erase a full-suite
+    // green the same binary already earned over this unchanged tree. Otherwise the
+    // next `confirm` loses the only evidence it is entitled to reuse.
+    TestHelpers.withTempDir "ipcoutput-643-preserve-prior-green" (fun repoRoot ->
+        let fullRun = TestRunReport.ofScopeOnly (FullSuite 1)
+
+        let initialExitCode =
+            publishVerdict
+                repoRoot
+                []
+                CheckVerdict.Confirmation
+                false
+                fullRun
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                CheckVerdict.CheckOutcome.Clean
+
+        test <@ initialExitCode = 0 @>
+
+        let initialInputs: CheckVerdict.CheckInputs =
+            { PluginStatuses = Map.empty
+              FailingDiagnostics = 0
+              UnattributableDiagnostics = 0
+              WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
+              RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+              Coverage = Incomplete 1
+              Scope = FullSuite 1 }
+
+        let zeroTestInputs =
+            { initialInputs with
+                Coverage = Complete
+                Scope = NoTestsRun NoTestsReason.AlreadyVerified }
+
+        let outcome =
+            CheckVerdict.converge CheckVerdict.InnerLoop 1 ignore (fun () -> zeroTestInputs) initialInputs
+
+        test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
+
+        let zeroTestExitCode =
+            publishVerdict
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                (TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified))
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                outcome
+
+        // The current invocation remains an unearned, exit-3 refusal; preservation is
+        // about the durable evidence, not laundering this no-test run into a pass.
+        test <@ zeroTestExitCode = 3 @>
+
+        match Verdict.priorConfirmation repoRoot [] with
+        | Verdict.PriorConfirmation.StillApplies _ -> ()
+        | Verdict.PriorConfirmation.MustEarn ->
+            failwith "the zero-test re-scan erased a full-suite green that still applies")
+
+[<Fact(Timeout = 15000)>]
+let ``a zero-test convergence never preserves a full-suite green from a different tree`` () =
+    // Preservation is evidence reuse, not a way for a no-test run to hide an edit.
+    // Drive the publisher (rather than `priorConfirmation` alone) so this asserts the
+    // no-write branch is unavailable when the prior full green has become stale.
+    TestHelpers.withTempDir "ipcoutput-643-stale-prior-green" (fun repoRoot ->
+        let src = System.IO.Path.Combine(repoRoot, "src")
+        System.IO.Directory.CreateDirectory(src) |> ignore
+        let tracked = System.IO.Path.Combine(src, "Tracked.fs")
+        System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 42\n")
+
+        publishVerdict
+            repoRoot
+            []
+            CheckVerdict.Confirmation
+            false
+            (TestRunReport.ofScopeOnly (FullSuite 1))
+            Verdict.NoReading
+            Map.empty
+            []
+            (SettledTree.capture repoRoot [])
+            CheckVerdict.CheckOutcome.Clean
+        |> ignore
+
+        System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 43\n")
+
+        let exitCode =
+            publishVerdict
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                (TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified))
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
+
+        test <@ exitCode = 3 @>
+        test <@ Verdict.priorConfirmation repoRoot [] = Verdict.PriorConfirmation.MustEarn @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v ->
+            test <@ v.Scope = NoTestsRun NoTestsReason.AlreadyVerified @>
+            test <@ v.ExitCode = 3 @>
+        | other -> failwithf "the stale full-suite green must be replaced, got %A" other)
+
+let private publishA643Prior (repoRoot: string) (kind: string) =
+    let publish scope outcome statuses =
+        publishVerdict
+            repoRoot
+            []
+            CheckVerdict.InnerLoop
+            false
+            (TestRunReport.ofScopeOnly scope)
+            Verdict.NoReading
+            statuses
+            []
+            (SettledTree.capture repoRoot [])
+            outcome
+        |> ignore
+
+    match kind with
+    | "missing" -> ()
+    | "unreadable" ->
+        let verdictPath = Verdict.path repoRoot
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName verdictPath)
+        |> ignore
+
+        System.IO.File.WriteAllText(verdictPath, "not a verdict")
+    | "filtered" -> publish (ImpactFiltered(1, 2)) CheckVerdict.CheckOutcome.Clean Map.empty
+    | "red" ->
+        let failedStatus =
+            { Status = StatusView.Failed("prior failure", System.DateTime.UtcNow)
+              Subtasks = []
+              ActivityTail = []
+              LastRun = None
+              Diagnostics = DiagnosticCounts.empty }
+
+        publish (FullSuite 1) CheckVerdict.CheckOutcome.FailuresFound (Map.ofList [ "build", failedStatus ])
+    | "incomplete" -> publish (FullSuite 1) (CheckVerdict.CheckOutcome.Incomplete 1) Map.empty
+    | "different-producer" ->
+        publish (FullSuite 1) CheckVerdict.CheckOutcome.Clean Map.empty
+        let verdictPath = Verdict.path repoRoot
+        let json = System.IO.File.ReadAllText verdictPath
+
+        let changed =
+            let pattern =
+                System.Text.RegularExpressions.Regex("(\\\"contentHash\\\"\\s*:\\s*\\\")[^\\\"]+")
+
+            pattern.Replace(
+                json,
+                System.Text.RegularExpressions.MatchEvaluator(fun m -> m.Groups[1].Value + String.replicate 64 "0"),
+                1
+            )
+
+        test <@ changed <> json @>
+        System.IO.File.WriteAllText(verdictPath, changed)
+    | other -> failwithf "unknown A643 prior kind %s" other
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("different-producer")>]
+[<InlineData("filtered")>]
+[<InlineData("red")>]
+[<InlineData("incomplete")>]
+[<InlineData("unreadable")>]
+[<InlineData("missing")>]
+let ``a zero-test convergence replaces every prior that is not an applicable full-suite green`` (kind: string) =
+    TestHelpers.withTempDir $"ipcoutput-643-replace-{kind}" (fun repoRoot ->
+        publishA643Prior repoRoot kind
+
+        let noTests = NoTestsRun NoTestsReason.AlreadyVerified
+
+        let exitCode =
+            publishVerdict
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                (TestRunReport.ofScopeOnly noTests)
+                Verdict.NoReading
+                Map.empty
+                []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.UnearnedScope noTests)
+
+        test <@ exitCode = 3 @>
+
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v ->
+            test <@ v.Scope = noTests @>
+            test <@ v.ExitCode = 3 @>
+            test <@ not (Verdict.isFullSuiteGreen v) @>
+        | other -> failwithf "the ineligible prior must be replaced by the zero-test verdict, got %A" other)
+
+[<Fact>]
+let ``ordinary outcomes do not inspect prior confirmation evidence`` () =
+    let ordinaryOutcome = CheckVerdict.CheckOutcome.Clean
+
+    let preserved =
+        priorVerdictToPreserve ordinaryOutcome "sha256:current-tree" FsHotWatch.TreeHash.Algorithm (fun () ->
+            failwith "ordinary publication must not read and hash the prior verdict")
+
+    test <@ preserved = None @>
+
 [<Theory(Timeout = 15000)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
