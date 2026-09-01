@@ -8177,6 +8177,38 @@ let ``detectCtrfRunnerFamily resolves a quoted project path containing spaces`` 
         test <@ detectCtrfRunnerFamily $"--project \"%s{proj}\"" tmp = Some Xunit4 @>)
 
 [<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily resolves an escaped quote inside a quoted project path`` () =
+    withTempDir "fshw-detect-xunit4-escaped-quote" (fun tmp ->
+        let projectDir = Path.Combine(tmp, "project \"quoted\" path")
+        Directory.CreateDirectory(projectDir) |> ignore
+        let proj = Path.Combine(projectDir, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0"
+        let escaped = proj.Replace("\"", "\\\"")
+
+        test <@ detectCtrfRunnerFamily $"--project \"%s{escaped}\"" tmp = Some Xunit4 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily fails closed on an unterminated project quote`` () =
+    withTempDir "fshw-detect-xunit4-unterminated" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0"
+
+        test <@ detectCtrfRunnerFamily $"--project \"%s{proj}" tmp = None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily does not treat single quotes as argument grouping`` () =
+    withTempDir "fshw-detect-xunit4-single-quote" (fun tmp ->
+        let projectDir = Path.Combine(tmp, "project with spaces")
+        Directory.CreateDirectory(projectDir) |> ignore
+        let proj = Path.Combine(projectDir, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0"
+
+        test <@ detectCtrfRunnerFamily $"--project '%s{proj}'" tmp = None @>)
+
+[<Fact(Timeout = 5000)>]
 let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicting runner majors`` () =
     withTempDir "fshw-detect-xunit-conflict" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -8191,6 +8223,9 @@ let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicti
 [<Theory(Timeout = 5000)>]
 [<InlineData("5.0.0")>]
 [<InlineData("not-a-version")>]
+[<InlineData("4.not-semver")>]
+[<InlineData("4.")>]
+[<InlineData("4.0.0 garbage")>]
 let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with an unknown version``
     (unknownVersion: string)
     =
@@ -8203,6 +8238,17 @@ let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with 
             $"""{{"version":3,"libraries":{{"xunit.v3/4.0.0":{{"type":"package"}},"xunit.v3/%s{unknownVersion}":{{"type":"package"}}}}}}"""
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("4.0.0-pre.12+sha.abcdef")>]
+[<InlineData("4.0.0+build.5")>]
+let ``detectCtrfRunnerFamily accepts complete xUnit 4 prerelease and build versions`` (version: string) =
+    withTempDir "fshw-detect-xunit-complete-semver" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj version
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
 
 [<Theory(Timeout = 5000)>]
 [<InlineData("{}")>]

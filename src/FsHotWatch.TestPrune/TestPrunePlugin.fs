@@ -2516,32 +2516,66 @@ let internal classifyTestOutcome
             // Unknown runner we never asked for a report: the exit code is all there is.
             TestsFailed(output, wasFiltered, elapsed)
 
-/// Split runner args into tokens while retaining whitespace inside quoted paths.
-/// The configuration stores one command-line string, so project discovery must
-/// apply the same basic quote grouping the launched process receives.
-let private argTokens (args: string) : string[] =
+/// Parse the `ProcessStartInfo.Arguments` string far enough to discover a project
+/// path. Double quotes group; a backslash before a quote follows the same odd/even
+/// escaping rule as ProcessStartInfo; single quotes are ordinary characters. An
+/// unfinished quote is not a partial command line, so discovery fails closed.
+let private argTokens (args: string) : string[] option =
     if String.IsNullOrWhiteSpace args then
-        [||]
+        Some [||]
     else
         let tokens = ResizeArray<string>()
         let token = Text.StringBuilder()
-        let mutable quote: char option = None
+        let mutable tokenStarted = false
+        let mutable inQuotes = false
+        let mutable index = 0
 
         let flush () =
-            if token.Length > 0 then
+            if tokenStarted then
                 tokens.Add(token.ToString())
                 token.Clear() |> ignore
+                tokenStarted <- false
 
-        for character in args do
-            match quote, character with
-            | Some expected, actual when actual = expected -> quote <- None
-            | Some _, actual -> token.Append(actual) |> ignore
-            | None, ('\'' | '"' as opening) -> quote <- Some opening
-            | None, actual when Char.IsWhiteSpace actual -> flush ()
-            | None, actual -> token.Append(actual) |> ignore
+        while index < args.Length do
+            match args[index] with
+            | '\\' ->
+                let start = index
 
-        flush ()
-        tokens.ToArray()
+                while index < args.Length && args[index] = '\\' do
+                    index <- index + 1
+
+                let slashCount = index - start
+
+                if index < args.Length && args[index] = '"' then
+                    token.Append('\\', slashCount / 2) |> ignore
+                    tokenStarted <- true
+
+                    if slashCount % 2 = 0 then
+                        inQuotes <- not inQuotes
+                    else
+                        token.Append('"') |> ignore
+
+                    index <- index + 1
+                else
+                    token.Append('\\', slashCount) |> ignore
+                    tokenStarted <- true
+            | '"' ->
+                tokenStarted <- true
+                inQuotes <- not inQuotes
+                index <- index + 1
+            | character when Char.IsWhiteSpace character && not inQuotes ->
+                flush ()
+                index <- index + 1
+            | character ->
+                token.Append(character) |> ignore
+                tokenStarted <- true
+                index <- index + 1
+
+        if inQuotes then
+            None
+        else
+            flush ()
+            Some(tokens.ToArray())
 
 /// The value following `--project`/`-p` in the quote-aware tokenized args.
 /// Shared by `tryApphostPresent` and `detectCtrfRunnerFamily` (both derive a project
@@ -2560,7 +2594,8 @@ let private projectFlagValue (tokens: string[]) : string option =
 /// (presence) and `ArtifactFreshness.stale` (freshness) so this
 /// fsproj-or-directory derivation has ONE definition.
 let internal deriveProjectBin (args: string) (repoRoot: string) : ArtifactFreshness.RunnerTarget option =
-    projectFlagValue (argTokens args)
+    argTokens args
+    |> Option.bind projectFlagValue
     |> Option.map (fun proj ->
         // Resolve to an absolute path (relative paths are repoRoot-relative).
         let abs =
@@ -2662,12 +2697,10 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
     // The project hint: the value after --project/-p, else any token that is
     // itself a project file path (e.g. `dotnet test path/to/Proj.fsproj`).
     let projArg =
-        projectFlagValue tokens
-        |> Option.orElse (
-            tokens
-            |> Array.tryFind looksLikeProjectFile
-            |> Option.map (fun raw -> raw.Trim('"'))
-        )
+        tokens
+        |> Option.bind (fun parsed ->
+            projectFlagValue parsed
+            |> Option.orElse (parsed |> Array.tryFind looksLikeProjectFile))
 
     let resolveProjectFile (proj: string) : string option =
         let abs =
@@ -2712,6 +2745,12 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
                             Some package)
                     |> Seq.toList
 
+                let completeNuGetVersion =
+                    System.Text.RegularExpressions.Regex(
+                        "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+                        System.Text.RegularExpressions.RegexOptions.CultureInvariant
+                    )
+
                 let tryFamily (package: JsonProperty) =
                     let mutable libraryType = Unchecked.defaultof<JsonElement>
 
@@ -2728,11 +2767,11 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
                         // need the SemVer major; System.Version deliberately rejects
                         // valid NuGet prerelease suffixes such as `4.0.0-pre.12`.
                         let version = package.Name.Substring(slash + 1)
-                        let dot = version.IndexOf('.')
+                        let matched = completeNuGetVersion.Match version
 
                         match
-                            if dot > 0 then
-                                Int32.TryParse(version.AsSpan(0, dot))
+                            if matched.Success then
+                                Int32.TryParse matched.Groups[1].Value
                             else
                                 (false, 0)
                         with
