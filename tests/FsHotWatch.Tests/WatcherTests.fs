@@ -597,21 +597,39 @@ let ``macOS setup creates native first and rolls every partial watcher back`` ()
         test <@ disposed |> Seq.contains "system-1" @>
         test <@ watcher.Disposables.Length = 1 @>)
 
-[<Fact(Timeout = 30000)>]
-let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
-    withTempDir "watcher-fsw" (fun tmpDir ->
+[<Collection(FileWatchCollectionName)>]
+type RealFileWatcherTests() =
+
+    [<Fact(Timeout = 30000)>]
+    member _.``FileWatcher.create with isMacOS=false watches src and tests dirs``() =
+        withTempDir "watcher-fsw" (fun tmpDir ->
+            let srcDir = Path.Combine(tmpDir, "src")
+            let testsDir = Path.Combine(tmpDir, "tests")
+            Directory.CreateDirectory(srcDir) |> ignore
+            Directory.CreateDirectory(testsDir) |> ignore
+
+            let changes = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+            let onChange change = changes.Add(change)
+
+            use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
+
+            probeUntilEvent srcDir (fun () -> changes.Count >= 1) 10000
+            test <@ changes.Count >= 1 @>)
+
+    [<Fact(Timeout = 150000)>]
+    member _.``watcher detects file changes in src directory``() =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
         let srcDir = Path.Combine(tmpDir, "src")
-        let testsDir = Path.Combine(tmpDir, "tests")
         Directory.CreateDirectory(srcDir) |> ignore
-        Directory.CreateDirectory(testsDir) |> ignore
+        let changes = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+        let onChange change = changes.Add(change)
 
-        let mutable changes: FileChangeKind list = []
-        let onChange change = changes <- change :: changes
+        use watcher = FileWatcher.create tmpDir onChange None [] 0.05
 
-        use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
-
-        probeUntilEvent srcDir (fun () -> changes.Length >= 1) 10000
-        test <@ changes.Length >= 1 @>)
+        // Probe until the watcher is delivering events (setup lag can be an unbounded window).
+        probeUntilEvent srcDir (fun () -> changes.Count >= 1) 60000
+        test <@ changes.Count >= 1 @>
+        Directory.Delete(tmpDir, true)
 
 [<Fact(Timeout = 15000)>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
@@ -621,23 +639,6 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
 
         use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
         test <@ watcher.Disposables.Length = 1 @>)
-
-// === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
-
-[<Fact(Timeout = 150000)>]
-let ``watcher detects file changes in src directory`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
-    let srcDir = Path.Combine(tmpDir, "src")
-    Directory.CreateDirectory(srcDir) |> ignore
-    let mutable changes = []
-    let onChange change = changes <- change :: changes
-
-    use watcher = FileWatcher.create tmpDir onChange None [] 0.05
-
-    // Probe until the watcher is delivering events (setup lag can be an unbounded window).
-    probeUntilEvent srcDir (fun () -> changes.Length >= 1) 60000
-    test <@ changes.Length >= 1 @>
-    Directory.Delete(tmpDir, true)
 
 // === Unit tests for matchesPattern ===
 
@@ -683,51 +684,56 @@ let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
 
 // === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
-[<Fact(Timeout = 60000)>]
-let ``FileWatcher with wildcard pattern fires SourceChanged for matching file`` () =
-    withTempDir "watcher-extra-wild" (fun tmpDir ->
-        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-        let onChange change = received.Add(change)
+[<Collection(FileWatchCollectionName)>]
+type ExtraPatternFileWatcherTests() =
 
-        use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] 0.05 :> IDisposable
+    [<Fact(Timeout = 60000)>]
+    member _.``FileWatcher with wildcard pattern fires SourceChanged for matching file``() =
+        withTempDir "watcher-extra-wild" (fun tmpDir ->
+            let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+            let onChange change = received.Add(change)
 
-        // Rewrite until an event lands: the macOS backend has cold-start latency.
-        let configPath = Path.Combine(tmpDir, "coverage.ratchet.json")
+            use _watcher =
+                FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] 0.05
+                :> IDisposable
 
-        let hasMatch () =
-            received
-            |> Seq.exists (fun c ->
-                match c with
-                | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(".ratchet.json"))
-                | _ -> false)
+            // Rewrite until an event lands: the macOS backend has cold-start latency.
+            let configPath = Path.Combine(tmpDir, "coverage.ratchet.json")
 
-        probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+            let hasMatch () =
+                received
+                |> Seq.exists (fun c ->
+                    match c with
+                    | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(".ratchet.json"))
+                    | _ -> false)
 
-        test <@ hasMatch () @>)
+            probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
 
-[<Fact(Timeout = 60000)>]
-let ``FileWatcher with literal filename pattern fires only for matching file`` () =
-    withTempDir "watcher-extra-literal" (fun tmpDir ->
-        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-        let onChange change = received.Add(change)
+            test <@ hasMatch () @>)
 
-        use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ] 0.05
-            :> IDisposable
+    [<Fact(Timeout = 60000)>]
+    member _.``FileWatcher with literal filename pattern fires only for matching file``() =
+        withTempDir "watcher-extra-literal" (fun tmpDir ->
+            let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+            let onChange change = received.Add(change)
 
-        let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
+            use _watcher =
+                FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ] 0.05
+                :> IDisposable
 
-        let hasMatch () =
-            received
-            |> Seq.exists (fun c ->
-                match c with
-                | SourceChanged files -> files |> List.exists (fun f -> Path.GetFileName(f) = "coverage-ratchet.json")
-                | _ -> false)
+            let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
 
-        probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+            let hasMatch () =
+                received
+                |> Seq.exists (fun c ->
+                    match c with
+                    | SourceChanged files ->
+                        files |> List.exists (fun f -> Path.GetFileName(f) = "coverage-ratchet.json")
+                    | _ -> false)
 
-        test <@ hasMatch () @>)
+            probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+
+            test <@ hasMatch () @>)
 
 // === Cross-instance dedup isolation (ContentDedup.Tracker) ===
 // The hash store must be scoped per daemon instance, not process-globally. Two
