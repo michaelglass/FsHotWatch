@@ -2309,6 +2309,46 @@ let private runDotnetIn (cwd: string) (args: string) : unit =
     if proc.ExitCode <> 0 then
         failwithf "dotnet %s in %s failed (exit %d): %s" args cwd proc.ExitCode stderr
 
+/// Own a daemon's complete test lifetime. In particular, cancellation and the
+/// bounded join happen even when the test body throws, so one failed integration
+/// test cannot leave a watcher/run task alive beside the next one.
+let private withRunningDaemon
+    (checker: FSharpChecker)
+    (repoRoot: string)
+    (configure: Daemon -> unit)
+    (body: Daemon -> unit)
+    =
+    use cts = new CancellationTokenSource()
+    let daemon = Daemon.createWith checker repoRoot Daemon.DaemonOptions.defaults
+    configure daemon
+    let task = Async.StartAsTask(daemon.Run(cts.Token))
+
+    try
+        if not (daemon.Ready.Wait(TimeSpan.FromSeconds(60.0))) then
+            Assert.Fail("Daemon did not become ready within 60s")
+
+        body daemon
+    finally
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        (daemon :> IDisposable).Dispose()
+
+/// Produce one complete FCS scan cohort before a test takes its baseline. The
+/// generation assertion makes an accidentally stale/no-op wait fail loudly;
+/// each caller additionally waits for its own observable handler/ledger result.
+let private scanToGeneration (daemon: Daemon) =
+    let before = daemon.GetScanGeneration()
+    daemon.ScanAll() |> Async.RunSynchronously
+    let after = daemon.GetScanGeneration()
+
+    if after <= before then
+        Assert.Fail(sprintf "Scan generation did not advance (%d -> %d)" before after)
+
 [<Fact(Timeout = 180000)>]
 let ``daemon auto-rechecks affected project's source files after .fsproj edit`` () =
     // Pins the original bug: invalidate + re-evaluate options fired, but the per-file
@@ -2366,16 +2406,9 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
         let checker =
             FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
 
-        let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
-
-        try
-            daemon.RegisterHandler(counter)
-            let task = Async.StartAsTask(daemon.Run(cts.Token))
-            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
-
-            // Boot scan drives the first FileChecked for Lib.fs.
-            daemon.ScanAll() |> Async.RunSynchronously
+        withRunningDaemon checker tmpDir (fun daemon -> daemon.RegisterHandler(counter)) (fun daemon ->
+            // Establish one fully-dispatched cohort before mutating the project.
+            scanToGeneration daemon
 
             waitUntil (fun () -> libCheckCount.Value >= 1) 30000
 
@@ -2416,16 +2449,7 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
                         "FR contract failed: after .fsproj edit, expected FileChecked for Lib.fs to increment past baseline=%d within 60s, but stayed at %d. The daemon detected the .fsproj change and re-discovered options, but never re-ran FCS on the project's source files."
                         baseline
                         libCheckCount.Value
-                )
-
-            cts.Cancel()
-
-            try
-                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-            with :? AggregateException ->
-                ()
-        finally
-            (daemon :> IDisposable).Dispose())
+                )))
 
 [<Fact(Timeout = 120000)>]
 let ``watcher delivers ProjectChanged event when obj/project.assets.json is written`` () =
@@ -2563,22 +2587,16 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
         let checker =
             FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
 
-        let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
-
-        let hasNewtonsoftError () =
-            daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
-            |> Map.toSeq
-            |> Seq.exists (fun (file, entries) ->
-                (file = libFsCanonical || file.EndsWith("Lib.fs"))
-                && entries |> List.exists (fun e -> e.Message.Contains("Newtonsoft")))
-
-        try
-            let task = Async.StartAsTask(daemon.Run(cts.Token))
-            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+        withRunningDaemon checker tmpDir ignore (fun daemon ->
+            let hasNewtonsoftError () =
+                daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
+                |> Map.toSeq
+                |> Seq.exists (fun (file, entries) ->
+                    (file = libFsCanonical || file.EndsWith("Lib.fs"))
+                    && entries |> List.exists (fun e -> e.Message.Contains("Newtonsoft")))
 
             // Lib.fs opens Newtonsoft, which isn't referenced yet ⇒ baseline FS0039.
-            daemon.ScanAll() |> Async.RunSynchronously
+            scanToGeneration daemon
             waitUntil hasNewtonsoftError 90000
 
             if not (hasNewtonsoftError ()) then
@@ -2611,16 +2629,7 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
                     sprintf
                         "FR acceptance failed: after PackageReference add + restore, FCS still can't resolve Newtonsoft after 120s (no restart). Remaining: %s"
                         remaining
-                )
-
-            cts.Cancel()
-
-            try
-                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-            with :? AggregateException ->
-                ()
-        finally
-            (daemon :> IDisposable).Dispose())
+                )))
 
 // ===========================================================================
 // Scoped invalidation: a change to one project must re-check that project AND its
@@ -2715,57 +2724,47 @@ let ``scoped: changing one project leaves an independent project warm (not re-ch
         let getB, counterB = fileCheckCounter "count-b" bFs
 
         let checker = FSharpChecker.Create(projectCacheSize = 50)
-        let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
 
-        try
-            daemon.RegisterHandler(counterA)
-            daemon.RegisterHandler(counterB)
-            let task = Async.StartAsTask(daemon.Run(cts.Token))
-            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+        withRunningDaemon
+            checker
+            tmpDir
+            (fun daemon ->
+                daemon.RegisterHandler(counterA)
+                daemon.RegisterHandler(counterB))
+            (fun daemon ->
+                scanToGeneration daemon
+                waitUntil (fun () -> getA () >= 1 && getB () >= 1) 60000
 
-            daemon.ScanAll() |> Async.RunSynchronously
-            waitUntil (fun () -> getA () >= 1 && getB () >= 1) 60000
+                if getA () < 1 || getB () < 1 then
+                    Assert.Fail(
+                        sprintf "Baseline: both projects should be checked on boot (A=%d B=%d)" (getA ()) (getB ())
+                    )
 
-            if getA () < 1 || getB () < 1 then
-                Assert.Fail(
-                    sprintf "Baseline: both projects should be checked on boot (A=%d B=%d)" (getA ()) (getB ())
+                let baselineB = getB ()
+
+                // Touch A's .fsproj only.
+                File.WriteAllText(
+                    aFsproj,
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
                 )
 
-            let baselineB = getB ()
+                let aBefore = getA ()
+                waitUntil (fun () -> getA () > aBefore) 60000
 
-            // Touch A's .fsproj only.
-            File.WriteAllText(
-                aFsproj,
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
-            )
+                if getA () <= aBefore then
+                    Assert.Fail(sprintf "A should be re-checked after its .fsproj change (stayed at %d)" (getA ()))
 
-            let aBefore = getA ()
-            waitUntil (fun () -> getA () > aBefore) 60000
+                // An erroneous B re-check needs time to land before "B stayed flat" means
+                // anything.
+                System.Threading.Thread.Sleep(3000)
 
-            if getA () <= aBefore then
-                Assert.Fail(sprintf "A should be re-checked after its .fsproj change (stayed at %d)" (getA ()))
-
-            // An erroneous B re-check needs time to land before "B stayed flat" means
-            // anything.
-            System.Threading.Thread.Sleep(3000)
-
-            if getB () <> baselineB then
-                Assert.Fail(
-                    sprintf
-                        "Independent project B was re-checked (%d → %d) when only A changed — scoped invalidation should leave it warm."
-                        baselineB
-                        (getB ())
-                )
-
-            cts.Cancel()
-
-            try
-                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-            with :? AggregateException ->
-                ()
-        finally
-            (daemon :> IDisposable).Dispose())
+                if getB () <> baselineB then
+                    Assert.Fail(
+                        sprintf
+                            "Independent project B was re-checked (%d → %d) when only A changed — scoped invalidation should leave it warm."
+                            baselineB
+                            (getB ())
+                    )))
 
 [<Fact(Timeout = 180000)>]
 let ``scoped: changing a project re-checks its dependent (correctness over warmth)`` () =
