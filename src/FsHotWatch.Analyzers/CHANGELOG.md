@@ -4,6 +4,9 @@
 
 - analyzer result cache keys now use repository-relative path
   identities, so equivalent checkouts can safely share cached findings.
+- warm analyzer hosts hash the exact analyzer DLL bytes once per
+  checked-file generation, reload changed assemblies before analysis, and bypass
+  caching while an assembly identity is temporarily unreadable.
 
 ## 0.7.0-alpha.28 - 2026-09-01
 

@@ -108,35 +108,131 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
 /// sorted so directory enumeration order is irrelevant. A missing path or unreadable
 /// DLL contributes a stable sentinel rather than throwing, so identity computation
 /// never crashes plugin construction.
-let internal analyzerAssemblyIdentityForRoot repoRoot (prefixes: string array) (paths: string list) : string =
-    let perFile =
+type private AnalyzerAssemblySnapshot = { Path: string; Name: string }
+
+let private analyzerAssemblySnapshotWith
+    (directoryExists: string -> bool)
+    (enumerateDlls: string -> string array)
+    repoRoot
+    (prefixes: string array)
+    (paths: string list)
+    =
+    let mutable allEnumerationsReadable = true
+
+    let snapshot =
         paths
         |> List.sort
         |> List.collect (fun path ->
-            if not (Directory.Exists(path)) then
-                [ $"%s{cachePathIdentity repoRoot path}=>missing" ]
-            else
-                Directory.GetFiles(path, "*.dll")
-                |> Array.filter (fun dll ->
-                    not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
-                |> Array.map (fun dll ->
-                    let name = Path.GetFileName dll
+            try
+                if not (directoryExists path) then
+                    [ Choice1Of2 $"%s{cachePathIdentity repoRoot path}=>missing" ]
+                else
+                    enumerateDlls path
+                    |> Array.filter (fun dll ->
+                        not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
+                    |> Array.sort
+                    |> Array.map (fun dll ->
+                        Choice2Of2
+                            { Path = dll
+                              Name = Path.GetFileName dll })
+                    |> Array.toList
+            with ex ->
+                allEnumerationsReadable <- false
+                [ Choice1Of2 $"%s{cachePathIdentity repoRoot path}=>unreadable-enumeration:%s{ex.Message}" ])
 
-                    let contentHash =
-                        try
-                            File.ReadAllBytes dll
-                            |> System.Security.Cryptography.SHA256.HashData
-                            |> System.Convert.ToHexString
-                        with ex ->
-                            // Unreadable (transient lock, perms): a stable sentinel
-                            // keyed on the message so distinct failures stay distinct,
-                            // never a throw that aborts plugin construction.
-                            $"unreadable:%s{ex.Message}"
+    snapshot, allEnumerationsReadable
 
-                    $"%s{cachePathIdentity repoRoot dll}=>%s{name}:%s{contentHash}")
-                |> Array.toList)
+let private analyzerAssemblySnapshot repoRoot prefixes paths =
+    analyzerAssemblySnapshotWith
+        Directory.Exists
+        (fun path -> Directory.GetFiles(path, "*.dll"))
+        repoRoot
+        prefixes
+        paths
 
-    hashIdentityParts "analyzer-assemblies-v1" perFile
+let private analyzerAssemblyIdentityFromSnapshot
+    repoRoot
+    (readBytes: string -> byte array)
+    (snapshot: Choice<string, AnalyzerAssemblySnapshot> list)
+    =
+    let mutable allReadable = true
+
+    let perFile =
+        snapshot
+        |> List.map (function
+            | Choice1Of2 missing -> missing
+            | Choice2Of2 file ->
+                let contentHash =
+                    try
+                        readBytes file.Path
+                        |> System.Security.Cryptography.SHA256.HashData
+                        |> System.Convert.ToHexString
+                    with ex ->
+                        allReadable <- false
+
+                        // Unreadable (transient lock, perms): a stable sentinel
+                        // keyed on the message so distinct failures stay distinct,
+                        // never a throw that aborts plugin construction.
+                        $"unreadable:%s{ex.Message}"
+
+                $"%s{cachePathIdentity repoRoot file.Path}=>%s{file.Name}:%s{contentHash}")
+
+    hashIdentityParts "analyzer-assemblies-v1" perFile, allReadable
+
+type internal AnalyzerAssemblyIdentityMemo =
+    { Current: unit -> string option
+      Invalidate: unit -> unit }
+
+/// Content is read once per explicitly invalidated stable batch generation.
+/// Metadata is not evidence: a build can preserve both length and timestamp.
+let internal analyzerAssemblyIdentityMemoWithIO
+    directoryExists
+    enumerateDlls
+    (readBytes: string -> byte array)
+    repoRoot
+    (prefixes: string array)
+    (paths: string list)
+    =
+    let mutable cached: string option = None
+    let gate = obj ()
+
+    { Current =
+        fun () ->
+            lock gate (fun () ->
+                match cached with
+                | Some identity -> Some identity
+                | None ->
+                    let snapshot, allEnumerationsReadable =
+                        analyzerAssemblySnapshotWith directoryExists enumerateDlls repoRoot prefixes paths
+
+                    let identity, allContentReadable =
+                        analyzerAssemblyIdentityFromSnapshot repoRoot readBytes snapshot
+
+                    if allEnumerationsReadable && allContentReadable then
+                        cached <- Some identity
+                        Some identity
+                    else
+                        // A transient read failure is not an assembly identity. In
+                        // particular, never let its diagnostic sentinel key a task-
+                        // cache lookup or write; retry the exact bytes next time.
+                        cached <- None
+                        None)
+      Invalidate = fun () -> lock gate (fun () -> cached <- None) }
+
+let internal analyzerAssemblyIdentityMemoWith repoRoot prefixes paths readBytes =
+    analyzerAssemblyIdentityMemoWithIO
+        Directory.Exists
+        (fun path -> Directory.GetFiles(path, "*.dll"))
+        readBytes
+        repoRoot
+        prefixes
+        paths
+
+let internal analyzerAssemblyIdentityForRoot repoRoot (prefixes: string array) (paths: string list) : string =
+    analyzerAssemblySnapshot repoRoot prefixes paths
+    |> fst
+    |> analyzerAssemblyIdentityFromSnapshot repoRoot File.ReadAllBytes
+    |> fst
 
 let internal analyzerAssemblyIdentity prefixes paths =
     analyzerAssemblyIdentityForRoot (Directory.GetCurrentDirectory()) prefixes paths
@@ -154,6 +250,18 @@ let internal analyzersCacheKeyFor cacheRepoRoot analyzerPathsHash analyzerAssemb
                   "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
         )
     | _ -> None
+
+let internal reloadAnalyzerIdentityIfStale
+    (currentIdentity: unit -> string option)
+    (loadedIdentity: string option)
+    (reload: unit -> unit)
+    : string option * bool =
+    match currentIdentity () with
+    | None -> loadedIdentity, false
+    | Some onDisk when Some onDisk = loadedIdentity -> loadedIdentity, false
+    | Some onDisk ->
+        reload ()
+        Some onDisk, true
 
 /// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
 /// The SDK's constructor shape is reflected at startup (`apoCtor`); kept separate
@@ -329,25 +437,32 @@ let internal createWithSlowHookForRepo
     // So track the content identity of the loaded assembly set (the same hash the
     // cache key uses) and re-load the client at the start of a FileChecked event
     // when the on-disk identity differs. Volatile-guarded per the plugin convention.
-    let mutable loadedAssemblyIdentity =
-        analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+    let analyzerAssemblyIdentity =
+        analyzerAssemblyIdentityMemoWith cacheRepoRoot knownNonAnalyzerPrefixes analyzerPaths File.ReadAllBytes
+
+    let mutable loadedAssemblyIdentity = analyzerAssemblyIdentity.Current()
+
+    // Construction hashes the assemblies loaded above. End that generation now:
+    // a rebuild can land before the first FileChecked event, including one that
+    // preserves both DLL length and timestamp.
+    analyzerAssemblyIdentity.Invalidate()
 
     let reloadIfStale () =
-        let onDisk = analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+        let updatedIdentity, _ =
+            reloadAnalyzerIdentityIfStale analyzerAssemblyIdentity.Current loadedAssemblyIdentity (fun () ->
+                // Load the current set into a FRESH client and swap it in, so
+                // the added analyzer is live (and removed/changed ones are gone).
+                let fresh = Client<CliAnalyzerAttribute, CliContext>()
+                let reloaded = loadInto fresh
+                let reloadedCount = reloaded |> List.sumBy snd
 
-        if onDisk <> Volatile.Read(&loadedAssemblyIdentity) then
-            // Load the current set into a FRESH client and swap it in, so the added
-            // analyzer is live (and any removed/changed one is gone) before we analyze.
-            let fresh = Client<CliAnalyzerAttribute, CliContext>()
-            let reloaded = loadInto fresh
-            let reloadedCount = reloaded |> List.sumBy snd
+                Volatile.Write(&client, fresh)
 
-            Volatile.Write(&client, fresh)
-            Volatile.Write(&loadedAssemblyIdentity, onDisk)
+                info
+                    "analyzers"
+                    $"Analyzer assembly set changed on disk — reloaded %d{reloadedCount} analyzers from %d{analyzerPaths.Length} paths")
 
-            info
-                "analyzers"
-                $"Analyzer assembly set changed on disk — reloaded %d{reloadedCount} analyzers from %d{analyzerPaths.Length} paths"
+        loadedAssemblyIdentity <- updatedIdentity
 
     let analyzerTimeout =
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
@@ -605,7 +720,7 @@ let internal createWithSlowHookForRepo
                              diagnostics = totalDiags |}
                       )
               } ]
-      Subscriptions = Set.ofList [ SubscribeFileChecked ]
+      Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
       CacheKey =
         // pure-content cache key (file source + analyzer identity + fcs-signature).
         let analyzerPathsHash =
@@ -616,12 +731,14 @@ let internal createWithSlowHookForRepo
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
             | FileChecked _ ->
-                // Recompute content identity before lookup: a cache hit skips Update,
-                // including reloadIfStale, so a construction-time snapshot is stale.
-                let analyzerAssemblyHash =
-                    analyzerAssemblyIdentityForRoot cacheRepoRoot knownNonAnalyzerPrefixes analyzerPaths
-
-                analyzersCacheKeyFor cacheRepoRoot analyzerPathsHash analyzerAssemblyHash event
+                analyzerAssemblyIdentity.Current()
+                |> Option.bind (fun analyzerAssemblyHash ->
+                    analyzersCacheKeyFor cacheRepoRoot analyzerPathsHash analyzerAssemblyHash event)
+            | BatchChecked _ ->
+                // The completed cohort is the stable-generation boundary. The
+                // first file in the next batch rehashes exact DLL bytes once.
+                analyzerAssemblyIdentity.Invalidate()
+                None
             | _ -> None
 
         Some cacheKey
