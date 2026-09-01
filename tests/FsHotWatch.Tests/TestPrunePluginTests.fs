@@ -8226,6 +8226,11 @@ let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicti
 [<InlineData("4.not-semver")>]
 [<InlineData("4.")>]
 [<InlineData("4.0.0 garbage")>]
+[<InlineData("4.0.0-01")>]
+[<InlineData("4.0.0-alpha.01")>]
+[<InlineData("4.2147483648.0")>]
+[<InlineData("4.0.2147483648")>]
+[<InlineData("4.0.0.2147483648")>]
 let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with an unknown version``
     (unknownVersion: string)
     =
