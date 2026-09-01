@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-564: test-selection cache identities now use portable repository
+  paths, so equivalent checkouts can reuse the same content evidence safely.
+
 - fix(AUTOMATION-111): derive the selection alarm and recall metric from the
   same typed run receipt. Non-executing outcomes, missing/unreadable/incomplete
   CTRF, and any failed row whose structured trace/stack/exception field carries

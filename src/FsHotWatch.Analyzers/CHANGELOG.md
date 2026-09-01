@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-564: analyzer result cache keys now use repository-relative path
+  identities, so equivalent checkouts can safely share cached findings.
+
 ## 0.7.0-alpha.28 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

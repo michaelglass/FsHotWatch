@@ -8533,8 +8533,8 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
     // `None` rather than "impact" for the inner loop keeps the merkle entry OMITTED, so
-    // the ordinary key stays byte-identical to the pre-feature one and existing on-disk
-    // entries keep hitting. `confirm` pays for its own scope; the fast loop pays nothing.
+    // the ordinary key has no scope-specific term. `confirm` pays for its own scope;
+    // the fast loop pays nothing. The plugin-wide version still moves for migrations.
     let withScopeThunk =
         cacheKeyFor
             (fun () -> "s")
@@ -8549,7 +8549,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
     // The same inputs, hand-built with no full-suite-scope entry at all.
     let expected =
         FsHotWatch.TaskCache.merkleCacheKey
-            [ "plugin-version", "test-prune-merkle-v2"
+            [ "plugin-version", cacheVersion
               "event", "BuildCompleted"
               "changed-symbols", "s"
               "project-structure", "struct"

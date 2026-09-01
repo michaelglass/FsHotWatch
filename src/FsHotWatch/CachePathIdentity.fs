@@ -94,6 +94,9 @@ module CachePathIdentity =
         | CachePathIdentity.RepoRelative relative -> repoPrefix + relative
         | CachePathIdentity.ExternalAbsolute absolute -> externalPrefix + absolute
 
+    /// Creates the canonical path value used inside content-merkle inputs.
+    let forMerkleInput (repoRoot: string) (path: string) = ofPath repoRoot path |> toKey
+
     /// Decodes a cache key, rejecting non-canonical or escaping relative paths.
     let tryParse (key: string) =
         if not (isNull key) && key.StartsWith(repoPrefix, StringComparison.Ordinal) then

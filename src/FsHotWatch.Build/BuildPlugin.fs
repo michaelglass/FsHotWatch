@@ -9,6 +9,13 @@ open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Lifecycle
 open FsHotWatch.PluginFramework
+
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+[<Literal>]
+let internal cacheVersion = "build-merkle-v2"
+
 open FsHotWatch.StringHelpers
 
 /// Why a project's compiled artifact is considered stale after a "successful"
@@ -211,11 +218,27 @@ let internal computeBuildCacheKey
     (inputsHash: string)
     : ContentHash =
     FsHotWatch.TaskCache.merkleCacheKey
-        [ "plugin-version", "build-merkle-v1"
+        [ "plugin-version", cacheVersion
           "command", buildCommand
           "args", buildArgs
           "depends-on", String.concat "," (List.sort dependsOn)
           "inputs", inputsHash ]
+
+let internal computeInputsMerkleWith
+    (hashFile: string -> string option)
+    (repoRoot: string)
+    (paths: string list)
+    : string =
+    let sb = System.Text.StringBuilder()
+
+    for path in paths |> List.distinct |> List.sort do
+        let pathIdentity = cachePathIdentity repoRoot path
+        let hash = hashFile path |> Option.defaultValue "missing"
+
+        sb.Append(pathIdentity.Length).Append(':').Append(pathIdentity).Append('@').Append(hash).Append('\n')
+        |> ignore
+
+    FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
 /// build all-inputs merkle. Hashes the on-disk CONTENT of every source
 /// file the project graph knows about, plus every .fsproj — every input, every
@@ -239,7 +262,7 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
         else
             Some(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path))
 
-    member _.Compute() : string =
+    member _.ComputeForRoot(repoRoot: string) : string =
         let sourceFiles = graph.GetAllFiles() |> List.map AbsFilePath.value
 
         let projectFiles = graph.GetAllProjects() |> List.map AbsProjectPath.value
@@ -263,25 +286,10 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
             |> List.collect FsHotWatch.StructureFiles.implicitImportsFor
             |> List.distinct
 
-        let allInputs =
-            (sourceFiles @ projectFiles @ implicitImports) |> List.distinct |> List.sort
+        computeInputsMerkleWith hashFile repoRoot (sourceFiles @ projectFiles @ implicitImports)
 
-        let sb = System.Text.StringBuilder()
-
-        for path in allInputs do
-            let h =
-                match hashFile path with
-                | Some h -> h
-                | None -> "missing" // distinct from any real sha256 hash
-
-            sb.Append(path.Length) |> ignore
-            sb.Append(':') |> ignore
-            sb.Append(path) |> ignore
-            sb.Append('@') |> ignore
-            sb.Append(h) |> ignore
-            sb.Append('\n') |> ignore
-
-        FsHotWatch.CheckCache.sha256Hex (sb.ToString())
+    member this.Compute() : string =
+        this.ComputeForRoot(Directory.GetCurrentDirectory())
 
 /// Why a project contributed nothing — or only half — to an artifact-freshness pass.
 type UnexaminedProject =
@@ -468,7 +476,8 @@ let artifactCoverageGap (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : s
 /// remains in this compatibility entry point so existing callers still compile, but
 /// there is no longer an unsafe report-only mode: attributable stale output always
 /// prevents both cache replay and a newly minted success.
-let createWith
+let private createWithForRepo
+    (repoRoot: string)
     (_artifactGateReddens: bool)
     (command: string)
     (args: string)
@@ -1281,7 +1290,7 @@ let createWith
         let inputsHasher = lazy BuildInputsHasher(graph)
 
         let merkleKey () =
-            Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
+            Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.ComputeForRoot(repoRoot)))
 
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
@@ -1391,6 +1400,29 @@ let createWith
       // never earned it.
       Teardown = None }
 
+let createWith
+    (artifactGateReddens: bool)
+    (command: string)
+    (args: string)
+    (environment: (string * string) list)
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
+    (testProjectNames: string list)
+    (buildTemplate: string option)
+    (dependsOn: string list)
+    (timeoutSec: int option)
+    =
+    createWithForRepo
+        (Directory.GetCurrentDirectory())
+        artifactGateReddens
+        command
+        args
+        environment
+        graph
+        testProjectNames
+        buildTemplate
+        dependsOn
+        timeoutSec
+
 /// The ordinary enforcing constructor. `createWith` retains its former boolean only
 /// for source compatibility; AUTOMATION-358 removed the unsafe report-only behavior.
 let create
@@ -1404,3 +1436,17 @@ let create
     (timeoutSec: int option)
     =
     createWith true command args environment graph testProjectNames buildTemplate dependsOn timeoutSec
+
+/// Creates the build plugin with an explicit repository root for portable cache identities.
+let createForRepo
+    (repoRoot: string)
+    (command: string)
+    (args: string)
+    (environment: (string * string) list)
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
+    (testProjectNames: string list)
+    (buildTemplate: string option)
+    (dependsOn: string list)
+    (timeoutSec: int option)
+    =
+    createWithForRepo repoRoot true command args environment graph testProjectNames buildTemplate dependsOn timeoutSec

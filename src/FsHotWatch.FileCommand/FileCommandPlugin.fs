@@ -6,6 +6,13 @@ open System.Threading
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
+
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+[<Literal>]
+let internal cacheVersion = "file-command-merkle-v2"
+
 open FsHotWatch.ProcessHelper
 
 /// Env var name set on every afterTests-triggered child process.
@@ -194,6 +201,17 @@ let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.Date
 /// deterministically exercise the `None` branch: a path that passes `File.Exists`
 /// during `collectArgFiles` but whose subsequent read fails (deleted in between,
 /// or permissions changed).
+let internal fileCommandCacheKeyFromInputs repoRoot command args fileHashes =
+    let inputs =
+        [ "plugin-version", cacheVersion; "command", command; "args", args ]
+        @ (fileHashes
+           |> List.map (fun (path, hash) ->
+               let identity = cachePathIdentity repoRoot path
+               $"file:%s{identity}", hash))
+
+    FsHotWatch.TaskCache.merkleCacheKey inputs
+    |> FsHotWatch.Events.ContentHash.value
+
 let internal computeArgsSaltWith
     (hashFile: string -> string option)
     (repoRoot: string)
@@ -202,12 +220,9 @@ let internal computeArgsSaltWith
     : string =
     let fileHashes =
         collectArgFiles repoRoot args
-        |> List.choose (fun path -> hashFile path |> Option.map (fun h -> $"file:%s{path}", h))
+        |> List.choose (fun path -> hashFile path |> Option.map (fun hash -> path, hash))
 
-    let inputs = [ "command", command; "args", args ] @ fileHashes
-
-    FsHotWatch.TaskCache.merkleCacheKey inputs
-    |> FsHotWatch.Events.ContentHash.value
+    fileCommandCacheKeyFromInputs repoRoot command args fileHashes
 
 /// Build the salt for this plugin's cache key. Includes the command, the args
 /// string, and a content hash of every whitespace-separated token in args

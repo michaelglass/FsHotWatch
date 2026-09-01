@@ -16,6 +16,13 @@ open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
+
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+[<Literal>]
+let internal cacheVersion = "test-prune-merkle-v3"
+
 open FsHotWatch.StringHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
@@ -4185,7 +4192,8 @@ let internal clearFcsCheckCache (repoRoot: string) : int =
 /// which keeps the corresponding merkle entry OMITTED — the empty-queue,
 /// no-dependsOn key stays byte-identical to the pre-feature key, so existing
 /// on-disk caches keep hitting.
-let internal cacheKeyFor
+let internal cacheKeyForRoot
+    (repoRoot: string)
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
@@ -4260,7 +4268,7 @@ let internal cacheKeyFor
     // that makes an old entry unsound, rather than asking users to wipe the cache.
     let outcomeKey (buildOutcome: string) =
         FsHotWatch.TaskCache.merkleCacheKey (
-            [ "plugin-version", "test-prune-merkle-v2"
+            [ "plugin-version", cacheVersion
               "event", "BuildCompleted"
               "changed-symbols", changedSymbolsHash ()
               // AUTOMATION-303. The one term that pins the SHAPE of the tree. The
@@ -4376,13 +4384,34 @@ let internal cacheKeyFor
 
         Some(
             FsHotWatch.TaskCache.merkleCacheKey
-                [ "plugin-version", "test-prune-merkle-v2"
+                [ "plugin-version", cacheVersion
                   "event", "FileChecked"
-                  "file", AbsFilePath.value r.File
+                  "file", cachePathIdentity repoRoot (AbsFilePath.value r.File)
                   "source", r.Source
                   "fcs-signature", fcsSignature ]
         )
     | _ -> None
+
+let internal cacheKeyFor
+    (changedSymbolsHash: unit -> string)
+    (pendingQueueHash: unit -> string option)
+    (dependsOnHash: unit -> string option)
+    (projectStructureHash: unit -> string)
+    (fullSuiteScopeHash: unit -> string option)
+    (hasOutstandingFailures: unit -> bool)
+    (sessionHasTestEvidence: unit -> bool)
+    (event: PluginEvent<TestPruneMsg>)
+    : ContentHash option =
+    cacheKeyForRoot
+        (Directory.GetCurrentDirectory())
+        changedSymbolsHash
+        pendingQueueHash
+        dependsOnHash
+        projectStructureHash
+        fullSuiteScopeHash
+        hasOutstandingFailures
+        sessionHasTestEvidence
+        event
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
@@ -7538,7 +7567,8 @@ let internal createWithLaunchDeadline
             // not pay for an input it never splices.
             let structureHash () = projectStructureHash repoRoot
 
-            cacheKeyFor
+            cacheKeyForRoot
+                repoRoot
                 changedSymbolsHash
                 pendingQueueHash
                 dependsOnHash

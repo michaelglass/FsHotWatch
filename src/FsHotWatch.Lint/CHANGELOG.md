@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-564: lint cache keys now identify source and configuration files
+  relative to the repository, enabling safe reuse between equivalent checkouts.
+
 ## 0.7.0-alpha.21 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AUTOMATION-564: build input cache keys now identify repository files relative
+  to the checkout root, allowing safe replay across equivalent checkout paths.
+
 ## 0.7.0-alpha.32 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
