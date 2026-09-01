@@ -4,15 +4,6 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-- **Database and socket outages no longer masquerade as TestPrune recall
-  misses.** The alarm and metric now share one typed run receipt: non-executing
-  outcomes, incomplete reports, and any failed row carrying an Npgsql/socket
-  fully qualified exception in a structured trace/stack/exception field produce
-  an explicit non-answer. String, object, and array field shapes are supported;
-  names and assertion messages cannot trigger it. Complete assertion-only
-  failures still report genuine misses of any size
-  (AUTOMATION-111).
-
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
@@ -82,6 +73,21 @@ All notable changes to FsHotWatch packages are documented here.
 > in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
+
+- **Database and socket outages no longer masquerade as TestPrune recall
+  misses.** The alarm and metric now share one typed run receipt: non-executing
+  outcomes, incomplete reports, and any failed row carrying an Npgsql/socket
+  fully qualified exception in a structured trace/stack/exception field produce
+  an explicit non-answer. String, object, and array field shapes are supported;
+  names and assertion messages cannot trigger it. Complete assertion-only
+  failures still report genuine misses of any size
+  (AUTOMATION-111).
+
+- **xUnit 4 test projects now produce authoritative CTRF evidence.** TestPrune
+  reads the restored runner version and uses that family's report switches;
+  xUnit 3 remains supported, while missing, malformed, conflicting, or unknown
+  runner metadata fails closed instead of guessing a fatal command line
+  (AUTOMATION-464).
 
 - **AUTOMATION-358 Case 2:** `fshw invalidate` clears every cached plugin task
   result for the current workspace through the live daemon. The RPC is bounded by
