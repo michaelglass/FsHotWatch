@@ -2747,7 +2747,7 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
 
                 let completeNuGetVersion =
                     System.Text.RegularExpressions.Regex(
-                        "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+                        "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
                         System.Text.RegularExpressions.RegexOptions.CultureInvariant
                     )
 
@@ -2769,14 +2769,30 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
                         let version = package.Name.Substring(slash + 1)
                         let matched = completeNuGetVersion.Match version
 
-                        match
+                        let numericComponents =
                             if matched.Success then
-                                Int32.TryParse matched.Groups[1].Value
+                                [ 1..4 ]
+                                |> List.choose (fun group ->
+                                    if matched.Groups[group].Success then
+                                        Some matched.Groups[group].Value
+                                    else
+                                        None)
+                                |> List.map Int32.TryParse
                             else
-                                (false, 0)
-                        with
-                        | true, 3 -> Some Xunit3
-                        | true, 4 -> Some Xunit4
+                                []
+
+                        let prereleaseIdentifiersAreValid =
+                            if matched.Success && matched.Groups[5].Success then
+                                matched.Groups[5].Value.Split('.')
+                                |> Array.forall (fun identifier ->
+                                    let numeric = identifier |> Seq.forall Char.IsAsciiDigit
+                                    not (numeric && identifier.Length > 1 && identifier[0] = '0'))
+                            else
+                                matched.Success
+
+                        match numericComponents, prereleaseIdentifiersAreValid with
+                        | (true, 3) :: remaining, true when remaining |> List.forall fst -> Some Xunit3
+                        | (true, 4) :: remaining, true when remaining |> List.forall fst -> Some Xunit4
                         | _ -> None
 
                 let parsedFamilies = xunitLibraries |> List.map tryFamily
