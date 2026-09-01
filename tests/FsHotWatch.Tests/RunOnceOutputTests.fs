@@ -1154,6 +1154,7 @@ let private innerLoopExitFor (scope: FsHotWatch.Cli.IpcParsing.TestScope) : int 
           UnattributableDiagnostics = 0
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = scope }
 
@@ -1230,6 +1231,7 @@ let ``confirm refuses every scope it did not positively establish — fault or n
               UnattributableDiagnostics = 0
               WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
               RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+              InvalidEvidence = []
               Coverage = FsHotWatch.Cli.IpcParsing.Complete
               Scope = scope }
 

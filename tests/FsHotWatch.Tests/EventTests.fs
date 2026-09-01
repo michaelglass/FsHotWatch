@@ -117,7 +117,8 @@ let ``TestResult.verdict classifies every TestResult case`` () =
           // that is the whole change: it used to be a sub-case of "passed".
           TestsNoMatch("Zero tests ran", TimeSpan.Zero), NothingVerified
           TestsDeferred "apphost not produced", NothingVerified
-          TestsErrored "no parseable report", NothingVerified ]
+          TestsErrored "no parseable report", NothingVerified
+          TestsInvalidEvidence "clean summary contradicts rows", NothingVerified ]
 
     for (result, expected) in cases do
         test <@ TestResult.verdict result = expected @>
@@ -150,6 +151,7 @@ let ``TestResult.verifiedGreen is TRUE only for a project that executed and pass
     test <@ not (TestResult.verifiedGreen (TestsNoMatch("Zero tests ran", TimeSpan.Zero))) @>
     test <@ not (TestResult.verifiedGreen (TestsDeferred "apphost not produced")) @>
     test <@ not (TestResult.verifiedGreen (TestsErrored "no parseable report")) @>
+    test <@ not (TestResult.verifiedGreen (TestsInvalidEvidence "clean summary contradicts rows")) @>
 
 // `verifiedGreen` is deliberately NOT the negation of "failed", and a fold that treats
 // it as one over-reports rather than under-reports — the safe direction. Pinned so the
@@ -206,7 +208,8 @@ let ``ofResults: projects reported but not one executed`` () =
     let results =
         Map.ofList
             [ "A", TestsDeferred "apphost not produced"
-              "B", TestsErrored "no parseable report" ]
+              "B", TestsErrored "no parseable report"
+              "C", TestsInvalidEvidence "clean summary contradicts rows" ]
 
     test <@ RunVerification.ofResults results = NothingExecuted @>
     test <@ RunVerification.verifiedNothing (RunVerification.ofResults results) @>

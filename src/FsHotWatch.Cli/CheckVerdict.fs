@@ -179,6 +179,11 @@ type CheckOutcome =
     /// host. A real failure alongside an abort still short-circuits to `FailuresFound`
     /// — failures are checked first, so this can never launder a red.
     | RunnerAborted of aborts: string list
+    /// No failures and no killed runner, but one or more completed test runners
+    /// supplied missing, unreadable, or self-contradictory requested evidence.
+    /// Nothing was verified, so this is incomplete (exit 2), never a pass or a
+    /// manufactured test failure.
+    | InvalidEvidence of evidence: string list
     /// A CONFIRMATION run whose tests did not cover the whole suite. Nothing failed —
     /// but the run did not produce the evidence a merge verdict is made of, so there
     /// is no verdict to give. Distinct from `FailuresFound` (nothing is known to be
@@ -218,6 +223,7 @@ let exitCode (outcome: CheckOutcome) : int =
     // A dead test host is the same class of answer again — "could not complete", not
     // "failed". Exit 2, NEVER the 1 it used to return.
     | CheckOutcome.RunnerAborted _ -> 2
+    | CheckOutcome.InvalidEvidence _ -> 2
     | CheckOutcome.UnearnedScope _ -> 3
     // Same exit code as an unearned scope, and for the same reason: the run produced
     // no verdict. "I cannot tell" is not a pass and it is not a failure.
@@ -268,6 +274,10 @@ type CheckInputs =
         /// it to `RunnerAborted`/exit 2 instead of a red, and a transport that forgets to
         /// supply it fails to compile rather than quietly reporting the old exit 1.
         RunnerAborted: RunnerAbort
+        /// Requested structured test evidence that could not support a verdict.
+        /// Kept separate from `RunnerAborted`: these runners completed, and a
+        /// transport that conflates the cases gives the wrong diagnosis/remedy.
+        InvalidEvidence: string list
         /// Did the run actually check every file it is responsible for? `Unknown` is
         /// never `Complete`.
         Coverage: Coverage
@@ -351,6 +361,8 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         // build race, and "re-run once the build settles" is advice that never arrives
         // for a machine that is simply out of CPU.
         CheckOutcome.RunnerAborted(RunnerAbort.aborts inputs.RunnerAborted)
+    elif not inputs.InvalidEvidence.IsEmpty then
+        CheckOutcome.InvalidEvidence inputs.InvalidEvidence
     elif BuildWait.isWaiting inputs.WaitingOnBuild then
         // No real failure, but a project's tests DID NOT RUN because its build
         // artifact wasn't ready. Non-green, but "could not complete", never a red.
@@ -475,6 +487,7 @@ let converge
     // real crash into a slow green. Reporting the abort honestly, once, keeps that
     // distinction in the hands of the reader — who can see whether the machine was busy.
     | CheckOutcome.RunnerAborted _
+    | CheckOutcome.InvalidEvidence _
     | CheckOutcome.UnearnedScope _
     // Terminal for the same reason: a re-scan does not clear stale daemon state. That
     // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault

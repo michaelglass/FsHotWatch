@@ -2766,7 +2766,7 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
 
         File.WriteAllText(
             reportPath,
-            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0}}}"""
+            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0},"tests":[{"name":"Ctrf.one","status":"passed"},{"name":"Ctrf.two","status":"passed"},{"name":"Ctrf.three","status":"passed"},{"name":"Ctrf.four","status":"passed"},{"name":"Ctrf.five","status":"passed"},{"name":"Ctrf.six","status":"passed"},{"name":"Ctrf.skipped","status":"skipped"}]}}"""
         )
 
         let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")
@@ -2816,6 +2816,54 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
         Assert.Equal(6, counts.GetProperty("succeeded").GetInt32())
         Assert.Equal(0, counts.GetProperty("failed").GetInt32())
         Assert.Equal(1, counts.GetProperty("skipped").GetInt32()))
+
+[<Fact(Timeout = 20000)>]
+let ``run-tests refuses a clean CTRF summary that lists fewer rows than it declares`` () =
+    // Drive the actual report-file handoff: a successful runner can leave a partial
+    // clean report, but the daemon must not emit a passed project from that evidence.
+    withTempDir "tp-run-contradictory-ctrf" (fun tmpDir ->
+        let reportPath = Path.Combine(tmpDir, "contradictory.ctrf.json")
+
+        File.WriteAllText(
+            reportPath,
+            """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+        )
+
+        let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")
+
+        File.WriteAllText(
+            scriptPath,
+            "for a in \"$@\"; do\n"
+            + "  if [ -d \"$a\" ]; then cp \""
+            + reportPath
+            + "\" \"$a/ContradictoryCtrfProj.ctrf.json\"; fi\n"
+            + "done\nexit 0\n"
+        )
+
+        let configs =
+            [ { Project = "ContradictoryCtrfProj"
+                Command = "sh"
+                Args = scriptPath
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = Ctrf } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+
+        let project =
+            JsonDocument.Parse(result.Value).RootElement.GetProperty("projects").[0]
+
+        Assert.Equal("invalid-evidence", project.GetProperty("status").GetString())
+        Assert.Contains("summary says 7", project.GetProperty("output").GetString())
+        Assert.Equal(JsonValueKind.Null, project.GetProperty("counts").ValueKind))
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests emits a NULL counts field for a project that wrote no report`` () =
@@ -7812,11 +7860,11 @@ let private isFailed result =
 [<Fact(Timeout = 5000)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
     // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
-    let report = Some(rep 12 12 0 0 0)
+    let report = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested report)
+            (ReportProvided report)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "host crashed during shutdown"))
@@ -7825,11 +7873,11 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
-    let report = Some(rep 3 2 1 0 0)
+    let report = rep 3 2 1 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested report)
+            (ReportProvided report)
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained ""))
@@ -7838,11 +7886,11 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classify: report with an other (raw-throw) result is RED`` () =
-    let report = Some(rep 3 2 0 0 1)
+    let report = rep 3 2 0 0 1
 
     let result =
         classifyTestOutcome
-            (ReportRequested report)
+            (ReportProvided report)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(2, ProcessOutput.Drained ""))
@@ -7850,15 +7898,15 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
+let ``classify: non-zero exit with an absent requested CTRF report is distinct incomplete evidence`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (InvalidReport "the requested report was not written or could not be read")
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "aborted"))
 
-    test <@ TestResult.isErrored result @>
+    test <@ TestResult.isInvalidEvidence result @>
     test <@ not (isFailed result) @>
     test <@ not (TestResult.verifiedGreen result) @>
 
@@ -7875,23 +7923,36 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: clean exit with no report is PASSED`` () =
+let ``classify: clean exit with no requested CTRF report is distinct incomplete evidence`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (InvalidReport "the requested report was not written or could not be read")
             false
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
-    test <@ TestResult.verifiedGreen result @>
+    test <@ TestResult.isInvalidEvidence result @>
+    test <@ not (TestResult.verifiedGreen result) @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: clean exit with an invalid requested CTRF report is distinct incomplete evidence`` () =
+    let result =
+        classifyTestOutcome
+            (InvalidReport "summary says 7 test(s), but results.tests lists 1")
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
+
+    test <@ TestResult.isInvalidEvidence result @>
+    test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
-    let report = Some(rep 0 0 0 0 0)
+    let report = rep 0 0 0 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested report)
+            (ReportProvided report)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(8, ProcessOutput.Drained "Zero tests ran"))
@@ -7900,11 +7961,11 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
 
 [<Fact(Timeout = 5000)>]
 let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
-    let report = Some(rep 5 5 0 0 0)
+    let report = rep 5 5 0 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested report)
+            (ReportProvided report)
             false
             (TimeSpan.FromSeconds 30.0)
             (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, ProcessOutput.Drained "stuck", KillOutcome.Killed))
@@ -7929,11 +7990,11 @@ let ``a SIGKILLed host is an ABORT even though it flushed a report full of failu
     // The exact shape the ticket records: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
     // Reading that report as the verdict is what minted the phantom mass regression.
-    let phantomMassRegression = Some(rep 2171 2032 139 0 0)
+    let phantomMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested phantomMassRegression)
+            (ReportProvided phantomMassRegression)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(137, ProcessOutput.Drained "failed FsHotWatch.Tests.AbsFilePath.roundtrips (0ms)"))
@@ -7960,11 +8021,11 @@ let ``THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` (
     // instead of being killed. This must stay a red, or the fix has merely inverted the
     // lie: a gate that reported every genuine regression as "the machine was busy" would
     // be worse than the bug it replaced.
-    let realMassRegression = Some(rep 2171 2032 139 0 0)
+    let realMassRegression = rep 2171 2032 139 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested realMassRegression)
+            (ReportProvided realMassRegression)
             false
             (TimeSpan.FromMinutes 4.0)
             (ProcessOutcome.Failed(2, ProcessOutput.Drained "failed FsHotWatch.Tests.Foo.bar (312ms)"))
@@ -7980,11 +8041,11 @@ let ``a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
     // that never reached its own exit describes the part of the suite it got through, and
     // outcome 2 ("a report showing zero failures beats the exit code") would have called
     // that a pass.
-    let partialButClean = Some(rep 812 812 0 0 0)
+    let partialButClean = rep 812 812 0 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested partialButClean)
+            (ReportProvided partialButClean)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(134, ProcessOutput.Drained ""))
@@ -7998,11 +8059,11 @@ let ``the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
     // swallowed it, every dirty shutdown would stop being a pass.
-    let clean = Some(rep 12 12 0 0 0)
+    let clean = rep 12 12 0 0 0
 
     let result =
         classifyTestOutcome
-            (ReportRequested clean)
+            (ReportProvided clean)
             false
             TimeSpan.Zero
             (ProcessOutcome.Failed(7, ProcessOutput.Drained "host crashed during shutdown"))
@@ -8084,7 +8145,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
 let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
     let result =
         classifyTestOutcome
-            (ReportRequested None)
+            (InvalidReport "the requested report was not written or could not be read")
             false
             (TimeSpan.FromSeconds 300.0)
             (ProcessOutcome.TimedOut(
@@ -9361,6 +9422,31 @@ let ``a run whose test HOST DIED completes as an ABORT, never as "N failed"`` ()
         )
 
 [<Fact(Timeout = 20000)>]
+let ``invalid CTRF evidence completes incomplete, never as a failed project`` () =
+    // A completed runner with contradictory evidence is not a test failure and is not a
+    // killed host. The plugin status must preserve that third outcome so the transport
+    // can return CheckOutcome.InvalidEvidence/exit 2 instead of manufacturing a red.
+    let handler =
+        create ":memory:" "/tmp" (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+    let invalid =
+        TestsInvalidEvidence "CTRF summary says 7 test(s), but results.tests lists 1"
+
+    let run =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", invalid ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let _ctx, statuses, _ledger, _final = driveRuns handler [ run ]
+
+    match lastStatus statuses with
+    | PluginStatus.Completed(_, verdict) ->
+        test <@ RunSummary.saysNothingVerified verdict.Summary @>
+        test <@ verdict.Summary.Contains "INVALID EVIDENCE" @>
+        test <@ verdict.Summary.Contains "ProjB" @>
+        test <@ not (verdict.Summary.Contains "1 failed") @>
+    | other ->
+        Assert.Fail($"invalid evidence must complete incomplete rather than report a failed project, got %A{other}")
+
+[<Fact(Timeout = 20000)>]
 let ``THE OTHER DIRECTION — a run with a REAL failure still fails, and names the abort apart`` () =
     // The guard against inverting the lie. A genuine red alongside a killed host stays a
     // red: `PluginStatus.Failed`, "1 failed: ProjA". The abort is still NAMED — it proved
@@ -10157,6 +10243,7 @@ let ``confirm still rejects a filtered green as UnearnedScope`` () =
                   UnattributableDiagnostics = 0
                   WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
                   RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+                  InvalidEvidence = []
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
                   Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
 
@@ -10193,6 +10280,7 @@ let ``x 129: a RAW-filter run with no report evidence claims NO coverage, so the
           UnattributableDiagnostics = 0
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun FsHotWatch.Cli.IpcParsing.NoTestsReason.Unstated }
 
@@ -10230,6 +10318,7 @@ let ``x 112: a raw-filter run WITH evidence is a FILTERED scope, and confirm sti
           UnattributableDiagnostics = 0
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
           Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
 

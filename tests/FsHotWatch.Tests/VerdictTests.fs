@@ -46,8 +46,14 @@ let private ctrfJson (tests: int) (passed: int) (failed: int) (stop: DateTime) =
                start = ms - 1000L
                stop = ms |}
 
+    let entries =
+        [| for index in 1..tests do
+               {| name = $"Fixture.case{index}"
+                  status = if index <= failed then "failed" else "passed" |} |]
+        |> JsonSerializer.Serialize
+
     let results =
-        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":[]}}"""
+        $"""{{"tool":{{"name":"xUnit.net v3"}},"summary":%s{summary},"tests":%s{entries}}}"""
 
     $"""{{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"%s{Guid.NewGuid().ToString()}","results":%s{results}}}"""
 
@@ -607,6 +613,23 @@ let ``suites are the reports in THIS RUN's directory — membership is declared,
         test <@ suites.Head.Failed = 0 @>
         let mineDir = mine.ToString("N")
         test <@ suites.Head.Ctrf = $".fshw/test-runs/%s{mineDir}/Lib.Tests.ctrf.json" @>)
+
+[<Fact>]
+let ``durable suite verdicts exclude a clean CTRF report with incomplete entries`` () =
+    // The report is retained as diagnostics, but a durable merge verdict may not copy
+    // its claimed seven passes after the live test-prune verdict refused that evidence.
+    withTempDir "ctrf-durable-coherence" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = Ctrf.runDir root runId
+        Directory.CreateDirectory(dir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(dir, "Lib.Tests" + Ctrf.ReportSuffix),
+            """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
+        )
+
+        test <@ List.isEmpty (Verdict.suiteVerdicts root (Some runId)) @>)
 
 [<Fact>]
 let ``a run that EXECUTED but ran no tests has an EMPTY directory — a fact, not a silence`` () =
@@ -1448,6 +1471,7 @@ let private impactScopedReading (root: string) (scope: TestScope) (failingDiagno
           UnattributableDiagnostics = 0
           WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
+          InvalidEvidence = []
           Coverage = coverage
           Scope = scope }
 

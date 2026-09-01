@@ -1049,6 +1049,42 @@ let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
         test <@ (TestResult.output p1).Contains("no parseable report") @>)
 
 [<Fact(Timeout = 15000)>]
+let ``FileTaskCache roundtrips the TestsInvalidEvidence case as non-green`` () =
+    // Invalid evidence is normally uncacheable, but the exhaustive persistence format
+    // must preserve its distinct meaning if a composite cached event carries it.
+    withTempDir "ftc-invalid-evidence" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.Zero
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsInvalidEvidence "clean counters contradict rows" ]
+                        Verification = Ran RunScope.Partial } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let cached = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ cached.IsSome @>
+
+        let projectResult =
+            cached.Value.EmittedEvents
+            |> List.pick (function
+                | CachedTestRunCompleted completed -> Some completed.Results.["p1"]
+                | _ -> None)
+
+        test <@ TestResult.isInvalidEvidence projectResult @>
+        test <@ not (TestResult.verifiedGreen projectResult) @>
+        test <@ TestResult.output projectResult = "clean counters contradict rows" @>)
+
+[<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)

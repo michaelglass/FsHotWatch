@@ -136,6 +136,12 @@ module TestReport =
 /// run.
 let internal tryParseReport (json: string) : TestReport option = FsHotWatch.Ctrf.trySummary json
 
+/// Parse the report used for a pass verdict. Unlike the opportunistic flakiness reader,
+/// this rejects a clean summary whose declared total cannot be supported by its rows.
+/// Red reports remain valid when MTP omitted a raw-exception row: their summary already
+/// proves the run was not clean.
+let internal tryParseVerdictReport (json: string) : Result<TestReport, string> = FsHotWatch.Ctrf.tryVerdictSummary json
+
 /// Compute a flakiness score in [0.0, 1.0] over a sequence of outcomes ordered
 /// most-recent-first. Skipped runs are filtered out before counting (a skip
 /// isn't a real outcome flip — collapse to the surrounding outcomes). The
