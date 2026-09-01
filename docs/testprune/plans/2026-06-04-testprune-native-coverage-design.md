@@ -3,7 +3,7 @@
 ## Problem
 
 The fshw coverage ratchet drifts and goes stale. Root cause, established empirically
-against thellma/intelligence:
+against a large private F# codebase:
 
 - A fresh MS `--coverage` run is **deterministic and complete** — its line set equals
   the PDB's span-expanded sequence points (e.g. `Embeddings.fs`: 412 lines, MS == PDB,
@@ -35,7 +35,7 @@ line. TestPrune already maintains, per symbol: `source_file`, `line_start/line_e
 
 So **symbol-level invalidation + complete impact re-run substitutes for per-test
 attribution.** We get AltCover-grade correctness without AltCover's 2–3× instrumentation
-slowdown (ADR: thellma/intelligence `docs/adr/0001-coverage-tooling.md`).
+slowdown (established in a downstream consumer's coverage-tooling ADR).
 
 Load-bearing assumptions (named, because correctness rests on them):
 1. Impact analysis is complete (every test reaching a changed symbol re-runs). Failure is
@@ -105,4 +105,4 @@ line-keyed merges.
 3. DB → per-file % — matches cobertura test.
 4. Edit-aware lifecycle wired to re-index — edit-shift-and-change test.
 5. Wire into `FsHotWatch.TestPrune`; retire the blind merges.
-6. Verify against intelligence (30 files honest; edit → no drift).
+6. Verify against a large real consumer repo (30 files honest; edit → no drift).
