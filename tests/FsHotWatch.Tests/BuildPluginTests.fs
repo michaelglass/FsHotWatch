@@ -450,48 +450,7 @@ let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let tests =
-            FsHotWatch.TestPrune.TestPrunePlugin.create
-                ":memory:"
-                tmpDir
-                (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
-                        Command = "sleep"
-                        Args = testDelay
-                        Group = "default"
-                        Environment = []
-                        FilterTemplate = None
-                        ClassJoin = " "
-                        TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
-                None
-                None
-                None
-                None
-                []
-
         let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
-        let mutable liveRun: Guid option = None
-
-        let lifecycleRecorder: PluginHandler<unit, unit> =
-            { Name = PluginName.create "overlap-lifecycle-recorder"
-              Init = ()
-              Update =
-                fun _ state event ->
-                    async {
-                        match event with
-                        | TestRunStarted started -> liveRun <- Some started.RunId
-                        | _ -> ()
-
-                        return state
-                    }
-              Commands = []
-              Subscriptions = Set.singleton SubscribeTestRunStarted
-              CacheKey = None
-              Teardown = None }
-
-        host.RegisterHandler(lifecycleRecorder)
-        host.RegisterHandler(tests)
         host.RegisterHandler(build)
 
         host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "First.fs") ])
@@ -503,12 +462,20 @@ let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
                 | _ -> false)
             5000
 
-        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
-
-        waitUntil (fun () -> liveRun.IsSome) 5000
+        let runId = Guid.NewGuid()
+        let startedAt = DateTime.UtcNow
+        host.EmitTestRunStarted({ RunId = runId; StartedAt = startedAt })
 
         host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Deferred.fs") ])
-        runTask.GetAwaiter().GetResult() |> ignore
+        System.Threading.Thread.Sleep(int (float testDelay * 1000.0))
+
+        host.EmitTestRunCompleted(
+            { RunId = runId
+              TotalElapsed = DateTime.UtcNow - startedAt
+              Outcome = Normal
+              Results = Map.empty
+              Verification = NoProjectsSelected }
+        )
 
         waitUntil
             (fun () ->
@@ -525,6 +492,225 @@ let ``deferred change survives when the overlapping build completes before the t
 [<Fact(Timeout = 20000)>]
 let ``deferred change survives when the overlapping test completes before the build`` () =
     overlappingBuildAndTest "1" "0.2"
+
+let private manualTestWaitsForBuild () =
+    withTempDir "test-waits-for-build" (fun tmpDir ->
+        let buildStarted = System.IO.Path.Combine(tmpDir, "build-started")
+        let buildCompleted = System.IO.Path.Combine(tmpDir, "build-completed")
+        let testStarted = System.IO.Path.Combine(tmpDir, "test-started")
+        let buildScript = System.IO.Path.Combine(tmpDir, "build.sh")
+        let testScript = System.IO.Path.Combine(tmpDir, "test.sh")
+
+        System.IO.File.WriteAllText(buildScript, $"touch '{buildStarted}'\nsleep 1\ntouch '{buildCompleted}'\n")
+
+        System.IO.File.WriteAllText(testScript, $"test -f '{buildCompleted}' || exit 42\ntouch '{testStarted}'\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let tests =
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                ":memory:"
+                tmpDir
+                (Some
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
+                        Command = "sh"
+                        Args = testScript
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        TimeoutSec = None
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                None
+                None
+                None
+                None
+                []
+
+        let build = BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] None
+        host.RegisterHandler(tests)
+        host.RegisterHandler(build)
+
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
+        waitUntil (fun () -> System.IO.File.Exists buildStarted) 5000
+
+        let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        System.Threading.Thread.Sleep 250
+        test <@ not (System.IO.File.Exists testStarted) @>
+
+        runTask.GetAwaiter().GetResult() |> ignore
+        test <@ System.IO.File.Exists buildCompleted @>
+        test <@ System.IO.File.Exists testStarted @>)
+
+[<Fact(Timeout = 20000)>]
+let ``manual test host waits for the active build to release its artifacts`` () = manualTestWaitsForBuild ()
+
+[<Fact(Timeout = 20000)>]
+let ``failed build rejects queued and later manual hosts until a success drains automatic debt`` () =
+    withTempDir "test-rejects-failed-build" (fun tmpDir ->
+        let buildStarted = System.IO.Path.Combine(tmpDir, "build-started")
+        let allowBuild = System.IO.Path.Combine(tmpDir, "allow-build")
+        let buildRuns = System.IO.Path.Combine(tmpDir, "build-runs")
+        let testStarted = System.IO.Path.Combine(tmpDir, "test-started")
+        let buildScript = System.IO.Path.Combine(tmpDir, "build.sh")
+        let testScript = System.IO.Path.Combine(tmpDir, "test.sh")
+
+        System.IO.File.WriteAllText(
+            buildScript,
+            $"printf '%%s\\n' x >> '{buildRuns}'\ntouch '{buildStarted}'\nsleep 0.5\ntest -f '{allowBuild}' || exit 1\n"
+        )
+
+        System.IO.File.WriteAllText(testScript, $"touch '{testStarted}'\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let tests =
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                ":memory:"
+                tmpDir
+                (Some
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
+                        Command = "sh"
+                        Args = testScript
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        TimeoutSec = None
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                None
+                None
+                None
+                None
+                []
+
+        host.RegisterHandler(tests)
+        host.RegisterHandler(BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] None)
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "First.fs") ])
+        waitUntil (fun () -> System.IO.File.Exists buildStarted) 5000
+
+        let reply = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ reply.Value.Contains("preceding build left invalid artifacts") @>
+        test <@ not (System.IO.File.Exists testStarted) @>
+
+        System.IO.File.WriteAllText(allowBuild, "ok")
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Second.fs") ])
+        waitUntil (fun () -> System.IO.File.Exists testStarted) 8000
+
+        // A failed build with nobody already waiting must leave the idle artifact
+        // resource invalid too. A later manual command is rejected without launching
+        // a host; the next successful build repairs the state and drains its debt.
+        System.IO.File.Delete allowBuild
+        System.IO.File.Delete testStarted
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Third.fs") ])
+
+        waitUntil
+            (fun () ->
+                System.IO.File.Exists buildRuns
+                && System.IO.File.ReadAllLines(buildRuns).Length = 3)
+            8000
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("build") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            8000
+
+        let laterReply = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ laterReply.Value.Contains("preceding build left invalid artifacts") @>
+        test <@ not (System.IO.File.Exists testStarted) @>
+
+        System.IO.File.WriteAllText(allowBuild, "ok")
+        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Fourth.fs") ])
+        waitUntil (fun () -> System.IO.File.Exists testStarted) 8000)
+
+[<Fact(Timeout = 20000)>]
+let ``queued template build preserves changes for a second project root`` () =
+    withTempDir "queued-template-roots" (fun tmpDir ->
+        let firstDir = System.IO.Path.Combine(tmpDir, "First")
+        let secondDir = System.IO.Path.Combine(tmpDir, "Second")
+        System.IO.Directory.CreateDirectory(firstDir) |> ignore
+        System.IO.Directory.CreateDirectory(secondDir) |> ignore
+
+        let firstProject = System.IO.Path.Combine(firstDir, "First.fsproj")
+        let secondProject = System.IO.Path.Combine(secondDir, "Second.fsproj")
+        let firstSource = System.IO.Path.Combine(firstDir, "First.fs")
+        let secondSource = System.IO.Path.Combine(secondDir, "Second.fs")
+        let buildLog = System.IO.Path.Combine(tmpDir, "build-roots")
+        let buildScript = System.IO.Path.Combine(tmpDir, "record-build.sh")
+
+        System.IO.File.WriteAllText(buildScript, $"printf '%%s\\n' \"$1\" >> '{buildLog}'\n")
+
+        let graph = ProjectGraph()
+        graph.RegisterProject(AbsProjectPath.create firstProject, [ AbsFilePath.create firstSource ], [])
+        graph.RegisterProject(AbsProjectPath.create secondProject, [ AbsFilePath.create secondSource ], [])
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let mutable testStarted = false
+
+        let lifecycleRecorder: PluginHandler<unit, unit> =
+            { Name = PluginName.create "queued-template-lifecycle-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | TestRunStarted _ -> testStarted <- true
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeTestRunStarted
+              CacheKey = None
+              Teardown = None }
+
+        let tests =
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                ":memory:"
+                tmpDir
+                (Some
+                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
+                        Command = "sleep"
+                        Args = "1"
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        TimeoutSec = None
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                None
+                None
+                None
+                None
+                []
+
+        let template = $"sh {buildScript} {{project}}"
+
+        let build =
+            BuildPlugin.create "false" "fallback-must-not-run" [] graph [] (Some template) [] None
+
+        host.RegisterHandler(lifecycleRecorder)
+        host.RegisterHandler(tests)
+        host.RegisterHandler(build)
+
+        let testTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+        waitUntil (fun () -> testStarted) 5000
+
+        host.EmitFileChanged(SourceChanged [ firstSource ])
+        host.EmitFileChanged(SourceChanged [ secondSource ])
+        testTask.GetAwaiter().GetResult() |> ignore
+
+        waitUntil
+            (fun () ->
+                System.IO.File.Exists buildLog
+                && System.IO.File.ReadAllLines(buildLog).Length = 2)
+            8000
+
+        let builtRoots = System.IO.File.ReadAllLines(buildLog) |> Set.ofArray
+        test <@ builtRoots = Set.ofList [ firstProject; secondProject ] @>)
 
 [<Fact(Timeout = 15000)>]
 let ``build-status command returns passed true after successful build`` () =
@@ -627,17 +813,16 @@ let ``build plugin handles exception from runProcess`` () =
         BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(handler)
+    let terminal = beginAwaitTerminal host "build"
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForTerminalStatus host "build" 5000
-
-    let status = host.GetStatus("build")
-    test <@ status.IsSome @>
+    test <@ terminal.Wait 15000 @>
+    let status = terminal.Result
 
     test
         <@
-            match status.Value with
+            match status with
             | Failed _ -> true
             | _ -> false
         @>

@@ -32,6 +32,7 @@ type PluginHost
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
+    let sharedRunScheduler = PluginFramework.SharedRunScheduler()
 
     // Read-only project-graph accessor threaded into every plugin's
     // `PluginCtx.ProjectGraph`. Starts as the no-op accessor; the daemon installs
@@ -239,7 +240,10 @@ type PluginHost
                 { GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
-                  GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p } }
+                  GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p }
+              StartAsync = Async.Start
+              ClaimOrQueueSharedRun = fun key start -> sharedRunScheduler.ClaimOrQueue(key, start)
+              ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state) }
 
         let plugin = PluginFramework.registerHandler services handler
 

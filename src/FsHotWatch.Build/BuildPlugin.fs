@@ -784,72 +784,85 @@ let createWith
         // FileChanged-while-building triggers land on SlotBusy and are safe to
         // skip — the next FileChanged re-triggers.
         let claim =
-            ctx.RunExclusive
+            ctx.RunExclusiveShared
                 "build"
-                (PluginCtxHelpers.withSubtask
-                    ctx
-                    "build"
-                    "dotnet build"
-                    (async {
-                        try
-                            let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
+                "build-artifacts"
+                (fun _ ->
+                    PluginCtxHelpers.withSubtask
+                        ctx
+                        "build"
+                        "dotnet build"
+                        (async {
+                            try
+                                let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
-                            let (rawOutcome, entries) =
-                                decideBuildOutcome (isSucceeded result) (outputOf result)
+                                let (rawOutcome, entries) =
+                                    decideBuildOutcome (isSucceeded result) (outputOf result)
 
-                            let copyVerifiedOutcome, verifiedEntries =
-                                verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
+                                let copyVerifiedOutcome, verifiedEntries =
+                                    verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
 
-                            let outcome = verifyAndDemote copyVerifiedOutcome
+                                let outcome = verifyAndDemote copyVerifiedOutcome
 
-                            match outcome, result with
-                            | BuildOutputFailed _, TimedOut(after, _, kill) ->
-                                // The full diagnostic already rides in `entries` (via
-                                // `outputOf`); this is the one-liner, so it gets the short
-                                // marker — a build tree we could not kill still holds the
-                                // obj/ locks the next build is about to trip over.
-                                let summary = $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
+                                match outcome, result with
+                                | BuildOutputFailed _, TimedOut(after, _, kill) ->
+                                    // The full diagnostic already rides in `entries` (via
+                                    // `outputOf`); this is the one-liner, so it gets the short
+                                    // marker — a build tree we could not kill still holds the
+                                    // obj/ locks the next build is about to trip over.
+                                    let summary =
+                                        $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
 
-                                ctx.Log "Build TIMED OUT"
-                                error "build" "Build TIMED OUT"
-                                ctx.CompleteWithTimeout summary
-                            | BuildOutputFailed _, Failed(exitCode, output) ->
-                                ctx.Log "Build FAILED"
-                                error "build" "Build FAILED"
+                                    ctx.Log "Build TIMED OUT"
+                                    error "build" "Build TIMED OUT"
+                                    ctx.CompleteWithTimeout summary
+                                | BuildOutputFailed _, Failed(exitCode, output) ->
+                                    ctx.Log "Build FAILED"
+                                    error "build" "Build FAILED"
 
-                                let parsedCount =
-                                    BuildDiagnostics.parseMSBuildDiagnostics (ProcessOutput.text output)
-                                    |> List.length
+                                    let parsedCount =
+                                        BuildDiagnostics.parseMSBuildDiagnostics (ProcessOutput.text output)
+                                        |> List.length
 
-                                if parsedCount = 0 then
-                                    // "Build FAILED / 0 diagnostics" is precisely the shape an
-                                    // unfinished drain fakes — so this diagnostic renders the
-                                    // capture, which NAMES the incomplete read rather than
-                                    // letting a silence we never heard read as a silent build.
-                                    let detail = formatSilentFailureDiagnostic exitCode (renderOutput output)
-                                    ctx.Log detail
-                                    error "build" detail
-                            | BuildOutputFailed _, _ ->
-                                ctx.Log "Build FAILED"
-                                error "build" "Build FAILED"
-                            | _ -> ()
+                                    if parsedCount = 0 then
+                                        // "Build FAILED / 0 diagnostics" is precisely the shape an
+                                        // unfinished drain fakes — so this diagnostic renders the
+                                        // capture, which NAMES the incomplete read rather than
+                                        // letting a silence we never heard read as a silent build.
+                                        let detail = formatSilentFailureDiagnostic exitCode (renderOutput output)
+                                        ctx.Log detail
+                                        error "build" detail
+                                | BuildOutputFailed _, _ ->
+                                    ctx.Log "Build FAILED"
+                                    error "build" "Build FAILED"
+                                | _ -> ()
 
-                            return applyBuildOutcome ctx outcome verifiedEntries (DateTime.UtcNow - buildStarted)
-                        with ex ->
-                            let crashEntry = ErrorEntry.error ex.Message
-                            // ReportErrors / EmitBuildCompleted belong to the synchronous
-                            // BuildDone handler, not here — see `applyBuildOutcome`.
-                            return
-                                BuildDone(
-                                    BuildOutputFailed [ ex.Message ],
-                                    [ crashEntry ],
-                                    DateTime.UtcNow - buildStarted
-                                )
-                    }))
+                                return applyBuildOutcome ctx outcome verifiedEntries (DateTime.UtcNow - buildStarted)
+                            with ex ->
+                                let crashEntry = ErrorEntry.error ex.Message
+                                // ReportErrors / EmitBuildCompleted belong to the synchronous
+                                // BuildDone handler, not here — see `applyBuildOutcome`.
+                                return
+                                    BuildDone(
+                                        BuildOutputFailed [ ex.Message ],
+                                        [ crashEntry ],
+                                        DateTime.UtcNow - buildStarted
+                                    )
+                        }))
+                (function
+                | BuildDone(BuildPassed _, _, _) -> Ready
+                | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                (fun ex ->
+                    BuildDone(
+                        BuildOutputFailed [ ex.Message ],
+                        [ ErrorEntry.error ex.Message ],
+                        DateTime.UtcNow - buildStarted
+                    ))
 
         match claim with
-        | Claimed -> ()
-        | SlotBusy ->
+        | SharedClaimed
+        | SharedQueued -> ()
+        | LocalSlotBusy ->
             // The FileChanged guard normally catches this earlier; this is the
             // race-free backstop.
             info "build" "Skipping: build already in progress"
@@ -889,88 +902,100 @@ let createWith
             let buildStarted = DateTime.UtcNow
 
             let claim =
-                ctx.RunExclusive
+                ctx.RunExclusiveShared
                     "build"
-                    (PluginCtxHelpers.withSubtask
-                        ctx
-                        "build"
-                        $"dotnet build ({roots.Length} roots)"
-                        (async {
-                            try
-                                let mutable failures = []
-                                let mutable outputs = []
+                    "build-artifacts"
+                    (fun _ ->
+                        PluginCtxHelpers.withSubtask
+                            ctx
+                            "build"
+                            $"dotnet build ({roots.Length} roots)"
+                            (async {
+                                try
+                                    let mutable failures = []
+                                    let mutable outputs = []
 
-                                for root in roots do
-                                    let rootStr = AbsProjectPath.value root
-                                    let rendered = template.Replace("{project}", rootStr)
-                                    let (cmd, cmdArgs) = splitCommand rendered
-                                    ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
+                                    for root in roots do
+                                        let rootStr = AbsProjectPath.value root
+                                        let rendered = template.Replace("{project}", rootStr)
+                                        let (cmd, cmdArgs) = splitCommand rendered
+                                        ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
-                                    try
-                                        let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
-                                        let output = outputOf result
-                                        outputs <- output :: outputs
+                                        try
+                                            let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
+                                            let output = outputOf result
+                                            outputs <- output :: outputs
 
-                                        match result with
-                                        | Succeeded _ -> ()
-                                        | TimedOut(after, _, kill) ->
-                                            let summary =
-                                                $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
+                                            match result with
+                                            | Succeeded _ -> ()
+                                            | TimedOut(after, _, kill) ->
+                                                let summary =
+                                                    $"timed out after %d{int after.TotalSeconds}s%s{renderKillBrief kill}"
 
-                                            ctx.Log $"Template build TIMED OUT for %s{rootStr}"
-                                            error "build" $"Template build TIMED OUT for %s{rootStr}"
-                                            ctx.CompleteWithTimeout summary
-                                            failures <- output :: failures
-                                        | Failed _ ->
-                                            ctx.Log $"Template build FAILED for %s{rootStr}"
-                                            error "build" $"Template build FAILED for %s{rootStr}"
-                                            failures <- output :: failures
-                                    with ex ->
-                                        ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                        error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                        failures <- ex.Message :: failures
+                                                ctx.Log $"Template build TIMED OUT for %s{rootStr}"
+                                                error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                                ctx.CompleteWithTimeout summary
+                                                failures <- output :: failures
+                                            | Failed _ ->
+                                                ctx.Log $"Template build FAILED for %s{rootStr}"
+                                                error "build" $"Template build FAILED for %s{rootStr}"
+                                                failures <- output :: failures
+                                        with ex ->
+                                            ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                            error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                            failures <- ex.Message :: failures
 
-                                let failedOutputs = failures |> List.rev
+                                    let failedOutputs = failures |> List.rev
 
-                                let (rawOutcome, entries) =
-                                    if failures.IsEmpty then
-                                        let combinedOutput = outputs |> List.rev |> String.concat "\n"
-                                        decideBuildOutcome true combinedOutput
-                                    else
-                                        let failedText = failedOutputs |> String.concat "\n"
-                                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
+                                    let (rawOutcome, entries) =
+                                        if failures.IsEmpty then
+                                            let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                                            decideBuildOutcome true combinedOutput
+                                        else
+                                            let failedText = failedOutputs |> String.concat "\n"
+                                            let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
 
-                                        let entries =
-                                            if parsed.IsEmpty then
-                                                failedOutputs |> List.map ErrorEntry.error
-                                            else
-                                                parsed
+                                            let entries =
+                                                if parsed.IsEmpty then
+                                                    failedOutputs |> List.map ErrorEntry.error
+                                                else
+                                                    parsed
 
-                                        BuildOutputFailed failedOutputs, entries
+                                            BuildOutputFailed failedOutputs, entries
 
-                                let copyVerifiedOutcome, verifiedEntries =
-                                    verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
+                                    let copyVerifiedOutcome, verifiedEntries =
+                                        verifyCopyRetryWarnings ctx.RepoRoot rawOutcome entries
 
-                                return
-                                    applyBuildOutcome
-                                        ctx
-                                        (verifyAndDemote copyVerifiedOutcome)
-                                        verifiedEntries
-                                        (DateTime.UtcNow - buildStarted)
-                            with ex ->
-                                error "build" $"Unexpected error: %s{ex.Message}"
+                                    return
+                                        applyBuildOutcome
+                                            ctx
+                                            (verifyAndDemote copyVerifiedOutcome)
+                                            verifiedEntries
+                                            (DateTime.UtcNow - buildStarted)
+                                with ex ->
+                                    error "build" $"Unexpected error: %s{ex.Message}"
 
-                                return
-                                    BuildDone(
-                                        BuildOutputFailed [ ex.Message ],
-                                        [ ErrorEntry.error ex.Message ],
-                                        DateTime.UtcNow - buildStarted
-                                    )
-                        }))
+                                    return
+                                        BuildDone(
+                                            BuildOutputFailed [ ex.Message ],
+                                            [ ErrorEntry.error ex.Message ],
+                                            DateTime.UtcNow - buildStarted
+                                        )
+                            }))
+                    (function
+                    | BuildDone(BuildPassed _, _, _) -> Ready
+                    | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                    (fun ex ->
+                        BuildDone(
+                            BuildOutputFailed [ ex.Message ],
+                            [ ErrorEntry.error ex.Message ],
+                            DateTime.UtcNow - buildStarted
+                        ))
 
             match claim with
-            | Claimed -> ()
-            | SlotBusy ->
+            | SharedClaimed
+            | SharedQueued -> ()
+            | LocalSlotBusy ->
                 // Race-free backstop; the FileChanged guard normally catches this.
                 info "build" "Skipping: build already in progress"
 
@@ -1103,10 +1128,16 @@ let createWith
                         { state with
                             PendingFiles = state.PendingFiles @ [ change ] }
 
-                // --- FileChanged: drop while a build is in flight (framework single-flight) ---
-                | FileChanged _ when ctx.IsRunning "build" ->
-                    info "build" "Skipping: build already in progress"
-                    return state
+                // A busy local slot may mean either a running build or one queued
+                // behind a test host's artifact lease. Preserve every later change:
+                // template builds close over the roots selected at claim time, so a
+                // second root arriving while queued is not covered by that work.
+                | FileChanged change when ctx.IsRunning "build" ->
+                    info "build" "Buffering file change — build already running or queued"
+
+                    return
+                        { state with
+                            PendingFiles = state.PendingFiles @ [ change ] }
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
                 | FileChanged(SourceChanged files) ->

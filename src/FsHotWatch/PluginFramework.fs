@@ -31,6 +31,85 @@ type RunClaim =
     /// already covers the need) or queue (when the work is owed).
     | SlotBusy
 
+/// Outcome of atomically claiming a plugin-local slot and a host-wide lease.
+type SharedRunClaim =
+    /// The shared resource was idle and work started immediately.
+    | SharedClaimed
+    /// An older owner exists; work is accounted now and will start by fair handoff.
+    | SharedQueued
+    /// This plugin's local slot is already occupied; the caller still owns this debt.
+    | LocalSlotBusy
+
+type SharedResourceState =
+    | Ready
+    | Invalid of reason: string
+
+type SharedRunStarter<'Msg> =
+    string
+        -> string
+        -> (SharedResourceState -> Async<'Msg>)
+        -> ('Msg -> SharedResourceState)
+        -> (exn -> 'Msg)
+        -> SharedRunClaim
+
+/// Fair host-wide scheduler for resources shared by otherwise independent plugins.
+/// Ownership is handed directly to the oldest waiter, so a releasing plugin cannot
+/// repeatedly reacquire ahead of already-owed work.
+type SharedRunScheduler() =
+    let gate = obj ()
+    let owners = System.Collections.Generic.HashSet<string>()
+
+    let resourceStates =
+        System.Collections.Generic.Dictionary<string, SharedResourceState>()
+
+    let waiters =
+        System.Collections.Generic.Dictionary<string, System.Collections.Generic.Queue<SharedResourceState -> bool>>()
+
+    member _.ClaimOrQueue(key: string, start: SharedResourceState -> bool) =
+        lock gate (fun () ->
+            if owners.Add key then
+                match resourceStates.TryGetValue key with
+                | true, state -> Some state
+                | _ -> Some Ready
+            else
+                let queue =
+                    match waiters.TryGetValue key with
+                    | true, existing -> existing
+                    | _ ->
+                        let created = System.Collections.Generic.Queue<SharedResourceState -> bool>()
+                        waiters[key] <- created
+                        created
+
+                queue.Enqueue start
+                None)
+
+    member _.Release(key: string, resourceState: SharedResourceState) =
+        let rec handOff state =
+            let next =
+                lock gate (fun () ->
+                    resourceStates[key] <- state
+
+                    match waiters.TryGetValue key with
+                    | true, queue when queue.Count > 0 -> Some(queue.Dequeue())
+                    | _ ->
+                        owners.Remove key |> ignore
+                        waiters.Remove key |> ignore
+                        None)
+
+            match next with
+            | None -> ()
+            | Some start ->
+                let started =
+                    try
+                        start state
+                    with _ ->
+                        false
+
+                if not started then
+                    handOff (Invalid "shared waiter failed to start")
+
+        handOff resourceState
+
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -91,6 +170,10 @@ type PluginCtx<'Msg> =
         /// The result must be handled: a dropped `SlotBusy` is dropped WORK.
         /// Match it and either skip-with-reason or queue.
         RunExclusive: string -> Async<'Msg> -> RunClaim
+        /// Atomically claim a local slot and enter a fair host-wide resource queue.
+        /// Both SharedClaimed and SharedQueued mean the framework owns the work;
+        /// only LocalSlotBusy requires the caller to retain or merge the debt.
+        RunExclusiveShared: SharedRunStarter<'Msg>
         /// Whether `key` is currently running under `RunExclusive`. Plugins
         /// use this for IPC-facing status without maintaining their own
         /// "is running" bit.
@@ -291,6 +374,14 @@ type PluginHostServices =
         /// `PluginCtx.ProjectGraph`. The host supplies `ProjectGraphAccessor.none`
         /// until the daemon installs the live graph.
         ProjectGraph: ProjectGraphAccessor
+        /// Starts plugin work. Supplied by the host so the synchronous failure
+        /// boundary is deterministic in framework tests.
+        StartAsync: Async<unit> -> unit
+        /// Enter the FIFO for a host-wide resource. True means start now; false
+        /// means `start` is retained and invoked on direct ownership handoff.
+        ClaimOrQueueSharedRun: string -> (SharedResourceState -> bool) -> SharedResourceState option
+        /// Release ownership and wake exactly the oldest waiter, if present.
+        ReleaseSharedRun: string -> SharedResourceState -> unit
     }
 
 /// The replay summary for a per-file cache entry, derived from the plugin's LIVE
@@ -426,7 +517,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             a.Post(Choice1Of2(Custom msg))
         | None -> ()
 
-    let runOne (key: string) (startedAt: DateTime) (w: Async<'Msg>) =
+    let runOne
+        (key: string)
+        (sharedRun: (string * ('Msg -> SharedResourceState)) option)
+        (startedAt: DateTime)
+        (w: Async<'Msg>)
+        =
         async {
             let mutable completion: 'Msg voption = ValueNone
 
@@ -477,6 +573,23 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 // plugin ever reads as not-busy.
                 lock runSlotsLock (fun () -> runSlots.[key] <- false)
 
+                sharedRun
+                |> Option.iter (fun (sharedKey, classify) ->
+                    let resourceState =
+                        match completion with
+                        | ValueSome message ->
+                            try
+                                classify message
+                            with ex ->
+                                error
+                                    (PluginName.value handler.Name)
+                                    $"RunExclusiveShared '%s{key}' classifier failed: %s{ex.ToString()}"
+
+                                Invalid $"%s{PluginName.value handler.Name} shared result classifier faulted"
+                        | ValueNone -> Invalid $"%s{PluginName.value handler.Name} shared work faulted"
+
+                    services.ReleaseSharedRun sharedKey resourceState)
+
                 try
                     match completion with
                     | ValueSome m -> post m
@@ -521,7 +634,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
         match claimedAt with
         | ValueSome startedAt ->
-            Async.Start(runOne key startedAt work)
+            Async.Start(runOne key None startedAt work)
             Claimed
         | ValueNone ->
             // Exclusion-slot contention: the run is NOT started and the caller must
@@ -532,6 +645,81 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 $"exclusion-slot busy: '%s{key}' run not started (a previous run is still in flight)"
 
             SlotBusy
+
+    let runExclusiveShared
+        (key: string)
+        (sharedKey: string)
+        (workFor: SharedResourceState -> Async<'Msg>)
+        (classify: 'Msg -> SharedResourceState)
+        (failureMessage: exn -> 'Msg)
+        : SharedRunClaim =
+        let claimedAt =
+            lock statusLock (fun () ->
+                let localClaimed =
+                    lock runSlotsLock (fun () ->
+                        match runSlots.TryGetValue(key) with
+                        | true, true -> false
+                        | _ ->
+                            runSlots.[key] <- true
+                            true)
+
+                if localClaimed then
+                    let startedAt = DateTime.UtcNow
+                    services.ReportStatus handler.Name (Running(since = startedAt))
+                    System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
+                    ValueSome startedAt
+                else
+                    ValueNone)
+
+        match claimedAt with
+        | ValueNone -> LocalSlotBusy
+        | ValueSome startedAt ->
+            let start resourceState =
+                // Defer the plugin factory invocation into runOne's guarded async
+                // boundary. A synchronous exception while constructing the work
+                // must release both the local slot and the host-wide lease.
+                try
+                    let guardedWork =
+                        async {
+                            try
+                                return! workFor resourceState
+                            with ex ->
+                                return failureMessage ex
+                        }
+
+                    services.StartAsync(runOne key (Some(sharedKey, classify)) startedAt guardedWork)
+                    true
+                with ex ->
+                    lock runSlotsLock (fun () -> runSlots.[key] <- false)
+                    System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
+
+                    error
+                        (PluginName.value handler.Name)
+                        $"RunExclusiveShared '%s{key}' failed to start: %s{ex.ToString()}"
+
+                    reportBypassingGuard (
+                        PluginStatus.Failed(
+                            $"RunExclusiveShared '%s{key}' failed to start: %s{ex.ToString()}",
+                            DateTime.UtcNow,
+                            RunVerdict.create
+                                $"RunExclusiveShared '%s{key}' failed to start: %s{ex.Message}"
+                                (DateTime.UtcNow - startedAt)
+                        )
+                    )
+
+                    post (failureMessage ex)
+
+                    false
+
+            match services.ClaimOrQueueSharedRun sharedKey start with
+            | Some resourceState ->
+                if not (start resourceState) then
+                    services.ReleaseSharedRun
+                        sharedKey
+                        (Invalid $"%s{PluginName.value handler.Name} shared work failed to start")
+
+                SharedClaimed
+            | None -> SharedQueued
 
     let isRunning (key: string) =
         lock runSlotsLock (fun () ->
@@ -571,6 +759,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
           Log = fun msg -> services.Log handler.Name msg
           CompleteWithTimeout = fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
           RunExclusive = runExclusive
+          RunExclusiveShared = runExclusiveShared
           IsRunning = isRunning
           FcsSuppressedCodes = services.FcsSuppressedCodes
           ProjectGraph = services.ProjectGraph }
@@ -906,6 +1095,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 launchedRunInWindow <- true
                                                 Claimed
                                             | SlotBusy -> SlotBusy
+                                      RunExclusiveShared =
+                                        fun key sharedKey workFor classify failureMessage ->
+                                            match runExclusiveShared key sharedKey workFor classify failureMessage with
+                                            | SharedClaimed ->
+                                                launchedRunInWindow <- true
+                                                SharedClaimed
+                                            | SharedQueued ->
+                                                launchedRunInWindow <- true
+                                                SharedQueued
+                                            | LocalSlotBusy -> LocalSlotBusy
                                       IsRunning = isRunning
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
