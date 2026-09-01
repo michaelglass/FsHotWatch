@@ -2377,6 +2377,8 @@ module Daemon =
         (workspaceLoader: IWorkspaceLoader option)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         (watcherIsMacOSOverride: bool option)
+        (watchFiles: bool)
+        (watcherFactory: string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher)
         =
         // This MUST be the first thing that happens.
         //
@@ -2568,7 +2570,10 @@ module Daemon =
                 changeAgent.Post(Choice1Of2 change)
 
             let watcher =
-                FileWatcher.create repoRoot onChange watcherIsMacOSOverride extraWatchPatterns fsEventsLatencySeconds
+                if watchFiles then
+                    watcherFactory repoRoot onChange watcherIsMacOSOverride extraWatchPatterns fsEventsLatencySeconds
+                else
+                    { Disposables = [] }
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
@@ -2639,7 +2644,15 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) None
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            None
+            true
+            FileWatcher.create
 
     /// Deterministic watcher-platform seam for daemon integration tests. Native
     /// FSEvents behavior has dedicated tests; scoped daemon tests use the
@@ -2651,7 +2664,32 @@ module Daemon =
         (opts: DaemonOptions)
         (isMacOSOverride: bool option)
         =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) isMacOSOverride
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            isMacOSOverride
+            true
+            FileWatcher.create
+
+    /// Deterministic seam proving watcher-disabled hosts never touch watcher construction.
+    let internal createWithoutWatcherWithFactory
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (watcherFactory: string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher)
+        =
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            None
+            false
+            watcherFactory
 
     /// Deterministic loader/mapping seam for discovery concurrency tests.
     let internal createWithWorkspaceLoader
@@ -2661,7 +2699,28 @@ module Daemon =
         (loader: IWorkspaceLoader)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
-        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None true FileWatcher.create
+
+    /// Create a watcher-free one-shot execution host. Internal so the public
+    /// DaemonOptions record remains source- and binary-compatible for consumers.
+    let internal createWithoutWatcher (repoRoot: string) (opts: DaemonOptions) =
+        let checker =
+            FSharpChecker.Create(
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true,
+                parallelReferenceResolution = true,
+                useTransparentCompiler = true
+            )
+
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            None
+            false
+            FileWatcher.create
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

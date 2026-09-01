@@ -548,6 +548,62 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         (noTestProjectsConfig ())
         None
 
+[<Theory(Timeout = 60000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``run-once check and confirm never construct a file watcher`` (confirm: bool) =
+    withProjectOnlyRepo "runonce-no-watcher" (fun repoRoot ->
+        let watcherFactory _ _ _ _ _ =
+            failwith "the watcher factory must not be invoked by --run-once"
+
+        let createDaemon (root: string) =
+            Daemon.createWithoutWatcherWithFactory
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+                watcherFactory
+
+        let mode =
+            if confirm then
+                FsHotWatch.Cli.CheckVerdict.Confirmation
+            else
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+                (fun _ -> "")
+                mode
+                false
+                createDaemon
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        let expected = if confirm then 3 else 0
+        test <@ exitCode = expected @>)
+
+[<Fact(Timeout = 60000)>]
+let ``run-once format never constructs a file watcher`` () =
+    withProjectOnlyRepo "runonce-format-no-watcher" (fun repoRoot ->
+        let watcherFactory _ _ _ _ _ =
+            failwith "the watcher factory must not be invoked by format --run-once"
+
+        let createDaemon (root: string) =
+            Daemon.createWithoutWatcherWithFactory
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                Daemon.DaemonOptions.defaults
+                watcherFactory
+
+        let config =
+            { noTestProjectsConfig () with
+                Format = Auto }
+
+        let exitCode =
+            runOnceAndReport (fun _ -> "") false createDaemon repoRoot config (Some "format")
+
+        test <@ exitCode = 0 @>)
+
 let private daemonWithLateVanishedDiagnostic (root: string) =
     let daemon =
         Daemon.createWith

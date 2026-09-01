@@ -201,6 +201,15 @@ let cliName = "fshw"
 
 let private isRunOnce = List.contains RunOnce
 
+/// One-shot checks use the daemon-independent scan host and must not construct
+/// long-lived file observation. Every persistent command retains watcher behavior.
+let internal watchFilesForCommand command =
+    match command with
+    | Check flags
+    | Confirm flags when isRunOnce flags -> false
+    | Format flags when isRunOnce flags -> false
+    | _ -> true
+
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
 /// wins when both are set.
 let private pickMode (agentMode: bool) (compactMode: bool) : ProgressRenderer.RenderMode =
@@ -2178,8 +2187,7 @@ let main args =
                     let pressureIdleFloorMin =
                         FsHotWatch.IdleExit.resolvePressureFloor config.PressureIdleFloorMin
 
-                    Daemon.create
-                        root
+                    let daemonOptions =
                         { Daemon.DaemonOptions.defaults with
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
@@ -2188,6 +2196,11 @@ let main args =
                             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
+
+                    if watchFilesForCommand command then
+                        Daemon.create root daemonOptions
+                    else
+                        Daemon.createWithoutWatcher root daemonOptions
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`

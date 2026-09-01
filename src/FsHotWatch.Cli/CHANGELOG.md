@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `check --run-once`, `confirm --run-once`, and
+  `format --run-once` now construct a watcher-free in-process execution host.
+  Their existing scan, plugin, scope, settlement, verdict-file, and exit-code
+  semantics are unchanged; persistent daemon commands continue to watch the
+  repository.
+
 ## 0.14.0-alpha.37 - 2026-09-01
 
 - fix: discover the checkout root from a linked Git worktree's
