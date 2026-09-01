@@ -51,6 +51,11 @@
         "platform": "linux"
       }
     ],
+    "CachePathIdentity.fs": {
+      "line": 92,
+      "branch": 55,
+      "reason": "canonical portable-path codec (AUTOMATION-564)"
+    },
     "CheckCache.fs": [
       {
         "line": 80,
