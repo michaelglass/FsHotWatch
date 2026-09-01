@@ -321,9 +321,9 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 /// rejected one layer deeper by a field read throwing, which reports every stale
 /// entry as a parse FAILURE. The cost of a bump is a one-time re-run.
 [<Literal>]
-let private EntryFormatVersion = 3
+let private EntryFormatVersion = 4
 
-let private serializeResult (result: TaskCacheResult) =
+let private serializeResult (encodePath: string -> string) (result: TaskCacheResult) =
     let root = JsonObject()
     root["format"] <- EntryFormatVersion
     root["cacheKey"] <- ContentHash.value result.CacheKey
@@ -333,7 +333,7 @@ let private serializeResult (result: TaskCacheResult) =
 
     for file, entries in result.Errors do
         let fileObj = JsonObject()
-        fileObj["file"] <- file
+        fileObj["file"] <- if file = "*" then file else encodePath file
         let entriesArr = JsonArray()
 
         for e in entries do
@@ -352,7 +352,7 @@ let private serializeResult (result: TaskCacheResult) =
     root["emittedEvents"] <- eventsArr
     root
 
-let private deserializeResult (json: string) : TaskCacheResult =
+let private deserializeResult (decodePath: string -> string) (json: string) : TaskCacheResult =
     let root = JsonNode.Parse(json).AsObject()
 
     let formatVersion =
@@ -368,7 +368,8 @@ let private deserializeResult (json: string) : TaskCacheResult =
         root["errors"].AsArray()
         |> Seq.map (fun n ->
             let obj = n.AsObject()
-            let file = obj["file"].GetValue<string>()
+            let storedFile = obj["file"].GetValue<string>()
+            let file = if storedFile = "*" then storedFile else decodePath storedFile
 
             let entries =
                 obj["entries"].AsArray()
@@ -445,8 +446,22 @@ let internal pruneSupersededSiblings (superseded: string list) (keepPath: string
 /// On-disk task cache. Each entry is a JSON file in the cache directory, named
 /// `{compositeKey}@{cacheKeyHash}.json`. Only the newest hash per key survives a
 /// write (see `pruneSupersededSiblings`).
-type FileTaskCache(cacheDir: string) =
+type FileTaskCache(cacheDir: string, repoRoot: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
+
+    let encodePath path = FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+    let decodePath key =
+        match FsHotWatch.CachePathIdentity.tryParse key with
+        | Some(FsHotWatch.CachePathIdentity.RepoRelative _ as identity) ->
+            FsHotWatch.CachePathIdentity.tryRebind repoRoot identity
+            |> Option.defaultWith (fun () -> failwith $"invalid repository cache path identity: %s{key}")
+        | Some(FsHotWatch.CachePathIdentity.ExternalAbsolute absolute) -> absolute
+        | None -> failwith $"invalid cache path identity: %s{key}"
+
+    let portableCompositeKey (key: CompositeKey) =
+        { key with
+            File = key.File |> Option.map encodePath }
 
     // Counts FULL-DIRECTORY enumerations performed by this instance. The write path
     // must perform ZERO of them (see `pruneSupersededSiblings`); the constructor's two
@@ -488,7 +503,7 @@ type FileTaskCache(cacheDir: string) =
                     | false, _ -> [ f ])
 
     let entryKey (compositeKey: CompositeKey) =
-        sanitizeKey (compositeKeyToString compositeKey)
+        sanitizeKey (compositeKeyToString (portableCompositeKey compositeKey))
 
     /// Make `path` the key's only live entry and return what it displaces. Atomic
     /// against a concurrent write to the SAME key: exactly one of the two writers
@@ -525,7 +540,7 @@ type FileTaskCache(cacheDir: string) =
         else
             try
                 let json = File.ReadAllText(path)
-                let result = deserializeResult json
+                let result = deserializeResult decodePath json
 
                 if result.CacheKey = cacheKey then Some result else None
             with _ ->
@@ -534,7 +549,7 @@ type FileTaskCache(cacheDir: string) =
 
     let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
-        let json = serializeResult result
+        let json = serializeResult encodePath result
         FsHwPaths.atomicWriteAllText path (json.ToJsonString(jsonWriteOptions))
         // AFTER the write, so a crash mid-set can never leave the key with NO entry.
         // The claim comes after it too: nothing may be named superseded until its
@@ -558,7 +573,7 @@ type FileTaskCache(cacheDir: string) =
                 File.Delete(f)
 
     let clearFile (file: string) =
-        let suffix = sanitizeKey ("--" + file)
+        let suffix = sanitizeKey ("--" + encodePath file)
 
         for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
@@ -568,7 +583,7 @@ type FileTaskCache(cacheDir: string) =
                 File.Delete(f)
 
     let clearPluginFile (plugin: string) (file: string) =
-        let prefix = sanitizeKey (plugin + "--" + file) + "@"
+        let prefix = sanitizeKey (plugin + "--" + encodePath file) + "@"
 
         for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
@@ -623,3 +638,5 @@ type FileTaskCache(cacheDir: string) =
         member _.ClearPlugin plugin = clearPlugin plugin
         member _.ClearFile file = clearFile file
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
+
+    new(cacheDir: string) = FileTaskCache(cacheDir, Directory.GetCurrentDirectory())

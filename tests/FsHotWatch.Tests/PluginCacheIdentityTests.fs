@@ -182,3 +182,9 @@ let ``missing analyzer directories have portable identities`` () =
             [ under rootB "analyzers/missing" ]
 
     test <@ identityA = identityB @>
+
+[<Fact>]
+let ``analyzer path identity preserves input boundaries`` () =
+    let hash = FsHotWatch.Analyzers.AnalyzersPlugin.hashAnalyzerPathIdentities
+
+    test <@ hash [ "a|b"; "c" ] <> hash [ "a"; "b|c" ] @>
