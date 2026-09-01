@@ -27,6 +27,7 @@
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="FileErrorReporterTests.fs" />
     <Compile Include="EventTests.fs" />
+    <Compile Include="CachePathIdentityTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="StructureFilesTests.fs" />
     <Compile Include="PluginTests.fs" />

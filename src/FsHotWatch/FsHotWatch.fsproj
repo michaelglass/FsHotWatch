@@ -56,6 +56,7 @@
     <Compile Include="OperationWatchdog.fs" />
 <Compile Include="Lifecycle.fs" />
     <Compile Include="Events.fs" />
+    <Compile Include="CachePathIdentity.fs" />
     <Compile Include="PathFilter.fs" />
     <Compile Include="SafeWalk.fs" />
     <Compile Include="ProcessRegistry.fs" />
