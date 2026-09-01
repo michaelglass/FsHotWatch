@@ -719,6 +719,24 @@ module internal SettledTree =
     let capture (repoRoot: string) (excludePatterns: string list) : SettledTree =
         VerifiedTree(FsHotWatch.TreeHash.compute repoRoot excludePatterns)
 
+let internal priorVerdictToPreserve
+    (outcome: CheckVerdict.CheckOutcome)
+    (currentTreeHash: string)
+    (currentTreeHashAlgorithm: string)
+    (priorConfirmation: unit -> Verdict.PriorConfirmation)
+    : Verdict.Verdict option =
+    match outcome with
+    | CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun _) ->
+        match priorConfirmation () with
+        | Verdict.PriorConfirmation.StillApplies prior when
+            prior.TreeHash = currentTreeHash
+            && prior.TreeHashAlgorithm = currentTreeHashAlgorithm
+            ->
+            Some prior
+        | Verdict.PriorConfirmation.StillApplies _
+        | Verdict.PriorConfirmation.MustEarn -> None
+    | _ -> None
+
 type internal RetainedTestRun =
     { Report: TestRunReport
       TreeHash: string }
@@ -907,7 +925,23 @@ let private publishVerdictWithReason
             | Verdict.Reading.Missing
             | Verdict.Reading.Unreadable _ -> None
 
-        Verdict.write repoRoot v
+        // A completed re-scan that ran no tests has NO new evidence. It remains an
+        // exit-3 refusal for this invocation, but it must not overwrite a full-suite
+        // green that this binary already earned over this exact tree: doing so turns a
+        // successful no-op convergence pass into evidence destruction.
+        //
+        // `priorConfirmation` is the one cross-process reuse gate. It checks the tree
+        // hash, tree-hash algorithm and producer identity before it returns
+        // `StillApplies`, so preservation cannot promote a green from another tree or
+        // binary. Comparing the prior tree with `v` additionally binds it to the tree
+        // this publisher is about to describe.
+        let preservedPrior =
+            priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
+                Verdict.priorConfirmation repoRoot excludePatterns)
+
+        match preservedPrior with
+        | Some _ -> ()
+        | None -> Verdict.write repoRoot v
 
         if not UI.isInteractive then
             eprintfn ""
@@ -986,7 +1020,9 @@ let internal publishTerminalIncomplete
 ///
 /// Every terminal path — clean, red, incomplete, wedged plugin, daemon teardown —
 /// publishes a verdict file, so the machine-readable answer exists on the failures
-/// too, not only the greens.
+/// too, not only the greens. The sole exception is an unearned no-test convergence
+/// over a tree already covered by an applicable full-suite green: preserving that
+/// existing evidence is more honest than replacing it with an absence of new evidence.
 let pollAndRender
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
