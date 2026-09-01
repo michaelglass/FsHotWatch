@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- persisted plugin-cache entries now encode repository files
+  portably, decode them for the active checkout, and use collision-resistant
+  filenames so equivalent worktrees can safely share cached evidence.
+
 - daemon construction can now omit long-lived file observation
   for authoritative one-shot scans. The default remains watcher-enabled, and a
   deterministic factory seam proves watcher-disabled hosts never invoke native
