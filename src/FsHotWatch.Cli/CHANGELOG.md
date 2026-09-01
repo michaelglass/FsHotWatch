@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: bundle the TestPrune runner-family resolver so CLI users
+  receive valid CTRF switches with both xUnit 3 and xUnit 4. Unknown or
+  conflicting restored runner metadata receives no guessed report switches.
+
 ## 0.14.0-alpha.37 - 2026-09-01
 
 - fix: discover the checkout root from a linked Git worktree's

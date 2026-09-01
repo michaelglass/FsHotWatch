@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: rebuild against the updated FsHotWatch core dependency.
+
 ## 0.7.0-alpha.21 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.
