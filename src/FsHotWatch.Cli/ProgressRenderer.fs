@@ -643,10 +643,12 @@ module AgentHints =
 
     /// The steering block for a completed check/confirm, naming this run's files.
     ///
-    /// `prior` is the verdict that was on disk BEFORE this run overwrote it. It has
-    /// to be an argument: the caller writes the new verdict before rendering, so by
-    /// the time this runs the file is already gone. Passing it in keeps this
-    /// function pure and makes that ordering impossible to get silently wrong.
+    /// `prior` is the verdict that was on disk BEFORE this run published its outcome.
+    /// It has to be an argument: the caller normally writes the new verdict before
+    /// rendering, so by the time this runs the old evidence is already gone; a
+    /// no-test convergence may instead preserve an applicable prior full green.
+    /// Passing it in keeps this function pure and makes that ordering impossible to
+    /// get silently wrong.
     let forVerdict (prior: Verdict.Verdict option) (v: Verdict.Verdict) : string list =
         // NEVER print a path for a file that was not written: a hint that sends you to an
         // empty directory teaches distrust of the tool.
