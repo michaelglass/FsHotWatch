@@ -51,6 +51,7 @@
     <Compile Include="DatabaseTests.fs" />
     <Compile Include="CoverageTests.fs" />
     <Compile Include="CoreReleaseSemanticsTests.fs" />
+    <Compile Include="CoverageImpactTests.fs" />
     <Compile Include="DiffParserTests.fs" />
     <Compile Include="SymbolDiffTests.fs" />
     <Compile Include="ImpactAnalysisTests.fs" />

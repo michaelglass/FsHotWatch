@@ -39,6 +39,7 @@
         <Compile Include="ProjectFanout.fs" />
         <Compile Include="Database.fs" />
         <Compile Include="Coverage.fs" />
+        <Compile Include="CoverageImpact.fs" />
         <Compile Include="Ports.fs" />
         <Compile Include="InMemoryStore.fs" />
         <Compile Include="DiffParser.fs" />

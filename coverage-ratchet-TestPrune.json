@@ -20,6 +20,11 @@
       "branch": 83,
       "reason": "Cobertura parse/ingest/emit for TestPrune-native coverage. The only uncovered branch is the defensive isNull-root guard after XDocument.Parse, which always yields a root (or throws) for the well-formed reports MS emits, so it cannot be reproducibly exercised. (Batch-ingest refactor moved the Some/None attribution branches into Database.RecordCoverageBatch, lowering this file's total branch count.) Pinned at the honest achieved floor rather than excluded."
     },
+    "CoverageImpact.fs": {
+      "line": 92,
+      "branch": 73,
+      "reason": "phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
+    },
     "Database.fs": {
       "line": 98,
       "branch": 70,
