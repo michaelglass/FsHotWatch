@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- file-command dependency cache keys now use portable
+  repository-relative identities instead of checkout-specific absolute paths.
+
 ## 0.7.0-alpha.20 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

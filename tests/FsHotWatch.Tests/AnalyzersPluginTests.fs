@@ -353,22 +353,20 @@ let ``analyzerAssemblyIdentity does not throw on a missing path`` () =
     test <@ id1 = id2 @>
 
 [<Fact(Timeout = 15000)>]
-let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =
-    // Two handlers on the SAME analyzer path with different DLL content. Under the old
-    // path-string-only key these keys were identical, so a daemon that cached "clean"
-    // under the old DLL replayed it after the rebuild.
+let ``regression: warm handler cache key changes when the analyzer DLL is rebuilt`` () =
+    // One long-lived handler sees the DLL change. Capturing the assembly hash during
+    // construction would leave this key unchanged and replay a stale clean result.
     let dir = analyzerBinWith "RuleChanged" [| 0uy; 1uy; 2uy |]
 
     try
-        let h1 = create None [ dir ] None DiagnosticSeverity.Hint
+        let handler = create None [ dir ] None DiagnosticSeverity.Hint
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
-        let key1 = (h1.CacheKey.Value) event
+        let key1 = (handler.CacheKey.Value) event
 
         // The rebuild: same path, new content.
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "RuleChanged.dll"), [| 9uy; 9uy; 9uy; 9uy |])
 
-        let h2 = create None [ dir ] None DiagnosticSeverity.Hint
-        let key2 = (h2.CacheKey.Value) event
+        let key2 = (handler.CacheKey.Value) event
 
         test <@ key1.IsSome @>
         test <@ key2.IsSome @>

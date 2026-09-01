@@ -230,7 +230,7 @@ let ``BENCH merkleCacheKey on representative .fs file`` () =
         typical // ~12KB
 
     let inputs =
-        [ "plugin-version", "lint-merkle-v1"
+        [ "plugin-version", FsHotWatch.Lint.LintPlugin.cacheVersion
           "tool", "1.2.3.4"
           "config", "abc123def456"
           "file", "/Users/me/repo/src/SomeModule/SomeFile.fs"

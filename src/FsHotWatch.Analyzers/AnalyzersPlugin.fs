@@ -13,6 +13,12 @@ open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 open FsHotWatch.ProcessHelper
 
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+[<Literal>]
+let internal cacheVersion = "analyzers-merkle-v4"
+
 /// Default per-event analyzer timeout (seconds). Used when no override is
 /// configured. Chosen to match DaemonConfig.AnalyzersTimeoutDefaultSec.
 [<Literal>]
@@ -90,13 +96,13 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
 /// sorted so directory enumeration order is irrelevant. A missing path or unreadable
 /// DLL contributes a stable sentinel rather than throwing, so identity computation
 /// never crashes plugin construction.
-let internal analyzerAssemblyIdentity (prefixes: string array) (paths: string list) : string =
+let internal analyzerAssemblyIdentityForRoot repoRoot (prefixes: string array) (paths: string list) : string =
     let perFile =
         paths
         |> List.sort
         |> List.collect (fun path ->
             if not (Directory.Exists(path)) then
-                [ $"%s{path}=>missing" ]
+                [ $"%s{cachePathIdentity repoRoot path}=>missing" ]
             else
                 Directory.GetFiles(path, "*.dll")
                 |> Array.filter (fun dll ->
@@ -120,6 +126,23 @@ let internal analyzerAssemblyIdentity (prefixes: string array) (paths: string li
         |> List.sort
 
     FsHotWatch.CheckCache.sha256Hex (String.concat "\n" perFile)
+
+let internal analyzerAssemblyIdentity prefixes paths =
+    analyzerAssemblyIdentityForRoot (Directory.GetCurrentDirectory()) prefixes paths
+
+let internal analyzersCacheKeyFor cacheRepoRoot analyzerPathsHash analyzerAssemblyHash event =
+    match event with
+    | FileChecked result ->
+        Some(
+            FsHotWatch.TaskCache.merkleCacheKey
+                [ "plugin-version", cacheVersion
+                  "analyzer-paths", analyzerPathsHash
+                  "analyzer-assemblies", analyzerAssemblyHash
+                  "file", cachePathIdentity cacheRepoRoot (AbsFilePath.value result.File)
+                  "source", result.Source
+                  "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ]
+        )
+    | _ -> None
 
 /// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
 /// The SDK's constructor shape is reflected at startup (`apoCtor`); kept separate
@@ -185,7 +208,8 @@ let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry
 /// timeout-guarded region before the real analyzer call so tests can force the
 /// timeout branch without a real slow analyzer DLL. The public `create` passes
 /// `None`.
-let internal createWithSlowHook
+let internal createWithSlowHookForRepo
+    (cacheRepoRoot: string)
     (repoRoot: string option)
     (analyzerPaths: string list)
     (timeoutSec: int option)
@@ -574,31 +598,21 @@ let internal createWithSlowHook
       CacheKey =
         // pure-content cache key (file source + analyzer identity + fcs-signature).
         let analyzerPathsHash =
-            FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
-
-        // CONTENT identity, not just the path strings — see `analyzerAssemblyIdentity`.
-        let analyzerAssemblyHash =
-            analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+            analyzerPaths
+            |> List.map (cachePathIdentity cacheRepoRoot)
+            |> List.sort
+            |> String.concat "|"
+            |> FsHotWatch.CheckCache.sha256Hex
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
-            | FileChecked result ->
-                // fcs-signature captures cross-file FCS state changes so
-                // upstream symbol changes invalidate this file's cache.
-                let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+            | FileChecked _ ->
+                // Recompute content identity before lookup: a cache hit skips Update,
+                // including reloadIfStale, so a construction-time snapshot is stale.
+                let analyzerAssemblyHash =
+                    analyzerAssemblyIdentityForRoot cacheRepoRoot knownNonAnalyzerPrefixes analyzerPaths
 
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        // v3 makes every entry cached under the path-only key (v2)
-                        // non-matching, so a daemon cannot replay a "clean" verdict
-                        // recorded before the analyzer set was part of the key.
-                        [ "plugin-version", "analyzers-merkle-v3"
-                          "analyzer-paths", analyzerPathsHash
-                          "analyzer-assemblies", analyzerAssemblyHash
-                          "file", AbsFilePath.value result.File
-                          "source", result.Source
-                          "fcs-signature", fcsSignature ]
-                )
+                analyzersCacheKeyFor cacheRepoRoot analyzerPathsHash analyzerAssemblyHash event
             | _ -> None
 
         Some cacheKey
@@ -614,10 +628,28 @@ let internal createWithSlowHook
 /// using the warm checker's results. Per-event work is bounded by
 /// `runWithCancellableTimeout`; on expiry the run is recorded as `TimedOut` and
 /// the in-flight analyzer is cancelled rather than left holding its slot.
-let create
+let createForRepo
+    (cacheRepoRoot: string)
     (repoRoot: string option)
     (analyzerPaths: string list)
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    createWithSlowHook repoRoot analyzerPaths timeoutSec failOnSeverity None
+    createWithSlowHookForRepo cacheRepoRoot repoRoot analyzerPaths timeoutSec failOnSeverity None
+
+let internal createWithSlowHook repoRoot analyzerPaths timeoutSec failOnSeverity slowHook =
+    createWithSlowHookForRepo
+        (defaultArg repoRoot (Directory.GetCurrentDirectory()))
+        repoRoot
+        analyzerPaths
+        timeoutSec
+        failOnSeverity
+        slowHook
+
+let create repoRoot analyzerPaths timeoutSec failOnSeverity =
+    createForRepo
+        (defaultArg repoRoot (Directory.GetCurrentDirectory()))
+        repoRoot
+        analyzerPaths
+        timeoutSec
+        failOnSeverity

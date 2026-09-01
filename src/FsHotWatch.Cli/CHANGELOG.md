@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- daemon plugin registration now supplies the repository root
+  explicitly so analyzer, build, format, and lint cache keys remain portable
+  across equivalent checkout locations.
+
 - fix: `check --run-once`, `confirm --run-once`, and
   `format --run-once` now construct a watcher-free in-process execution host.
   Their existing scan, plugin, scope, settlement, verdict-file, and exit-code

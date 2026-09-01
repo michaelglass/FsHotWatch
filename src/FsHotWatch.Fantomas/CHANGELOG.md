@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- format-check cache keys now use repository-relative file
+  identities, making content-equivalent checkout paths shareable.
+
 ## 0.7.0-alpha.20 - 2026-09-01
 
 - chore(deps): rebuild for the synchronized FsHotWatch.Cli dependency release.

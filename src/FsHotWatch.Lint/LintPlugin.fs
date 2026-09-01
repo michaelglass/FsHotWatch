@@ -9,6 +9,9 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.ProcessHelper
 open FSharpLint.Application
 
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
 /// Default per-event lint timeout (seconds). Used when no override is
 /// configured. Chosen to match DaemonConfig.LintTimeoutDefaultSec.
 [<Literal>]
@@ -32,13 +35,28 @@ let private fsharpLintVersion =
 /// previously-cached results must be discarded. Independent of FSharpLint's
 /// own version.
 [<Literal>]
-let private pluginCacheSalt = "lint-merkle-v1"
+let internal cacheVersion = "lint-merkle-v2"
+
+let internal lintCacheKeyFor cacheRepoRoot toolVersion configHash event =
+    match event with
+    | FileChecked r ->
+        Some(
+            FsHotWatch.TaskCache.merkleCacheKey
+                [ "plugin-version", cacheVersion
+                  "tool", toolVersion
+                  "config", configHash
+                  "file", cachePathIdentity cacheRepoRoot (AbsFilePath.value r.File)
+                  "source", r.Source
+                  "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults ]
+        )
+    | _ -> None
 
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
 /// content-merkle (file source + tool/config hashes); jj commit_id is not
 /// consulted.
-let create
+let private createWithCacheRoot
+    (cacheRepoRoot: string)
     (repoRoot: string option)
     (lintConfigPath: string option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
@@ -55,24 +73,7 @@ let create
         | Some _ -> "missing-config"
         | None -> "no-config"
 
-    let cacheKey (event: PluginEvent<unit>) : ContentHash option =
-        match event with
-        | FileChecked r ->
-            // the FCS check signature, so a change to an upstream symbol's
-            // signature invalidates this file's entry even though its own source
-            // bytes are unchanged — a source-only key serves stale lint results.
-            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
-
-            Some(
-                FsHotWatch.TaskCache.merkleCacheKey
-                    [ "plugin-version", pluginCacheSalt
-                      "tool", fsharpLintVersion
-                      "config", configHash
-                      "file", AbsFilePath.value r.File
-                      "source", r.Source
-                      "fcs-signature", fcsSignature ]
-            )
-        | _ -> None
+    let cacheKey = lintCacheKeyFor cacheRepoRoot fsharpLintVersion configHash
 
 
     let lintParams =
@@ -211,3 +212,15 @@ let create
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some cacheKey
       Teardown = None }
+
+/// Creates the lint plugin with an explicit root for portable cache identities.
+let createForRepo cacheRepoRoot repoRoot lintConfigPath lintRunner timeoutSec =
+    createWithCacheRoot cacheRepoRoot repoRoot lintConfigPath lintRunner timeoutSec
+
+let create repoRoot lintConfigPath lintRunner timeoutSec =
+    createWithCacheRoot
+        (defaultArg repoRoot (System.IO.Directory.GetCurrentDirectory()))
+        repoRoot
+        lintConfigPath
+        lintRunner
+        timeoutSec

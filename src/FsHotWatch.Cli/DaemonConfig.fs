@@ -1375,7 +1375,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         )
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
-        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck config.TimeoutSec)
+
+        daemon.RegisterHandler(
+            FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheckForRepo repoRoot config.TimeoutSec
+        )
     | Off -> ()
 
     // When includeOutsideRepo is false (default), the report-producing plugins
@@ -1394,7 +1397,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create outsideRepoScope lintConfigPath None config.TimeoutSec)
+        daemon.RegisterHandler(
+            FsHotWatch.Lint.LintPlugin.createForRepo repoRoot outsideRepoScope lintConfigPath None config.TimeoutSec
+        )
 
     // Analyzers plugin
     match config.Analyzers with
@@ -1423,7 +1428,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
         // the real per-path result.
         let handler =
-            FsHotWatch.Analyzers.AnalyzersPlugin.create
+            FsHotWatch.Analyzers.AnalyzersPlugin.createForRepo
+                repoRoot
                 outsideRepoScope
                 resolvedPaths
                 config.TimeoutSec
@@ -1470,7 +1476,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 // Case 1 promotes the corrected issue
                 // detector: a cached or freshly returned success must describe the
                 // current graph outputs, not a deleted, older, or divergent artifact.
-                FsHotWatch.Build.BuildPlugin.create
+                FsHotWatch.Build.BuildPlugin.createForRepo
+                    repoRoot
                     b.Command
                     b.Args
                     []

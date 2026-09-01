@@ -8,6 +8,34 @@ open FsHotWatch.Logging
 open FsHotWatch.Plugin
 open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
+
+let internal cachePathIdentity repoRoot path =
+    FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+
+[<Literal>]
+let internal cacheVersion = "format-check-merkle-v2"
+
+let internal formatCheckCacheKeyWith
+    (tryRead: string -> string option)
+    (repoRoot: string)
+    (event: PluginEvent<unit>)
+    : ContentHash option =
+    match event with
+    | FileChanged(SourceChanged files) when not (List.isEmpty files) ->
+        files
+        |> List.sort
+        |> List.fold
+            (fun inputs path ->
+                inputs
+                |> Option.bind (fun values ->
+                    tryRead path
+                    |> Option.map (fun source ->
+                        let identity = cachePathIdentity repoRoot path
+                        values @ [ $"file:{identity}", identity; $"source:{identity}", source ])))
+            (Some [])
+        |> Option.map (fun inputs -> FsHotWatch.TaskCache.merkleCacheKey ([ "plugin-version", cacheVersion ] @ inputs))
+    | _ -> None
+
 open FsHotWatch.ProcessHelper
 open Fantomas.Core
 
@@ -89,7 +117,8 @@ type FormatCheckState = { Unformatted: Set<string> }
 /// Internal constructor with a test seam. `slowHook` is invoked inside the
 /// timeout-guarded region before formatting runs so tests can force the
 /// timeout branch. The public `createFormatCheck` passes `None`.
-let internal createFormatCheckWithSlowHook
+let internal createFormatCheckWithSlowHookForRepo
+    (repoRoot: string)
     (timeoutSec: int option)
     (slowHook: (unit -> unit) option)
     : PluginHandler<FormatCheckState, unit> =
@@ -251,14 +280,14 @@ let internal createFormatCheckWithSlowHook
         // in the FileChanged event. Fantomas formatting is content-deterministic
         // — same source bytes always produce the same formatted output, so two
         // daemons agree on the cache value regardless of working-copy state.
-        let tryReadFileForMerkle (f: string) : (string * string) list option =
+        let tryReadFileForMerkle (f: string) : string option =
             // Refuse to produce a key when any input is unreadable — substituting
             // "" would collide with real empty files and with each other, so the
             // cache is bypassed (cache miss + retry on the next event) instead of
             // poisoning a "format OK" verdict.
             try
                 let source = File.ReadAllText(f)
-                Some [ $"file:{f}", f; $"source:{f}", source ]
+                Some source
             with ex ->
                 Logging.debug
                     "format-check"
@@ -267,23 +296,7 @@ let internal createFormatCheckWithSlowHook
                 None
 
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
-            match event with
-            | FileChanged(SourceChanged files) when not (List.isEmpty files) ->
-                let sortedFiles = List.sort files
-
-                // Read every file or surrender the key: one unreadable file must
-                // produce None for the whole event.
-                let allInputs =
-                    (Some [], sortedFiles)
-                    ||> List.fold (fun acc f ->
-                        acc
-                        |> Option.bind (fun accList ->
-                            tryReadFileForMerkle f |> Option.map (fun pairs -> accList @ pairs)))
-
-                allInputs
-                |> Option.map (fun fileInputs ->
-                    FsHotWatch.TaskCache.merkleCacheKey ([ "plugin-version", "format-check-merkle-v1" ] @ fileInputs))
-            | _ -> None
+            formatCheckCacheKeyWith tryReadFileForMerkle repoRoot event
 
         Some cacheKey
       Teardown = None }
@@ -293,5 +306,12 @@ let internal createFormatCheckWithSlowHook
 /// Respects .gitignore and .fantomasignore files in the repo root. Per-file format
 /// work is bounded by `runWithCancellableTimeout`; on expiry the run is recorded as
 /// `TimedOut` and the in-flight format is cancelled.
+let internal createFormatCheckWithSlowHook timeoutSec slowHook =
+    createFormatCheckWithSlowHookForRepo (Directory.GetCurrentDirectory()) timeoutSec slowHook
+
+/// Creates a read-only format checker with an explicit root for portable cache identities.
+let createFormatCheckForRepo (repoRoot: string) (timeoutSec: int option) : PluginHandler<FormatCheckState, unit> =
+    createFormatCheckWithSlowHookForRepo repoRoot timeoutSec None
+
 let createFormatCheck (timeoutSec: int option) : PluginHandler<FormatCheckState, unit> =
-    createFormatCheckWithSlowHook timeoutSec None
+    createFormatCheckForRepo (Directory.GetCurrentDirectory()) timeoutSec
