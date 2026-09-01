@@ -449,7 +449,7 @@ merge verdict without one.
 | `environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
-| `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` injects `--report-ctrf` only for a runner detected as xUnit.v3 (else falls back to the dotnet heuristic); `ctrf` always injects it; `off` never injects it and the exit code stays authoritative. |
+| `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` reads `obj/project.assets.json` and injects the matching CTRF switches for a resolved xUnit 3 or 4 runner; missing, malformed, conflicting, and unknown versions receive no report switches. `ctrf` forces report switches, using the detected family when possible and the xUnit 3 names for an unknown custom runner. `off` never injects them and the exit code stays authoritative. |
 
 **`analyzers` fields:**
 

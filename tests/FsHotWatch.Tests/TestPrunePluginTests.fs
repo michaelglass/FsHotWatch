@@ -2774,10 +2774,13 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
         )
 
         let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")
+        let capturedArgs = Path.Combine(tmpDir, "captured-args")
 
         File.WriteAllText(
             scriptPath,
-            "for a in \"$@\"; do\n"
+            "printf '%s\\n' \"$@\" > \""
+            + capturedArgs
+            + "\"\nfor a in \"$@\"; do\n"
             + "  if [ -d \"$a\" ]; then cp \""
             + reportPath
             + "\" \"$a/CtrfProj.ctrf.json\"; fi\n"
@@ -2793,9 +2796,8 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                // `Ctrf`, not `AutoDetect`: AutoDetect declines to inject the report flags
-                // for a non-dotnet command, and without them there is no run directory on
-                // the command line to write into.
+                // `Ctrf`, not `AutoDetect`: this custom runner has no project assets from
+                // which AutoDetect could learn its flag family.
                 ReportVerificationFormat = Ctrf } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -2819,7 +2821,14 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
         Assert.Equal(7, counts.GetProperty("total").GetInt32())
         Assert.Equal(6, counts.GetProperty("succeeded").GetInt32())
         Assert.Equal(0, counts.GetProperty("failed").GetInt32())
-        Assert.Equal(1, counts.GetProperty("skipped").GetInt32()))
+        Assert.Equal(1, counts.GetProperty("skipped").GetInt32())
+
+        // Force-on remains useful for custom runners without an assets graph. Its
+        // documented fallback is the established xUnit 3 switch family.
+        let args = File.ReadAllLines capturedArgs
+        test <@ args |> Array.contains "--report-ctrf" @>
+        test <@ args |> Array.contains "--report-ctrf-filename" @>
+        test <@ not (args |> Array.contains "--report-xunit-ctrf") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests emits a NULL counts field for a project that wrote no report`` () =
@@ -8113,36 +8122,159 @@ let ``classify: a timeout whose teardown never answered is still terminal, and s
         test <@ output.Contains "STILL RUNNING" @>
     | other -> failwith $"expected TestsTimedOut, got %A{other}"
 
-// --- detectCtrfCapable: report injection is scoped to xUnit runners ---
+// --- CTRF runner family: report flags follow the resolved xUnit major ---
+
+let private writeRunnerAssets (projectPath: string) (packageVersion: string) =
+    let objDir = Path.Combine(Path.GetDirectoryName(projectPath), "obj")
+    Directory.CreateDirectory(objDir) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(objDir, "project.assets.json"),
+        $"""{{"version":3,"libraries":{{"xunit.v3/%s{packageVersion}":{{"type":"package"}}}}}}"""
+    )
+
+let private writeRunnerAssetsJson (projectPath: string) (json: string) =
+    let objDir = Path.Combine(Path.GetDirectoryName(projectPath), "obj")
+    Directory.CreateDirectory(objDir) |> ignore
+    File.WriteAllText(Path.Combine(objDir, "project.assets.json"), json)
 
 [<Fact(Timeout = 5000)>]
-let ``detectCtrfCapable: Some true when the project references xunit`` () =
-    withTempDir "fshw-detect-xunit" (fun tmp ->
+let ``detectCtrfRunnerFamily resolves xUnit 3 from restored assets`` () =
+    withTempDir "fshw-detect-xunit3" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "3.2.2"
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit3 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily resolves xUnit 4 from restored assets`` () =
+    withTempDir "fshw-detect-xunit4" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0"
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily resolves a prerelease xUnit 4 package`` () =
+    withTempDir "fshw-detect-xunit4-prerelease" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0-pre.12"
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicting runner majors`` () =
+    withTempDir "fshw-detect-xunit-conflict" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+
+        writeRunnerAssetsJson
+            proj
+            """{"version":3,"libraries":{"xunit.v3/3.2.2":{"type":"package"},"xunit.v3/4.0.0":{"type":"package"}}}"""
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily fails closed when restored assets are missing`` () =
+    withTempDir "fshw-detect-xunit-missing-assets" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily fails closed when restored assets are malformed`` () =
+    withTempDir "fshw-detect-xunit-malformed-assets" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssetsJson proj "not JSON"
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily rejects an unknown xUnit major`` () =
+    withTempDir "fshw-detect-xunit5" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "5.0.0"
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Theory(Timeout = 5000)>]
+[<InlineData(3, "--report-ctrf --report-ctrf-filename MyTests.ctrf.json --results-directory \"/tmp/results\"")>]
+[<InlineData(4,
+             "--report-xunit-ctrf --report-xunit-ctrf-filename MyTests.ctrf.json --results-directory \"/tmp/results\"")>]
+let ``ctrfArguments uses the report switches supported by the resolved xUnit major`` (major: int) (expected: string) =
+    let family = if major = 3 then Xunit3 else Xunit4
+    test <@ ctrfArguments family "MyTests.ctrf.json" "/tmp/results" = expected @>
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from that path`` () =
+    withTempDir "fshw-xunit4-functional" (fun tmp ->
+        let projectPath = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(projectPath, "<Project />")
+        writeRunnerAssets projectPath "4.0.0-pre.12"
+
+        let cannedReport = Path.Combine(tmp, "canned.ctrf.json")
 
         File.WriteAllText(
-            proj,
-            "<Project><ItemGroup><PackageReference Include=\"xunit.v3\" Version=\"3.2.2\" /></ItemGroup></Project>"
+            cannedReport,
+            """{"results":{"summary":{"tests":2,"passed":2,"failed":0,"pending":0,"skipped":0,"other":0}}}"""
         )
 
-        test <@ detectCtrfCapable $"--project {proj}" tmp = Some true @>)
-
-[<Fact(Timeout = 5000)>]
-let ``detectCtrfCapable: Some false when the project does not reference xunit`` () =
-    withTempDir "fshw-detect-noxunit" (fun tmp ->
-        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        let capturedArgs = Path.Combine(tmp, "captured-args")
+        let runner = Path.Combine(tmp, "fake-xunit4.sh")
 
         File.WriteAllText(
-            proj,
-            "<Project><ItemGroup><PackageReference Include=\"Expecto\" Version=\"10.0.0\" /></ItemGroup></Project>"
+            runner,
+            "printf '%s\\n' \"$@\" > \""
+            + capturedArgs
+            + "\"\n"
+            + "report_name=''\nresults_dir=''\n"
+            + "while [ \"$#\" -gt 0 ]; do\n"
+            + "  case \"$1\" in\n"
+            + "    --report-xunit-ctrf-filename) report_name=\"$2\"; shift 2 ;;\n"
+            + "    --results-directory) results_dir=\"$2\"; shift 2 ;;\n"
+            + "    *) shift ;;\n"
+            + "  esac\n"
+            + "done\n"
+            + "if [ -n \"$report_name\" ] && [ -n \"$results_dir\" ]; then cp \""
+            + cannedReport
+            + "\" \"$results_dir/$report_name\"; fi\n"
         )
 
-        test <@ detectCtrfCapable $"--project {proj}" tmp = Some false @>)
+        let configs =
+            [ { Project = "MyTests"
+                Command = "sh"
+                // A bare project-file token is enough for runner detection without making
+                // the fake shell script look like a `dotnet run --project` launch.
+                Args = $"{runner} {projectPath}"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
-[<Fact(Timeout = 5000)>]
-let ``detectCtrfCapable: None when no project can be derived from the args`` () =
-    // None sends the caller to the dotnet heuristic.
-    test <@ detectCtrfCapable "test --no-build" "/tmp" = None @>
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmp
+        let handler = create ":memory:" tmp (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+
+        let args = File.ReadAllLines capturedArgs
+        test <@ args |> Array.contains "--report-xunit-ctrf" @>
+        test <@ args |> Array.contains "--report-xunit-ctrf-filename" @>
+        test <@ not (args |> Array.contains "--report-ctrf") @>
+
+        use doc = JsonDocument.Parse(result.Value)
+        let project = doc.RootElement.GetProperty("projects").[0]
+        Assert.Equal("passed", project.GetProperty("status").GetString())
+        Assert.Equal(2, project.GetProperty("counts").GetProperty("total").GetInt32()))
 
 // =============================================================================
 // AUTOMATION-95 / AUTOMATION-99 — the check must CONVERGE, never rest on a verdict

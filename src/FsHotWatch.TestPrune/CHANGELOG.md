@@ -9,6 +9,11 @@
   unmeasurable. Those fields may use string, object, or array shapes; test names
   and assertion messages are not inspected. Complete assertion-only receipts
   still report genuine mass misses.
+- fix(AUTOMATION-464): resolve the installed xUnit runner major from
+  `obj/project.assets.json` before requesting CTRF. xUnit 3 keeps its
+  `--report-ctrf*` switches; xUnit 4 receives the renamed
+  `--report-xunit-ctrf*` switches. Auto-detection declines unknown or unreadable
+  runner versions instead of guessing a fatal command line.
 
 ## 0.13.0-alpha.28 - 2026-09-01
 

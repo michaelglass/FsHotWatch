@@ -768,12 +768,11 @@ let internal ingestAndEmitCoverage
 /// "invalid command line" and runs nothing). So injection of the report flag is
 /// scoped by this setting.
 type ReportVerificationFormat =
-    /// Inject `--report-ctrf` iff the runner is detected as CTRF-capable
-    /// (xUnit.v3, from the test project's package references), else fall back to
-    /// the broad "is a dotnet command" heuristic. The default.
+    /// Inject the matching CTRF switches iff the restored project graph resolves
+    /// to a supported xUnit 3 or 4 runner. The default.
     | AutoDetect
-    /// Always inject `--report-ctrf` (force-on for a capable runner the detector
-    /// misses).
+    /// Always inject CTRF switches (force-on for a capable custom runner the
+    /// detector misses). Unknown custom runners retain the xUnit 3 switch family.
     | Ctrf
     /// Never inject a report flag — the process exit code is authoritative
     /// (force-off; e.g. a custom runner that would error on `--report-ctrf`).
@@ -2525,7 +2524,7 @@ let private argTokens (args: string) : string[] =
         args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
 
 /// The value following `--project`/`-p` in the tokenized args, quote-trimmed.
-/// Shared by `tryApphostPresent` and `detectCtrfCapable` (both derive a project
+/// Shared by `tryApphostPresent` and `detectCtrfRunnerFamily` (both derive a project
 /// from the runner command line the same way).
 let private projectFlagValue (tokens: string[]) : string option =
     tokens
@@ -2613,18 +2612,28 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
             || File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".exe"))))
 
 
-/// Detect whether a test runner emits a CTRF report we can parse. The
-/// `--report-ctrf` family is provided by xUnit.v3's runner (NOT the MTP core),
-/// and an UNSUPPORTED `--report-*` flag is fatal — the runner exits "invalid
-/// command line" and runs zero tests. So we positively identify xUnit.v3 from
-/// the test project file's package references before injecting the flag.
-///
-/// Returns `Some true`/`Some false` when a project file is located and read
-/// (mentions xunit or not), and `None` when no project file can be derived from
-/// the args (a custom runner, or a `--project`-less command) — the caller treats
-/// `None` as "fall back to the broad dotnet heuristic", preserving existing
-/// behaviour without risking a fatal flag on a positively-non-xunit runner.
-let internal detectCtrfCapable (args: string) (repoRoot: string) : bool option =
+/// The xUnit runner major determines the names of its CTRF report switches.
+/// xUnit 4 names them `--report-xunit-ctrf*`; xUnit 3 used
+/// `--report-ctrf*`. Passing the other family's switches is fatal and runs zero
+/// tests, so unknown majors are deliberately not treated as a best guess.
+type internal CtrfRunnerFamily =
+    | Xunit3
+    | Xunit4
+
+/// Render only the switches owned by the resolved runner family. The results
+/// directory is an MTP switch and is shared by both supported families.
+let internal ctrfArguments (family: CtrfRunnerFamily) (reportName: string) (resultsDirectory: string) : string =
+    match family with
+    | Xunit3 -> $"--report-ctrf --report-ctrf-filename %s{reportName} --results-directory \"%s{resultsDirectory}\""
+    | Xunit4 ->
+        $"--report-xunit-ctrf --report-xunit-ctrf-filename %s{reportName} --results-directory \"%s{resultsDirectory}\""
+
+/// Resolve the actual xUnit runner family from NuGet's restored graph. The
+/// project file can contain central versions, properties, ranges, or stale
+/// text, while `obj/project.assets.json` records the exact package version that
+/// will run. Missing/malformed assets and unsupported majors return `None` so
+/// auto-detection fails closed rather than giving a runner fatal arguments.
+let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunnerFamily option =
     let tokens = argTokens args
 
     let looksLikeProjectFile (t: string) =
@@ -2661,9 +2670,52 @@ let internal detectCtrfCapable (args: string) (repoRoot: string) : bool option =
     |> Option.bind resolveProjectFile
     |> Option.bind (fun projFile ->
         try
-            // xUnit is a DIRECT package reference in a test project, so a text
-            // probe of the project file is sufficient and build-independent.
-            Some((File.ReadAllText projFile).Contains("xunit", StringComparison.OrdinalIgnoreCase))
+            let assetsPath =
+                Path.Combine(Path.GetDirectoryName(projFile), "obj", "project.assets.json")
+
+            use assets = JsonDocument.Parse(File.ReadAllText assetsPath)
+            let mutable libraries = Unchecked.defaultof<JsonElement>
+
+            if assets.RootElement.TryGetProperty("libraries", &libraries) then
+                let families =
+                    libraries.EnumerateObject()
+                    |> Seq.choose (fun package ->
+                        let slash = package.Name.IndexOf('/')
+
+                        if
+                            slash <= 0
+                            || not (
+                                package.Name.AsSpan(0, slash).Equals("xunit.v3", StringComparison.OrdinalIgnoreCase)
+                            )
+                        then
+                            None
+                        else
+                            // NuGet library keys use `<id>/<normalized-version>`. We only
+                            // need the SemVer major; System.Version deliberately rejects
+                            // valid NuGet prerelease suffixes such as `4.0.0-pre.12`.
+                            let version = package.Name.Substring(slash + 1)
+                            let dot = version.IndexOf('.')
+
+                            match
+                                if dot > 0 then
+                                    Int32.TryParse(version.AsSpan(0, dot))
+                                else
+                                    (false, 0)
+                            with
+                            | true, 3 -> Some Xunit3
+                            | true, 4 -> Some Xunit4
+                            | _ -> None)
+                    |> Set.ofSeq
+
+                // Multiple patch/minor versions from one major are harmless, but two
+                // runner majors make the accepted command line ambiguous. Do not let
+                // JSON property order decide which suite gets fatal flags.
+                if families.Count = 1 then
+                    families |> Seq.exactlyOne |> Some
+                else
+                    None
+            else
+                None
         with _ ->
             None)
 
@@ -3443,28 +3495,21 @@ let private executeTests
                                     extraArgs.Add(buildCoverageArgs paths wasFiltered)
                                     launch)
 
-                            // xUnit.v3's runner supports `--report-ctrf`, which fshw
+                            // xUnit's runner supports a major-specific CTRF switch, which fshw
                             // reads back as the AUTHORITATIVE pass/fail verdict (and for
                             // flakiness history). An UNSUPPORTED `--report-*` flag is
                             // FATAL (the runner exits "invalid command line" and runs
                             // zero tests), so injection is scoped: `Disabled` never
                             // injects, `Ctrf` always does, `AutoDetect` injects iff the
-                            // runner is detected as xUnit (from the project's package
-                            // refs) and otherwise falls back to the broad "is a dotnet
-                            // command" heuristic — non-dotnet test fixtures (sleep, echo)
-                            // are thereby never given the flag.
-                            let isDotnetCommand (cmd: string) =
-                                let leaf = Path.GetFileNameWithoutExtension(cmd)
-                                leaf = "dotnet"
-
-                            let shouldRequestCtrf =
+                            // runner's restored package graph resolves to a supported xUnit
+                            // major. Forced `Ctrf` keeps the xUnit 3 switches as its fallback
+                            // for explicitly-configured custom runners, but uses the resolved
+                            // xUnit 4 switches whenever the project graph identifies v4.
+                            let ctrfRunnerFamily =
                                 match config.ReportVerificationFormat with
-                                | Disabled -> false
-                                | Ctrf -> true
-                                | AutoDetect ->
-                                    match detectCtrfCapable config.Args repoRoot with
-                                    | Some capable -> capable
-                                    | None -> isDotnetCommand config.Command
+                                | Disabled -> None
+                                | Ctrf -> detectCtrfRunnerFamily config.Args repoRoot |> Option.orElse (Some Xunit3)
+                                | AutoDetect -> detectCtrfRunnerFamily config.Args repoRoot
 
                             // ONE DIRECTORY PER RUN (AUTOMATION-129). A run's reports live in
                             // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
@@ -3474,19 +3519,17 @@ let private executeTests
                             // executed run that produced nothing leaves an EMPTY DIRECTORY —
                             // distinguishable from a run that never happened.
                             let ctrfPath =
-                                if shouldRequestCtrf then
+                                match ctrfRunnerFamily with
+                                | Some family ->
                                     Directory.CreateDirectory(runDir) |> ignore
                                     // The dir already names the run, so the file need only name
                                     // the project. No guid to guess at, nothing to parse.
                                     let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
 
-                                    extraArgs.Add(
-                                        $"--report-ctrf --report-ctrf-filename {ctrfName} --results-directory \"{runDir}\""
-                                    )
+                                    extraArgs.Add(ctrfArguments family ctrfName runDir)
 
                                     Some(Path.Combine(runDir, ctrfName))
-                                else
-                                    None
+                                | None -> None
 
                             let finalArgs =
                                 if extraArgs.Count > 0 then
