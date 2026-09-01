@@ -9018,6 +9018,7 @@ let private makeTestPruneRecordingCtx () =
           Log = fun _ -> ()
           CompleteWithTimeout = fun _ -> ()
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           IsRunning = fun _ -> false
           FcsSuppressedCodes = Set.empty
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
@@ -10491,13 +10492,13 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
             [ "ProjA", impactSkipped; "ProjB", passed true ]
             (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
 
-    let mutable claims = [ SlotBusy; Claimed ]
+    let mutable claims = [ LocalSlotBusy; SharedClaimed ]
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let ctx =
         { recordingCtx with
-            RunExclusive =
-                fun _ _ ->
+            RunExclusiveShared =
+                fun _ _ _ _ _ ->
                     match claims with
                     | claim :: later ->
                         claims <- later
@@ -10527,6 +10528,37 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
     test <@ drainedState.EvidenceReceipt.IsNone @>
     test <@ drainedState.QueuedCommandRuns.IsEmpty @>
     test <@ claims.IsEmpty @>
+
+[<Fact(Timeout = 15000)>]
+let ``manual run reply terminates when its shared test host cannot start`` () =
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+
+    let reply = System.Threading.Tasks.TaskCompletionSource<string>()
+    let mutable posted: TestPruneMsg option = None
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    let ctx =
+        { recordingCtx with
+            Post = fun message -> posted <- Some message
+            RunExclusiveShared =
+                fun _ _ _ _ failureMessage ->
+                    posted <- Some(failureMessage (InvalidOperationException("host start fault")))
+                    SharedClaimed }
+
+    let claimedState =
+        handler.Update ctx handler.Init (Custom(RunTestsRequested([ a125Config "ProjA" ], None, reply)))
+        |> Async.RunSynchronously
+
+    test <@ posted.IsSome @>
+
+    let finalState =
+        handler.Update ctx claimedState (Custom posted.Value) |> Async.RunSynchronously
+
+    test <@ reply.Task.Wait 5000 @>
+    test <@ reply.Task.Result.Contains("test host could not start") @>
+    test <@ reply.Task.Result.Contains("host start fault") @>
+    test <@ finalState.PendingRerun @>
 
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =

@@ -596,6 +596,23 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
         let pendingPath = System.IO.Path.Combine(repoRoot, "src", "Pending.fs")
         let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
         System.IO.File.WriteAllText(sourcePath, "module Library\n")
+        // Keep the disk project consistent with the manual registration below. The
+        // daemon's watcher may rediscover during this test; rediscovery must preserve
+        // both files, especially the deliberately unchecked Pending.fs.
+        System.IO.File.WriteAllText(
+            projectPath,
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+    <Compile Include="Pending.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
         let runId = Guid.Parse "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
         System.IO.Directory.CreateDirectory(runDir) |> ignore

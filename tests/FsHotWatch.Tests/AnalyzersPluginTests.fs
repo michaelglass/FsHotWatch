@@ -928,6 +928,7 @@ let private makeAnalyzerRecordingCtx () =
           Log = fun _ -> ()
           CompleteWithTimeout = fun _ -> ()
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           IsRunning = fun _ -> false
           FcsSuppressedCodes = Set.empty
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }

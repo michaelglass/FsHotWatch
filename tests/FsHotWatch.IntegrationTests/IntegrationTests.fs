@@ -1649,9 +1649,10 @@ let ``Full pipeline: format → build → test`` () =
 // ===========================================================================
 
 [<Fact(Timeout = 10000)>]
-let ``BuildPlugin does not run concurrent builds`` () =
+let ``BuildPlugin serializes changes that arrive during a build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCount = 0
+    let elapsed = System.Diagnostics.Stopwatch.StartNew()
 
     let recorder =
         { Name = PluginName.create "build-counter"
@@ -1689,11 +1690,11 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
-    waitForTerminalStatus host "build" 5000
+    waitUntil (fun () -> buildCount >= 2) 5000
+    elapsed.Stop()
 
-    waitUntil (fun () -> buildCount >= 1) 2000
-
-    test <@ buildCount = 1 @>
+    test <@ buildCount = 2 @>
+    test <@ elapsed.Elapsed >= TimeSpan.FromMilliseconds 1800.0 @>
 
     let status = host.GetStatus("build")
     test <@ status.IsSome @>
@@ -2025,10 +2026,11 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 30000)>]
-let ``concurrent FileChanged events do not start two builds`` () =
+let ``concurrent FileChanged events run two builds sequentially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let buildCompletedCount = ref 0
+    let elapsed = System.Diagnostics.Stopwatch.StartNew()
 
     let counter: PluginHandler<unit, obj> =
         { Name = PluginName.create "build-counter"
@@ -2060,12 +2062,11 @@ let ``concurrent FileChanged events do not start two builds`` () =
     System.Threading.Thread.Sleep(100)
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
-    waitForTerminalStatus host "build" 15000
-    // An erroneously-spawned second build would fire its BuildCompleted within ~1.5s of
-    // the first, so this settle window is what makes the count assertion meaningful.
-    System.Threading.Thread.Sleep(2000)
+    waitUntil (fun () -> !buildCompletedCount >= 2) 15000
+    elapsed.Stop()
 
-    test <@ !buildCompletedCount = 1 @>
+    test <@ !buildCompletedCount = 2 @>
+    test <@ elapsed.Elapsed >= TimeSpan.FromMilliseconds 1800.0 @>
 
 [<Fact(Timeout = 30000)>]
 let ``run summary names the slowest project when 2+ projects ran`` () =

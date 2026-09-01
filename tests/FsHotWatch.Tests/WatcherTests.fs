@@ -600,7 +600,7 @@ let ``macOS setup creates native first and rolls every partial watcher back`` ()
 [<Collection(FileWatchCollectionName)>]
 type RealFileWatcherTests() =
 
-    [<Fact(Timeout = 30000)>]
+    [<Fact(Timeout = 150000)>]
     member _.``FileWatcher.create with isMacOS=false watches src and tests dirs``() =
         withTempDir "watcher-fsw" (fun tmpDir ->
             let srcDir = Path.Combine(tmpDir, "src")
@@ -613,7 +613,9 @@ type RealFileWatcherTests() =
 
             use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
 
-            probeUntilEvent srcDir (fun () -> changes.Count >= 1) 10000
+            // File watcher startup can stall under full-suite load. Keep probing
+            // until an event arrives instead of treating 10 seconds as a readiness signal.
+            probeUntilEvent srcDir (fun () -> changes.Count >= 1) 60000
             test <@ changes.Count >= 1 @>)
 
     [<Fact(Timeout = 150000)>]

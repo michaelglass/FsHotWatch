@@ -1529,6 +1529,8 @@ module CheckReach =
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
+    | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
+    | TestHostUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
     /// `RunExclusive "tests"` slot (AUTOMATION-99). The command must never execute tests
     /// on the IPC thread itself: a run outside the slot is invisible to the daemon's
@@ -4268,6 +4270,25 @@ let internal createWithLaunchDeadline
     let db = Database.create dbPath
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
+    let runTestHostExclusive (ctx: PluginCtx<TestPruneMsg>) (reply: Tasks.TaskCompletionSource<string> option) work =
+        let workFor =
+            function
+            | Ready -> work
+            | Invalid reason -> async { return ArtifactsUnavailable(reason, reply) }
+
+        let classify =
+            function
+            | ArtifactsUnavailable(reason, _) -> Invalid reason
+            | TestHostUnavailable(reason, _) -> Invalid reason
+            | _ -> Ready
+
+        let failureMessage (ex: exn) = TestHostUnavailable(ex.Message, reply)
+
+        match ctx.RunExclusiveShared "tests" "build-artifacts" workFor classify failureMessage with
+        | SharedClaimed
+        | SharedQueued -> Claimed
+        | LocalSlotBusy -> SlotBusy
+
     // A recreated DB (schema bump) leaves the FCS check cache stale — see
     // `clearFcsCheckCache`.
     if db.WasRecreated then
@@ -6290,8 +6311,9 @@ let internal createWithLaunchDeadline
                                         PendingForceRunProjects = Set.empty }
 
                                 match
-                                    ctx.RunExclusive
-                                        "tests"
+                                    runTestHostExclusive
+                                        ctx
+                                        None
                                         (runTestsWithImpact
                                             ctx
                                             configs
@@ -6461,8 +6483,9 @@ let internal createWithLaunchDeadline
                                             EvidenceReceipt = None }
 
                                     match
-                                        ctx.RunExclusive
-                                            "tests"
+                                        runTestHostExclusive
+                                            ctx
+                                            None
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
@@ -7106,7 +7129,12 @@ let internal createWithLaunchDeadline
                                 EvidenceReceipt = None
                                 QueuedCommandRuns = laterRuns }
 
-                        match ctx.RunExclusive "tests" (commandForceRun ctx queuedConfigs queuedFilter queuedReply) with
+                        match
+                            runTestHostExclusive
+                                ctx
+                                (Some queuedReply)
+                                (commandForceRun ctx queuedConfigs queuedFilter queuedReply)
+                        with
                         | Claimed ->
                             Logging.info "test-prune" "Launching queued run-tests force-run"
                             return dequeuedState
@@ -7203,8 +7231,9 @@ let internal createWithLaunchDeadline
                                     // deferred fanout force-runs any test project whose
                                     // dependency fingerprint changed during the prior run.
                                     match
-                                        ctx.RunExclusive
-                                            "tests"
+                                        runTestHostExclusive
+                                            ctx
+                                            None
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
@@ -7238,11 +7267,40 @@ let internal createWithLaunchDeadline
                                 ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed [] }
 
+                | Custom(ArtifactsUnavailable(reason, reply)) ->
+                    let message =
+                        $"Tests did not run because the preceding build left invalid artifacts: %s{reason}"
+
+                    reply
+                    |> Option.iter (fun target ->
+                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
+
+                    ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
+
+                    return
+                        { state with
+                            PendingRerun = true
+                            EvidenceReceipt = None }
+
+                | Custom(TestHostUnavailable(reason, reply)) ->
+                    let message = $"Tests did not run because the test host could not start: %s{reason}"
+
+                    reply
+                    |> Option.iter (fun target ->
+                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
+
+                    ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
+
+                    return
+                        { state with
+                            PendingRerun = true
+                            EvidenceReceipt = None }
+
                 | Custom(RunTestsRequested(configs, filter, reply)) ->
                     // Launched from the mailbox so it is serialised with every other
                     // launch site and holds the `RunExclusive "tests"` slot for its whole
                     // duration — see the `RunTestsRequested` case for why that matters.
-                    match ctx.RunExclusive "tests" (commandForceRun ctx configs filter reply) with
+                    match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
                     | Claimed -> return { state with EvidenceReceipt = None }
                     | SlotBusy ->
                         // A busy slot QUEUES the run, never refuses it: a refusal that

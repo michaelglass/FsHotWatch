@@ -34,7 +34,10 @@ let private defaultServices: PluginHostServices =
       Log = fun _ _ -> ()
       SetNextTerminalOutcome = fun _ _ -> ()
       FcsSuppressedCodes = Set.empty
-      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
+      StartAsync = Async.Start
+      ClaimOrQueueSharedRun = fun _ _ -> Some Ready
+      ReleaseSharedRun = fun _ _ -> () }
 
 /// Helper: register a handler with no-op host functions by default.
 let private registerWith
@@ -50,6 +53,298 @@ let private registerWith
 
 /// Register with all defaults.
 let private registerDefault handler = registerWith handler None
+
+[<Fact>]
+let ``shared run scheduler hands ownership to waiters in FIFO order`` () =
+    let scheduler = SharedRunScheduler()
+    let order = ResizeArray<string>()
+
+    test
+        <@
+            scheduler.ClaimOrQueue(
+                "artifacts",
+                fun _ ->
+                    order.Add "owner"
+                    true
+            ) = Some Ready
+        @>
+
+    test
+        <@
+            scheduler.ClaimOrQueue(
+                "artifacts",
+                fun _ ->
+                    order.Add "second"
+                    true
+            ) = None
+        @>
+
+    test
+        <@
+            scheduler.ClaimOrQueue(
+                "artifacts",
+                fun _ ->
+                    order.Add "third"
+                    true
+            ) = None
+        @>
+
+    scheduler.Release("artifacts", Ready)
+    test <@ List.ofSeq order = [ "second" ] @>
+    scheduler.Release("artifacts", Ready)
+    test <@ List.ofSeq order = [ "second"; "third" ] @>
+    scheduler.Release("artifacts", Ready)
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+
+[<Fact>]
+let ``shared run scheduler preserves invalid idle state until a later owner repairs it`` () =
+    let scheduler = SharedRunScheduler()
+
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    scheduler.Release("artifacts", Invalid "failed build")
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some(Invalid "failed build") @>
+    scheduler.Release("artifacts", Ready)
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+
+[<Fact>]
+let ``throwing middle shared waiter cannot strand the tail`` () =
+    let scheduler = SharedRunScheduler()
+    let tailStates = ResizeArray<SharedResourceState>()
+
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> failwith "middle start fault") = None @>
+
+    test
+        <@
+            scheduler.ClaimOrQueue(
+                "artifacts",
+                fun state ->
+                    tailStates.Add state
+                    true
+            ) = None
+        @>
+
+    scheduler.Release("artifacts", Ready)
+    test <@ List.ofSeq tailStates = [ Invalid "shared waiter failed to start" ] @>
+
+    scheduler.Release("artifacts", Ready)
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> true) = Some Ready @>
+
+type private SharedWakeMsg =
+    | SharedFinished
+    | SharedFailed of string
+
+let private sharedWakeHandlerWithClassifier
+    name
+    (workFor: SharedResourceState -> Async<SharedWakeMsg>)
+    (classify: SharedWakeMsg -> SharedResourceState)
+    =
+    { Name = PluginName.create name
+      Init = ()
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChanged _ ->
+                    let classifyResult =
+                        function
+                        | SharedFailed reason -> Invalid reason
+                        | message -> classify message
+
+                    match
+                        ctx.RunExclusiveShared "work" "artifacts" workFor classifyResult (fun ex ->
+                            SharedFailed ex.Message)
+                    with
+                    | SharedClaimed
+                    | SharedQueued -> ()
+                    | LocalSlotBusy -> failwith "unexpected local contention"
+                | Custom SharedFinished -> ctx.ReportStatus(PluginStatus.completedNow "done" System.TimeSpan.Zero)
+                | Custom(SharedFailed reason) ->
+                    ctx.ReportStatus(PluginStatus.failedNow reason reason System.TimeSpan.Zero)
+                | _ -> ()
+
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.singleton SubscribeFileChanged
+      CacheKey = None
+      Teardown = None }
+
+let private sharedWakeHandler name workFor =
+    sharedWakeHandlerWithClassifier name workFor (fun _ -> Ready)
+
+[<Fact(Timeout = 15000)>]
+let ``shared start failure posts the typed failure and releases its accounting`` () =
+    let statuses = System.Collections.Concurrent.ConcurrentBag<PluginStatus>()
+    let releases = System.Collections.Concurrent.ConcurrentBag<SharedResourceState>()
+
+    let services =
+        { defaultServices with
+            StartAsync = fun _ -> raise (System.InvalidOperationException("start fault"))
+            ReportStatus = fun _ status -> statuses.Add(status)
+            ReleaseSharedRun = fun _ state -> releases.Add(state) }
+
+    let registration =
+        registerHandler services (sharedWakeHandler "start-failure" (fun _ -> async { return SharedFinished }))
+
+    registration.Dispatch(DispatchFileChanged SolutionChanged)
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Failed(summary, _, _) when summary.Contains("start fault") -> true
+                | _ -> false))
+        5000
+
+    test <@ not (registration.IsBusy()) @>
+
+    test
+        <@
+            releases
+            |> Seq.exists (function
+                | Invalid reason when reason.Contains("failed to start") -> true
+                | _ -> false)
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``faulted shared owner releases its lease and wakes an accounted waiter`` () =
+    let scheduler = SharedRunScheduler()
+    let ownerStarted = new System.Threading.ManualResetEventSlim(false)
+    let releaseOwner = new System.Threading.ManualResetEventSlim(false)
+    let waiterStarted = new System.Threading.ManualResetEventSlim(false)
+
+    let services =
+        { defaultServices with
+            ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+            ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
+
+    let owner =
+        registerHandler
+            services
+            (sharedWakeHandler "shared-owner" (fun _ ->
+                async {
+                    ownerStarted.Set()
+                    releaseOwner.Wait()
+                    return failwith "owner fault"
+                }))
+
+    let waiter =
+        registerHandler
+            services
+            (sharedWakeHandler "shared-waiter" (fun resourceState ->
+                async {
+                    test
+                        <@
+                            match resourceState with
+                            | Invalid _ -> true
+                            | Ready -> false
+                        @>
+
+                    waiterStarted.Set()
+                    return SharedFinished
+                }))
+
+    owner.Dispatch(DispatchFileChanged SolutionChanged)
+    test <@ ownerStarted.Wait 5000 @>
+    waiter.Dispatch(DispatchFileChanged SolutionChanged)
+    test <@ waiter.IsBusy() @>
+    test <@ not (waiterStarted.Wait 100) @>
+
+    releaseOwner.Set()
+    test <@ waiterStarted.Wait 5000 @>
+    waitUntil (fun () -> not (waiter.IsBusy())) 5000
+
+[<Fact(Timeout = 30000)>]
+let ``shared work factory exception releases local and shared ownership`` () =
+    let scheduler = SharedRunScheduler()
+    let factoryStarted = new System.Threading.ManualResetEventSlim(false)
+    let releaseFactory = new System.Threading.ManualResetEventSlim(false)
+    let waiterStarted = new System.Threading.ManualResetEventSlim(false)
+
+    let services =
+        { defaultServices with
+            ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+            ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
+
+    let owner =
+        registerHandler
+            services
+            (sharedWakeHandler "factory-owner" (fun _ ->
+                factoryStarted.Set()
+                releaseFactory.Wait()
+                failwith "factory fault"))
+
+    let waiter =
+        registerHandler
+            services
+            (sharedWakeHandler "factory-waiter" (fun resourceState ->
+                async {
+                    test <@ resourceState = Invalid "factory fault" @>
+                    waiterStarted.Set()
+                    return SharedFinished
+                }))
+
+    owner.Dispatch(DispatchFileChanged SolutionChanged)
+
+    try
+        test <@ factoryStarted.Wait 15000 @>
+        waiter.Dispatch(DispatchFileChanged SolutionChanged)
+    finally
+        // Never strand the worker when an earlier assertion fails under a loaded
+        // suite; that would hang the test host and contaminate later tests.
+        releaseFactory.Set()
+
+    test <@ waiterStarted.Wait 10000 @>
+    waitUntil (fun () -> not (owner.IsBusy()) && not (waiter.IsBusy())) 10000
+
+[<Fact(Timeout = 15000)>]
+let ``shared result classifier exception invalidates resource and wakes waiter`` () =
+    let scheduler = SharedRunScheduler()
+    let ownerStarted = new System.Threading.ManualResetEventSlim(false)
+    let releaseOwner = new System.Threading.ManualResetEventSlim(false)
+    let waiterStarted = new System.Threading.ManualResetEventSlim(false)
+
+    let services =
+        { defaultServices with
+            ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+            ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
+
+    let owner =
+        registerHandler
+            services
+            (sharedWakeHandlerWithClassifier
+                "classifier-owner"
+                (fun _ ->
+                    async {
+                        ownerStarted.Set()
+                        releaseOwner.Wait()
+                        return SharedFinished
+                    })
+                (fun _ -> failwith "classifier fault"))
+
+    let waiter =
+        registerHandler
+            services
+            (sharedWakeHandler "classifier-waiter" (fun resourceState ->
+                async {
+                    test <@ resourceState = Invalid "classifier-owner shared result classifier faulted" @>
+                    waiterStarted.Set()
+                    return SharedFinished
+                }))
+
+    owner.Dispatch(DispatchFileChanged SolutionChanged)
+    test <@ ownerStarted.Wait 5000 @>
+
+    try
+        waiter.Dispatch(DispatchFileChanged SolutionChanged)
+        test <@ waiter.IsBusy() @>
+        test <@ not (waiterStarted.Wait 100) @>
+    finally
+        releaseOwner.Set()
+
+    test <@ waiterStarted.Wait 5000 @>
+    waitUntil (fun () -> not (owner.IsBusy()) && not (waiter.IsBusy())) 5000
 
 [<Fact(Timeout = 15000)>]
 let ``registered plugin dispatches FileChanged`` () =
