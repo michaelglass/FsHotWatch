@@ -41,21 +41,14 @@ open FsHotWatch.Daemon
 let private findRepoRoot () =
     let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
 
-    let rec walk dir =
-        if
-            Directory.Exists(Path.Combine(dir, ".jj"))
-            || Directory.Exists(Path.Combine(dir, ".git"))
-        then
-            dir
-        else
-            let parent = Directory.GetParent(dir)
+    FsHotWatch.Cli.Program.findRepoRoot assemblyDir
+    |> Option.defaultWith (fun () -> failwith "Could not find repo root")
 
-            if isNull parent then
-                failwith "Could not find repo root"
+[<Fact>]
+let ``integration harness resolves checkout root`` () =
+    let expected = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
 
-            walk parent.FullName
-
-    walk assemblyDir
+    test <@ findRepoRoot () = expected @>
 
 let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeoutMs: int) =
     waitForSettled host pluginName timeoutMs

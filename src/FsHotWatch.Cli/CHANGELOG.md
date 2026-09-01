@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: discover the checkout root from a linked Git worktree's
+  `.git` pointer file, while rejecting malformed or dangling Git metadata.
+
 ## 0.14.0-alpha.36 - 2026-09-01
 
 - fix: recognize daemon-side corrupted-frame faults wrapped by
