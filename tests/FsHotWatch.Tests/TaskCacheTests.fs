@@ -57,7 +57,36 @@ let ``file cache replays a repo-relative entry and ledger under an equivalent ch
         let reader = FileTaskCache(cacheDir, rootB) :> ITaskCache
         let replayed = reader.TryGet (ck "lint" fileB) cacheKey
 
-        test <@ replayed = Some { stored with Errors = [ fileB, [ entry ] ] } @>)
+        test
+            <@
+                replayed = Some
+                    { stored with
+                        Errors = [ fileB, [ entry ] ] }
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``file cache keeps repo paths that sanitize to the same filename separate`` () =
+    withTempDir "ftc-portable-key-collision" (fun cacheDir ->
+        let repoRoot = Path.Combine(cacheDir, "checkout")
+        let nested = Path.Combine(repoRoot, "src", "a", "b.fs")
+        let dashed = Path.Combine(repoRoot, "src", "a-b.fs")
+        let cacheKey = hash "same-content"
+
+        let result file message =
+            { CacheKey = cacheKey
+              Errors = [ file, [ errorEntry message DiagnosticSeverity.Warning ] ]
+              Status = cachedFileDone
+              EmittedEvents = [] }
+
+        let cache = FileTaskCache(cacheDir, repoRoot) :> ITaskCache
+        cache.Set (ck "lint" nested) cacheKey (result nested "nested")
+        cache.Set (ck "lint" dashed) cacheKey (result dashed "dashed")
+
+        test <@ Directory.GetFiles(cacheDir, "*.json").Length = 2 @>
+
+        let reader = FileTaskCache(cacheDir, repoRoot) :> ITaskCache
+        test <@ reader.TryGet (ck "lint" nested) cacheKey = Some(result nested "nested") @>
+        test <@ reader.TryGet (ck "lint" dashed) cacheKey = Some(result dashed "dashed") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``TryGet returns None for unknown key`` () =
@@ -715,6 +744,7 @@ let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
     // seeds the memo from disk, so the first write to a key collects what was left under it.
     withTempDir "ftc-prune-prior-process" (fun tmpDir ->
         let seed = FileTaskCache(tmpDir) :> ITaskCache
+
         let seedResult h =
             { CacheKey = hash h
               Errors = []

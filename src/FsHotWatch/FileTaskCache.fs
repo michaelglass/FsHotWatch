@@ -8,8 +8,6 @@ open FsHotWatch.TaskCache
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-let private sanitizeKey = FsHotWatch.StringHelpers.sanitizeFileName
-
 let private severityToString = DiagnosticSeverity.toString
 
 let private stringToSeverity s =
@@ -369,7 +367,12 @@ let private deserializeResult (decodePath: string -> string) (json: string) : Ta
         |> Seq.map (fun n ->
             let obj = n.AsObject()
             let storedFile = obj["file"].GetValue<string>()
-            let file = if storedFile = "*" then storedFile else decodePath storedFile
+
+            let file =
+                if storedFile = "*" then
+                    storedFile
+                else
+                    decodePath storedFile
 
             let entries =
                 obj["entries"].AsArray()
@@ -392,20 +395,18 @@ let private deserializeResult (decodePath: string -> string) (json: string) : Ta
 let private hashCacheKey (cacheKey: ContentHash) =
     (FsHotWatch.CheckCache.sha256Hex (ContentHash.value cacheKey)).Substring(0, 12)
 
-/// Serialize a CompositeKey to a file-safe string.
-let private compositeKeyToString (key: CompositeKey) =
-    match key.File with
-    | Some file -> $"%s{key.Plugin}--%s{file}"
-    | None -> key.Plugin
+/// Collision-resistant, file-safe encoding for one structured key component.
+/// Sanitizing paths is lossy (`src/a/b.fs` and `src/a-b.fs` both become
+/// `src-a-b.fs`), so cache filenames use the full SHA-256 instead.
+let private hashKeyPart value = FsHotWatch.CheckCache.sha256Hex value
 
 /// Snapshot of on-disk cache size.
 [<Struct>]
 type CacheStats = { EntryCount: int; SizeBytes: int64 }
 
 /// The on-disk name of the key an entry file belongs to — everything before the
-/// `@{contentHash}` suffix. `LastIndexOf`, because `sanitizeKey` does not strip
-/// `@` and a source path may legitimately contain one (`/src/@types/x.fs`); the
-/// hash is always the LAST `@`-delimited segment.
+/// `@{contentHash}` suffix. The structured key components are SHA-256 hex, so the
+/// hash is the only `@`-delimited segment.
 let private entryKeyOfFileName (fileName: string) =
     match fileName.LastIndexOf('@') with
     | i when i > 0 -> Some(fileName.Substring(0, i))
@@ -449,7 +450,8 @@ let internal pruneSupersededSiblings (superseded: string list) (keepPath: string
 type FileTaskCache(cacheDir: string, repoRoot: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
 
-    let encodePath path = FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
+    let encodePath path =
+        FsHotWatch.CachePathIdentity.forMerkleInput repoRoot path
 
     let decodePath key =
         match FsHotWatch.CachePathIdentity.tryParse key with
@@ -503,7 +505,12 @@ type FileTaskCache(cacheDir: string, repoRoot: string) =
                     | false, _ -> [ f ])
 
     let entryKey (compositeKey: CompositeKey) =
-        sanitizeKey (compositeKeyToString (portableCompositeKey compositeKey))
+        let key = portableCompositeKey compositeKey
+        let pluginPart = hashKeyPart key.Plugin
+
+        match key.File with
+        | Some file -> $"%s{pluginPart}--%s{hashKeyPart file}"
+        | None -> pluginPart
 
     /// Make `path` the key's only live entry and return what it displaces. Atomic
     /// against a concurrent write to the SAME key: exactly one of the two writers
@@ -563,8 +570,9 @@ type FileTaskCache(cacheDir: string, repoRoot: string) =
         forgetAll ()
 
     let clearPlugin (plugin: string) =
-        let prefix = sanitizeKey (plugin + "--")
-        let exact = sanitizeKey plugin + "@"
+        let pluginPart = hashKeyPart plugin
+        let prefix = pluginPart + "--"
+        let exact = pluginPart + "@"
 
         for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
@@ -573,7 +581,7 @@ type FileTaskCache(cacheDir: string, repoRoot: string) =
                 File.Delete(f)
 
     let clearFile (file: string) =
-        let suffix = sanitizeKey ("--" + encodePath file)
+        let suffix = "--" + hashKeyPart (encodePath file)
 
         for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
@@ -583,7 +591,7 @@ type FileTaskCache(cacheDir: string, repoRoot: string) =
                 File.Delete(f)
 
     let clearPluginFile (plugin: string) (file: string) =
-        let prefix = sanitizeKey (plugin + "--" + encodePath file) + "@"
+        let prefix = hashKeyPart plugin + "--" + hashKeyPart (encodePath file) + "@"
 
         for f in enumerateEntries "*.json" do
             let name = Path.GetFileName(f)
