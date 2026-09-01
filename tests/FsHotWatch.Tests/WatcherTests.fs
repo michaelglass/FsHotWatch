@@ -1,3 +1,4 @@
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.FileWatchCollectionName)>]
 module FsHotWatch.Tests.WatcherTests
 
 open System
