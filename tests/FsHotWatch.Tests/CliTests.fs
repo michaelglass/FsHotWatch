@@ -415,13 +415,85 @@ let ``applyGlobalFlags NoWarnFail does not add to daemon extra args`` () =
 // --- findRepoRoot tests ---
 
 [<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
 let ``findRepoRoot finds git repo`` () =
     withTempDir "cli-git" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "a", "b")
         Directory.CreateDirectory(nested) |> ignore
-        Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
+        let metadata = Directory.CreateDirectory(Path.Combine(tmpDir, ".git"))
+        File.WriteAllText(Path.Combine(metadata.FullName, "HEAD"), "ref: refs/heads/main\n")
         let result = findRepoRoot nested
         test <@ result = Some tmpDir @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
+let ``findRepoRoot finds linked git worktree metadata whose dotgit is a file`` () =
+    // A Git linked worktree stores `.git` as a pointer file, not a directory.
+    // `findRepoRoot` only needs Git's documented on-disk contract (a `gitdir:`
+    // pointer to metadata carrying HEAD), so construct that contract directly:
+    // invoking `git init`/`worktree add` here would make a pure parser test depend
+    // on the host Git binary, its global configuration, hooks, and process timing.
+    withTempDir "cli-linked-worktree" (fun tmpDir ->
+        let metadata = Path.Combine(tmpDir, "main", ".git", "worktrees", "linked")
+        Directory.CreateDirectory(metadata) |> ignore
+        File.WriteAllText(Path.Combine(metadata, "HEAD"), "ref: refs/heads/linked\n")
+
+        let linked = Path.Combine(tmpDir, "linked")
+        let nested = Path.Combine(linked, "src", "nested")
+        Directory.CreateDirectory(nested) |> ignore
+        File.WriteAllText(Path.Combine(linked, ".git"), $"gitdir: {metadata}\n")
+
+        test <@ File.Exists(Path.Combine(linked, ".git")) @>
+        test <@ not (Directory.Exists(Path.Combine(linked, ".git"))) @>
+        test <@ findRepoRoot nested = Some linked @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
+let ``findRepoRoot does not mistake an unrelated dotgit file for a repository`` () =
+    withTempDir "cli-non-git-dotgit-file" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(nested) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, ".git"), "this is not a gitdir pointer")
+
+        test <@ findRepoRoot nested = None @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
+let ``findRepoRoot does not mistake an arbitrary dotgit directory for a repository`` () =
+    withTempDir "cli-non-git-dotgit-directory" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(nested) |> ignore
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
+
+        test <@ findRepoRoot nested = None @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
+let ``findRepoRoot does not accept a dangling linked-worktree gitdir pointer`` () =
+    withTempDir "cli-dangling-gitdir-pointer" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(nested) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, ".git"), "gitdir: missing-worktree-metadata")
+
+        test <@ findRepoRoot nested = None @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-440")>]
+let ``findRepoRoot preserves spaces at the end of a valid gitdir path`` () =
+    if not (OperatingSystem.IsWindows()) then
+        // Win32 normalizes trailing spaces in path components, so that platform
+        // cannot represent this otherwise-valid Git pointer target.
+        withTempDir "cli-spaced-gitdir-pointer" (fun tmpDir ->
+            let metadata = Path.Combine(tmpDir, "metadata ")
+            Directory.CreateDirectory(metadata) |> ignore
+            File.WriteAllText(Path.Combine(metadata, "HEAD"), "ref: refs/heads/main\n")
+
+            let checkout = Path.Combine(tmpDir, "checkout")
+            let nested = Path.Combine(checkout, "src")
+            Directory.CreateDirectory(nested) |> ignore
+            File.WriteAllText(Path.Combine(checkout, ".git"), "gitdir: ../metadata ")
+
+            test <@ findRepoRoot nested = Some checkout @>)
 
 [<Fact(Timeout = 15000)>]
 let ``findRepoRoot finds jj repo`` () =

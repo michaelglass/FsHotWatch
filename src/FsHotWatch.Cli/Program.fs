@@ -245,13 +245,51 @@ let computeLaunchCommand (processPath: string) (entryAssemblyDll: string option)
             // tool-run form so the published tool still launches.
             (processPath, $"tool run %s{cliName} ")
 
-/// Walk up from startDir looking for .jj or .git directory.
+/// Whether `dir` has either ordinary Git metadata or a valid Git worktree
+/// pointer file. The pointer's target must resolve to a Git directory with a
+/// `HEAD`; a dangling pointer or arbitrary `.git` file/directory does not
+/// establish a repository.
+let private hasGitMetadata (dir: string) =
+    let dotGit = Path.Combine(dir, ".git")
+
+    let isGitDirectory path =
+        Directory.Exists(path) && File.Exists(Path.Combine(path, "HEAD"))
+
+    isGitDirectory dotGit
+    || (File.Exists(dotGit)
+        && try
+            // Git writes a one-line `gitdir: <path>` pointer for linked
+            // worktrees. Read only that line: root discovery runs on every CLI
+            // invocation and must not load an arbitrary `.git` file in full.
+            use reader = File.OpenText(dotGit)
+            let pointer = reader.ReadLine()
+
+            if isNull pointer || not (pointer.StartsWith("gitdir: ", StringComparison.Ordinal)) then
+                false
+            else
+                // ReadLine has already removed the line ending. Keep every
+                // remaining character: spaces are valid path characters, and
+                // trimming one would make a valid pointer dangle.
+                let gitDirPath = pointer.Substring("gitdir: ".Length)
+
+                if String.IsNullOrEmpty(gitDirPath) then
+                    false
+                else
+                    let resolvedGitDir =
+                        if Path.IsPathRooted(gitDirPath) then
+                            gitDirPath
+                        else
+                            Path.GetFullPath(Path.Combine(dir, gitDirPath))
+
+                    isGitDirectory resolvedGitDir
+           with _ ->
+               false)
+
+/// Walk up from startDir looking for a jj directory or either Git repository
+/// shape: a normal `.git` directory or a linked-worktree `.git` pointer file.
 let findRepoRoot (startDir: string) =
     let rec walk (dir: string) =
-        if
-            Directory.Exists(Path.Combine(dir, ".jj"))
-            || Directory.Exists(Path.Combine(dir, ".git"))
-        then
+        if Directory.Exists(Path.Combine(dir, ".jj")) || hasGitMetadata dir then
             Some dir
         else
             let parent = Directory.GetParent(dir)
