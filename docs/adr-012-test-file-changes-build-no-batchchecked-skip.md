@@ -42,7 +42,7 @@ mtime, ADR-008's temporal complement) — the exact check that would have caught
 stale DLL — ran **only** on the real-build path (`startBuild` / `startTemplateBuild`
 → `verifyAndDemote`). The test-only skip bypassed it entirely.
 
-### Observed downstream (thellma/intelligence)
+### Observed downstream (a large private F# codebase)
 
 Editing only `RawSqlTests.fs` then `dotnet fshw test-rerun --filter-class
 '*DbSpanLocationTests'` reported pass / exit 0 against a stale test DLL. A forced

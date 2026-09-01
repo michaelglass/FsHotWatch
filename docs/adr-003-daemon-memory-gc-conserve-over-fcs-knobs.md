@@ -4,7 +4,7 @@ Status: Accepted (2026-06-06)
 
 ## Context
 
-Running the daemon against a large multi-project solution (thellma/intelligence:
+Running the daemon against a large multi-project solution (a large private F# codebase:
 32 projects, ~745 checkable files, deep dependency tiers) showed a heavy
 per-instance memory footprint — ~4 GB observed under machine load, and up to
 **14 GB peak** unconstrained on a quiet machine. Users running several daemons
