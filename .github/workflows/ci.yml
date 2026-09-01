@@ -77,3 +77,8 @@ jobs:
       # PUBLISH path: the tagger requires a green run of this workflow before it will
       # cut the tag that `release.yml` publishes from.
       lint-cmd: 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'
+
+  lint-project:
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-lint-project.yml@main
+    permissions:
+      contents: read
