@@ -2516,21 +2516,40 @@ let internal classifyTestOutcome
             // Unknown runner we never asked for a report: the exit code is all there is.
             TestsFailed(output, wasFiltered, elapsed)
 
-/// Split runner args on whitespace into tokens (empty entries removed).
+/// Split runner args into tokens while retaining whitespace inside quoted paths.
+/// The configuration stores one command-line string, so project discovery must
+/// apply the same basic quote grouping the launched process receives.
 let private argTokens (args: string) : string[] =
     if String.IsNullOrWhiteSpace args then
         [||]
     else
-        args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+        let tokens = ResizeArray<string>()
+        let token = Text.StringBuilder()
+        let mutable quote: char option = None
 
-/// The value following `--project`/`-p` in the tokenized args, quote-trimmed.
+        let flush () =
+            if token.Length > 0 then
+                tokens.Add(token.ToString())
+                token.Clear() |> ignore
+
+        for character in args do
+            match quote, character with
+            | Some expected, actual when actual = expected -> quote <- None
+            | Some _, actual -> token.Append(actual) |> ignore
+            | None, ('\'' | '"' as opening) -> quote <- Some opening
+            | None, actual when Char.IsWhiteSpace actual -> flush ()
+            | None, actual -> token.Append(actual) |> ignore
+
+        flush ()
+        tokens.ToArray()
+
+/// The value following `--project`/`-p` in the quote-aware tokenized args.
 /// Shared by `tryApphostPresent` and `detectCtrfRunnerFamily` (both derive a project
 /// from the runner command line the same way).
 let private projectFlagValue (tokens: string[]) : string option =
     tokens
     |> Array.tryFindIndex (fun t -> t = "--project" || t = "-p")
     |> Option.bind (fun i -> if i + 1 < tokens.Length then Some tokens.[i + 1] else None)
-    |> Option.map (fun raw -> raw.Trim('"'))
 
 /// Derive the runner's build-output target (project file, dir, assembly name,
 /// `bin/Debug`) from its `--project` arg, or `None` when no `--project`/`-p`
@@ -2677,7 +2696,7 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
             let mutable libraries = Unchecked.defaultof<JsonElement>
 
             if assets.RootElement.TryGetProperty("libraries", &libraries) then
-                let families =
+                let xunitLibraries =
                     libraries.EnumerateObject()
                     |> Seq.choose (fun package ->
                         let slash = package.Name.IndexOf('/')
@@ -2690,30 +2709,51 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
                         then
                             None
                         else
-                            // NuGet library keys use `<id>/<normalized-version>`. We only
-                            // need the SemVer major; System.Version deliberately rejects
-                            // valid NuGet prerelease suffixes such as `4.0.0-pre.12`.
-                            let version = package.Name.Substring(slash + 1)
-                            let dot = version.IndexOf('.')
+                            Some package)
+                    |> Seq.toList
 
-                            match
-                                if dot > 0 then
-                                    Int32.TryParse(version.AsSpan(0, dot))
-                                else
-                                    (false, 0)
-                            with
-                            | true, 3 -> Some Xunit3
-                            | true, 4 -> Some Xunit4
-                            | _ -> None)
-                    |> Set.ofSeq
+                let tryFamily (package: JsonProperty) =
+                    let mutable libraryType = Unchecked.defaultof<JsonElement>
 
-                // Multiple patch/minor versions from one major are harmless, but two
-                // runner majors make the accepted command line ambiguous. Do not let
-                // JSON property order decide which suite gets fatal flags.
-                if families.Count = 1 then
-                    families |> Seq.exactlyOne |> Some
-                else
+                    if
+                        not (package.Value.TryGetProperty("type", &libraryType))
+                        || libraryType.ValueKind <> JsonValueKind.String
+                        || not (String.Equals(libraryType.GetString(), "package", StringComparison.Ordinal))
+                    then
+                        None
+                    else
+                        let slash = package.Name.IndexOf('/')
+
+                        // NuGet library keys use `<id>/<normalized-version>`. We only
+                        // need the SemVer major; System.Version deliberately rejects
+                        // valid NuGet prerelease suffixes such as `4.0.0-pre.12`.
+                        let version = package.Name.Substring(slash + 1)
+                        let dot = version.IndexOf('.')
+
+                        match
+                            if dot > 0 then
+                                Int32.TryParse(version.AsSpan(0, dot))
+                            else
+                                (false, 0)
+                        with
+                        | true, 3 -> Some Xunit3
+                        | true, 4 -> Some Xunit4
+                        | _ -> None
+
+                let parsedFamilies = xunitLibraries |> List.map tryFamily
+
+                if List.isEmpty parsedFamilies || List.exists Option.isNone parsedFamilies then
                     None
+                else
+                    let families = parsedFamilies |> List.choose id |> Set.ofList
+
+                    // Multiple patch/minor versions from one major are harmless, but two
+                    // runner majors make the accepted command line ambiguous. Do not let
+                    // JSON property order decide which suite gets fatal flags.
+                    if families.Count = 1 then
+                        families |> Seq.exactlyOne |> Some
+                    else
+                        None
             else
                 None
         with _ ->

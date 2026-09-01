@@ -86,6 +86,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Build the real xUnit 4 runner fixture before the AUTOMATION-464
+         compatibility test invokes it without rebuilding. Its assemblies and package
+         graph do not flow into this xUnit 3 test host. -->
+    <ProjectReference Include="../Fixtures/Xunit4RunnerFixture/Xunit4RunnerFixture.fsproj"
+                      ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />

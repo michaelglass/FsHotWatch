@@ -8166,6 +8166,17 @@ let ``detectCtrfRunnerFamily resolves a prerelease xUnit 4 package`` () =
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
 
 [<Fact(Timeout = 5000)>]
+let ``detectCtrfRunnerFamily resolves a quoted project path containing spaces`` () =
+    withTempDir "fshw-detect-xunit4-quoted" (fun tmp ->
+        let projectDir = Path.Combine(tmp, "project with spaces")
+        Directory.CreateDirectory(projectDir) |> ignore
+        let proj = Path.Combine(projectDir, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssets proj "4.0.0"
+
+        test <@ detectCtrfRunnerFamily $"--project \"%s{proj}\"" tmp = Some Xunit4 @>)
+
+[<Fact(Timeout = 5000)>]
 let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicting runner majors`` () =
     withTempDir "fshw-detect-xunit-conflict" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -8174,6 +8185,34 @@ let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicti
         writeRunnerAssetsJson
             proj
             """{"version":3,"libraries":{"xunit.v3/3.2.2":{"type":"package"},"xunit.v3/4.0.0":{"type":"package"}}}"""
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("5.0.0")>]
+[<InlineData("not-a-version")>]
+let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with an unknown version``
+    (unknownVersion: string)
+    =
+    withTempDir "fshw-detect-xunit-unknown-conflict" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+
+        writeRunnerAssetsJson
+            proj
+            $"""{{"version":3,"libraries":{{"xunit.v3/4.0.0":{{"type":"package"}},"xunit.v3/%s{unknownVersion}":{{"type":"package"}}}}}}"""
+
+        test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("{}")>]
+[<InlineData("{\"type\":\"project\"}")>]
+[<InlineData("{\"type\":\"Package\"}")>]
+let ``detectCtrfRunnerFamily requires the xUnit asset to be exactly a package`` (library: string) =
+    withTempDir "fshw-detect-xunit-library-type" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+        File.WriteAllText(proj, "<Project />")
+        writeRunnerAssetsJson proj $"""{{"version":3,"libraries":{{"xunit.v3/4.0.0":%s{library}}}}}"""
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
@@ -8275,6 +8314,37 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
         let project = doc.RootElement.GetProperty("projects").[0]
         Assert.Equal("passed", project.GetProperty("status").GetString())
         Assert.Equal(2, project.GetProperty("counts").GetProperty("total").GetInt32()))
+
+[<Fact(Timeout = 60000)>]
+let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` () =
+    let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+
+    let fixtureProject =
+        Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture", "Xunit4RunnerFixture.fsproj")
+
+    let configs =
+        [ { Project = "Xunit4RunnerFixture"
+            Command = "dotnet"
+            Args = $"run --project \"%s{fixtureProject}\" --no-build --"
+            Group = "default"
+            Environment = []
+            FilterTemplate = None
+            ClassJoin = " "
+            TimeoutSec = Some 30
+            ReportVerificationFormat = AutoDetect } ]
+
+    let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
+    let handler = create ":memory:" repoRoot (Some configs) None None None None []
+    host.RegisterHandler(handler)
+
+    let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+
+    use doc = JsonDocument.Parse(result.Value)
+    let project = doc.RootElement.GetProperty("projects").[0]
+    Assert.Equal("passed", project.GetProperty("status").GetString())
+    Assert.Equal(1, project.GetProperty("counts").GetProperty("total").GetInt32())
+    Assert.Equal(1, project.GetProperty("counts").GetProperty("succeeded").GetInt32())
 
 // =============================================================================
 // AUTOMATION-95 / AUTOMATION-99 — the check must CONVERGE, never rest on a verdict
