@@ -253,7 +253,9 @@ let private liveCoverage (daemon: Daemon.Daemon) : Coverage =
 ///     laundered pass.
 /// Dependency-injected form used to pin command-level scan cardinality without spawning
 /// an external CLI process. Production passes `runOnceWithProgress` unchanged.
-let runOnceAndVerdictWith
+let private runOnceAndVerdictIn
+    // AUTOMATION-555. The invocation every verdict this run publishes belongs to.
+    (invocation: Verdict.Invocation)
     (runScan: Daemon.Daemon -> Map<string, PluginStatus>)
     (renderSummary: Map<string, ParsedPluginStatus> -> string)
     (checkMode: CheckVerdict.CheckMode)
@@ -264,7 +266,17 @@ let runOnceAndVerdictWith
     (pluginName: string option)
     : int =
     match failIfNoProjects repoRoot config.Exclude with
-    | Some exitCode -> exitCode
+    | Some _ ->
+        // AUTOMATION-555. A zero-project run is a terminal `incomplete` like any other
+        // infrastructure refusal: it publishes, so a prior green cannot survive it as the
+        // answer, and the exit code is the one the file records.
+        IpcOutput.publishTerminalIncompleteForInvocation
+            invocation
+            repoRoot
+            config.Exclude
+            checkMode
+            "no projects were discovered — check `.fshw.json` exclude patterns or the working directory"
+            IpcOutput.NeverSettled
     | None ->
 
         let daemon = createDaemon repoRoot
@@ -289,7 +301,13 @@ let runOnceAndVerdictWith
                 // current tree — the most dangerous form of the original incident.
                 settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
 
-                IpcOutput.publishTerminalIncomplete repoRoot config.Exclude checkMode message settledTree.Value
+                IpcOutput.publishTerminalIncompleteForInvocation
+                    invocation
+                    repoRoot
+                    config.Exclude
+                    checkMode
+                    message
+                    settledTree.Value
                 |> ignore
 
                 raise (ConfigError message)
@@ -437,7 +455,8 @@ let runOnceAndVerdictWith
         // and it did not: `publishVerdict` downgrades to `incomplete` when the tree
         // moves during the check, and the caller recomputed 0 from the original.
         let publishedExitCode =
-            IpcOutput.publishVerdict
+            IpcOutput.publishVerdictForInvocation
+                invocation
                 repoRoot
                 config.Exclude
                 checkMode
@@ -459,6 +478,53 @@ let runOnceAndVerdictWith
 
         publishedExitCode
 
+/// Dependency-injected form for tests that pin command-level scan cardinality without
+/// a CLI bracket: the run gets a fresh invocation of its own.
+let runOnceAndVerdictWith
+    (runScan: Daemon.Daemon -> Map<string, PluginStatus>)
+    (renderSummary: Map<string, ParsedPluginStatus> -> string)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (createDaemon: string -> Daemon.Daemon)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (pluginName: string option)
+    : int =
+    runOnceAndVerdictIn
+        (Verdict.Invocation.start ())
+        runScan
+        renderSummary
+        checkMode
+        noWarnFail
+        createDaemon
+        repoRoot
+        config
+        pluginName
+
+/// The production `--run-once` driver: the verdict it publishes is owned by the CLI
+/// invocation that bracketed it, so the wrapper's hook timing can be attached to it.
+let runOnceAndVerdictForInvocation
+    (invocation: Verdict.Invocation)
+    (renderSummary: Map<string, ParsedPluginStatus> -> string)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (createDaemon: string -> Daemon.Daemon)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (pluginName: string option)
+    : int =
+    runOnceAndVerdictIn
+        invocation
+        runOnceWithProgress
+        renderSummary
+        checkMode
+        noWarnFail
+        createDaemon
+        repoRoot
+        config
+        pluginName
+
+/// `runOnceAndVerdictForInvocation` for a run that no CLI bracket wraps.
 let runOnceAndVerdict
     (renderSummary: Map<string, ParsedPluginStatus> -> string)
     (checkMode: CheckVerdict.CheckMode)
@@ -468,4 +534,12 @@ let runOnceAndVerdict
     (config: DaemonConfiguration)
     (pluginName: string option)
     : int =
-    runOnceAndVerdictWith runOnceWithProgress renderSummary checkMode noWarnFail createDaemon repoRoot config pluginName
+    runOnceAndVerdictForInvocation
+        (Verdict.Invocation.start ())
+        renderSummary
+        checkMode
+        noWarnFail
+        createDaemon
+        repoRoot
+        config
+        pluginName

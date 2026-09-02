@@ -102,7 +102,7 @@ In `.fshw.json`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `beforeRun` | `string` | -- | Command to run before each test run (e.g. `"dotnet build"`). |
+| `beforeRun` | `string` or `string[]` | -- | One command, or ordered fail-fast commands, run before each test run. Each array element is one atomic shell command and is timed separately in the verdict's `hooks[]`. |
 | `projects[].project` | `string` | `"unknown"` | Project name (for filtering and display). |
 | `projects[].command` | `string` | `"dotnet"` | Test runner command. |
 | `projects[].args` | `string` | `"test --project <name>"` | Arguments to the test runner. |
