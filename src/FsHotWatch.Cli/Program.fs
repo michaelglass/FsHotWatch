@@ -731,6 +731,7 @@ let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
+    (invocation: Verdict.Invocation)
     (repoRoot: string)
     (excludePatterns: string list)
     (noWarnFail: bool)
@@ -778,7 +779,8 @@ let private ensureAndQueryErrors
                 forceRealBuild ipc pipeName
 
             withCheckIpc forceRestart (fun () ->
-                IpcOutput.pollAndRender
+                IpcOutput.pollAndRenderForInvocation
+                    invocation
                     mode
                     checkMode
                     repoRoot
@@ -1311,72 +1313,190 @@ let internal installRunSignalHandlers (afterRun: unit -> unit) (exitWith: int ->
 /// Bracket a `check`/`confirm` run with the run-level `beforeRun`/`afterRun` hooks.
 /// See the section header above for the full contract.
 ///
-/// When NEITHER hook is configured this is a straight `action ()` — no latch, no
-/// signal handlers, no shell machinery. Otherwise the hooks reuse `.fshw.json`'s
-/// existing bounded-child spawn (`makeShellHookWithResult`, `/bin/sh -c`).
+/// AUTOMATION-555. EVERY run is an invocation now, hooks or no hooks: it gets an id
+/// the verdict is stamped with, a clock the observed wall time is read from, and a
+/// signal finalizer — because the wrapper is the only party that knows the run was
+/// interrupted, and a prior green must not survive a Ctrl-C as the answer. What the
+/// hooks add on top is their own timed, named evidence: each `run.beforeRun` /
+/// `run.afterRun` step is measured here and attached to the verdict the action
+/// published, by invocation id, so an overlapping check cannot receive them.
 ///
 /// Works for BOTH transports because it wraps the ACTION, whatever it is: the
 /// daemon path (`queryPluginIn`) and `--run-once` (`RunOnceCheck.runOnceAndVerdict`)
-/// are the same `action ()` from here.
-let withRunHooks (repoRoot: string) (config: DaemonConfiguration) (action: unit -> int) : int =
-    match config.BeforeRun, config.AfterRun with
-    | None, None -> action ()
-    | beforeRunCmd, afterRunCmd ->
-        let timeoutSec = Some(resolveRunHookTimeoutSec config)
+/// are the same `action invocation` from here.
+///
+/// `installSignals` is INJECTED so a test can drive the signal finalizer without
+/// delivering a real OS signal to the test host; production passes
+/// `installRunSignalHandlers`.
+let internal withRunHooksCommandUsingSignals
+    (installSignals: (unit -> unit) -> (int -> unit) -> IDisposable)
+    (command: Verdict.Command)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: Verdict.Invocation -> int)
+    : int =
+    let invocation = Verdict.Invocation.start ()
+    let timeoutSec = Some(resolveRunHookTimeoutSec config)
+    let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
 
-        // afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
-        // already logs a failure (and its output) at error; the extra line here says
-        // the ONE thing that matters at this layer — the verdict is unchanged.
-        let afterRun =
-            makeRunOnce (fun () ->
-                match afterRunCmd with
-                | None -> ()
-                | Some cmd ->
-                    let (success, _) = makeShellHookWithResult "afterRun" timeoutSec repoRoot cmd ()
+    let evidence () =
+        lock hookEvidence (fun () -> hookEvidence |> Seq.toList |> List.unzip)
 
-                    if not success then
-                        FsHotWatch.Logging.error
-                            "afterRun"
-                            "afterRun hook exited non-zero (see the failure above) — the run's exit code is \
-                             UNCHANGED; a run-level teardown failure never alters the verdict.")
+    let runTimedHook (scope: string) (label: string) (cmd: string) : bool * string =
+        let startOffsetMs = Verdict.Invocation.elapsedMs invocation
+        let stopwatch = Diagnostics.Stopwatch.StartNew()
+        let success, output = makeShellHookWithResult label timeoutSec repoRoot cmd ()
+        stopwatch.Stop()
 
-        // Trap signals only when there is an afterRun to run; otherwise leave the
-        // default SIGINT/SIGTERM behaviour untouched.
-        use _signals =
-            match afterRunCmd with
-            | Some _ -> installRunSignalHandlers afterRun exit
-            | None ->
-                { new IDisposable with
-                    member _.Dispose() = () }
+        lock hookEvidence (fun () ->
+            hookEvidence.Add(
+                { Scope = scope
+                  StepIndex = 1
+                  StepCount = 1
+                  Command = cmd
+                  ElapsedMs = stopwatch.ElapsedMilliseconds
+                  Outcome = if success then "ok" else "fail" },
+                { Scope = scope
+                  StartOffsetMs = startOffsetMs
+                  ElapsedMs = stopwatch.ElapsedMilliseconds
+                  Detail = Some cmd }
+            ))
 
-        // beforeRun FIRST — before `action`, hence before the daemon is contacted —
-        // and FAIL-CLOSED. Surface the captured output like `tests.beforeRun` does,
-        // so a refused preflight shows WHY, not just that it refused.
-        let proceed =
-            match beforeRunCmd with
-            | None -> true
+        success, output
+
+    // afterRun as a latched, best-effort teardown. `makeShellHookWithResult`
+    // already logs a failure (and its output) at error; the extra line here says
+    // the ONE thing that matters at this layer — the verdict is unchanged.
+    let afterRun =
+        makeRunOnce (fun () ->
+            match config.AfterRun with
+            | None -> ()
             | Some cmd ->
-                let (success, output) =
-                    makeShellHookWithResult "beforeRun" timeoutSec repoRoot cmd ()
+                let (success, _) = runTimedHook "run.afterRun" "afterRun" cmd
 
                 if not success then
-                    eprintfn
-                        "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
+                    FsHotWatch.Logging.error
+                        "afterRun"
+                        "afterRun hook exited non-zero (see the failure above) — the run's exit code is \
+                         UNCHANGED; a run-level teardown failure never alters the verdict.")
 
-                    eprintfn "%s" output
+    // Attach the wrapper's evidence — hook steps, their spans, the observed wall time
+    // — to the verdict THIS invocation produced. Latched: the ordinary finalizer and a
+    // late signal must not append the same hooks twice. Refused (and said so) when a
+    // newer invocation already owns the file.
+    let attach =
+        makeRunOnce (fun () ->
+            let hooks, spans = evidence ()
 
-                success
+            if
+                not (
+                    Verdict.tryAugment
+                        repoRoot
+                        invocation.Id
+                        hooks
+                        spans
+                        []
+                        (Some(Verdict.Invocation.elapsedMs invocation))
+                )
+            then
+                FsHotWatch.Logging.warn
+                    "hooks"
+                    "The run verdict changed before hook timing could be attached; left the newer verdict untouched.")
 
-        if not proceed then
-            // Fail-closed: exit 2, NOT 1. afterRun does NOT fire here — beforeRun is
-            // the acquire, and a failed acquire has nothing for afterRun to release
-            // (afterRun brackets the ACTION, which never began).
-            2
-        else
+    // The one finalizer for every way out. `terminal` names how the run ended when it
+    // did not end by publishing normally: `downgrade` says whether a verdict this
+    // invocation ALREADY published must be downgraded to incomplete (an exception or
+    // signal after the publish) or left as it is (the action returned normally and
+    // simply never published — the fallback is written only where nothing owns the
+    // file). Publishing the terminal record is best-effort like every other verdict
+    // write: a `.fshw/` that cannot be written must not turn into a second failure.
+    let finalize (reason: string) (downgrade: bool) : unit =
+        afterRun ()
+
+        try
+            Verdict.tryPublishTerminal repoRoot config.Exclude command invocation reason downgrade
+            |> ignore
+
+            attach ()
+        with
+        | :? IOException as ex ->
+            FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
+        | :? UnauthorizedAccessException as ex ->
+            FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
+
+    // Installed for EVERY invocation, not only those with an afterRun: a signalled run
+    // has no verdict of its own unless this writes one, and a prior green left on disk
+    // would read as the answer.
+    use _signals =
+        installSignals (fun () -> finalize "the run was signalled before the check could finish" true) exit
+
+    // beforeRun FIRST — before `action`, hence before the daemon is contacted —
+    // and FAIL-CLOSED. Surface the captured output like `tests.beforeRun` does,
+    // so a refused preflight shows WHY, not just that it refused.
+    let proceed =
+        match config.BeforeRun with
+        | None -> true
+        | Some cmd ->
+            let (success, output) = runTimedHook "run.beforeRun" "beforeRun" cmd
+
+            if not success then
+                eprintfn
+                    "fshw: beforeRun hook failed — aborting the run before any check ran (the daemon was not contacted):"
+
+                eprintfn "%s" output
+
+            success
+
+    if not proceed then
+        // Fail-closed: exit 2, NOT 1. afterRun does NOT fire here — beforeRun is
+        // the acquire, and a failed acquire has nothing for afterRun to release
+        // (afterRun brackets the ACTION, which never began). Nothing else will
+        // publish, so the refusal — and the timed hook that made it — is the record.
+        let hooks, spans = evidence ()
+
+        Verdict.writeHookFailure
+            repoRoot
+            config.Exclude
+            command
+            invocation
+            hooks
+            spans
+            "the top-level beforeRun hook failed before the daemon was contacted"
+
+        2
+    else
+        let mutable captured: Runtime.ExceptionServices.ExceptionDispatchInfo option = None
+
+        let exitCode =
             try
-                action ()
-            finally
-                afterRun ()
+                action invocation
+            with ex ->
+                captured <- Some(Runtime.ExceptionServices.ExceptionDispatchInfo.Capture ex)
+                2
+
+        match captured with
+        | Some error ->
+            finalize
+                $"the check terminated with an exception before it could finish: %s{error.SourceException.Message}"
+                true
+
+            error.Throw()
+            exitCode
+        | None ->
+            finalize "the check ended without publishing a verdict for this invocation" false
+            exitCode
+
+let internal withRunHooksCommand
+    (command: Verdict.Command)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: Verdict.Invocation -> int)
+    : int =
+    withRunHooksCommandUsingSignals installRunSignalHandlers command repoRoot config action
+
+/// The bracket as a `check`, for an action that does not need its invocation.
+let withRunHooks (repoRoot: string) (config: DaemonConfiguration) (action: unit -> int) : int =
+    withRunHooksCommand Verdict.Check repoRoot config (fun _ -> action ())
 
 /// Does the config select `verb` for run-level hook bracketing?
 ///
@@ -1397,16 +1517,36 @@ let internal runHooksApplyTo (config: DaemonConfiguration) (verb: RunHookCommand
 /// The rule is purely "which verb was invoked": `--run-once` and the daemon path get
 /// the identical decision, and there is no cheapness heuristic through which CI could
 /// silently lose the gate.
+let internal withRunHooksForInvocation
+    (verb: RunHookCommand)
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (action: Verdict.Invocation -> int)
+    : int =
+    let command =
+        match verb with
+        | RunHookCommand.Check -> Verdict.Check
+        | RunHookCommand.Confirm -> Verdict.Confirm
+
+    // AUTOMATION-555. A verb the config does not select still runs as an invocation
+    // (id, clock, signal finalizer) — it just has no hooks to time.
+    let selectedConfig =
+        if runHooksApplyTo config verb then
+            config
+        else
+            { config with
+                BeforeRun = None
+                AfterRun = None }
+
+    withRunHooksCommand command repoRoot selectedConfig action
+
 let withRunHooksFor
     (verb: RunHookCommand)
     (repoRoot: string)
     (config: DaemonConfiguration)
     (action: unit -> int)
     : int =
-    if runHooksApplyTo config verb then
-        withRunHooks repoRoot config action
-    else
-        action ()
+    withRunHooksForInvocation verb repoRoot config (fun _ -> action ())
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -1443,6 +1583,12 @@ let executeCommand
     // Init/etc. tolerate or don't care about a zero-projects workspace and skip it.
     let needsProjects =
         match command with
+        // AUTOMATION-555. `--run-once` makes the same check INSIDE the run bracket
+        // (`RunOnceCheck`), where the refusal is published as an invocation-owned
+        // `incomplete` and the run-level hooks still fire around it; pre-checking here
+        // would exit before either could happen.
+        | Check flags
+        | Confirm flags when isRunOnce flags -> false
         | Start
         | Check _
         | Confirm _
@@ -1520,6 +1666,7 @@ let executeCommand
         let withIpc = withIpc forceRestartDaemon
 
         let queryPluginIn
+            (invocation: Verdict.Invocation)
             (checkMode: CheckVerdict.CheckMode)
             (mode: ProgressRenderer.RenderMode)
             (filter: string)
@@ -1527,6 +1674,7 @@ let executeCommand
             ensureAndQueryErrors
                 mode
                 checkMode
+                invocation
                 repoRoot
                 config.Exclude
                 noWarnFail
@@ -1538,7 +1686,7 @@ let executeCommand
                 filter
 
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-            queryPluginIn CheckVerdict.InnerLoop mode filter
+            queryPluginIn (Verdict.Invocation.start ()) CheckVerdict.InnerLoop mode filter
 
         /// `check`/`confirm` with NO daemon (`--run-once`). Same verdict, same verdict
         /// file, same exit codes — only the transport differs (`PluginHost.RunCommand`
@@ -1548,9 +1696,10 @@ let executeCommand
         /// analyzers guard) raises `ConfigError`. Report it cleanly with a RED exit code
         /// — same contract as the config-load handler — rather than crashing with an
         /// unhandled-exception stack trace.
-        let runOnceIn (checkMode: CheckVerdict.CheckMode) : int =
+        let runOnceIn (invocation: Verdict.Invocation) (checkMode: CheckVerdict.CheckMode) : int =
             try
-                RunOnceCheck.runOnceAndVerdict
+                RunOnceCheck.runOnceAndVerdictForInvocation
+                    invocation
                     (renderBlock mode (not noWarnFail))
                     checkMode
                     noWarnFail
@@ -1853,8 +2002,11 @@ let executeCommand
         // `runHookCommands` selects `check` — a consumer gating only the merge verdict
         // leaves the inner loop completely unwrapped.
         | Check flags when isRunOnce flags ->
-            withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> runOnceIn CheckVerdict.InnerLoop)
-        | Check flags -> withRunHooksFor RunHookCommand.Check repoRoot config (fun () -> queryPluginWith (mode) "")
+            withRunHooksForInvocation RunHookCommand.Check repoRoot config (fun invocation ->
+                runOnceIn invocation CheckVerdict.InnerLoop)
+        | Check flags ->
+            withRunHooksForInvocation RunHookCommand.Check repoRoot config (fun invocation ->
+                queryPluginIn invocation CheckVerdict.InnerLoop mode "")
         | Confirm flags ->
             // The evidence may ALREADY have been earned. `confirm` is run repeatedly
             // before a merge, and on a tree that has not moved, asking again is the SAME
@@ -1885,11 +2037,11 @@ let executeCommand
                 // `--run-once` needs no daemon, which is the only reason CI can invoke
                 // `confirm` at all. This arm does the heavy work, so it is the one the
                 // gate-lock must guard.
-                withRunHooksFor RunHookCommand.Confirm repoRoot config (fun () ->
+                withRunHooksForInvocation RunHookCommand.Confirm repoRoot config (fun invocation ->
                     if isRunOnce flags then
-                        runOnceIn CheckVerdict.Confirmation
+                        runOnceIn invocation CheckVerdict.Confirmation
                     else
-                        queryPluginIn CheckVerdict.Confirmation mode "")
+                        queryPluginIn invocation CheckVerdict.Confirmation mode "")
         | Verdict ->
             // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
             let report = Verdict.report repoRoot config.Exclude

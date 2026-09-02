@@ -892,6 +892,44 @@ module AgentHints =
                 // same class of lie this block exists to stop.
                 [ "  WHAT FAILED — the causes in full; nothing below this is needed to act on them:" ]
 
+        // AUTOMATION-555. Where the wall time went, over and above the plugin lines:
+        // each configured hook step that ran, in the order the run met them, and how
+        // much of the observed wall time the interval evidence explains. Plugin and
+        // hook spans can overlap (a plugin owns the work a hook performed), so the
+        // attributed figure is the UNION of the intervals — nested work counts once.
+        let hookLines =
+            v.Hooks
+            |> List.sortBy (fun h ->
+                match h.Scope with
+                | "run.beforeRun" -> 0, h.StepIndex
+                | "tests.beforeRun" -> 1, h.StepIndex
+                | "run.afterRun" -> 2, h.StepIndex
+                | _ -> 3, h.StepIndex)
+            |> List.mapi (fun i h ->
+                let label = if i = 0 then "hooks   " else "        "
+
+                $"    %s{label} %s{h.Scope} step %d{h.StepIndex}/%d{h.StepCount} — %d{h.ElapsedMs}ms (%s{h.Outcome}): %s{h.Command}")
+
+        let attributionLines =
+            match v.ObservedElapsedMs with
+            | Some observed when observed > 0L ->
+                let attributed = Verdict.TimingSpan.coveredDuration observed v.TimingSpans
+                let unattributed = max 0L (observed - attributed)
+                let percent = 100.0 * float attributed / float observed
+
+                // Completeness is reported SEPARATELY from the percentage: a 95% figure
+                // over refused evidence is not the same fact as 95% over complete evidence.
+                let completeness =
+                    match v.TimingIncompleteReasons with
+                    | [] -> "timing evidence complete"
+                    | reasons ->
+                        let joined = String.concat "; " reasons
+                        $"timing evidence incomplete: %s{joined}"
+
+                [ $"    timing   %d{attributed}ms attributed / %d{observed}ms observed (%.1f{percent}%%, %d{unattributed}ms unattributed)"
+                  $"    timing   %s{completeness}" ]
+            | _ -> []
+
         // AUTOMATION-111: FIRST, ahead of the cause header. A recall miss is a fact about
         // the TOOL, not about this change, and a reader who meets it after a wall of test
         // causes has already started debugging the wrong thing.
@@ -901,6 +939,8 @@ module AgentHints =
         @ causeLines
         @ noSuiteFactLines
         @ zeroSelectionLines
+        @ hookLines
+        @ attributionLines
         @ [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
             $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against \
                the tree on disk; exit 4 = stale, do not reuse)" ]

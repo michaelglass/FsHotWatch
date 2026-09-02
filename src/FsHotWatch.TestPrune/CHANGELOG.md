@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under
+  its test run (`.fshw/test-runs/<runId>/hook-timings.json`), including the
+  failing step of a fail-fast chain, so the CLI carries it into
+  `.fshw/verdict.json` as separately attributed hook work.
+  - **BREAKING:** `TestPrunePlugin.create`'s `beforeRun` hook receives the run id
+    (`Guid -> unit`, was `unit -> unit`).
+
 ## 0.13.0-alpha.29 - 2026-09-01
 
 - fix(AUTOMATION-111): derive the selection alarm and recall metric from the

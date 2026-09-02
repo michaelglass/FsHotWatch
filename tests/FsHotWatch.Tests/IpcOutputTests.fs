@@ -733,27 +733,42 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
     let cleanDiagnostics () : string =
         """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
 
-    let exitCode =
+    // AUTOMATION-555. The verdict the daemon transport publishes is stamped with the
+    // invocation that drove it, so the wrapping CLI can attach its hook timing to THIS
+    // file and to no other.
+    let invocationId = "daemon-transport-invocation"
+
+    let exitCode, recordedInvocation =
         TestHelpers.withTempDir "ipcoutput-verdict" (fun repoRoot ->
-            pollAndRender
-                ProgressRenderer.Agent
-                CheckVerdict.InnerLoop
-                repoRoot
-                []
-                (fun _ -> [])
-                false
-                (fun () -> "idle")
-                waitForComplete
-                getStatus
-                cleanDiagnostics
-                (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
-                // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
-                // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
-                ignore // forceFullRun: never fires — the scope is already full-suite
-                (fun () -> "idle"))
+            let code =
+                pollAndRenderForInvocation
+                    (Verdict.Invocation.startAs invocationId)
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    waitForComplete
+                    getStatus
+                    cleanDiagnostics
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    // AUTOMATION-259: no projection on offer. `InnerLoop` never asks, and a
+                    // `Confirmation` that gets this records "no sample", never an agreement.
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore // forceFullRun: never fires — the scope is already full-suite
+                    (fun () -> "idle")
+
+            let recorded =
+                match Verdict.read repoRoot with
+                | Verdict.Reading.Found verdict -> verdict.InvocationId
+                | other -> failwith $"expected daemon verdict, got %A{other}"
+
+            code, recorded)
 
     test <@ exitCode = 0 @>
+    test <@ recordedInvocation = Some invocationId @>
 
 // --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
 // AUTOMATION-65: a WaitForComplete that faults because the daemon shut down or the pipe

@@ -231,6 +231,20 @@ let ``parseConfig keeps the run-level beforeRun separate from tests.beforeRun`` 
     // AUTOMATION-320: a string in the config is now a ONE-STEP chain.
     test <@ config.Tests |> Option.map (fun t -> t.BeforeRun) = Some(Some [ "test-level" ]) @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests beforeRun array preserves nonblank steps in order`` () =
+    let config =
+        parseConfig """{"tests": {"beforeRun": ["first", "  ", "second"], "projects": [{"project": "P"}]}}""" defaults
+
+    test <@ config.Tests |> Option.bind _.BeforeRun = Some [ "first"; "second" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests beforeRun empty array disables the hook`` () =
+    let config =
+        parseConfig """{"tests": {"beforeRun": [], "projects": [{"project": "P"}]}}""" defaults
+
+    test <@ config.Tests |> Option.bind _.BeforeRun = None @>
+
 // --- parseConfig: includeOutsideRepo ---
 
 [<Fact(Timeout = 15000)>]

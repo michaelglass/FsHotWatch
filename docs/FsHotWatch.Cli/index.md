@@ -267,6 +267,17 @@ sufficient.
     { "name": "test-prune", "outcome": "ok", "elapsedMs": 91449,
       "summary": "6 passed, 0 failed in 6 projects" }
   ],
+  "hooks": [
+    { "scope": "tests.beforeRun", "stepIndex": 1, "stepCount": 2,
+      "command": "dotnet restore", "elapsedMs": 4312, "outcome": "ok" }
+  ],
+  "timingSpans": [
+    { "scope": "tests.beforeRun", "startOffsetMs": 0, "elapsedMs": 4312,
+      "detail": "dotnet restore" }
+  ],
+  "timingIncompleteReasons": [],
+  "observedElapsedMs": 102381,
+  "invocationId": "8cc0715e5df6420dbe2157066dc0ac5c",
   "suites": [
     { "project": "Intelligence.Tests.Unit",
       "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
@@ -276,6 +287,24 @@ sufficient.
   "reddenedByCount": 0
 }
 ```
+
+**Where the wall time went.** `hooks[]` accounts for work outside the plugin run
+records: each `tests.beforeRun` array element (in configured order, one atomic
+command each) and the top-level run hooks as `run.beforeRun` / `run.afterRun`, each
+with its position in its chain, exact command, outcome and elapsed milliseconds. Only
+steps that RAN appear — the step after a fail-fast failure is absent, not zero.
+`observedElapsedMs` is the wall time seen by the wrapping CLI, and `timingSpans[]`
+places plugin and hook work on that one timeline, measured from the origin the
+invocation captured before any hook ran. The human summary unions overlapping
+intervals before reporting attributed time, so nested work is never counted twice.
+`timingIncompleteReasons[]` names evidence that was missing, stale (a plugin run or
+hook step from an earlier invocation), malformed or out of range — reported
+separately from the attribution percentage, so a figure over refused evidence cannot
+pass as complete. `invocationId` binds the CLI's own evidence to the verdict its run
+produced: a concurrent invocation's verdict is never touched, and a run that ends by
+exception, signal or without publishing leaves an invocation-owned `incomplete`
+behind instead of a prior green. Older verdicts omit these fields and read back as
+having no interval evidence.
 
 **A red says what reddened it.** `reddenedBy` lists the failing ledger diagnostics the
 exit code was computed from — `{ "source", "file", "severity", "message", "kind" }` — and

@@ -31,7 +31,14 @@ open FsHotWatch.Tests.TestHelpers
 
 /// The hooks run in a working directory; the sentinels they touch are absolute
 /// paths under the system temp dir, so cwd is irrelevant and any real dir works.
-let private tmpRoot = Path.GetTempPath()
+/// AUTOMATION-555: a FRESH directory, not the system temp dir itself — every bracket
+/// is an invocation now, and an invocation hashes its repo tree and leaves a verdict
+/// under `.fshw/` in it.
+let private tmpRoot =
+    let id = Guid.NewGuid().ToString("N")
+    let path = Path.Combine(Path.GetTempPath(), $"fshw-runhooks-tests-%s{id}")
+    Directory.CreateDirectory path |> ignore
+    path
 
 /// A fresh absolute sentinel path. A hook `touch <sentinel>` creates it iff the
 /// hook actually fired; `File.Exists` is then a pure observation of "the hook ran".
@@ -72,6 +79,69 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
       Invalidate = fun _ -> async { return "invalidated" }
       IsRunning = isRunning
       LaunchDaemon = fun _ _ _ -> () }
+
+/// AUTOMATION-555. What a transport publishes on a clean run: a green owned by
+/// `invocationId`, with a plugin record, a `tests.beforeRun` hook and both on the
+/// timeline — the evidence a later terminal downgrade must keep.
+let private publishCleanInvocation (invocationId: string) (root: string) =
+    let tree = TreeHash.compute root []
+
+    FsHotWatch.Cli.Verdict.create
+        FsHotWatch.Cli.Verdict.Check
+        (TestRunReport.ofScopeOnly (FullSuite 1))
+        tree
+        (Some [])
+        FsHotWatch.Cli.Verdict.Green
+        0
+        [ { Name = "test-prune"
+            Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+            ElapsedMs = Some 5L
+            Summary = Some "tests passed" } ]
+        []
+        FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
+        []
+    |> FsHotWatch.Cli.Verdict.withAttribution
+        { Hooks =
+            [ { Scope = "tests.beforeRun"
+                StepIndex = 1
+                StepCount = 1
+                Command = "true"
+                ElapsedMs = 5L
+                Outcome = "ok" } ]
+          TimingSpans =
+            [ { Scope = "plugin.test-prune"
+                StartOffsetMs = 0L
+                ElapsedMs = 5L
+                Detail = Some "tests passed" }
+              { Scope = "tests.beforeRun"
+                StartOffsetMs = 0L
+                ElapsedMs = 5L
+                Detail = Some "true" } ]
+          TimingIncompleteReasons = []
+          ObservedElapsedMs = Some 20L
+          InvocationId = Some invocationId }
+    |> FsHotWatch.Cli.Verdict.write root
+
+    // So the wrapper's own observed wall time is at least what the transport claimed.
+    Thread.Sleep 20
+
+let private isIncomplete (outcome: FsHotWatch.Cli.Verdict.Outcome) =
+    match outcome with
+    | FsHotWatch.Cli.Verdict.Incomplete _ -> true
+    | _ -> false
+
+/// A signal installer that hands the finalizer to the test instead of the OS.
+let private captureSignalFinalizer (slot: (unit -> unit) option ref) =
+    fun (finalize: unit -> unit) (_exitWith: int -> unit) ->
+        slot.Value <- Some finalize
+
+        { new IDisposable with
+            member _.Dispose() = () }
+
+let private fireCapturedSignal (slot: (unit -> unit) option ref) =
+    match slot.Value with
+    | Some finalize -> finalize ()
+    | None -> failwith "the signal finalizer was not installed"
 
 // ---------------------------------------------------------------------------
 // afterRun: a `finally` that fires on success, a red verdict, an abort, a throw
@@ -414,6 +484,359 @@ let ``runHooksApplyTo reads the configured verb set`` () =
     let none = { cfg with RunHookCommands = Set.empty }
     test <@ not (runHooksApplyTo none RunHookCommand.Check) @>
     test <@ not (runHooksApplyTo none RunHookCommand.Confirm) @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-555. Every bracket is an invocation: it owns the verdict its action
+// published, attaches its own timing to that verdict and no other, and leaves an
+// invocation-owned `incomplete` behind on every way out that did not publish.
+// ---------------------------------------------------------------------------
+
+/// The bracket's evidence lands on the verdict the action published: both run-level
+/// hooks, timed and placed on the timeline, plus the observed wall time.
+[<Fact(Timeout = 20000)>]
+let ``run-level hooks are attached to the invocation's own verdict with observed wall time`` () =
+    withTempDir "run-hook-attached" (fun root ->
+        let code =
+            withRunHooksForInvocation RunHookCommand.Check root (hooks (Some "true") (Some "true")) (fun invocation ->
+                publishCleanInvocation invocation.Id root
+                0)
+
+        test <@ code = 0 @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.Outcome = FsHotWatch.Cli.Verdict.Green @>
+
+            test <@ verdict.Hooks |> List.map _.Scope = [ "tests.beforeRun"; "run.beforeRun"; "run.afterRun" ] @>
+
+            test <@ verdict.TimingSpans |> List.exists (fun span -> span.Scope = "run.afterRun") @>
+            test <@ verdict.ObservedElapsedMs |> Option.exists (fun observed -> observed >= 20L) @>
+        | other -> failwith $"expected the attached verdict, got %A{other}")
+
+/// The failed `beforeRun` is the ONLY record of the invocation, and it is timed and
+/// named like any other hook.
+[<Fact(Timeout = 20000)>]
+let ``a refused beforeRun publishes an invocation-owned incomplete naming the hook`` () =
+    withTempDir "run-hook-refused" (fun root ->
+        let code =
+            withRunHooksForInvocation RunHookCommand.Check root (hooks (Some "exit 7") None) (fun _ ->
+                failwith "the action must not run after a refused beforeRun")
+
+        test <@ code = 2 @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ isIncomplete verdict.Outcome @>
+            test <@ verdict.InvocationId.IsSome @>
+            test <@ verdict.Hooks |> List.map (fun h -> h.Scope, h.Outcome) = [ "run.beforeRun", "fail" ] @>
+        | other -> failwith $"expected the refusal verdict, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``transport exit without a verdict publishes correlated incomplete timing`` () =
+    withTempDir "run-hook-terminal-verdict" (fun root ->
+        let code =
+            withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun _ -> 2)
+
+        test <@ code = 2 @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId.IsSome @>
+            test <@ isIncomplete verdict.Outcome @>
+            test <@ verdict.ObservedElapsedMs.IsSome @>
+
+            test
+                <@
+                    verdict.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "without publishing")
+                @>
+        | other -> failwith $"expected terminal invocation verdict, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``transport exception publishes correlated incomplete timing before rethrow`` () =
+    withTempDir "run-hook-exception-verdict" (fun root ->
+        let thrown =
+            Record.Exception(fun () ->
+                withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun _ ->
+                    raise (InvalidOperationException "transport boom"))
+                |> ignore)
+
+        test <@ not (isNull thrown) @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId.IsSome @>
+            test <@ isIncomplete verdict.Outcome @>
+
+            test
+                <@
+                    verdict.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "terminated with an exception")
+                @>
+        | other -> failwith $"expected exception terminal verdict, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``transport exception replaces its own already-published normal verdict with incomplete`` () =
+    withTempDir "run-hook-exception-after-verdict" (fun root ->
+        let mutable ownedInvocation = None
+
+        let thrown =
+            Record.Exception(fun () ->
+                withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun invocation ->
+                    ownedInvocation <- Some invocation.Id
+                    publishCleanInvocation invocation.Id root
+                    raise (InvalidOperationException "transport failed after publishing"))
+                |> ignore)
+
+        test <@ not (isNull thrown) @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = ownedInvocation @>
+            test <@ isIncomplete verdict.Outcome @>
+            test <@ verdict.ExitCode = 2 @>
+            // Downgraded, not discarded: the published evidence survives.
+            test <@ verdict.Plugins |> List.exists (fun plugin -> plugin.Name = "test-prune") @>
+
+            test
+                <@
+                    verdict.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "terminated with an exception")
+                @>
+        | other -> failwith $"expected premature terminal verdict, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``transport exception replaces malformed verdict JSON with its terminal fallback`` () =
+    withTempDir "run-hook-exception-malformed-verdict" (fun root ->
+        let mutable ownedInvocation = None
+
+        let thrown =
+            Record.Exception(fun () ->
+                withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun invocation ->
+                    ownedInvocation <- Some invocation.Id
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(FsHotWatch.Cli.Verdict.path root))
+                    |> ignore
+
+                    File.WriteAllText(FsHotWatch.Cli.Verdict.path root, "{malformed")
+                    raise (InvalidOperationException "transport failed over malformed verdict"))
+                |> ignore)
+
+        test <@ not (isNull thrown) @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = ownedInvocation @>
+            test <@ isIncomplete verdict.Outcome @>
+        | other -> failwith $"malformed verdict was not replaced by terminal evidence: %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``signal replaces a non-object verdict with its terminal fallback`` () =
+    withTempDir "run-hook-signal-nonobject-verdict" (fun root ->
+        let signalFinalize = ref None
+        let mutable ownedInvocation = None
+
+        let code =
+            withRunHooksCommandUsingSignals
+                (captureSignalFinalizer signalFinalize)
+                FsHotWatch.Cli.Verdict.Check
+                root
+                (hooks None None)
+                (fun invocation ->
+                    ownedInvocation <- Some invocation.Id
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(FsHotWatch.Cli.Verdict.path root))
+                    |> ignore
+
+                    File.WriteAllText(FsHotWatch.Cli.Verdict.path root, "[]")
+                    fireCapturedSignal signalFinalize
+                    2)
+
+        test <@ code = 2 @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = ownedInvocation @>
+            test <@ isIncomplete verdict.Outcome @>
+
+            test
+                <@
+                    verdict.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "signalled")
+                @>
+        | other -> failwith $"non-object verdict was not replaced by terminal evidence: %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``premature terminal fallback never overwrites a newer invocation verdict`` () =
+    withTempDir "run-hook-newer-verdict" (fun root ->
+        let thrown =
+            Record.Exception(fun () ->
+                withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun _ ->
+                    publishCleanInvocation "newer-invocation" root
+                    raise (InvalidOperationException "older transport failed"))
+                |> ignore)
+
+        test <@ not (isNull thrown) @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = Some "newer-invocation" @>
+            test <@ verdict.Outcome = FsHotWatch.Cli.Verdict.Green @>
+            test <@ verdict.Hooks |> List.map _.Scope = [ "tests.beforeRun" ] @>
+        | other -> failwith $"expected newer verdict to survive, got %A{other}")
+
+/// `--run-once` over a tree with no projects: the hooks still bracket it, and the
+/// refusal is published as an invocation-owned incomplete instead of a bare exit 2
+/// that would leave a prior green readable.
+[<Fact(Timeout = 30000)>]
+let ``zero-project run-once failure remains inside the run hook bracket`` () =
+    withTempDir "run-hook-zero-project" (fun root ->
+        let beforeSentinel = freshSentinel ()
+        let afterSentinel = freshSentinel ()
+
+        try
+            let config = hooks (Some(touch beforeSentinel)) (Some(touch afterSentinel))
+
+            let code =
+                executeCommand
+                    (fun _ -> failwith "zero-project run must not create a daemon")
+                    (dummyIpc (fun _ -> false))
+                    root
+                    "pipe"
+                    (FsHotWatch.Cli.Program.Command.Check [ RunOnce ])
+                    defaultGlobalOptions
+                    config
+                    30.0
+
+            test <@ code = 2 @>
+            test <@ File.Exists beforeSentinel @>
+            test <@ File.Exists afterSentinel @>
+
+            match FsHotWatch.Cli.Verdict.read root with
+            | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+                test <@ verdict.ExitCode = 2 @>
+                test <@ verdict.InvocationId.IsSome @>
+
+                match verdict.Outcome with
+                | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains "no projects" @>
+                | other -> failwith $"expected zero-project incomplete verdict, got %A{other}"
+
+                test <@ verdict.ObservedElapsedMs.IsSome @>
+
+                test
+                    <@
+                        verdict.TimingIncompleteReasons
+                        |> List.exists (fun reason -> reason.Contains "no projects")
+                    @>
+
+                test <@ verdict.Hooks |> List.map _.Scope = [ "run.beforeRun"; "run.afterRun" ] @>
+            | other -> failwith $"zero-project run did not publish a verdict: %A{other}"
+        finally
+            tryDelete beforeSentinel
+            tryDelete afterSentinel)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``every active invocation installs signal finalization even without afterRun`` (beforeRunOnly: bool) =
+    withTempDir "run-hook-signal-finalize" (fun root ->
+        let installedFinalize = ref None
+        let config = hooks (if beforeRunOnly then Some "true" else None) None
+
+        let code =
+            withRunHooksCommandUsingSignals
+                (captureSignalFinalizer installedFinalize)
+                FsHotWatch.Cli.Verdict.Check
+                root
+                config
+                (fun invocation ->
+                    publishCleanInvocation invocation.Id root
+                    fireCapturedSignal installedFinalize
+                    2)
+
+        test <@ code = 2 @>
+        test <@ installedFinalize.Value.IsSome @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ isIncomplete verdict.Outcome @>
+            test <@ verdict.InvocationId.IsSome @>
+
+            test
+                <@
+                    verdict.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "signalled")
+                @>
+        | other -> failwith $"signal finalizer did not publish its terminal verdict: %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``signal downgrade still wins after ordinary finalization already won the teardown latch`` () =
+    withTempDir "run-hook-signal-after-ordinary" (fun root ->
+        let signalFinalize = ref None
+        let mutable ownedInvocation = None
+        use releaseSignal = new ManualResetEventSlim(false)
+
+        let signalTask =
+            Threading.Tasks.Task.Run(fun () ->
+                releaseSignal.Wait()
+                fireCapturedSignal signalFinalize)
+
+        let code =
+            withRunHooksCommandUsingSignals
+                (captureSignalFinalizer signalFinalize)
+                FsHotWatch.Cli.Verdict.Check
+                root
+                (hooks None None)
+                (fun invocation ->
+                    ownedInvocation <- Some invocation.Id
+                    publishCleanInvocation invocation.Id root
+                    0)
+
+        test <@ code = 0 @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found ordinary -> test <@ ordinary.Outcome = FsHotWatch.Cli.Verdict.Green @>
+        | other -> failwith $"ordinary finalization did not preserve green: %A{other}"
+
+        releaseSignal.Set()
+        signalTask.GetAwaiter().GetResult()
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found terminal ->
+            test <@ terminal.InvocationId = ownedInvocation @>
+            test <@ isIncomplete terminal.Outcome @>
+            test <@ terminal.ObservedElapsedMs |> Option.exists (fun elapsed -> elapsed >= 20L) @>
+
+            test
+                <@
+                    terminal.Plugins
+                    |> List.exists (fun plugin -> plugin.Name = "test-prune" && plugin.ElapsedMs = Some 5L)
+                @>
+
+            test
+                <@
+                    terminal.Hooks
+                    |> List.exists (fun hook -> hook.Scope = "tests.beforeRun" && hook.ElapsedMs = 5L)
+                @>
+
+            test
+                <@
+                    terminal.TimingSpans
+                    |> List.exists (fun span -> span.Scope = "plugin.test-prune" && span.ElapsedMs = 5L)
+                @>
+
+            test
+                <@
+                    terminal.TimingSpans
+                    |> List.exists (fun span -> span.Scope = "tests.beforeRun" && span.ElapsedMs = 5L)
+                @>
+
+            test
+                <@
+                    terminal.TimingIncompleteReasons
+                    |> List.exists (fun reason -> reason.Contains "signalled")
+                @>
+        | other -> failwith $"late signal did not downgrade the same-owner verdict: %A{other}")
 
 // ---------------------------------------------------------------------------
 // `confirm` StillApplies fast-path is DELIBERATELY unwrapped (no hooks fire)

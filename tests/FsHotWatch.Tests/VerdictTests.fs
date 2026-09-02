@@ -146,6 +146,267 @@ let private structuralRedCause: Verdict.RedCause =
 let private writeSpec (root: string) (s: Spec) : unit = Verdict.write root (build s)
 let private serializeSpec (s: Spec) : string = Verdict.serialize (build s)
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-555. Hook attribution: named, timed steps beside the plugin records,
+// interval evidence on one timeline, and augmentation that binds to an invocation.
+// ---------------------------------------------------------------------------
+
+let private hookStep scope index count command elapsed : Verdict.HookVerdict =
+    { Scope = scope
+      StepIndex = index
+      StepCount = count
+      Command = command
+      ElapsedMs = elapsed
+      Outcome = "ok" }
+
+let private attributedTo (invocationId: string) (hooks: Verdict.HookVerdict list) (observed: int64 option) =
+    { Verdict.Attribution.none with
+        Hooks = hooks
+        ObservedElapsedMs = observed
+        InvocationId = Some invocationId }
+
+[<Fact>]
+let ``hook timings are written as named steps with observed wall time`` () =
+    withTempDir "verdict-hooks" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution (
+            attributedTo "invocation-one" [ hookStep "tests.beforeRun" 2 3 "dotnet restore" 4312L ] (Some 5000L)
+        )
+        |> Verdict.write root
+
+        use json = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+        let hook = json.RootElement.GetProperty("hooks").EnumerateArray() |> Seq.exactlyOne
+        let scope = hook.GetProperty("scope").GetString()
+        let stepIndex = hook.GetProperty("stepIndex").GetInt32()
+        let stepCount = hook.GetProperty("stepCount").GetInt32()
+        let command = hook.GetProperty("command").GetString()
+        let elapsed = hook.GetProperty("elapsedMs").GetInt64()
+        let observed = json.RootElement.GetProperty("observedElapsedMs").GetInt64()
+        test <@ scope = "tests.beforeRun" @>
+        test <@ stepIndex = 2 @>
+        test <@ stepCount = 3 @>
+        test <@ command = "dotnet restore" @>
+        test <@ elapsed = 4312L @>
+        test <@ observed = 5000L @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found readBack ->
+            test <@ readBack.Hooks.Length = 1 @>
+            test <@ readBack.Hooks.Head.Command = "dotnet restore" @>
+            test <@ readBack.ObservedElapsedMs = Some 5000L @>
+            test <@ readBack.InvocationId = Some "invocation-one" @>
+            use roundTrip = JsonDocument.Parse(Verdict.serialize readBack)
+            let hookCount = roundTrip.RootElement.GetProperty("hooks").GetArrayLength()
+            test <@ hookCount = 1 @>
+        | other -> failwith $"expected hook verdict to round-trip, got %A{other}")
+
+/// A verdict written before the fields existed is not unreadable — it simply has no
+/// interval evidence, and says so with an empty attribution rather than a guess.
+[<Fact>]
+let ``a verdict without attribution fields reads back as no interval evidence`` () =
+    withTempDir "verdict-legacy-attribution" (fun root ->
+        writeSpec root (greenVerdict "abc" 1)
+
+        match Verdict.read root with
+        | Verdict.Reading.Found readBack -> test <@ readBack.Attribution = Verdict.Attribution.none @>
+        | other -> failwith $"expected a readable legacy verdict, got %A{other}")
+
+/// Spans the invocation could not have contained are refused on the way in and NAMED,
+/// so a percentage computed from what survived cannot pass as complete evidence.
+[<Fact>]
+let ``out-of-range timing spans are rejected on read and reported as incomplete`` () =
+    withTempDir "verdict-span-range" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution
+            { Verdict.Attribution.none with
+                TimingSpans =
+                    [ { Scope = "plugin.build"
+                        StartOffsetMs = 0L
+                        ElapsedMs = 50L
+                        Detail = None }
+                      { Scope = "plugin.overflowing"
+                        StartOffsetMs = 90L
+                        ElapsedMs = 50L
+                        Detail = None }
+                      { Scope = "plugin.pre-origin"
+                        StartOffsetMs = -1L
+                        ElapsedMs = 5L
+                        Detail = None } ]
+                ObservedElapsedMs = Some 100L
+                InvocationId = Some "ranged" }
+        |> Verdict.write root
+
+        match Verdict.read root with
+        | Verdict.Reading.Found readBack ->
+            test <@ readBack.TimingSpans |> List.map _.Scope = [ "plugin.build" ] @>
+
+            test
+                <@
+                    readBack.TimingIncompleteReasons
+                    |> List.exists (fun r -> r.Contains "2 malformed or out-of-range")
+                @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``zero-test verdict summary names hook timing and unattributed wall time`` () =
+    withTempDir "verdict-zero-test-hooks" (fun root ->
+        build
+            { greenVerdict "abc" 1 with
+                Command = Verdict.Check
+                Scope = NoTestsRun NoTestsReason.AlreadyVerified
+                Plugins = [] }
+        |> Verdict.withAttribution (
+            attributedTo
+                "zero-test-invocation"
+                [ hookStep "tests.beforeRun" 1 1 "prepare-test-environment" 95L ]
+                (Some 100L)
+        )
+        |> Verdict.write root
+
+        let timingAttached =
+            Verdict.tryAugment
+                root
+                "zero-test-invocation"
+                []
+                [ { Scope = "tests.beforeRun"
+                    StartOffsetMs = 0L
+                    ElapsedMs = 95L
+                    Detail = Some "prepare-test-environment" } ]
+                []
+                None
+
+        test <@ timingAttached @>
+
+        let readBack =
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v
+            | other -> failwith $"expected zero-test verdict, got %A{other}"
+
+        let summary =
+            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+
+        test <@ summary.Contains "NO TEST RUN — nothing was verified" @>
+        test <@ summary.Contains "tests.beforeRun step 1/1" @>
+        test <@ summary.Contains "95.0%" @>
+        test <@ summary.Contains "5ms unattributed" @>
+        test <@ summary.Contains "timing evidence complete" @>)
+
+[<Fact>]
+let ``timing attribution unions overlapping spans and clips them to observed wall time`` () =
+    let spans: Verdict.TimingSpan list =
+        [ { Scope = "plugin.test-prune"
+            StartOffsetMs = 10L
+            ElapsedMs = 70L
+            Detail = None }
+          { Scope = "tests.beforeRun"
+            StartOffsetMs = 20L
+            ElapsedMs = 30L
+            Detail = None }
+          { Scope = "run.afterRun"
+            StartOffsetMs = 90L
+            ElapsedMs = 40L
+            Detail = None } ]
+
+    // [10,80) union [20,50) = 70ms; [90,130) clips to [90,100) = 10ms.
+    test <@ Verdict.TimingSpan.coveredDuration 100L spans = 80L @>
+
+[<Fact>]
+let ``timing attribution sums disjoint spans without double counting touching intervals`` () =
+    let spans: Verdict.TimingSpan list =
+        [ { Scope = "one"
+            StartOffsetMs = 0L
+            ElapsedMs = 10L
+            Detail = None }
+          { Scope = "two"
+            StartOffsetMs = 10L
+            ElapsedMs = 5L
+            Detail = None }
+          { Scope = "three"
+            StartOffsetMs = 30L
+            ElapsedMs = 7L
+            Detail = None } ]
+
+    test <@ Verdict.TimingSpan.coveredDuration 100L spans = 22L @>
+
+[<Fact>]
+let ``hook augmentation refuses a verdict from another invocation`` () =
+    withTempDir "verdict-hook-correlation" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution (attributedTo "this-invocation" [] None)
+        |> Verdict.write root
+
+        let releaseLock = [ hookStep "run.afterRun" 1 1 "release-lock" 12L ]
+
+        let changed =
+            Verdict.tryAugment root "another-invocation" releaseLock [] [] (Some 20L)
+
+        test <@ not changed @>
+        use json = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+        let hookCountBefore = json.RootElement.GetProperty("hooks").GetArrayLength()
+        test <@ hookCountBefore = 0 @>
+        json.Dispose()
+
+        let appended =
+            Verdict.tryAugment root "this-invocation" releaseLock [] [] (Some 20L)
+
+        test <@ appended @>
+        use augmented = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+
+        let hook =
+            augmented.RootElement.GetProperty("hooks").EnumerateArray() |> Seq.exactlyOne
+
+        let scope = hook.GetProperty("scope").GetString()
+        let observed = augmented.RootElement.GetProperty("observedElapsedMs").GetInt64()
+        test <@ scope = "run.afterRun" @>
+        test <@ observed = 20L @>)
+
+[<Fact(Timeout = 15000)>]
+let ``concurrent invocations attach hooks only to the winning verdict in both orders`` () =
+    let drive firstId secondId =
+        withTempDir "verdict-hook-concurrency" (fun root ->
+            let verdict = build (greenVerdict "abc" 1)
+            use firstWritten = new Threading.ManualResetEventSlim(false)
+            use secondWritten = new Threading.ManualResetEventSlim(false)
+            use augmentFirst = new Threading.ManualResetEventSlim(false)
+
+            let publish id =
+                verdict
+                |> Verdict.withAttribution (attributedTo id [] None)
+                |> Verdict.write root
+
+            let hook command =
+                [ hookStep "run.afterRun" 1 1 command 1L ]
+
+            let first =
+                Threading.Tasks.Task.Run(fun () ->
+                    publish firstId
+                    firstWritten.Set()
+                    augmentFirst.Wait()
+                    Verdict.tryAugment root firstId (hook firstId) [] [] (Some 10L))
+
+            let second =
+                Threading.Tasks.Task.Run(fun () ->
+                    firstWritten.Wait()
+                    publish secondId
+                    secondWritten.Set()
+                    let attached = Verdict.tryAugment root secondId (hook secondId) [] [] (Some 20L)
+                    augmentFirst.Set()
+                    attached)
+
+            secondWritten.Wait()
+            Threading.Tasks.Task.WaitAll(first, second)
+            test <@ not first.Result @>
+            test <@ second.Result @>
+
+            match Verdict.read root with
+            | Verdict.Reading.Found readBack ->
+                test <@ readBack.InvocationId = Some secondId @>
+                test <@ readBack.Hooks |> List.map _.Command = [ secondId ] @>
+            | other -> failwith $"expected correlated verdict, got %A{other}")
+
+    drive "invocation-a" "invocation-b"
+    drive "invocation-b" "invocation-a"
+
 /// No prior verdict — the default for tests that are not about prior evidence.
 let private hintsFor (s: Spec) : string list =
     ProgressRenderer.AgentHints.forVerdict None (build s)
