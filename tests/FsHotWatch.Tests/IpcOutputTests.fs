@@ -1406,14 +1406,64 @@ let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderi
     test <@ v.ExitCode = 0 @>
     test <@ v.Outcome = Verdict.Green @>
 
+/// The seven-suite shape the consuming repo's `confirm` leaves behind: one CTRF report
+/// per test project under the run directory, which is where `Verdict.suiteVerdicts`
+/// reads `suites[]` from. Returns the project names, sorted as the verdict lists them.
+let private writeSevenSuiteRun (repoRoot: string) (runId: System.Guid) : string list =
+    let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
+    System.IO.Directory.CreateDirectory(runDir) |> ignore
+
+    let projects =
+        [ "Intelligence.Tests.Unit"
+          "Intelligence.Tests.Integration"
+          "Intelligence.Tests.Pipeline"
+          "Intelligence.Tests.Web"
+          "Intelligence.Tests.Legal"
+          "Intelligence.Tests.Playwright"
+          "Intelligence.Tests.Build" ]
+
+    for project in projects do
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix),
+            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"seven","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        )
+
+    List.sort projects
+
 [<Fact(Timeout = 15000)>]
 let ``a zero-test convergence result preserves a prior applicable full-suite green`` () =
     // A re-scan can settle successfully while TestPrune has no test work to do. That
     // result is correctly refused as NEW evidence, but it must not erase a full-suite
     // green the same binary already earned over this unchanged tree. Otherwise the
     // next `confirm` loses the only evidence it is entitled to reuse.
+    //
+    // AUTOMATION-643 as REPORTED: the erased verdict carried a run id, seven suite
+    // entries and a tree hash, and what the reader lost was exactly those. So the prior
+    // here is that verdict — a real run with seven CTRF reports and a green plugin
+    // record — and the proof is the FILE read back after the zero-test publish, entry
+    // by entry, not merely that `priorConfirmation` still says the green applies.
     TestHelpers.withTempDir "ipcoutput-643-preserve-prior-green" (fun repoRoot ->
-        let fullRun = TestRunReport.ofScopeOnly (FullSuite 1)
+        let runId = System.Guid.NewGuid()
+        let projects = writeSevenSuiteRun repoRoot runId
+
+        let fullRun =
+            { TestRunReport.ofScopeOnly (FullSuite 7) with
+                RunId = Some runId
+                Seeds = [ "src/Changed.fs" ]
+                SeedCount = 1 }
+
+        let greenTestPrune =
+            { Status = StatusView.Completed System.DateTime.UtcNow
+              Subtasks = []
+              ActivityTail = []
+              LastRun =
+                Some
+                    { StartedAt = System.DateTime.UtcNow.AddSeconds(-30.0)
+                      Elapsed = System.TimeSpan.FromSeconds 25.0
+                      Outcome = CompletedRun
+                      Summary = Some "21 passed, 0 failed in 7 projects"
+                      ActivityTail = [] }
+              Diagnostics = DiagnosticCounts.empty }
 
         let initialExitCode =
             publishVerdict
@@ -1423,12 +1473,33 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 false
                 fullRun
                 Verdict.NoReading
-                Map.empty
+                (Map.ofList [ "test-prune", greenTestPrune ])
                 []
                 (SettledTree.capture repoRoot [])
                 CheckVerdict.CheckOutcome.Clean
 
         test <@ initialExitCode = 0 @>
+
+        // POSITIVE CONTROL on the fixture: the prior really is a seven-suite full green
+        // with a run id and a tree hash, so an intact read-back below proves something.
+        let priorText = System.IO.File.ReadAllText(Verdict.path repoRoot)
+
+        let prior =
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found v -> v
+            | other -> failwithf "the prior full-suite green must be readable, got %A" other
+
+        test <@ Verdict.isFullSuiteGreen prior @>
+        test <@ prior.RunId = Some runId @>
+        test <@ prior.Suites |> List.map _.Project |> List.sort = projects @>
+
+        test
+            <@
+                prior.Suites
+                |> List.forall (fun s -> s.Total = 3 && s.Passed = 3 && s.Failed = 0)
+            @>
+
+        test <@ prior.Plugins |> List.map _.Name = [ "test-prune" ] @>
 
         let initialInputs: CheckVerdict.CheckInputs =
             { PluginStatuses = Map.empty
@@ -1437,7 +1508,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               WaitingOnBuild = CheckVerdict.BuildWait.NotWaiting
               RunnerAborted = CheckVerdict.RunnerAbort.NoAbort
               Coverage = Incomplete 1
-              Scope = FullSuite 1 }
+              Scope = FullSuite 7 }
 
         let zeroTestInputs =
             { initialInputs with
@@ -1465,6 +1536,26 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         // The current invocation remains an unearned, exit-3 refusal; preservation is
         // about the durable evidence, not laundering this no-test run into a pass.
         test <@ zeroTestExitCode = 3 @>
+
+        // THE claim: the file on disk is still the prior — its run id, its seven suite
+        // entries, its tree hash, its plugin record, its green — not a no-test verdict
+        // wearing the prior's applicability.
+        let preserved =
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found v -> v
+            | other -> failwithf "the preserved full-suite green must still be readable, got %A" other
+
+        test <@ preserved.TreeHash = prior.TreeHash @>
+        test <@ preserved.RunId = Some runId @>
+        test <@ preserved.Suites = prior.Suites @>
+        test <@ preserved.Suites |> List.map _.Project |> List.sort = projects @>
+        test <@ preserved.Scope = FullSuite 7 @>
+        test <@ preserved.Outcome = Verdict.Green @>
+        test <@ preserved.ExitCode = 0 @>
+        test <@ preserved.Plugins = prior.Plugins @>
+        test <@ Verdict.isFullSuiteGreen preserved @>
+        // Byte for byte: preservation is the ABSENCE of a write, not a rewrite.
+        test <@ System.IO.File.ReadAllText(Verdict.path repoRoot) = priorText @>
 
         match Verdict.priorConfirmation repoRoot [] with
         | Verdict.PriorConfirmation.StillApplies _ -> ()
