@@ -961,6 +961,10 @@ let ``check --run-once tolerates an unknown scope`` () =
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
         test <@ exitCode = 0 @>)
 
+/// The `--run-once` transport stamps its verdict with the invocation
+/// that drove it, exactly as the daemon transport does.
+let private runOnceInvocationId = "run-once-transport-invocation"
+
 /// The REAL run-once driver, on a daemon whose `test-scope` command throws. Identical to
 /// `runOnceIn` otherwise, so the only variable is whether the scope read succeeds.
 let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRoot: string) : int =
@@ -985,7 +989,8 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
         daemon.Host.RegisterHandler(handler)
         daemon
 
-    FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+    FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictForInvocation
+        (FsHotWatch.Cli.Verdict.Invocation.startAs runOnceInvocationId)
         (fun _ -> "")
         checkMode
         false
@@ -1011,6 +1016,7 @@ let ``check --run-once REFUSES a scope read that faulted — and records WHY on 
         match FsHotWatch.Cli.Verdict.read repoRoot with
         | FsHotWatch.Cli.Verdict.Reading.Found v ->
             test <@ v.ExitCode = exitCode @>
+            test <@ v.InvocationId = Some runOnceInvocationId @>
             // Never green, and never a red either: nothing failed, nothing was proven.
             test <@ FsHotWatch.Cli.Verdict.Outcome.tag v.Outcome = "incomplete" @>
 
