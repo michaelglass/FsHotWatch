@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- AUTOMATION-555: verdicts attribute configured hook steps separately from
+  plugins. `hooks[]` records each `tests.beforeRun` array element and the
+  top-level `run.beforeRun`/`run.afterRun` bracket with its scope, ordered
+  position, exact command, outcome and elapsed milliseconds — only the steps that
+  ran, so a fail-fast chain never implies work that did not happen. Every
+  `check`/`confirm` is now an invocation: the verdict carries its `invocationId`
+  and `observedElapsedMs` (the CLI's own wall time), and `timingSpans[]` places
+  plugin runs and hook steps on one timeline measured from the origin the
+  invocation captured before any hook ran. Overlapping intervals are unioned, never
+  summed; spans that predate the invocation, overflow, or outrun the observed wall
+  time are refused and named in `timingIncompleteReasons[]`, which is reported
+  separately from the attribution percentage. The CLI attaches its evidence by a
+  compare-and-swap on the invocation id under a writer lock, so a concurrent
+  invocation's verdict is never touched. Signal finalization is installed for every
+  invocation, hooks or no hooks: an exception, a signal, a refused `beforeRun`, a
+  zero-project `--run-once`, or an action that returns without publishing leaves an
+  invocation-owned `incomplete` behind — downgrading a verdict this invocation had
+  already published without discarding its plugin, hook, interval or wall-time
+  evidence, replacing a malformed or unowned prior, and never overwriting a newer
+  invocation's verdict. The agent summary lists the hook steps and reports
+  `attributed / observed` wall time beside the evidence-completeness line.
+  - **BREAKING:** `IpcOutput.pollAndRender`, `publishVerdict`,
+    `publishTerminalIncomplete` and `RunOnceCheck.runOnceAndVerdict[With]` remain as
+    unbracketed seams that start their own invocation; production paths use the
+    `…ForInvocation` forms, which take a `Verdict.Invocation`.
+  - `Verdict.write` now takes the verdict writer lock; `Verdict.tryAugment` and
+    `Verdict.tryPublishTerminal` are the two invocation-owned write primitives.
+
 ## 0.14.0-alpha.38 - 2026-09-01
 
 - fix(AUTOMATION-464): bundle the TestPrune runner-family resolver so CLI users
