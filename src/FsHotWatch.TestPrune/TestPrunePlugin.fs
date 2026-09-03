@@ -3314,7 +3314,9 @@ let private executeTests
     (emitStarted: TestRunStarted -> unit)
     (repoRoot: string)
     (launchDeadline: TimeSpan)
-    (beforeRun: (unit -> unit) option)
+    // AUTOMATION-555. Receives the run id so the hook's own timings can be filed
+    // under this run, beside the CTRF reports the verdict already reads.
+    (beforeRun: (Guid -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (coverageIngestFailed: CoverageIngestFailure -> unit)
     (afterRun: (TestResults -> unit) option)
@@ -3360,7 +3362,7 @@ let private executeTests
         match beforeRun with
         | Some setup ->
             Logging.info "test-prune" "Running beforeRun setup..."
-            setup ()
+            setup runId
             Logging.info "test-prune" "beforeRun complete"
         | None -> ()
 
@@ -4403,7 +4405,7 @@ let internal createWithLaunchDeadline
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (unit -> unit) option)
+    (beforeRun: (Guid -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     // `dependsOn`: repo-root-relative globs naming EXTERNAL inputs (DB
@@ -7573,7 +7575,7 @@ let create
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (unit -> unit) option)
+    (beforeRun: (Guid -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (dependsOn: string list)

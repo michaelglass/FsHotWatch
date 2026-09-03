@@ -1235,12 +1235,93 @@ module internal HookFailure =
 
         $"%s{f.Label} failed at %s{where}: %s{disposition}\n  command: %s{f.Command}\n  output:\n%s{output}"
 
+/// AUTOMATION-555. One shell-hook step that ACTUALLY RAN, with when and how long.
+/// Steps after a failed one are deliberately absent: fail-fast attribution must
+/// never imply work happened.
+type internal HookStepTiming =
+    {
+        Label: string
+        StepIndex: int
+        StepCount: int
+        Command: string
+        StartedAtUtc: DateTime
+        ElapsedMs: int64
+        /// `"ok"` or `"fail"`.
+        Outcome: string
+    }
+
+/// AUTOMATION-555. `tests.beforeRun` runs INSIDE the daemon, per test run; the verdict
+/// is published by the CLI on the other side of the IPC boundary. The run directory
+/// (`.fshw/test-runs/<runId>/`) is already the shared ground between them — the CTRF
+/// reports cross the same way — so each run's hook timings are filed there, keyed by
+/// the run id the verdict carries. A missing or malformed file reads as "no hook
+/// evidence", never as a crash: attribution is an additional surface, not a new way
+/// for a check to fail.
+module internal HookTimings =
+    [<Literal>]
+    let private FileName = "hook-timings.json"
+
+    let private path (repoRoot: string) (runId: Guid) =
+        Path.Combine(Ctrf.runDir repoRoot runId, FileName)
+
+    let record (repoRoot: string) (runId: Guid) (timings: HookStepTiming list) : unit =
+        let payload =
+            [ for t in timings ->
+                  {| label = t.Label
+                     stepIndex = t.StepIndex
+                     stepCount = t.StepCount
+                     command = t.Command
+                     startedAtUtc = t.StartedAtUtc.ToString("O")
+                     elapsedMs = t.ElapsedMs
+                     outcome = t.Outcome |} ]
+
+        try
+            FsHwPaths.atomicWriteAllText (path repoRoot runId) (JsonSerializer.Serialize payload + "\n")
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            let run = runId.ToString "N"
+            Logging.warn "beforeRun" $"could not record hook timings for run %s{run}: %s{ex.Message}"
+
+    let read (repoRoot: string) (runId: Guid option) : HookStepTiming list =
+        match runId with
+        | Some id when File.Exists(path repoRoot id) ->
+            try
+                use document = JsonDocument.Parse(File.ReadAllText(path repoRoot id))
+
+                document.RootElement.EnumerateArray()
+                |> Seq.map (fun item ->
+                    { Label = item.GetProperty("label").GetString()
+                      StepIndex = item.GetProperty("stepIndex").GetInt32()
+                      StepCount = item.GetProperty("stepCount").GetInt32()
+                      Command = item.GetProperty("command").GetString()
+                      StartedAtUtc =
+                        DateTime.Parse(
+                            item.GetProperty("startedAtUtc").GetString(),
+                            Globalization.CultureInfo.InvariantCulture,
+                            Globalization.DateTimeStyles.AdjustToUniversal
+                        )
+                      ElapsedMs = item.GetProperty("elapsedMs").GetInt64()
+                      Outcome = item.GetProperty("outcome").GetString() })
+                |> Seq.toList
+            with
+            | :? JsonException
+            | :? FormatException
+            | :? InvalidOperationException
+            | :? Collections.Generic.KeyNotFoundException
+            | :? IOException
+            | :? UnauthorizedAccessException -> []
+        | _ -> []
+
 /// The result of running a hook chain. A DU rather than `Result<unit, _>`
 /// because `Error` is already a `DiagnosticSeverity` case in this file, and the
 /// collision made every neighbouring match ambiguous.
+///
+/// AUTOMATION-555. Both cases carry the timings of every step that RAN, in chain
+/// order — on failure, up to and including the step that failed.
 type internal HookOutcome =
-    | HookOk
-    | HookFailed of HookFailure
+    | HookOk of HookStepTiming list
+    | HookFailed of HookStepTiming list * HookFailure
 
 /// Run an ordered chain of shell steps, stopping at the first failure and
 /// reporting WHICH one broke. One step is the degenerate case of the same path,
@@ -1260,27 +1341,49 @@ let internal runShellSteps
 
     let count = List.length steps
 
+    // Timings accumulate newest-first while folding and are reversed once at the end.
     steps
     |> List.indexed
     |> List.fold
         (fun acc (i, cmd) ->
             match acc with
             | HookFailed _ -> acc // first failure wins; do not run the rest
-            | HookOk ->
+            | HookOk timings ->
                 Logging.info label $"Running %s{label} step %d{i + 1}/%d{count}: %s{cmd}"
                 let (command, args) = shellInvocation cmd
+                let startedAt = DateTime.UtcNow
+                let stopwatch = Diagnostics.Stopwatch.StartNew()
                 let outcome = runProcess command args repoRoot [] bounds
+                stopwatch.Stop()
+
+                let timing =
+                    { Label = label
+                      StepIndex = i + 1
+                      StepCount = count
+                      Command = cmd
+                      StartedAtUtc = startedAt
+                      ElapsedMs = stopwatch.ElapsedMilliseconds
+                      Outcome = if isSucceeded outcome then "ok" else "fail" }
+
+                Logging.info
+                    label
+                    $"Completed %s{label} step %d{i + 1}/%d{count} in %d{timing.ElapsedMs}ms (%s{timing.Outcome}): %s{cmd}"
 
                 if isSucceeded outcome then
-                    HookOk
+                    HookOk(timing :: timings)
                 else
-                    HookFailed
+                    HookFailed(
+                        List.rev (timing :: timings),
                         { Label = label
                           StepIndex = i + 1
                           StepCount = count
                           Command = cmd
-                          Outcome = outcome })
-        HookOk
+                          Outcome = outcome }
+                    ))
+        (HookOk [])
+    |> function
+        | HookOk timings -> HookOk(List.rev timings)
+        | failed -> failed
 
 let internal makeShellHookWithResult
     (label: string)
@@ -1504,13 +1607,17 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // AUTOMATION-320: fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's
         // `runTests failed: …` wrapper now carries that instead of a bare colon.
+        // AUTOMATION-555. The plugin hands over the run id so the steps' timings are
+        // filed under that run, where the CLI's verdict publisher reads them back —
+        // including the failing step of a fail-fast chain, which ran and cost time.
         let beforeRun =
             t.BeforeRun
             |> Option.map (fun steps ->
-                fun () ->
+                fun (runId: Guid) ->
                     match runShellSteps "beforeRun" config.TimeoutSec repoRoot steps with
-                    | HookOk -> ()
-                    | HookFailed failure ->
+                    | HookOk timings -> HookTimings.record repoRoot runId timings
+                    | HookFailed(timings, failure) ->
+                        HookTimings.record repoRoot runId timings
                         let message = HookFailure.describe failure
                         Logging.error "beforeRun" message
                         failwith message)

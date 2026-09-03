@@ -25,6 +25,7 @@ module FsHotWatch.Cli.Verdict
 open System
 open System.IO
 open System.Text.Json
+open System.Text.Json.Nodes
 open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
@@ -34,6 +35,36 @@ open FsHotWatch.Cli.IpcParsing
 /// breaking change to its shape MUST bump this string.
 [<Literal>]
 let Schema = "fshw-verdict-v1"
+
+/// AUTOMATION-555. ONE `check`/`confirm` invocation as seen by the CLI wrapper that
+/// brackets it: the identity the verdict is stamped with, and the ONE origin every
+/// piece of timing evidence in that verdict is measured from.
+///
+/// `Id` correlates the wrapper with the verdict publisher reached through either
+/// transport, so hook timings measured on the client can only ever be attached to
+/// the verdict THIS invocation produced — never to a concurrent invocation's.
+/// `OriginUtc` and `Clock` are captured together, before any hook runs: offsets on
+/// the timeline come from `Clock` (monotonic), while evidence that arrives stamped
+/// with wall-clock times (plugin runs, `tests.beforeRun` steps recorded inside the
+/// daemon) is placed relative to `OriginUtc` and REFUSED when it falls outside the
+/// invocation.
+type Invocation =
+    { Id: string
+      OriginUtc: DateTime
+      Clock: Diagnostics.Stopwatch }
+
+module Invocation =
+    /// Start an invocation under an explicit id. Tests use this to make correlation
+    /// observable; production passes through `start`.
+    let startAs (id: string) : Invocation =
+        { Id = id
+          OriginUtc = DateTime.UtcNow
+          Clock = Diagnostics.Stopwatch.StartNew() }
+
+    let start () : Invocation = startAs (Guid.NewGuid().ToString("N"))
+
+    /// Wall time observed so far by the wrapping CLI, on the invocation's own clock.
+    let elapsedMs (invocation: Invocation) : int64 = invocation.Clock.ElapsedMilliseconds
 
 /// What one plugin contributed to the verdict. The SAME value drives the agent-mode
 /// status line (`ProgressRenderer`), so a plugin cannot report `ok` on one surface
@@ -151,6 +182,142 @@ type PluginVerdict =
       Outcome: PluginOutcome
       ElapsedMs: int64 option
       Summary: string option }
+
+/// AUTOMATION-555. One configured hook step which ACTUALLY EXECUTED during this
+/// invocation — a `tests.beforeRun` array element (run inside the daemon, per test
+/// run) or the top-level `run.beforeRun`/`run.afterRun` bracket (run by the CLI).
+/// Steps that never ran because an earlier step failed are absent: fail-fast
+/// attribution must never imply work happened.
+type HookVerdict =
+    {
+        Scope: string
+        /// 1-based position in its chain, with the chain's length, so "which link"
+        /// is answerable without counting.
+        StepIndex: int
+        StepCount: int
+        /// The exact command, as configured — one atomic shell command.
+        Command: string
+        ElapsedMs: int64
+        /// `"ok"` or `"fail"`.
+        Outcome: string
+    }
+
+/// AUTOMATION-555. One measured half-open interval `[StartOffsetMs, StartOffsetMs +
+/// ElapsedMs)` on an invocation's timeline. Nested and concurrent spans explain the
+/// SAME wall time (a plugin can own the work a hook performed), so they are unioned
+/// when attributed, never summed.
+type TimingSpan =
+    { Scope: string
+      StartOffsetMs: int64
+      ElapsedMs: int64
+      Detail: string option }
+
+module TimingSpan =
+    /// Is `[startOffsetMs, startOffsetMs + elapsedMs)` a well-formed interval inside
+    /// an invocation that has observed `observedElapsedMs` so far? Pre-origin,
+    /// negative, overflowing and post-observation spans are all refused: a span the
+    /// invocation could not have contained is not evidence about it.
+    let isWithin (observedElapsedMs: int64) (startOffsetMs: int64) (elapsedMs: int64) : bool =
+        startOffsetMs >= 0L
+        && elapsedMs >= 0L
+        && startOffsetMs <= Int64.MaxValue - elapsedMs
+        && startOffsetMs + elapsedMs <= observedElapsedMs
+
+    /// Place a wall-clock-stamped interval on the invocation's timeline.
+    /// `Error` names why it could not be attributed; the caller records that as an
+    /// incompleteness reason rather than dropping it silently.
+    let ofWallClock
+        (invocation: Invocation)
+        (observedElapsedMs: int64)
+        (scope: string)
+        (startedAtUtc: DateTime)
+        (elapsed: TimeSpan)
+        (detail: string option)
+        : Result<TimingSpan, string> =
+        let startOffsetMs = int64 (startedAtUtc - invocation.OriginUtc).TotalMilliseconds
+        let elapsedMs = int64 elapsed.TotalMilliseconds
+
+        if startOffsetMs < 0L then
+            Error $"%s{scope} timing predates this invocation and was not attributed"
+        elif isWithin observedElapsedMs startOffsetMs elapsedMs then
+            Ok
+                { Scope = scope
+                  StartOffsetMs = startOffsetMs
+                  ElapsedMs = elapsedMs
+                  Detail = detail }
+        else
+            Error $"%s{scope} timing is outside this invocation and was not attributed"
+
+    /// A plugin's last run, placed on the timeline. `Ok None` for a cache replay: it
+    /// did no work in this invocation, so there is nothing to attribute and nothing
+    /// to complain about.
+    let ofPluginRun
+        (invocation: Invocation)
+        (observedElapsedMs: int64)
+        (name: string)
+        (run: RunRecord)
+        : Result<TimingSpan option, string> =
+        let cached =
+            run.Summary
+            |> Option.exists (fun summary -> summary.EndsWith(" (cached)", StringComparison.Ordinal))
+
+        if cached then
+            Ok None
+        else
+            ofWallClock invocation observedElapsedMs ("plugin." + name) run.StartedAt run.Elapsed run.Summary
+            |> Result.map Some
+
+    /// How much of `observedElapsedMs` the spans explain, counting each instant AT
+    /// MOST ONCE: overlapping intervals are unioned, and every span is clipped to
+    /// `[0, observed)`.
+    let coveredDuration (observedElapsedMs: int64) (spans: TimingSpan list) : int64 =
+        let observed = max 0L observedElapsedMs
+
+        spans
+        |> List.choose (fun span ->
+            let startAt = max 0L (min observed span.StartOffsetMs)
+            let endAt = max startAt (min observed (span.StartOffsetMs + max 0L span.ElapsedMs))
+            if endAt > startAt then Some(startAt, endAt) else None)
+        |> List.sortBy fst
+        |> List.fold
+            (fun (covered, current) (startAt, endAt) ->
+                match current with
+                | None -> covered, Some(startAt, endAt)
+                | Some(currentStart, currentEnd) when startAt <= currentEnd ->
+                    covered, Some(currentStart, max currentEnd endAt)
+                | Some(currentStart, currentEnd) -> covered + currentEnd - currentStart, Some(startAt, endAt))
+            (0L, None)
+        |> fun (covered, current) ->
+            covered
+            + (current
+               |> Option.map (fun (startAt, endAt) -> endAt - startAt)
+               |> Option.defaultValue 0L)
+
+/// AUTOMATION-555. Everything a verdict says about WHERE its wall time went, over and
+/// above the per-plugin `elapsedMs`. Grouped so a producer attaches it in one move and
+/// cannot stamp an invocation id without the evidence that goes with it.
+type Attribution =
+    {
+        Hooks: HookVerdict list
+        TimingSpans: TimingSpan list
+        /// Evidence that was missing, stale, malformed or out of range — reported
+        /// SEPARATELY from the attribution percentage. An empty span list alone never
+        /// claims complete attribution; only an empty reason list does.
+        TimingIncompleteReasons: string list
+        /// Wall time observed by the wrapping CLI, when there was one.
+        ObservedElapsedMs: int64 option
+        /// The invocation this verdict belongs to. `None` on a verdict produced
+        /// outside any bracket (an embedder, an older binary).
+        InvocationId: string option
+    }
+
+module Attribution =
+    let none: Attribution =
+        { Hooks = []
+          TimingSpans = []
+          TimingIncompleteReasons = []
+          ObservedElapsedMs = None
+          InvocationId = None }
 
 /// A pointer to one test project's CTRF report, plus the counts it carries, so "how
 /// many ran? how many failed?" is answered without opening a second file while the
@@ -921,6 +1088,10 @@ type Verdict =
             /// The true seed count before `trigger` was truncated, so a report can say
             /// "and N more" rather than implying the short list is all of them.
             triggerCount: int
+            /// AUTOMATION-555. Hook steps, interval evidence, observed wall time and
+            /// the owning invocation. Additive: a verdict written before the field
+            /// existed reads back as `Attribution.none`.
+            attribution: Attribution
         }
 
     member this.ProducedAt = this.producedAt
@@ -987,6 +1158,14 @@ type Verdict =
 
     /// How many seeds there were before `Trigger` was truncated.
     member this.TriggerCount = this.triggerCount
+
+    /// AUTOMATION-555. Configured hook steps that executed in this invocation.
+    member this.Hooks = this.attribution.Hooks
+    member this.TimingSpans = this.attribution.TimingSpans
+    member this.TimingIncompleteReasons = this.attribution.TimingIncompleteReasons
+    member this.ObservedElapsedMs = this.attribution.ObservedElapsedMs
+    member this.InvocationId = this.attribution.InvocationId
+    member this.Attribution = this.attribution
 
 let private hasFailingPlugin (v: Verdict) : bool =
     v.Plugins |> List.exists (fun p -> PluginOutcome.isFailing p.Outcome)
@@ -1152,11 +1331,17 @@ let create
           redCauses = redCauses |> List.truncate MaxRedCauses
           redCauseCount = List.length redCauses
           trigger = runReport.Seeds
-          triggerCount = runReport.SeedCount }
+          triggerCount = runReport.SeedCount
+          attribution = Attribution.none }
 
     match validate candidate with
     | Ok v -> v
     | Error reason -> invalidArg (nameof outcome) reason
+
+/// AUTOMATION-555. The same verdict, carrying its attribution. Separate from `create`
+/// because attribution is EVIDENCE ABOUT THE RUN, not an input to the outcome: it can
+/// neither redden nor green a verdict, and `validate` has nothing to say about it.
+let withAttribution (attribution: Attribution) (v: Verdict) : Verdict = { v with attribution = attribution }
 
 /// Absolute path to the verdict file.
 let path (repoRoot: string) : string =
@@ -1384,16 +1569,268 @@ let serialize (v: Verdict) : string =
                      kind = RedCauseKind.tag c.Kind |} ]
            reddenedByCount = v.RedCauseCount
            trigger = v.Trigger |> List.toArray
-           triggerCount = v.TriggerCount |}
+           triggerCount = v.TriggerCount
+           // AUTOMATION-555. Work outside the plugin run records, on one timeline.
+           hooks =
+            [ for h in v.Hooks ->
+                  {| scope = h.Scope
+                     stepIndex = h.StepIndex
+                     stepCount = h.StepCount
+                     command = h.Command
+                     elapsedMs = h.ElapsedMs
+                     outcome = h.Outcome |} ]
+           timingSpans =
+            [ for span in v.TimingSpans ->
+                  {| scope = span.Scope
+                     startOffsetMs = span.StartOffsetMs
+                     elapsedMs = span.ElapsedMs
+                     detail =
+                      (match span.Detail with
+                       | Some d -> box d
+                       | None -> null) |} ]
+           timingIncompleteReasons = v.TimingIncompleteReasons |> List.toArray
+           observedElapsedMs =
+            (match v.ObservedElapsedMs with
+             | Some ms -> box ms
+             | None -> null)
+           invocationId =
+            (match v.InvocationId with
+             | Some id -> box id
+             | None -> null) |}
 
     JsonSerializer.Serialize(payload, jsonOptions)
+
+/// AUTOMATION-555. Every write to the verdict file — the publisher's, the wrapper's
+/// augmentation, a terminal fallback — happens under this lock, so two CLI
+/// invocations in the same repo cannot interleave a read-then-write on it. The
+/// ownership checks below are only meaningful because the check and the write
+/// share the lock.
+let private withWriteLock (repoRoot: string) (action: unit -> 'T) : 'T =
+    let lockPath = Path.Combine(FsHwPaths.root repoRoot, "verdict.write.lock")
+    Directory.CreateDirectory(Path.GetDirectoryName lockPath) |> ignore
+
+    let deadline = DateTime.UtcNow.AddSeconds 5.0
+
+    let rec acquire () =
+        try
+            new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)
+        with :? IOException when DateTime.UtcNow < deadline ->
+            Threading.Thread.Sleep 10
+            acquire ()
+
+    use _lock = acquire ()
+    action ()
 
 /// Write the verdict ATOMICALLY (temp file + rename). A partial read must be
 /// impossible: a consumer polling this file races the daemon by construction, and
 /// a half-written verdict that happened to parse would be the worst possible
 /// artifact.
 let write (repoRoot: string) (v: Verdict) : unit =
-    FsHwPaths.atomicWriteAllText (path repoRoot) (serialize v + "\n")
+    let content = serialize v + "\n"
+    withWriteLock repoRoot (fun () -> FsHwPaths.atomicWriteAllText (path repoRoot) content)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-555. Attaching evidence to a verdict ANOTHER process wrote.
+//
+// The CLI wrapper measures its run-level hooks and the observed wall time, but the
+// verdict was published from inside the action — through the daemon or the in-process
+// run — before the wrapper's `afterRun` even fired. Attaching that evidence afterwards
+// is a compare-and-swap on the invocation id: only the verdict THIS invocation
+// produced may be touched, and a newer invocation's verdict is left exactly as it is.
+// Patching the JSON in place, rather than reading and re-serializing through `read`,
+// keeps every byte the publisher wrote that this step has no business rewriting.
+// ---------------------------------------------------------------------------
+
+/// The invocation id a verdict file claims, if it parses as an object at all.
+/// `Error` is "unreadable" — which is NOT evidence that another invocation owns it.
+let private tryReadOwner (verdictPath: string) : Result<JsonObject * string option, unit> =
+    try
+        match JsonNode.Parse(File.ReadAllText verdictPath) with
+        | :? JsonObject as root ->
+            let owner =
+                match root["invocationId"] with
+                | null -> None
+                | token when token.GetValueKind() = JsonValueKind.String -> Some(token.GetValue<string>())
+                | _ -> None
+
+            Ok(root, owner)
+        | _ -> Error()
+    with _ ->
+        Error()
+
+let private hookJson (h: HookVerdict) : JsonNode =
+    let node = JsonObject()
+    node["scope"] <- JsonValue.Create h.Scope
+    node["stepIndex"] <- JsonValue.Create h.StepIndex
+    node["stepCount"] <- JsonValue.Create h.StepCount
+    node["command"] <- JsonValue.Create h.Command
+    node["elapsedMs"] <- JsonValue.Create h.ElapsedMs
+    node["outcome"] <- JsonValue.Create h.Outcome
+    node
+
+let private spanJson (span: TimingSpan) : JsonNode =
+    let node = JsonObject()
+    node["scope"] <- JsonValue.Create span.Scope
+    node["startOffsetMs"] <- JsonValue.Create span.StartOffsetMs
+    node["elapsedMs"] <- JsonValue.Create span.ElapsedMs
+
+    node["detail"] <-
+        (span.Detail
+         |> Option.map (fun d -> JsonValue.Create d :> JsonNode)
+         |> Option.toObj)
+
+    node
+
+let private arrayAt (root: JsonObject) (name: string) : JsonArray =
+    match root[name] with
+    | :? JsonArray as existing -> existing
+    | _ ->
+        let created = JsonArray()
+        root[name] <- created
+        created
+
+let private addReason (root: JsonObject) (reason: string) : unit =
+    let reasons = arrayAt root "timingIncompleteReasons"
+
+    let alreadyRecorded =
+        reasons
+        |> Seq.exists (fun item ->
+            not (isNull item)
+            && item.GetValueKind() = JsonValueKind.String
+            && item.GetValue<string>() = reason)
+
+    if not alreadyRecorded then
+        reasons.Add(JsonValue.Create reason :> JsonNode)
+
+/// Append hook steps, interval evidence, incompleteness reasons and the observed wall
+/// time to the verdict owned by `invocationId`. `false` — and NOTHING written — when
+/// the file is missing, unreadable, unowned, or owned by a different invocation.
+let tryAugment
+    (repoRoot: string)
+    (invocationId: string)
+    (hooks: HookVerdict list)
+    (spans: TimingSpan list)
+    (incompleteReasons: string list)
+    (observedElapsedMs: int64 option)
+    : bool =
+    withWriteLock repoRoot (fun () ->
+        let verdictPath = path repoRoot
+
+        if not (File.Exists verdictPath) then
+            false
+        else
+            match tryReadOwner verdictPath with
+            | Ok(root, Some owner) when owner = invocationId ->
+                let hookArray = arrayAt root "hooks"
+                hooks |> List.iter (hookJson >> hookArray.Add)
+                let spanArray = arrayAt root "timingSpans"
+                spans |> List.iter (spanJson >> spanArray.Add)
+                incompleteReasons |> List.iter (addReason root)
+
+                match observedElapsedMs with
+                | Some observed -> root["observedElapsedMs"] <- JsonValue.Create observed
+                | None -> ()
+
+                FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")
+                true
+            | _ -> false)
+
+/// A verdict that says only "this invocation did not finish, and here is why".
+let private terminalVerdict
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (command: Command)
+    (reason: string)
+    : Verdict =
+    create
+        command
+        (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
+        (TreeHash.compute repoRoot excludePatterns)
+        (SolutionScope.readExclusions repoRoot)
+        (Incomplete reason)
+        (CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
+        []
+        []
+        CheckComparison.notRecorded
+        []
+
+/// The top-level `beforeRun` hook refused the run before the daemon was contacted.
+/// Nothing else will publish, so this is the ONLY record of the invocation — and the
+/// hook that refused it is timed and named like any other.
+let writeHookFailure
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (command: Command)
+    (invocation: Invocation)
+    (hooks: HookVerdict list)
+    (spans: TimingSpan list)
+    (reason: string)
+    : unit =
+    terminalVerdict repoRoot excludePatterns command reason
+    |> withAttribution
+        { Hooks = hooks
+          TimingSpans = spans
+          TimingIncompleteReasons = [ reason ]
+          ObservedElapsedMs = Some(Invocation.elapsedMs invocation)
+          InvocationId = Some invocation.Id }
+    |> write repoRoot
+
+/// The invocation ended abnormally — an exception out of the transport, a signal, or
+/// an action that returned without ever publishing. Leave behind an invocation-owned
+/// `incomplete` so a prior green cannot survive as the answer, WITHOUT ever
+/// overwriting a newer invocation's verdict:
+///
+/// - no file, an unowned (older-binary) file, or an unreadable one → the terminal
+///   fallback is written; unreadable content cannot establish anyone's ownership,
+///   and a corrupt file must not suppress fail-closed evidence;
+/// - owned by THIS invocation → downgraded in place to `incomplete` when
+///   `downgradeSameOwner` (an exception or signal AFTER publishing), keeping its
+///   plugin, hook, interval and wall-time evidence; left alone otherwise (the action
+///   published and returned normally — nothing abnormal happened);
+/// - owned by a DIFFERENT invocation → untouched, `false`.
+let tryPublishTerminal
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (command: Command)
+    (invocation: Invocation)
+    (reason: string)
+    (downgradeSameOwner: bool)
+    : bool =
+    let observed = Invocation.elapsedMs invocation
+
+    let fallback () =
+        terminalVerdict repoRoot excludePatterns command reason
+        |> withAttribution
+            { Attribution.none with
+                TimingIncompleteReasons = [ reason ]
+                ObservedElapsedMs = Some observed
+                InvocationId = Some invocation.Id }
+        |> serialize
+        |> fun s -> s + "\n"
+
+    withWriteLock repoRoot (fun () ->
+        let verdictPath = path repoRoot
+
+        if not (File.Exists verdictPath) then
+            FsHwPaths.atomicWriteAllText verdictPath (fallback ())
+            true
+        else
+            match tryReadOwner verdictPath with
+            | Ok(_, None)
+            | Error() ->
+                FsHwPaths.atomicWriteAllText verdictPath (fallback ())
+                true
+            | Ok(root, Some owner) when owner = invocation.Id && downgradeSameOwner ->
+                let outcome = JsonObject()
+                outcome["kind"] <- JsonValue.Create "incomplete"
+                outcome["reason"] <- JsonValue.Create reason
+                root["outcome"] <- outcome
+                root["exitCode"] <- JsonValue.Create(CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
+                addReason root reason
+                root["observedElapsedMs"] <- JsonValue.Create observed
+                FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")
+                true
+            | Ok _ -> false)
 
 // ---------------------------------------------------------------------------
 // Reading it back — the CLI reads the same file it writes. No second truth.
@@ -1432,6 +1869,90 @@ let private tryInt64 (el: JsonElement) (name: string) : int64 option =
         | true, n -> Some n
         | _ -> None
     | _ -> None
+
+/// AUTOMATION-555. Additive fields: absent in older verdicts, which read back as
+/// "no interval evidence" — `Attribution.none` — rather than as unreadable. Malformed
+/// or out-of-range evidence is DROPPED and NAMED: a span the invocation could not have
+/// contained is not evidence, and losing it silently would be a laundered percentage.
+let private parseAttribution (root: JsonElement) : Attribution =
+    let observedElapsedMs = tryInt64 root "observedElapsedMs"
+
+    let hooks =
+        match tryProp root "hooks" with
+        | Some el when el.ValueKind = JsonValueKind.Array ->
+            el.EnumerateArray()
+            |> Seq.choose (fun h ->
+                match
+                    tryString h "scope",
+                    tryInt h "stepIndex",
+                    tryInt h "stepCount",
+                    tryString h "command",
+                    tryInt64 h "elapsedMs",
+                    tryString h "outcome"
+                with
+                | Some scope, Some stepIndex, Some stepCount, Some command, Some elapsed, Some outcome ->
+                    Some
+                        { Scope = scope
+                          StepIndex = stepIndex
+                          StepCount = stepCount
+                          Command = command
+                          ElapsedMs = elapsed
+                          Outcome = outcome }
+                | _ -> None)
+            |> Seq.toList
+        | _ -> []
+
+    let spans, spanReasons =
+        match tryProp root "timingSpans" with
+        | None -> [], []
+        | Some el when el.ValueKind = JsonValueKind.Array ->
+            let parsed = ResizeArray<TimingSpan>()
+            let mutable malformed = 0
+
+            for span in el.EnumerateArray() do
+                match tryString span "scope", tryInt64 span "startOffsetMs", tryInt64 span "elapsedMs" with
+                | Some scope, Some startOffsetMs, Some elapsedMs when
+                    observedElapsedMs
+                    |> Option.exists (fun observed -> TimingSpan.isWithin observed startOffsetMs elapsedMs)
+                    ->
+                    parsed.Add
+                        { Scope = scope
+                          StartOffsetMs = startOffsetMs
+                          ElapsedMs = elapsedMs
+                          Detail = tryString span "detail" }
+                | _ -> malformed <- malformed + 1
+
+            List.ofSeq parsed,
+            (if malformed = 0 then
+                 []
+             else
+                 [ $"%d{malformed} malformed or out-of-range timing span(s) were rejected" ])
+        | Some _ -> [], [ "timingSpans is malformed: expected an array" ]
+
+    let recordedReasons =
+        match tryProp root "timingIncompleteReasons" with
+        | None -> []
+        | Some el when el.ValueKind = JsonValueKind.Array ->
+            let reasons = ResizeArray<string>()
+            let mutable malformed = 0
+
+            for reason in el.EnumerateArray() do
+                if reason.ValueKind = JsonValueKind.String then
+                    reasons.Add(reason.GetString())
+                else
+                    malformed <- malformed + 1
+
+            if malformed > 0 then
+                reasons.Add($"%d{malformed} malformed timing incomplete reason(s) were rejected")
+
+            List.ofSeq reasons
+        | Some _ -> [ "timingIncompleteReasons is malformed: expected an array" ]
+
+    { Hooks = hooks
+      TimingSpans = spans
+      TimingIncompleteReasons = spanReasons @ recordedReasons
+      ObservedElapsedMs = observedElapsedMs
+      InvocationId = tryString root "invocationId" }
 
 let private parseScope (el: JsonElement) : TestScope =
     let ran = tryInt el "ranProjects"
@@ -1861,7 +2382,8 @@ let read (repoRoot: string) : Reading =
                                          None)
                                  |> Seq.toList
                              | _ -> [])
-                          triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0 }
+                          triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0
+                          attribution = parseAttribution root }
 
                     // AUTOMATION-357. Old and malformed files can carry a bare red with
                     // no structural evidence. It is still a usable, fail-closed reading,

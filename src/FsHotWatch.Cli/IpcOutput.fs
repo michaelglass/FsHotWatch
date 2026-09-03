@@ -796,6 +796,10 @@ module internal TestRunEvidence =
 /// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
 /// its exit code. The verdict is an additional surface, never a new way to fail.
 let private publishVerdictWithReason
+    // AUTOMATION-555. The invocation this verdict belongs to: the id it is stamped
+    // with (so the wrapping CLI can attach ITS evidence to THIS file and no other) and
+    // the origin every interval below is measured from.
+    (invocation: Verdict.Invocation)
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -899,6 +903,69 @@ let private publishVerdictWithReason
         // says it does not know.
         let excluded = SolutionScope.readExclusions repoRoot
 
+        // AUTOMATION-555. Where the wall time went. Every interval is placed against the
+        // ONE origin the invocation captured before any hook ran, and refused — by name —
+        // when it falls outside the invocation: a plugin run or a `tests.beforeRun` step
+        // from an EARLIER run (a warm daemon that had nothing to re-run) is not work this
+        // invocation did, and a cache replay did no work at all. What cannot be placed
+        // is reported as an incompleteness reason, separately from the percentage the
+        // placed spans explain.
+        let observedSoFar = Verdict.Invocation.elapsedMs invocation
+
+        let hooks, hookSpans, hookReasons =
+            DaemonConfig.HookTimings.read repoRoot runReport.RunId
+            |> List.fold
+                (fun (hooks, spans, reasons) timing ->
+                    let scope = "tests.beforeRun"
+
+                    match
+                        Verdict.TimingSpan.ofWallClock
+                            invocation
+                            observedSoFar
+                            scope
+                            timing.StartedAtUtc
+                            (TimeSpan.FromMilliseconds(float timing.ElapsedMs))
+                            (Some timing.Command)
+                    with
+                    // `Result.` qualified: `ErrorLedger` is open here and its `Error`
+                    // severity case shadows the result constructor.
+                    | Result.Ok span ->
+                        let hook: Verdict.HookVerdict =
+                            { Scope = scope
+                              StepIndex = timing.StepIndex
+                              StepCount = timing.StepCount
+                              Command = timing.Command
+                              ElapsedMs = timing.ElapsedMs
+                              Outcome = timing.Outcome }
+
+                        hook :: hooks, span :: spans, reasons
+                    | Result.Error reason -> hooks, spans, reason :: reasons)
+                ([], [], [])
+            |> fun (hooks, spans, reasons) -> List.rev hooks, List.rev spans, List.rev reasons
+
+        let pluginSpans, pluginReasons =
+            statuses
+            |> Map.toList
+            |> List.choose (fun (name, parsed) -> parsed.LastRun |> Option.map (fun run -> name, run))
+            |> List.fold
+                (fun (spans, reasons) (name, run) ->
+                    match Verdict.TimingSpan.ofPluginRun invocation observedSoFar name run with
+                    | Result.Ok(Some span) -> span :: spans, reasons
+                    | Result.Ok None -> spans, reasons
+                    | Result.Error reason -> spans, reason :: reasons)
+                ([], [])
+            |> fun (spans, reasons) -> List.rev spans, List.rev reasons
+
+        let attribution: Verdict.Attribution =
+            { Hooks = hooks
+              TimingSpans = hookSpans @ pluginSpans
+              // A terminal failure ended the run before its timing could be complete,
+              // and says so here as well as in `outcome` — the two questions are read
+              // by different consumers.
+              TimingIncompleteReasons = hookReasons @ pluginReasons @ Option.toList terminalIncompleteReason
+              ObservedElapsedMs = Some observedSoFar
+              InvocationId = Some invocation.Id }
+
         let v =
             Verdict.create
                 command
@@ -911,6 +978,7 @@ let private publishVerdictWithReason
                 suites
                 comparison
                 redCauses
+            |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
         // tests, the prior verdict is the only thing that can answer the reader's
@@ -961,9 +1029,11 @@ let private publishVerdictWithReason
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
         CheckVerdict.exitCode outcome
 
-/// Publish the ordinary check outcome. This stable wrapper keeps the many normal
-/// terminal paths unable to accidentally invent an infrastructure diagnosis.
-let internal publishVerdict
+/// Publish the ordinary check outcome, owned by one explicit CLI invocation. This
+/// stable wrapper keeps the many normal terminal paths unable to accidentally invent
+/// an infrastructure diagnosis.
+let internal publishVerdictForInvocation
+    (invocation: Verdict.Invocation)
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -976,6 +1046,7 @@ let internal publishVerdict
     (outcome: CheckVerdict.CheckOutcome)
     : int =
     publishVerdictWithReason
+        invocation
         repoRoot
         excludePatterns
         checkMode
@@ -988,10 +1059,38 @@ let internal publishVerdict
         outcome
         None
 
+/// `publishVerdictForInvocation` for a publish that no CLI bracket wraps — tests and
+/// embedders. Production check/confirm paths always pass their invocation through.
+let internal publishVerdict
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (runReport: TestRunReport)
+    (checkScoped: Verdict.CheckScopedEvidence)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (redCauses: Verdict.RedCause list)
+    (settledTree: SettledTree)
+    (outcome: CheckVerdict.CheckOutcome)
+    : int =
+    publishVerdictForInvocation
+        (Verdict.Invocation.start ())
+        repoRoot
+        excludePatterns
+        checkMode
+        noWarnFail
+        runReport
+        checkScoped
+        statuses
+        redCauses
+        settledTree
+        outcome
+
 /// Publish an infrastructure failure that made the run un-completable before
 /// plugin/test verdict inputs existed. Exit 2, never red, and the exact reason is
 /// retained in `verdict.json` so an older green cannot survive or misdirect.
-let internal publishTerminalIncomplete
+let internal publishTerminalIncompleteForInvocation
+    (invocation: Verdict.Invocation)
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -999,6 +1098,7 @@ let internal publishTerminalIncomplete
     (settledTree: SettledTree)
     : int =
     publishVerdictWithReason
+        invocation
         repoRoot
         excludePatterns
         checkMode
@@ -1010,6 +1110,22 @@ let internal publishTerminalIncomplete
         settledTree
         (CheckVerdict.CheckOutcome.Incomplete -1)
         (Some reason)
+
+/// `publishTerminalIncompleteForInvocation` for a publish that no CLI bracket wraps.
+let internal publishTerminalIncomplete
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (reason: string)
+    (settledTree: SettledTree)
+    : int =
+    publishTerminalIncompleteForInvocation
+        (Verdict.Invocation.start ())
+        repoRoot
+        excludePatterns
+        checkMode
+        reason
+        settledTree
 
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
@@ -1023,7 +1139,9 @@ let internal publishTerminalIncomplete
 /// too, not only the greens. The sole exception is an unearned no-test convergence
 /// over a tree already covered by an applicable full-suite green: preserving that
 /// existing evidence is more honest than replacing it with an absence of new evidence.
-let pollAndRender
+let pollAndRenderForInvocation
+    // AUTOMATION-555. The invocation every verdict this drive publishes belongs to.
+    (invocation: Verdict.Invocation)
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
     (repoRoot: string)
@@ -1208,7 +1326,8 @@ let pollAndRender
         // the check: the file recorded `incomplete`/2 while this returned 0, so CI —
         // the only consumer that gates on the exit code — read that as a pass.
         let publishedExitCode =
-            publishVerdict
+            publishVerdictForInvocation
+                invocation
                 repoRoot
                 excludePatterns
                 checkMode
@@ -1240,7 +1359,13 @@ let pollAndRender
         let reason = ex.Message
 
         let exitCode =
-            publishTerminalIncomplete repoRoot excludePatterns checkMode reason settledTree.Value
+            publishTerminalIncompleteForInvocation
+                invocation
+                repoRoot
+                excludePatterns
+                checkMode
+                reason
+                settledTree.Value
 
         UI.fail reason
         exitCode
@@ -1251,7 +1376,8 @@ let pollAndRender
         // the recovery path.
         // AUTOMATION-167: return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdict
+            publishVerdictForInvocation
+                invocation
                 repoRoot
                 excludePatterns
                 checkMode
@@ -1280,7 +1406,8 @@ let pollAndRender
     | ex when isDaemonShutdownDuringWait ex ->
         // AUTOMATION-167: return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdict
+            publishVerdictForInvocation
+                invocation
                 repoRoot
                 excludePatterns
                 checkMode
@@ -1306,3 +1433,38 @@ let pollAndRender
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
 
         abortExitCode
+
+/// `pollAndRenderForInvocation` for a drive that no CLI bracket wraps — tests and
+/// embedders. Production check/confirm paths always pass their invocation through.
+let pollAndRender
+    (mode: ProgressRenderer.RenderMode)
+    (checkMode: CheckVerdict.CheckMode)
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (waitForScan: unit -> string)
+    (waitForComplete: unit -> string)
+    (getStatus: unit -> string)
+    (getErrors: unit -> string)
+    (getTestRun: unit -> TestRunReport)
+    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    (forceFullRun: unit -> unit)
+    (triggerScan: unit -> string)
+    : int =
+    pollAndRenderForInvocation
+        (Verdict.Invocation.start ())
+        mode
+        checkMode
+        repoRoot
+        excludePatterns
+        renderStatuses
+        noWarnFail
+        waitForScan
+        waitForComplete
+        getStatus
+        getErrors
+        getTestRun
+        getCheckReach
+        forceFullRun
+        triggerScan

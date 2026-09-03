@@ -2528,6 +2528,60 @@ module ``beforeRun failure reporting`` =
         with _ ->
             ()
 
+    /// AUTOMATION-555. Hook timings are filed under the run they belong to, so a later
+    /// verdict cannot pick up an earlier run's steps; a file that cannot be parsed is
+    /// no evidence, never a crash.
+    [<Fact>]
+    let ``hook evidence is keyed by test run id and malformed evidence fails closed`` () =
+        let repo = tmpRepo ()
+
+        try
+            let first = Guid.NewGuid()
+            let second = Guid.NewGuid()
+
+            let timing command index =
+                { HookStepTiming.Label = "beforeRun"
+                  StepIndex = index
+                  StepCount = 2
+                  Command = command
+                  StartedAtUtc = DateTime.UtcNow
+                  ElapsedMs = int64 index
+                  Outcome = "ok" }
+
+            HookTimings.record repo first [ timing "first-a" 1; timing "first-b" 2 ]
+            HookTimings.record repo second [ timing "second-a" 1 ]
+
+            test <@ HookTimings.read repo (Some first) |> List.map _.Command = [ "first-a"; "first-b" ] @>
+            test <@ HookTimings.read repo (Some second) |> List.map _.Command = [ "second-a" ] @>
+            test <@ HookTimings.read repo (Some(Guid.NewGuid())) |> List.isEmpty @>
+            test <@ HookTimings.read repo None |> List.isEmpty @>
+
+            let malformed = Path.Combine(FsHotWatch.Ctrf.runDir repo first, "hook-timings.json")
+            File.WriteAllText(malformed, "{not json")
+            test <@ HookTimings.read repo (Some first) |> List.isEmpty @>
+
+            // Every other way the file can be wrong is equally "no evidence": not an
+            // array, a step missing a field, a step whose start time does not parse.
+            for wrong in
+                [ "{}"
+                  """[{"label":"beforeRun","stepIndex":1}]"""
+                  """[{"label":"beforeRun","stepIndex":1,"stepCount":1,"command":"true","startedAtUtc":"yesterday","elapsedMs":1,"outcome":"ok"}]""" ] do
+                File.WriteAllText(malformed, wrong)
+                test <@ HookTimings.read repo (Some first) |> List.isEmpty @>
+
+            // A run directory that cannot be created (its path is a FILE) makes
+            // `record` warn and carry on: attribution never fails the test run.
+            let blocked = Guid.NewGuid()
+
+            Directory.CreateDirectory(Path.GetDirectoryName(FsHotWatch.Ctrf.runDir repo blocked))
+            |> ignore
+
+            File.WriteAllText(FsHotWatch.Ctrf.runDir repo blocked, "not a directory")
+            HookTimings.record repo blocked [ timing "blocked" 1 ]
+            test <@ HookTimings.read repo (Some blocked) |> List.isEmpty @>
+        finally
+            cleanup repo
+
     [<Fact>]
     let ``a failing step is named, with its exit code and its output`` () =
         let repo = tmpRepo ()
@@ -2537,8 +2591,13 @@ module ``beforeRun failure reporting`` =
                 [ "echo first-ok"; "echo the-failing-output && exit 3"; "echo never-reached" ]
 
             match runShellSteps "beforeRun" (Some 60) repo steps with
-            | HookOk -> failwith "expected the chain to fail"
-            | HookFailed failure ->
+            | HookOk _ -> failwith "expected the chain to fail"
+            | HookFailed(ran, failure) ->
+                // AUTOMATION-555. The steps that RAN are timed — the passing one and the
+                // failing one — and the never-reached step is absent, not zero.
+                test <@ ran |> List.map _.Command = [ "echo first-ok"; "echo the-failing-output && exit 3" ] @>
+                test <@ ran |> List.map _.Outcome = [ "ok"; "fail" ] @>
+
                 let message = HookFailure.describe failure
 
                 // WHICH step — the whole point. Position and the command itself.
@@ -2566,8 +2625,8 @@ module ``beforeRun failure reporting`` =
 
         try
             match runShellSteps "beforeRun" (Some 60) repo [ "exit 7" ] with
-            | HookOk -> failwith "expected the chain to fail"
-            | HookFailed failure ->
+            | HookOk _ -> failwith "expected the chain to fail"
+            | HookFailed(_, failure) ->
                 let message = HookFailure.describe failure
 
                 test <@ message.Contains "exit 7" @>
@@ -2589,8 +2648,14 @@ module ``beforeRun failure reporting`` =
             let steps = [ "echo one > ran.txt"; "echo two >> ran.txt"; "echo three >> ran.txt" ]
 
             match runShellSteps "beforeRun" (Some 60) repo steps with
-            | HookFailed f -> failwith $"expected success, got: %s{HookFailure.describe f}"
-            | HookOk ->
+            | HookFailed(_, f) -> failwith $"expected success, got: %s{HookFailure.describe f}"
+            | HookOk timings ->
+                // AUTOMATION-555. Every step is timed, in chain order, as itself.
+                test <@ timings |> List.map _.StepIndex = [ 1; 2; 3 ] @>
+                test <@ timings |> List.forall (fun t -> t.StepCount = 3) @>
+                test <@ timings |> List.map _.Command = steps @>
+                test <@ timings |> List.forall (fun t -> t.ElapsedMs >= 0L && t.Outcome = "ok") @>
+
                 let contents = File.ReadAllText marker
                 test <@ contents.Contains "one" @>
                 test <@ contents.Contains "two" @>
