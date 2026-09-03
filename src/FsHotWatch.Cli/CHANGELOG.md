@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.39 - 2026-09-03
+
 - AUTOMATION-555: verdicts attribute configured hook steps separately from
   plugins. `hooks[]` records each `tests.beforeRun` array element and the
   top-level `run.beforeRun`/`run.afterRun` bracket with its scope, ordered
