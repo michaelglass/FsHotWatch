@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.30 - 2026-09-03
+
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under
   its test run (`.fshw/test-runs/<runId>/hook-timings.json`), including the
   failing step of a fail-fast chain, so the CLI carries it into
