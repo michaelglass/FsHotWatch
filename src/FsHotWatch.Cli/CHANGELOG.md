@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.40 - 2026-09-04
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.39 - 2026-09-03
 
 - AUTOMATION-555: verdicts attribute configured hook steps separately from
