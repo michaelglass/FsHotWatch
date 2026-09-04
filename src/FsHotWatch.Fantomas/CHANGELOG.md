@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.23 - 2026-09-04
+
 - AUTOMATION-564: the format-check cache key names its files — and its `.editorconfig`
   inputs — REPO-RELATIVELY, so two checkouts of one repository mint the same key for
   byte-identical content and a fresh workspace replays a `format OK` instead of
