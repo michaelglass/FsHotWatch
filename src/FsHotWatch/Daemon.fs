@@ -1619,6 +1619,10 @@ type Daemon
         excludePatterns: string list,
         idleExitMin: int option,
         pressureIdleFloorMin: int option,
+        // Live scan-activity leases, shared with the scan agent that takes them
+        // (AUTOMATION-609). Read by the idle-exit scheduler and the heartbeat so
+        // a cold or forced scan is never mistaken for idleness.
+        scanLeases: ScanActivity.ScanLeases,
         // Per-daemon process registry. Plugin-spawned children (test runners,
         // playwright drivers, file-command processes) register against it, and
         // Dispose kills everything still tracked — that is how `fshw stop` and
@@ -1961,17 +1965,20 @@ type Daemon
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readGcPressure
                               Now = fun () -> System.DateTime.UtcNow
-                              // Busy when any plugin has work in flight (mailbox
-                              // events or an exclusive background run) OR a client
-                              // is blocked on a verdict wait. The wait leg keeps
-                              // idle-exit from firing out from under a connected
-                              // `fshw check` in the instants where no plugin work
-                              // is in flight (e.g. between convergence attempts).
-                              Busy =
+                              // Inhibited by plugin work in flight (mailbox events
+                              // or an exclusive background run), a client blocked
+                              // on a verdict wait, or a scan in flight. The wait
+                              // leg keeps idle-exit from firing out from under a
+                              // connected `fshw check` between convergence
+                              // attempts; the scan leg (AUTOMATION-609) covers the
+                              // cold FCS analysis that raises neither of the other
+                              // two and used to be terminated as "idle".
+                              Inhibitors =
                                 fun () ->
-                                    IdleExit.busyForIdleExit
+                                    IdleExit.idleInhibitors
                                         (host.AnyPluginBusy())
                                         (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                        (ScanActivity.ScanLeases.inFlight scanLeases)
                               LastActivityAt = host.LastActivityAt
                               Shutdown = fun () -> cts.Cancel()
                               Log = fun message -> Logging.info "idle-exit" message }
@@ -2002,6 +2009,7 @@ type Daemon
                                 Heartbeat.runActive
                                     (host.AnyPluginBusy())
                                     (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                    (ScanActivity.ScanLeases.anyInFlight scanLeases)
                           Write = Heartbeat.writeTo repoRoot
                           Log = Logging.warn "heartbeat"
                           Cadence = Heartbeat.DefaultCadence }
@@ -2070,6 +2078,37 @@ type Daemon
                 (this :> IDisposable).Dispose()
         }
 
+/// What one tier's bounded check/retry loop settled on (`runChecksWithRetry`).
+///
+/// AUTOMATION-610 — the bound existed; the OUTCOME of reaching it did not. A
+/// scan that gave up is a different event from a scan that converged, and the
+/// difference belongs in the type so the log line and the scan-completeness
+/// count cannot disagree about which happened.
+[<RequireQualifiedAccess>]
+type ScanCheckOutcome =
+    /// Every file produced a result. Carries how many EXTRA rounds beyond the
+    /// first pass were needed — 0 on a clean scan, and the direct measure of
+    /// the cancellation amplification this ticket bounds.
+    | AllChecked of extraRounds: int
+    /// The retry budget ran out with files still unchecked. Carries the files,
+    /// the extra rounds spent, and the budget that was exhausted.
+    | BudgetExhausted of unchecked: AbsFilePath list * extraRounds: int * budget: int
+
+/// Accessors over `ScanCheckOutcome`, so callers read the two numbers a scan
+/// summary needs without re-matching the union at each site.
+module ScanCheckOutcome =
+    /// Files left unchecked (0 for `AllChecked`).
+    let uncheckedCount (outcome: ScanCheckOutcome) : int =
+        match outcome with
+        | ScanCheckOutcome.AllChecked _ -> 0
+        | ScanCheckOutcome.BudgetExhausted(unchecked, _, _) -> List.length unchecked
+
+    /// Extra retry rounds beyond the first pass.
+    let extraRounds (outcome: ScanCheckOutcome) : int =
+        match outcome with
+        | ScanCheckOutcome.AllChecked rounds -> rounds
+        | ScanCheckOutcome.BudgetExhausted(_, rounds, _) -> rounds
+
 /// Drive per-file checks with a bounded retry on `None` results.
 ///
 /// Guards the cold-scan silent-truncation race: while the initial scan runs its FCS
@@ -2085,10 +2124,13 @@ type Daemon
 /// `CheckFile`/`CheckFileWithOptions` → `CancelPreviousCheck`) re-reads current disk
 /// content, so a NEWER user edit that legitimately superseded the in-flight check is
 /// observed on retry rather than duplicated. Each file is emitted at most once.
-/// Returns the number of files STILL unchecked after the budget is exhausted
-/// (a file under continuous concurrent edit, or a hard failure). The caller
-/// must surface a non-zero count as a non-ok scan condition — see `performScan`
-/// / `ScanComplete` — so a truncated scan cannot be read as clean.
+///
+/// AUTOMATION-610 — the outcome is TYPED. The budget was always bounded, but
+/// exhausting it produced a bare `int` that the caller folded into a running
+/// total, so "this tier gave up on 4 files after 3 extra rounds" was
+/// indistinguishable in the code from "4 files happened to be unchecked". A
+/// `BudgetExhausted` case carries the files and the rounds spent, and the caller
+/// says so in the log instead of looping on in silence.
 ///
 /// Pure of FCS and disk: `check` is injected, making the retry/convergence and
 /// honest-completion invariants unit-testable at the narrowest seam.
@@ -2097,7 +2139,7 @@ let internal runChecksWithRetry
     (check: AbsFilePath -> Async<'r option>)
     (emit: 'r -> unit)
     (files: AbsFilePath list)
-    : Async<int> =
+    : Async<ScanCheckOutcome> =
     async {
         let mutable pending = files
         let mutable round = 0
@@ -2124,7 +2166,14 @@ let internal runChecksWithRetry
             pending <- List.rev stillPending
             round <- round + 1
 
-        return pending.Length
+        // `round` counts the initial pass too, so extra rounds is `round - 1`
+        // (0 for an empty file list, which never enters the loop).
+        let extraRounds = max 0 (round - 1)
+
+        if List.isEmpty pending then
+            return ScanCheckOutcome.AllChecked extraRounds
+        else
+            return ScanCheckOutcome.BudgetExhausted(pending, extraRounds, maxRetries)
     }
 
 /// Execute the full scan logic, returning the updated agent state.
@@ -2145,192 +2194,264 @@ let internal runChecksWithRetry
 let internal partitionVanished (exists: string -> bool) (registered: string list) : string list * string list =
     registered |> List.partition exists
 
-let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: ScanAgentState) (ct: CancellationToken) =
-    async {
-        let host = ctx.Host
-        let pipeline = ctx.Pipeline
-        let graph = ctx.Graph
+/// Which kind of scan this is, for the activity lease and the metrics record.
+/// Generation 0 means nothing has completed yet, so this is the daemon's cold
+/// scan — the phase AUTOMATION-609's idle-exit terminated.
+let private scanKindFor (state: ScanAgentState) =
+    if state.Generation = 0L then
+        ScanActivity.ScanKind.Cold
+    else
+        ScanActivity.ScanKind.Forced
 
-        // Re-discover projects before scanning so that removed files/projects
-        // are cleared before results are returned to the client. Without this,
-        // a concurrent processChanges re-discovery (triggered by the file watcher
-        // with debounce delay) may complete AFTER the scan signals waiters,
-        // leaving stale FCS errors visible for one cycle.
-        // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
-        // when no project files have changed.
-        let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
-        let mutable lastFingerprint = state.LastFingerprint
+let private performScan
+    (ctx: BatchContext)
+    (scanLeases: ScanActivity.ScanLeases)
+    (scanSignal: ScanSignal)
+    (state: ScanAgentState)
+    (ct: CancellationToken)
+    =
+    let scanBody =
+        async {
+            let host = ctx.Host
+            let pipeline = ctx.Pipeline
+            let graph = ctx.Graph
 
-        if currentFingerprint <> state.LastFingerprint then
-            let! completed, _ =
-                rediscoverAndClearRemoved
-                    ctx.RepoRoot
-                    ctx.Loader
-                    ctx.MapOptions
-                    ctx.Discovery
-                    graph
-                    pipeline
-                    host
+            // Re-discover projects before scanning so that removed files/projects
+            // are cleared before results are returned to the client. Without this,
+            // a concurrent processChanges re-discovery (triggered by the file watcher
+            // with debounce delay) may complete AFTER the scan signals waiters,
+            // leaving stale FCS errors visible for one cycle.
+            // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
+            // when no project files have changed.
+            let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
+            let mutable lastFingerprint = state.LastFingerprint
+
+            if currentFingerprint <> state.LastFingerprint then
+                let! completed, _ =
+                    rediscoverAndClearRemoved
+                        ctx.RepoRoot
+                        ctx.Loader
+                        ctx.MapOptions
+                        ctx.Discovery
+                        graph
+                        pipeline
+                        host
+                        "scan"
+                        ctx.ExcludePatterns
+                        true
+
+                // A total loader failure is retryable even when no .fsproj bytes
+                // changed (for example after repairing an app-local assembly). Do
+                // not memoize the failed fingerprint and suppress the next attempt.
+                if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
+                    lastFingerprint <- currentFingerprint
+
+            let registeredProjects = pipeline.GetRegisteredProjects()
+
+            // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
+            //
+            // A file that is no longer on disk cannot be analyzed, and analyzing it
+            // anyway produces a finding about nothing: "symbol analysis failed —
+            // Parse errors" for a path that cannot be opened. That finding is keyed
+            // to the dead path, so nothing later clears it and the gate stays red
+            // until the daemon is stopped — the one command the docs tell you not to
+            // run. Renames are routine here (the compiler is the migration
+            // checklist), so this taxed exactly the refactoring the codebase asks for.
+            //
+            // The removed-file clearing above does NOT cover this on its own: it is
+            // gated on the fsproj fingerprint changing, so a rename that leaves every
+            // `.fsproj` byte-identical — a glob-matched file — never reaches it.
+            // Checking existence here is the backstop that does not depend on how the
+            // rename happened to touch the project files.
+            let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
+            let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
+
+            if not vanished.IsEmpty then
+                // Clear first, THEN scan: a finding left behind here outlives the
+                // scan that would have replaced it, because nothing will check that
+                // path again.
+                host.ClearFilesEverywhere vanished
+
+                Logging.info
                     "scan"
-                    ctx.ExcludePatterns
-                    true
+                    $"Dropped %d{vanished.Length} registered file(s) that no longer exist (renamed or deleted) and cleared their findings"
 
-            // A total loader failure is retryable even when no .fsproj bytes
-            // changed (for example after repairing an app-local assembly). Do
-            // not memoize the failed fingerprint and suppress the next attempt.
-            if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
-                lastFingerprint <- currentFingerprint
+            let total = files.Length
+            Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+            let scanStartedAt = System.DateTime.UtcNow
+            let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
+            let dispatchedFiles = ResizeArray<AbsFilePath>()
+            // Files whose check never returned Some, even after the bounded
+            // scan-retry budget (the silent-truncation race: a scan-side check
+            // cancelled by processBatch's same-file re-check, or a hard failure).
+            // Surfaced in the scan-complete state and log so a truncated scan can
+            // never read as clean. See `runChecksWithRetry`.
+            let mutable uncheckedCount = 0
+            // Extra retry rounds beyond each tier's first pass, summed. The direct
+            // measure of the cold-scan cancellation amplification AUTOMATION-610
+            // bounds; recorded in the per-scan metrics below.
+            let mutable retryRounds = 0
+            // Files that produced a result and were emitted, hoisted out of the
+            // `if` so the metrics record can read it on an empty scan too.
+            let mutable checkedTotal = 0
 
-        let registeredProjects = pipeline.GetRegisteredProjects()
+            if not files.IsEmpty then
+                // Run preprocessors (e.g., formatter) before dispatching
+                let modified = host.RunPreprocessors(files).Modified
 
-        // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
-        //
-        // A file that is no longer on disk cannot be analyzed, and analyzing it
-        // anyway produces a finding about nothing: "symbol analysis failed —
-        // Parse errors" for a path that cannot be opened. That finding is keyed
-        // to the dead path, so nothing later clears it and the gate stays red
-        // until the daemon is stopped — the one command the docs tell you not to
-        // run. Renames are routine here (the compiler is the migration
-        // checklist), so this taxed exactly the refactoring the codebase asks for.
-        //
-        // The removed-file clearing above does NOT cover this on its own: it is
-        // gated on the fsproj fingerprint changing, so a rename that leaves every
-        // `.fsproj` byte-identical — a glob-matched file — never reaches it.
-        // Checking existence here is the backstop that does not depend on how the
-        // rename happened to touch the project files.
-        let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+                if modified.Length > 0 then
+                    Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-        let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
+                host.EmitFileChanged(SourceChanged files)
 
-        if not vanished.IsEmpty then
-            // Clear first, THEN scan: a finding left behind here outlives the
-            // scan that would have replaced it, because nothing will check that
-            // path again.
-            host.ClearFilesEverywhere vanished
+                // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
+                // read the obj/ refs it rewrites. See
+                // `waitForPluginTerminalIfRunningWith` for the race this closes.
+                do! waitForPluginTerminalIfRunning host "build" (System.TimeSpan.FromMinutes(10.0))
 
-            Logging.info
-                "scan"
-                $"Dropped %d{vanished.Length} registered file(s) that no longer exist (renamed or deleted) and cleared their findings"
+                let mutable completed = 0
 
-        let total = files.Length
-        Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
-        let sw = System.Diagnostics.Stopwatch.StartNew()
-        let scanStartedAt = System.DateTime.UtcNow
-        let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
-        let dispatchedFiles = ResizeArray<AbsFilePath>()
-        // Files whose check never returned Some, even after the bounded
-        // scan-retry budget (the silent-truncation race: a scan-side check
-        // cancelled by processBatch's same-file re-check, or a hard failure).
-        // Surfaced in the scan-complete state and log so a truncated scan can
-        // never read as clean. See `runChecksWithRetry`.
-        let mutable uncheckedCount = 0
+                let mutable checkedCount = 0
+                let mutable skippedCount = 0
 
-        if not files.IsEmpty then
-            // Run preprocessors (e.g., formatter) before dispatching
-            let modified = host.RunPreprocessors(files).Modified
+                let filesToCheckSet = Set.ofList files
 
-            if modified.Length > 0 then
-                Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
+                // Check files in parallel tiers based on project dependency graph
+                let tiers = graph.GetParallelTiers()
 
-            host.EmitFileChanged(SourceChanged files)
+                // Bounded retry budget for cancelled/aborted/failed scan checks.
+                // The common case (a single processBatch race per file) converges
+                // in one retry; the budget caps work for files under continuous
+                // concurrent edit, which are then honestly reported as unchecked.
+                let scanRetryBudget = 3
 
-            // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
-            // read the obj/ refs it rewrites. See
-            // `waitForPluginTerminalIfRunningWith` for the race this closes.
-            do! waitForPluginTerminalIfRunning host "build" (System.TimeSpan.FromMinutes(10.0))
+                for tier in tiers do
+                    // Resolve each checkable file in the tier to its check thunk,
+                    // honouring the deps-freshness gate and per-project options. The
+                    // thunk is re-runnable (an Async description), so
+                    // `runChecksWithRetry` can re-invoke it on a cancelled result.
+                    let tierThunks =
+                        System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-            let mutable completed = 0
+                    for proj in tier do
+                        let projPath = AbsProjectPath.value proj
 
-            let mutable checkedCount = 0
-            let mutable skippedCount = 0
+                        let projFiles =
+                            graph.GetSourceFiles(proj)
+                            |> List.map AbsFilePath.value
+                            |> List.filter filesToCheckSet.Contains
 
-            let filesToCheckSet = Set.ofList files
+                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
 
-            // Check files in parallel tiers based on project dependency graph
-            let tiers = graph.GetParallelTiers()
+                        // Deps-freshness gate — see `applyDepsGate`.
+                        if applyDepsGate ctx.DepsGate host projPath then
+                            match pipeline.GetProjectOptions(projPath) with
+                            | Some options ->
+                                for file in projFiles do
+                                    let absFile = AbsFilePath.create file
+                                    tierThunks[absFile] <- pipeline.CheckFileWithOptions(absFile, options, ct)
+                            | None ->
+                                for file in projFiles do
+                                    let absFile = AbsFilePath.create file
+                                    tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
+                        else
+                            skippedCount <- skippedCount + projFiles.Length
 
-            // Bounded retry budget for cancelled/aborted/failed scan checks.
-            // The common case (a single processBatch race per file) converges
-            // in one retry; the budget caps work for files under continuous
-            // concurrent edit, which are then honestly reported as unchecked.
-            let scanRetryBudget = 3
+                    let tierFiles = tierThunks.Keys |> Seq.toList
 
-            for tier in tiers do
-                // Resolve each checkable file in the tier to its check thunk,
-                // honouring the deps-freshness gate and per-project options. The
-                // thunk is re-runnable (an Async description), so
-                // `runChecksWithRetry` can re-invoke it on a cancelled result.
-                let tierThunks =
-                    System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
+                    let emitChecked (checkResult: FileCheckResult) =
+                        checkedCount <- checkedCount + 1
+                        dispatchedFiles.Add(checkResult.File)
+                        host.EmitFileChecked(checkResult)
+                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                        completed <- completed + 1
+                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                for proj in tier do
-                    let projPath = AbsProjectPath.value proj
+                    let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
-                    let projFiles =
-                        graph.GetSourceFiles(proj)
-                        |> List.map AbsFilePath.value
-                        |> List.filter filesToCheckSet.Contains
+                    match tierOutcome with
+                    | ScanCheckOutcome.AllChecked _ -> ()
+                    | ScanCheckOutcome.BudgetExhausted(unchecked, rounds, budget) ->
+                        // AUTOMATION-610 — say it once, explicitly, naming the bound
+                        // that was reached. The alternative this replaces was adding
+                        // a number to a total and moving on, which is how repeated
+                        // self-cancellation stayed invisible for a whole gate run.
+                        let named =
+                            unchecked |> List.truncate 5 |> List.map AbsFilePath.value |> String.concat ", "
 
-                    skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+                        Logging.warn
+                            "scan"
+                            $"Retry budget exhausted after %d{rounds} extra round(s) of %d{budget}: %d{unchecked.Length} file(s) still unchecked (%s{named})"
 
-                    // Deps-freshness gate — see `applyDepsGate`.
-                    if applyDepsGate ctx.DepsGate host projPath then
-                        match pipeline.GetProjectOptions(projPath) with
-                        | Some options ->
-                            for file in projFiles do
-                                let absFile = AbsFilePath.create file
-                                tierThunks[absFile] <- pipeline.CheckFileWithOptions(absFile, options, ct)
-                        | None ->
-                            for file in projFiles do
-                                let absFile = AbsFilePath.create file
-                                tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
-                    else
-                        skippedCount <- skippedCount + projFiles.Length
+                    uncheckedCount <- uncheckedCount + ScanCheckOutcome.uncheckedCount tierOutcome
+                    retryRounds <- retryRounds + ScanCheckOutcome.extraRounds tierOutcome
 
-                let tierFiles = tierThunks.Keys |> Seq.toList
+                // Keep the existing "Checked N files (T tiers), skipped M" prefix
+                // intact (external tooling greps it); append the unchecked count so
+                // a truncated scan is never silently green in the log either.
+                Logging.info
+                    "scan"
+                    $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
-                let emitChecked (checkResult: FileCheckResult) =
-                    checkedCount <- checkedCount + 1
-                    dispatchedFiles.Add(checkResult.File)
-                    host.EmitFileChecked(checkResult)
-                    reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                    completed <- completed + 1
-                    scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                checkedTotal <- checkedCount
 
-                let! tierUnchecked = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+            sw.Stop()
+            let finalScanState = ScanComplete(sw.Elapsed)
+            let newGeneration = state.Generation + 1L
 
-                uncheckedCount <- uncheckedCount + tierUnchecked
+            // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
+            // callers (IPC) safely assume BatchChecked has already been dispatched
+            // by the time `fshw scan --wait` returns. Empty cohorts (no registered
+            // files) skip — there's nothing to "flush and decide" against.
+            if dispatchedFiles.Count > 0 then
+                host.EmitBatchChecked
+                    { Trigger = BootScan
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = newGeneration
+                      StartedAt = scanStartedAt
+                      CompletedAt = System.DateTime.UtcNow }
 
-            // Keep the existing "Checked N files (T tiers), skipped M" prefix
-            // intact (external tooling greps it); append the unchecked count so
-            // a truncated scan is never silently green in the log either.
-            Logging.info
-                "scan"
-                $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
+            scanSignal.SignalGeneration(newGeneration)
 
-        sw.Stop()
-        let finalScanState = ScanComplete(sw.Elapsed)
-        let newGeneration = state.Generation + 1L
+            // AUTOMATION-610 — one measurement record per completed scan generation,
+            // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
+            // and compares; `ScanMetrics.fitRetention` turns the RSS series into a
+            // slope. A write failure is logged, never fatal.
+            let reading =
+                ScanMetrics.readResources (ScanMetrics.forceGcEnabled Environment.GetEnvironmentVariable)
 
-        // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
-        // callers (IPC) safely assume BatchChecked has already been dispatched
-        // by the time `fshw scan --wait` returns. Empty cohorts (no registered
-        // files) skip — there's nothing to "flush and decide" against.
-        if dispatchedFiles.Count > 0 then
-            host.EmitBatchChecked
-                { Trigger = BootScan
-                  Files = dispatchedFiles |> List.ofSeq
+            let sample: ScanMetrics.ScanSample =
+                { Generation = newGeneration
+                  Kind = ScanActivity.ScanKind.describe (scanKindFor state)
+                  DurationMs = sw.Elapsed.TotalMilliseconds
+                  FilesRegistered = total
+                  FilesChecked = checkedTotal
+                  FilesUnchecked = uncheckedCount
+                  RetryRounds = retryRounds
+                  RssBytes = reading.RssBytes
+                  ManagedBytes = reading.ManagedBytes
+                  ForcedGc = reading.ForcedGc
+                  Gen2Collections = reading.Gen2Collections
+                  SampledAt = System.DateTime.UtcNow }
+
+            match ScanMetrics.tryAppend (ScanMetrics.recordPath ctx.RepoRoot) sample with
+            | Ok() -> ()
+            | Result.Error message -> Logging.debug "scan" $"scan-metrics append failed: %s{message}"
+
+            return
+                { ScanState = finalScanState
                   Generation = newGeneration
-                  StartedAt = scanStartedAt
-                  CompletedAt = System.DateTime.UtcNow }
+                  LastFingerprint = lastFingerprint }
+        }
 
-        scanSignal.SignalGeneration(newGeneration)
-
-        return
-            { ScanState = finalScanState
-              Generation = newGeneration
-              LastFingerprint = lastFingerprint }
-    }
+    // AUTOMATION-609 — hold an activity lease for the WHOLE scan, released by
+    // `withLease`'s finally on completion, exception, and cancellation alike.
+    // Everything in `scanBody` (re-discovery, preprocessors, build settlement,
+    // the FCS tiers, verdict signalling) runs inside it, so none of it can be
+    // mistaken for idleness by the idle-exit scheduler or the heartbeat.
+    ScanActivity.withLease scanLeases (scanKindFor state) scanBody
 
 /// Functions for creating and managing daemons.
 module Daemon =
@@ -2676,6 +2797,10 @@ module Daemon =
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
+            // One lease set per daemon: the scan agent takes a lease for the span
+            // of every scan, the idle-exit scheduler and heartbeat read it.
+            let scanLeases = ScanActivity.ScanLeases.create ()
+
             let scanMailbox =
                 MailboxProcessor.Start(
                     (fun inbox ->
@@ -2686,7 +2811,11 @@ module Daemon =
                                 match msg with
                                 | RequestScan(ct, reply) ->
                                     // Failure policy lives in `runDaemonStep`.
-                                    match! runDaemonStep "performScan" (performScan batchCtx scanSignal state ct) with
+                                    match!
+                                        runDaemonStep
+                                            "performScan"
+                                            (performScan batchCtx scanLeases scanSignal state ct)
+                                    with
                                     | Ok newState ->
                                         reply.Reply(())
                                         return! loop newState
@@ -2735,6 +2864,7 @@ module Daemon =
                 excludePatterns,
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
+                scanLeases,
                 processRegistry
             )
         with _ ->

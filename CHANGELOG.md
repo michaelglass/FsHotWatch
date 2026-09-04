@@ -4,6 +4,56 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- AUTOMATION-609: **a cold or forced scan is no longer mistaken for idleness — the
+  daemon cannot shut itself down while it is analysing.** Idle-exit's notion of
+  "busy" was a bare bool over two signals — plugin mailboxes in flight, and
+  connected verdict waits — and a cold `fshw check` raises NEITHER for its first
+  minutes: the FCS check tiers are not plugin mailbox work, and the client's
+  verdict wait is only bracketed after discovery admission. Under the 2-minute
+  memory-pressure floor a working daemon therefore terminated itself mid-scan,
+  and the caller exited 2 with no verdict.
+  - `ScanActivity` gives the scan agent a LEASE, held for the whole span of
+    `performScan` — re-discovery, preprocessors, build settlement, the FCS tiers,
+    verdict signalling — and released by `try/finally` on completion, exception,
+    and cancellation alike, so a failed scan cannot pin the daemon alive.
+  - The idle decision is typed: `IdleExit.IdleInhibitor` names each reason
+    (`PluginBusy`, `VerdictWait n`, `ScanInFlight Cold|Forced`) and `runTick`
+    returns a `TickOutcome` instead of a bool. A tick whose window has elapsed but
+    which finds work in flight now LOGS what held the daemon up, which is the
+    audit line the incident could not produce.
+  - The heartbeat gains the same leg, so the "a run is in progress" file keeps
+    beating through cold analysis instead of going silent during the longest
+    phase of real work.
+  - The pressure floor still sheds a genuinely quiescent daemon: a test drives
+    the scheduler past the shortened window with a lease held (no exit) and again
+    after it is released (exit).
+
+- AUTOMATION-610: **the cold-scan retry bound has a named outcome, and every scan
+  records what it cost.** The retry budget was already bounded at three extra
+  rounds, but exhausting it returned a bare count that the caller folded into a
+  total — indistinguishable in the code from "nothing to retry", which is how
+  thousands of repeated FCS checks in one gate run stayed invisible.
+  - `ScanCheckOutcome` is `AllChecked extraRounds` or
+    `BudgetExhausted(files, extraRounds, budget)`; reaching the bound now logs the
+    budget, the rounds spent, and the files given up on. Tests pin the exact
+    ceiling (attempts = 1 + budget, for every budget).
+  - `ScanMetrics` appends one JSON-Lines record per completed scan to
+    `<repo>/.fshw/scan-metrics.jsonl`: generation, kind, duration, files
+    registered/checked/unchecked, retry rounds, RSS, managed heap, gen-2
+    collections. A later run reads the same file and compares;
+    `ScanMetrics.fitRetention` fits RSS against generation and reports the slope
+    as a fraction of the first generation's RSS, against the 10%-per-generation
+    bound — `WithinBound` / `ExceedsBound` / `NotEnoughData`, never a threshold
+    relabelled as proof of a leak. `FSHW_SCAN_METRICS_GC=1` forces a collection
+    before each sample so the figure is post-GC retention rather than a live heap.
+  - Measured, five generations over this repository (160 files, real FCS, forced
+    GC before each sample, macOS 2026-09-04): post-GC RSS 1.731, 1.804, 1.776,
+    1.864, 1.894 GB — a fitted +38.6 MB per generation, **2.2% of the first
+    generation's RSS per generation, within the 10% bound**. The managed heap is
+    flat over the same run (1.566 → 1.588 GB, +0.30% per generation), so what
+    grows is native FCS state, not managed allocation. This is a measurement, not
+    a leak finding.
+
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
   between the workspaces of one repository — so a freshly created workspace starts
   warm.** Nothing about WHICH checkout a file was read from reaches a cache key any
