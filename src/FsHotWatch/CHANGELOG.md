@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.27 - 2026-09-04
+
 - AUTOMATION-435: `DaemonOptions` gains `RunMode` — `Watching` (the default: a
   persistent daemon builds its `FileWatcher` exactly as before) or `OneShot`, under
   which daemon construction never reaches watcher construction at all: no native
