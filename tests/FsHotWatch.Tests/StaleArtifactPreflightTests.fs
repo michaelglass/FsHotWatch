@@ -70,6 +70,15 @@ let private invertCopy (s: Synth) =
     File.WriteAllText(s.CommonCopy, "COMMON-STALE")
     File.SetLastWriteTimeUtc(s.CommonCopy, s.BuiltAt)
 
+/// AUTOMATION-528: the restore moves on after the build that generated the runtime
+/// manifest — which is precisely what the deps-freshness gate's automatic recovery does,
+/// since `dotnet restore` writes `obj/project.assets.json` and never touches
+/// `bin/**/*.deps.json`.
+let private supersedeRestore (s: Synth) =
+    let testsOut = Path.Combine(s.Root, "Tests", "bin", "Debug", "net10.0")
+    writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" s.BuiltAt
+    writeAt (Path.Combine(s.Root, "Tests", "obj", "project.assets.json")) "{}" (s.BuiltAt.AddMinutes 30.0)
+
 let private targets (s: Synth) = [ "Tests", s.Target ]
 
 let private runPreflight (s: Synth) =
@@ -126,6 +135,54 @@ let ``AUTOMATION-201: a stale compile refuses with a remedy instead of being 're
         test <@ outcome.Refusals.Head.Project = "Tests" @>
         test <@ outcome.Refusals.Head.Reason.Contains "dotnet build" @>)
 
+/// AUTOMATION-528: a superseded restore is REPORTED, by name, before anything launches —
+/// instead of surfacing later as a `FileNotFoundException` inside an unrelated-looking
+/// test. It is not healable: the manifest is generated from the restore by MSBuild's own
+/// target and no file on disk holds the bytes that target would produce, so writing a
+/// plausible one would mean inventing a reference closure.
+///
+/// The refusal must also name the WRONG fix. Adding a direct `ProjectReference` to
+/// whatever failed to load puts an entry in the manifest and makes the symptom vanish
+/// while the superseded restore stays exactly where it was — a fix that works for the
+/// wrong reason, and the one a reader reaches for first.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a superseded restore refuses, names both files, and rules out the wrong fix`` () =
+    withTempDir "a528-superseded" (fun tmpDir ->
+        let s = synth tmpDir
+        supersedeRestore s
+
+        let outcome = runPreflight s
+
+        test <@ List.isEmpty outcome.Healed @>
+        test <@ outcome.Refusals.Length = 1 @>
+        test <@ outcome.Refusals.Head.Project = "Tests" @>
+
+        let reason = outcome.Refusals.Head.Reason
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral reason @>
+        test <@ reason.Contains "Tests.deps.json" @>
+        test <@ reason.Contains "project.assets.json" @>
+        test <@ reason.Contains "dotnet build" @>
+        test <@ reason.Contains "ProjectReference" @>
+
+        // Nothing was repaired, so nothing is on the ledger — a refusal must not spend
+        // breaker budget it never used.
+        test <@ not (File.Exists(StaleArtifactPreflight.ledgerPath tmpDir)) @>)
+
+/// POSITIVE CONTROL for the test above: the same tree with the manifest generated AFTER
+/// its restore — the shape every healthy build leaves — still gates normally.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a manifest generated after its restore is not reported`` () =
+    withTempDir "a528-control" (fun tmpDir ->
+        let s = synth tmpDir
+        let testsOut = Path.Combine(tmpDir, "Tests", "bin", "Debug", "net10.0")
+        writeAt (Path.Combine(tmpDir, "Tests", "obj", "project.assets.json")) "{}" s.BuiltAt
+        writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" (s.BuiltAt.AddMinutes 1.0)
+
+        let outcome = runPreflight s
+
+        test <@ List.isEmpty outcome.Refusals @>
+        test <@ List.isEmpty outcome.Healed @>)
+
 /// The remedy text is the whole point of the "diagnoses but does not prescribe" defect,
 /// and one specific wrong answer must stay out of it: restarting the daemon. The task
 /// cache is file-backed and survives a restart, so `fshw stop` clears nothing — it was
@@ -135,6 +192,13 @@ let ``AUTOMATION-201: every remedy names a command that works, and none says 'st
     let cases =
         [ ArtifactFreshness.CopyDiffersFromOrigin("/o.dll", "/c.dll")
           ArtifactFreshness.AssemblyOlderThanSource("P", "/s.fs", DateTime.UtcNow, DateTime.UtcNow)
+          ArtifactFreshness.DepsManifestOlderThanRestore(
+              "P",
+              "/P/obj/project.assets.json",
+              "/P/bin/Debug/net10.0/P.deps.json",
+              DateTime.UtcNow,
+              DateTime.UtcNow
+          )
           ArtifactFreshness.InputsUndeterminable("P", "unreadable") ]
 
     for case in cases do
@@ -180,6 +244,19 @@ let ``AUTOMATION-201: exactly one stale case is repairable`` () =
         <@
             StaleArtifactPreflight.repairFor (
                 ArtifactFreshness.AssemblyOlderThanSource("P", "/s.fs", DateTime.UtcNow, DateTime.UtcNow)
+            ) = None
+        @>
+
+    test
+        <@
+            StaleArtifactPreflight.repairFor (
+                ArtifactFreshness.DepsManifestOlderThanRestore(
+                    "P",
+                    "/P/obj/project.assets.json",
+                    "/P/bin/Debug/net10.0/P.deps.json",
+                    DateTime.UtcNow,
+                    DateTime.UtcNow
+                )
             ) = None
         @>
 

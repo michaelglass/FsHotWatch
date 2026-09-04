@@ -275,6 +275,11 @@ type RecoveryTracker() =
     /// baseline (a first sighting is not a match). Used to suppress a phantom `Stale`
     /// mtime verdict whose dep-relevant content is unchanged — a compile-item-only
     /// fsproj edit bumped the mtime without touching the package graph.
+    ///
+    /// Speaks about DECLARED DEPS ONLY, never about the restore output. Nothing in the
+    /// signature comes from `obj/`, so a match says the inputs are unchanged and says
+    /// nothing at all about whether the assets file still exists. Callers must check
+    /// presence themselves — see `evaluateProject`.
     member _.MatchesFreshBaseline(proj: string, sig_: string) : bool =
         match freshSignatures.TryGetValue proj with
         | true, prev -> prev = sig_
@@ -345,9 +350,10 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 ///
 /// The mtime `probe` has two blind spots, and the content signature closes both
 /// symmetrically: a `Fresh` verdict whose signature DRIFTED is re-restored, and a
-/// `Stale` verdict whose signature MATCHES the last fresh/recovered baseline is
-/// proceeded on. A first sighting has no baseline, so a genuinely-cold Stale still
-/// restores. See docs/adr-008-mtime-is-not-a-content-oracle.md.
+/// `Stale` verdict whose signature MATCHES the last fresh/recovered baseline AND
+/// still has assets on disk is proceeded on. A first sighting has no baseline, so a
+/// genuinely-cold Stale still restores. See
+/// docs/adr-008-mtime-is-not-a-content-oracle.md.
 let evaluateProject
     (probe: string -> Freshness)
     (signatureOf: string -> string)
@@ -392,9 +398,19 @@ let evaluateProject
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
-    | Stale when tracker.MatchesFreshBaseline(proj, sig_) ->
+    | Stale when assetsPresent proj && tracker.MatchesFreshBaseline(proj, sig_) ->
         // mtime says stale but the dep content is unchanged from the last baseline:
         // a compile-item-only fsproj edit. The existing assets are still valid.
+        //
+        // `assetsPresent` FIRST, and it is not redundant. `Stale` is two different
+        // facts wearing one label — "the assets are older than a dep file" and "there
+        // are no assets at all" — and the baseline can only vouch for the first. The
+        // signature is derived from the `.fsproj` and the ancestor dep files, none of
+        // which a `rm -rf obj/` touches, so a cleaned workspace arrives here with a
+        // matching baseline and would be certified fresh with NO restore output on
+        // disk at all. FCS would then type-check against an empty reference set and
+        // produce exactly the phantom "namespace/type not found" storm this module
+        // exists to prevent (AUTOMATION-528).
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
