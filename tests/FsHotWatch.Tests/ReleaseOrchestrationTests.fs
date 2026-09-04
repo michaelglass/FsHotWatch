@@ -6,25 +6,7 @@ open System.Text.Json
 open System.Xml.Linq
 open Xunit
 open Swensen.Unquote
-
-let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: mise.toml is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "mise.toml")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
-
-let private taskBlock (mise: string) taskName =
-    let marker = $"[tasks.%s{taskName}]"
-
-    mise.Split('\n')
-    |> Array.skipWhile ((<>) marker)
-    |> Array.takeWhile (fun line -> line = marker || not (line.StartsWith("[tasks.", StringComparison.Ordinal)))
-    |> String.concat "\n"
+open FsHotWatch.Tests.RepoTasks
 
 let private releaseProjects root =
     use config =
@@ -75,9 +57,7 @@ let private dependencyLevels (graph: Map<string, Set<string>>) =
 let ``release emits every dependency lane before the CLI lane`` () =
     let root = repoRoot ()
 
-    let release =
-        File.ReadAllText(Path.Combine(root, "mise.toml"))
-        |> fun mise -> taskBlock mise "release"
+    let release = taskBlock (miseToml root) "release"
 
     let graph = dependencyGraph root
     let expectedLevels = dependencyLevels graph
@@ -143,9 +123,7 @@ let ``release emits every dependency lane before the CLI lane`` () =
 let ``release dry run remains one exact whole-release preview`` () =
     let root = repoRoot ()
 
-    let dryRun =
-        File.ReadAllText(Path.Combine(root, "mise.toml"))
-        |> fun mise -> taskBlock mise "release-dry-run"
+    let dryRun = taskBlock (miseToml root) "release-dry-run"
 
     let taggerLines =
         dryRun.Split('\n') |> Array.filter _.Contains("fssemantictagger release")
