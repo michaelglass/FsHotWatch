@@ -17,13 +17,17 @@
 /// build would have left. Nothing is inferred, and the destination is regenerable
 /// build output, so the repair is idempotent and destroys nothing.
 ///
-/// The other two cases are NOT healed, deliberately:
+/// The other three cases are NOT healed, deliberately:
 ///   * `AssemblyOlderThanSource` — the work that did not happen is a COMPILE. There
 ///     is no file anywhere on disk holding the bytes that compile would produce, so
 ///     any "repair" would be fabrication.
+///   * `DepsManifestOlderThanRestore` — likewise. The manifest is GENERATED from the
+///     restore by MSBuild's own target; nothing on disk holds the bytes it would
+///     produce, and writing a plausible one would put this module in the business of
+///     inventing a reference closure.
 ///   * `InputsUndeterminable` — we could not establish what this run's inputs ARE.
 ///     Repairing a tree we cannot describe is how silent degradation starts.
-/// Both refuse, and both name `dotnet build` — the remedy that actually works.
+/// All three refuse, and all three name `dotnet build` — the remedy that actually works.
 ///
 /// A heal is NEVER silent. Repeated origin/copy disagreements mean something upstream
 /// keeps rebuilding origins without their consumers, and a repair that absorbs that forever
@@ -141,6 +145,7 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
     match stale with
     | ArtifactFreshness.CopyDiffersFromOrigin(origin, copy) -> Some(origin, copy)
     | ArtifactFreshness.AssemblyOlderThanSource _
+    | ArtifactFreshness.DepsManifestOlderThanRestore _
     | ArtifactFreshness.InputsUndeterminable _ -> None
 
 /// What to actually DO about a stale verdict this module would not repair. Names a
@@ -158,6 +163,12 @@ let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
          and build again"
     | ArtifactFreshness.AssemblyOlderThanSource _ ->
         "run `dotnet build` — the compile has not run since that edit, so there is nothing on disk to copy from"
+    | ArtifactFreshness.DepsManifestOlderThanRestore _ ->
+        "run `dotnet build` — only a build regenerates the manifest from the restore. A `dotnet restore` will NOT: \
+         it rewrites `obj/project.assets.json` and never touches `bin/**/*.deps.json`, which is why this state \
+         outlives the automatic recovery that repairs the compile. Do NOT add a direct `ProjectReference` to \
+         whatever failed to load — that puts an entry in the manifest and makes the symptom vanish while the \
+         superseded restore stays in place"
     | ArtifactFreshness.InputsUndeterminable _ ->
         "run `dotnet build` and read its error — it fails loudly on the same project file this gate could not read"
 
