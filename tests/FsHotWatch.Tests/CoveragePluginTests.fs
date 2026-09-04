@@ -691,6 +691,12 @@ type private CountingTaskCache(inner: FsHotWatch.TaskCache.ITaskCache) =
             System.Threading.Interlocked.Increment(&gets) |> ignore
             inner.TryGet compositeKey cacheKey
 
+        // Counted too, and this is the member the framework actually calls: counting
+        // only `TryGet` would let the "never reads the cache" claim pass vacuously.
+        member _.Lookup compositeKey cacheKey =
+            System.Threading.Interlocked.Increment(&gets) |> ignore
+            inner.Lookup compositeKey cacheKey
+
         member _.Set compositeKey cacheKey result =
             System.Threading.Interlocked.Increment(&sets) |> ignore
             inner.Set compositeKey cacheKey result

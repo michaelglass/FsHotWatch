@@ -321,19 +321,64 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 /// rejected one layer deeper by a field read throwing, which reports every stale
 /// entry as a parse FAILURE. The cost of a bump is a one-time re-run.
 [<Literal>]
-let private EntryFormatVersion = 3
+let private EntryFormatVersion = 4
 
-let private serializeResult (result: TaskCacheResult) =
+/// The marker a run writes when it cleared its WHOLE ledger. Not a path, so it is
+/// exempt from path encoding on the way out and on the way back in.
+[<Literal>]
+let private ClearAllMarker = "*"
+
+/// Encode an error's file path so the entry can be read in ANOTHER checkout of the
+/// same repository. Paths inside the repo become `repo:`-relative; anything outside
+/// stays explicitly machine-local and therefore cannot be rebound elsewhere — which
+/// is the honest answer, not a limitation to route around.
+let private encodeErrorPath (repoRoot: string option) (file: string) =
+    if file = ClearAllMarker then
+        file
+    else
+        match repoRoot with
+        | Some root -> CachePathIdentity.ofPath root file |> CachePathIdentity.toKey
+        | None -> CachePathIdentity.toKey (CachePathIdentity.ExternalAbsolute file)
+
+/// Resolve an encoded error path against THIS checkout. Returns None when the entry
+/// cannot honestly be replayed here — an unparseable encoding, or a repo-relative
+/// path with no repo root to rebind it against. The caller turns that into a cache
+/// MISS: a replay that reported findings against another workspace's files would be
+/// worse than recomputing.
+let private decodeErrorPath (repoRoot: string option) (encoded: string) =
+    if encoded = ClearAllMarker then
+        Some encoded
+    else
+        match CachePathIdentity.tryParse encoded with
+        | Some(CachePathIdentity.ExternalAbsolute absolute) -> Some absolute
+        | Some(CachePathIdentity.RepoRelative _ as identity) ->
+            repoRoot |> Option.bind (fun root -> CachePathIdentity.tryRebind root identity)
+        | None -> None
+
+let private serializeResult (repoRoot: string option) (result: TaskCacheResult) =
     let root = JsonObject()
     root["format"] <- EntryFormatVersion
     root["cacheKey"] <- ContentHash.value result.CacheKey
     root["status"] <- serializeStatus result.Status
 
+    // The labelled digests behind this key, when this process minted it. Persisted so
+    // a LATER lookup that misses can name the input that moved — including a lookup
+    // from a different workspace, which is the case this whole store exists for.
+    match FsHotWatch.TaskCache.KeyFingerprints.tryGet (ContentHash.value result.CacheKey) with
+    | Some inputs ->
+        let inputsObj = JsonObject()
+
+        for (label, digest) in inputs do
+            inputsObj[label] <- digest
+
+        root["keyInputs"] <- inputsObj
+    | None -> ()
+
     let errorsArr = JsonArray()
 
     for file, entries in result.Errors do
         let fileObj = JsonObject()
-        fileObj["file"] <- file
+        fileObj["file"] <- encodeErrorPath repoRoot file
         let entriesArr = JsonArray()
 
         for e in entries do
@@ -352,7 +397,13 @@ let private serializeResult (result: TaskCacheResult) =
     root["emittedEvents"] <- eventsArr
     root
 
-let private deserializeResult (json: string) : TaskCacheResult =
+/// Read an entry. Returns the result AND the labelled key-input digests it carries
+/// (empty when the writer could not record them), so a caller holding a MISS can
+/// explain it.
+///
+/// Throws on anything it cannot honestly reproduce here — including an error path
+/// that will not rebind into this checkout. Every caller turns a throw into a MISS.
+let private deserializeEntry (repoRoot: string option) (json: string) : TaskCacheResult * (string * string) list =
     let root = JsonNode.Parse(json).AsObject()
 
     let formatVersion =
@@ -368,7 +419,14 @@ let private deserializeResult (json: string) : TaskCacheResult =
         root["errors"].AsArray()
         |> Seq.map (fun n ->
             let obj = n.AsObject()
-            let file = obj["file"].GetValue<string>()
+
+            let file =
+                let encoded = obj["file"].GetValue<string>()
+
+                match decodeErrorPath repoRoot encoded with
+                | Some path -> path
+                | None ->
+                    failwith $"task-cache entry names a file that cannot be resolved in this checkout: %s{encoded}"
 
             let entries =
                 obj["entries"].AsArray()
@@ -383,10 +441,19 @@ let private deserializeResult (json: string) : TaskCacheResult =
         |> Seq.map (fun n -> deserializeCachedEvent (n.AsObject()))
         |> Seq.toList
 
+    let keyInputs =
+        match root["keyInputs"] with
+        | null -> []
+        | node ->
+            node.AsObject()
+            |> Seq.map (fun kvp -> kvp.Key, kvp.Value.GetValue<string>())
+            |> Seq.toList
+
     { CacheKey = ContentHash.create (root["cacheKey"].GetValue<string>())
       Errors = errors
       Status = deserializeStatus (root["status"].AsObject())
-      EmittedEvents = emittedEvents }
+      EmittedEvents = emittedEvents },
+    keyInputs
 
 let private hashCacheKey (cacheKey: ContentHash) =
     (FsHotWatch.CheckCache.sha256Hex (ContentHash.value cacheKey)).Substring(0, 12)
@@ -445,8 +512,15 @@ let internal pruneSupersededSiblings (superseded: string list) (keepPath: string
 /// On-disk task cache. Each entry is a JSON file in the cache directory, named
 /// `{compositeKey}@{cacheKeyHash}.json`. Only the newest hash per key survives a
 /// write (see `pruneSupersededSiblings`).
-type FileTaskCache(cacheDir: string) =
+/// `repoRoot` makes the entries PORTABLE: with it, every path an entry names is
+/// stored `repo:`-relative and rebound against whatever checkout reads it back, so a
+/// store shared between two workspaces of the same repository replays into the right
+/// files. Without it (the default), paths round-trip verbatim and the store is
+/// implicitly machine-local — which is what a test fixture wants.
+type FileTaskCache(cacheDir: string, ?repoRoot: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
+
+    let repoRoot = repoRoot
 
     // Counts FULL-DIRECTORY enumerations performed by this instance. The write path
     // must perform ZERO of them (see `pruneSupersededSiblings`); the constructor's two
@@ -517,24 +591,65 @@ type FileTaskCache(cacheDir: string) =
     // stale-format). Telemetry for the corruption-failure rate.
     let mutable parseFailureCount = 0
 
-    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
+    /// The key-input digests of whatever entry this composite key was last written
+    /// under, so a lookup that missed can say which input moved. Reads the SIBLING
+    /// entry `livePaths` remembers — seeded from disk at construction, so a brand-new
+    /// daemon reading a store another workspace filled still gets a real answer.
+    ///
+    /// Never throws and never widens a hit: a sibling that cannot be read yields
+    /// `None`, which degrades the reason, not the decision.
+    let siblingKeyInputs (compositeKey: CompositeKey) =
+        let candidates =
+            lock livePathsLock (fun () ->
+                match livePaths.TryGetValue(entryKey compositeKey) with
+                | true, paths -> paths
+                | false, _ -> [])
+
+        candidates
+        |> List.tryPick (fun p ->
+            try
+                if File.Exists p then
+                    Some(snd (deserializeEntry repoRoot (File.ReadAllText p)))
+                else
+                    None
+            with _ ->
+                None)
+
+    let lookup (compositeKey: CompositeKey) (cacheKey: ContentHash) : CacheLookup =
         let path = filePath compositeKey cacheKey
 
         if not (File.Exists path) then
-            None
+            match siblingKeyInputs compositeKey with
+            | Some stored -> CacheMiss(missReasonForKeys (Some stored) cacheKey)
+            | None ->
+                // No sibling on disk at all: either nothing was ever written under this
+                // composite key, or the only sibling is unreadable. Both are honestly
+                // reported as a cold key — there is no recorded input to point at.
+                CacheMiss CacheMissReason.NoEntryForKey
         else
             try
                 let json = File.ReadAllText(path)
-                let result = deserializeResult json
+                let result, _ = deserializeEntry repoRoot json
 
-                if result.CacheKey = cacheKey then Some result else None
-            with _ ->
+                if result.CacheKey = cacheKey then
+                    CacheHit result
+                else
+                    // The file named by this key stores a DIFFERENT key. Only reachable
+                    // through a hash collision in the 12-character file-name digest, so
+                    // it is a miss with no input to blame.
+                    CacheMiss(CacheMissReason.UnreadableEntry "entry stores a different cache key")
+            with ex ->
                 System.Threading.Interlocked.Increment(&parseFailureCount) |> ignore
-                None
+                CacheMiss(CacheMissReason.UnreadableEntry $"%s{ex.GetType().Name}: %s{ex.Message}")
+
+    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
+        match lookup compositeKey cacheKey with
+        | CacheHit result -> Some result
+        | CacheMiss _ -> None
 
     let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
-        let json = serializeResult result
+        let json = serializeResult repoRoot result
         FsHwPaths.atomicWriteAllText path (json.ToJsonString(jsonWriteOptions))
         // AFTER the write, so a crash mid-set can never leave the key with NO entry.
         // The claim comes after it too: nothing may be named superseded until its
@@ -600,6 +715,9 @@ type FileTaskCache(cacheDir: string) =
     /// Try to retrieve a cached result.
     member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
 
+    /// Retrieve a cached result, or the reason there is none.
+    member _.Lookup(compositeKey: CompositeKey, cacheKey: ContentHash) = lookup compositeKey cacheKey
+
     /// Store a result under the given compositeKey.
     member _.Set(compositeKey: CompositeKey, cacheKey: ContentHash, result: TaskCacheResult) =
         set compositeKey cacheKey result
@@ -618,6 +736,7 @@ type FileTaskCache(cacheDir: string) =
 
     interface ITaskCache with
         member _.TryGet compositeKey cacheKey = tryGet compositeKey cacheKey
+        member _.Lookup compositeKey cacheKey = lookup compositeKey cacheKey
         member _.Set compositeKey cacheKey result = set compositeKey cacheKey result
         member _.Clear() = clear ()
         member _.ClearPlugin plugin = clearPlugin plugin

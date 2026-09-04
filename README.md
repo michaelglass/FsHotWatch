@@ -91,7 +91,15 @@ This matters more than the feature list, so it is stated up front:
 - **A warm cache makes `confirm` exit 3, not 0.** Re-run it on an *unchanged* tree and
   the test plugin replays its cached result rather than running; a replay is not
   evidence, so `confirm` refuses (exit 3) instead of greening. Clear the cache
-  (`rm -rf .fshw/cache`) or change a file. It fails safe, but it is a rough edge.
+  (`mise run cache-clear`) or change a file. It fails safe, but it is a rough edge.
+- **The cache is in two places, and `rm -rf .fshw/cache` only empties one of them.**
+  Verdicts that are a pure function of content — `format-check`, `lint`, `analyzers` —
+  live in a box-wide store OUTSIDE the checkout, so a freshly created workspace starts
+  warm instead of re-scanning a tree it already has an answer for. Everything that
+  asserts something about *this* checkout (`build`, `test-prune`) stays under `.fshw/`.
+  `mise run cache-clear` empties both. The shared store is at `$FSHW_CACHE_HOME`,
+  else `$XDG_CACHE_HOME/fshw`, else `~/.cache/fshw`, namespaced per repository — the
+  daemon logs the exact directory and its entry count on every start.
 
 ## Commands
 
