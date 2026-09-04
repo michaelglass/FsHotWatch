@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.42 - 2026-09-04
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.41 - 2026-09-04
 
 - AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`
