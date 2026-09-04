@@ -4,6 +4,76 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+> ### ⚠️ Read this first if you run `fshw` in CI or from a script
+>
+> **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
+> told people to restart the daemon when a check looked wedged or a cached result
+> looked stale. It cannot work: the task cache is `FileTaskCache`, it lives on disk
+> under `.fshw/`, and it survives `stop`, a reboot, and a fresh daemon. A restart
+> throws away the warm compiler and reinstates the exact same cached answer.
+>
+> The escape is **`fshw confirm`** — it runs the full suite unfiltered and refuses to
+> replay a cached verdict. Every `waiting on build` message now says so in place of the
+> old "re-run once the build settles", which was the one instruction that could not
+> work. If a stale *build output* is the cause, `dotnet build` is the fix, and a
+> timestamp-inverted copy needs `dotnet build --no-incremental`.
+>
+> **Exit codes: six runs that used to be green can now be red.**
+>
+> 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
+>    (`gate` was introduced unreleased and never appeared in a published package, so
+>    there is **no published consumer to migrate**. It still bites anyone tracking
+>    `main` or running a local pack.)
+> 2. **`fshw check --run-once` can now exit `2` where it previously exited `0`.**
+>    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
+>    so it could not report an incomplete scan. It can now, and it does. A CI job that
+>    treats "not 0" as failure will start seeing red on trees it used to pass.
+> 3. **`fshw test-rerun` can now exit `3` where it previously exited `0`.** A run that
+>    executed no tests — the filter matched nothing, or no project was selected at all —
+>    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
+>    are exactly the ones that never verified anything.
+> 4. **`fshw check` can now exit `3` where it previously exited `0`** — but only when it
+>    could not READ what the tests covered (the `test-scope` command threw, the IPC call
+>    faulted, the reply was unparseable). A repo with no test projects configured is
+>    unaffected and still exits `0`. See below.
+> 5. **`fshw test-rerun` can now exit `1` where it previously exited `0`** for a test
+>    project KILLED at its timeout. The CLI's failure check matched only the `failed`
+>    per-project status, so a `timed-out` project printed `✓ Tests passed` and exited
+>    `0` — while the daemon's own terminal status for the very same run was a failure
+>    plus a timeout. Only the CLI was wrong.
+> 6. **`fshw test-rerun` can now exit `3` where it previously exited `0`** when talking
+>    to an OLDER daemon that sends no `coverage` field and the run was a MIXED no-op —
+>    e.g. one project matched nothing and another deferred. Not all-zero-match, so the
+>    existing guard missed it, and nothing executed.
+>
+> **One machine-readable surface changed shape without changing an exit code:** a run
+> that selected zero test projects now records `warn` rather than `ok` in
+> `.fshw/verdict.json`'s `plugins[]`, and agent mode tokens it `warn` so `next:` points
+> at `status` instead of `done`. If you branch on `plugins[].state == "ok"`, that run
+> stops matching. The exit code was already `3`; only the per-plugin state was lying.
+>
+> **A whole test run can now be refused before any suite launches.** If a configured
+> test project's build output does not match its sources, nothing spawns and every
+> project comes back deferred — where previously the fresh projects ran first and the
+> refusal surfaced minutes in, as a partial red. The remedy is named in the message.
+>
+> That refusal now gets its **own** words, and this is the sentence to read: **`waiting
+> on build` was two causes wearing one label.** A build artifact that has not been
+> produced yet settles on the next build, so "re-run once the build settles" is right for
+> it. A build output that is STALE — the artifact exists and its bytes do not match its
+> sources — does not settle, and re-running, `fshw confirm` and restarting the daemon all
+> spend a full cycle to arrive back at the identical refusal. The stale case now names
+> every affected project, quotes the file, and says `dotnet build` (or `dotnet build
+> --no-incremental` for a timestamp-inverted copy). **If you match on the `reason` string
+> in `.fshw/verdict.json`, that string changes shape for this cause** — the exit code is
+> unchanged at 2.
+>
+> The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
+> `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
+> in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
+> state that used to be a lie is now **unrepresentable**, so the migration is the
+> compiler telling you where you were guessing.
+
 - AUTOMATION-609: **a cold or forced scan is no longer mistaken for idleness — the
   daemon cannot shut itself down while it is analysing.** Idle-exit's notion of
   "busy" was a bare bool over two signals — plugin mailboxes in flight, and
@@ -100,76 +170,6 @@ All notable changes to FsHotWatch packages are documented here.
 - `FsHwPaths.atomicWriteAllText` gives each write a unique temp name. With a store
   shared between two daemons, two processes can be mid-write to one entry path, and a
   single fixed `.tmp` name let them truncate each other's partial file.
-
-> ### ⚠️ Read this first if you run `fshw` in CI or from a script
->
-> **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —
-> told people to restart the daemon when a check looked wedged or a cached result
-> looked stale. It cannot work: the task cache is `FileTaskCache`, it lives on disk
-> under `.fshw/`, and it survives `stop`, a reboot, and a fresh daemon. A restart
-> throws away the warm compiler and reinstates the exact same cached answer.
->
-> The escape is **`fshw confirm`** — it runs the full suite unfiltered and refuses to
-> replay a cached verdict. Every `waiting on build` message now says so in place of the
-> old "re-run once the build settles", which was the one instruction that could not
-> work. If a stale *build output* is the cause, `dotnet build` is the fix, and a
-> timestamp-inverted copy needs `dotnet build --no-incremental`.
->
-> **Exit codes: six runs that used to be green can now be red.**
->
-> 1. **`fshw gate` is gone — the verb is `fshw confirm`.** Removed, not aliased.
->    (`gate` was introduced unreleased and never appeared in a published package, so
->    there is **no published consumer to migrate**. It still bites anyone tracking
->    `main` or running a local pack.)
-> 2. **`fshw check --run-once` can now exit `2` where it previously exited `0`.**
->    Not a re-labelling — `--run-once` never computed a `CheckOutcome` at all before,
->    so it could not report an incomplete scan. It can now, and it does. A CI job that
->    treats "not 0" as failure will start seeing red on trees it used to pass.
-> 3. **`fshw test-rerun` can now exit `3` where it previously exited `0`.** A run that
->    executed no tests — the filter matched nothing, or no project was selected at all —
->    printed `✓ Tests passed`. Same shape as the item above: the runs that change colour
->    are exactly the ones that never verified anything.
-> 4. **`fshw check` can now exit `3` where it previously exited `0`** — but only when it
->    could not READ what the tests covered (the `test-scope` command threw, the IPC call
->    faulted, the reply was unparseable). A repo with no test projects configured is
->    unaffected and still exits `0`. See below.
-> 5. **`fshw test-rerun` can now exit `1` where it previously exited `0`** for a test
->    project KILLED at its timeout. The CLI's failure check matched only the `failed`
->    per-project status, so a `timed-out` project printed `✓ Tests passed` and exited
->    `0` — while the daemon's own terminal status for the very same run was a failure
->    plus a timeout. Only the CLI was wrong.
-> 6. **`fshw test-rerun` can now exit `3` where it previously exited `0`** when talking
->    to an OLDER daemon that sends no `coverage` field and the run was a MIXED no-op —
->    e.g. one project matched nothing and another deferred. Not all-zero-match, so the
->    existing guard missed it, and nothing executed.
->
-> **One machine-readable surface changed shape without changing an exit code:** a run
-> that selected zero test projects now records `warn` rather than `ok` in
-> `.fshw/verdict.json`'s `plugins[]`, and agent mode tokens it `warn` so `next:` points
-> at `status` instead of `done`. If you branch on `plugins[].state == "ok"`, that run
-> stops matching. The exit code was already `3`; only the per-plugin state was lying.
->
-> **A whole test run can now be refused before any suite launches.** If a configured
-> test project's build output does not match its sources, nothing spawns and every
-> project comes back deferred — where previously the fresh projects ran first and the
-> refusal surfaced minutes in, as a partial red. The remedy is named in the message.
->
-> That refusal now gets its **own** words, and this is the sentence to read: **`waiting
-> on build` was two causes wearing one label.** A build artifact that has not been
-> produced yet settles on the next build, so "re-run once the build settles" is right for
-> it. A build output that is STALE — the artifact exists and its bytes do not match its
-> sources — does not settle, and re-running, `fshw confirm` and restarting the daemon all
-> spend a full cycle to arrive back at the identical refusal. The stale case now names
-> every affected project, quotes the file, and says `dotnet build` (or `dotnet build
-> --no-incremental` for a timestamp-inverted copy). **If you match on the `reason` string
-> in `.fshw/verdict.json`, that string changes shape for this cause** — the exit code is
-> unchanged at 2.
->
-> The F# API breaks — `RunVerdict`, `RunClaim`, `CommandCtx`, `ProcessOutput`,
-> `KillOutcome`, `CheckInputs`, `CheckOutcome`, `LoadedQueue` — are listed per package
-> in [`src/*/CHANGELOG.md`](src/), each marked **BREAKING**. They share one shape: a
-> state that used to be a lie is now **unrepresentable**, so the migration is the
-> compiler telling you where you were guessing.
 
 - **Database and socket outages no longer masquerade as TestPrune recall
   misses.** The alarm and metric now share one typed run receipt: non-executing
