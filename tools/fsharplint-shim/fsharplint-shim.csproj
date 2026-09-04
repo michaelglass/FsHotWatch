@@ -20,6 +20,12 @@
     <!-- NU1605 (version downgrade) is expected: the shim pins FCS 43.12.x
          while FSharp.Analyzers.SDK 0.37.2 transitively asks for an older FCS. -->
     <NoWarn>$(NoWarn);NU1605</NoWarn>
+    <!-- NU1603 (requested version not found, a HIGHER one substituted) is an error
+         here, not NuGet's default warning: the pin above decides which FSharpLint
+         findings the check produces (.fshw.json hashes this project for exactly that
+         reason), and a restore that silently swaps in another version is a different
+         analyzer wearing the same path. Fail the build by name instead (AUTOMATION-448). -->
+    <WarningsAsErrors>$(WarningsAsErrors);NU1603</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

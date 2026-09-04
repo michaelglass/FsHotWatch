@@ -21,14 +21,25 @@ run = "dotnet tool restore"
 [tasks.build]
 description = "Compile the CLI binary (so --no-build daemon tasks can run)"
 run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
-depends = ["restore", "build-rules"]
+depends = ["restore", "build-analyzers"]
 
-[tasks.build-rules]
-description = "Compile the repo's own analyzer rules (loaded by the check via .fshw.json analyzers.paths)"
-# Anything that runs `check` needs the rules DLL present, or the check would
-# silently run WITHOUT the house rules while looking green — an unloaded
-# analyzer and a clean one are indistinguishable from the outside.
-run = "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj"
+[tasks.build-analyzers]
+description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (house rules + the FSharpLint shim)"
+# One entry per `.fshw.json` `analyzers.paths` element, in the same order. The daemon
+# loads analyzers at startup and REFUSES to start when a configured path yields zero
+# (DaemonConfig.analyzerPathFailures) — an unloaded analyzer and a clean one are
+# indistinguishable from the outside, so it fails loud rather than running green
+# without the house rules. That makes this the prerequisite of every daemon-backed
+# task, not just `check`: AUTOMATION-448 was `mise run format` in a clean workspace
+# dying on the missing shim bin, and "passing" only on a workspace where some earlier
+# `dotnet build` had happened to populate it. An array, not a multi-line script: mise
+# runs the entries in order and stops at the first non-zero exit, so a shim that cannot
+# be restored fails THIS task by name instead of surfacing later as a daemon error.
+# `tests/FsHotWatch.Tests/AnalyzerMaterializationTests.fs` pins this list to the config.
+run = [
+  "dotnet build tools/fsharplint-shim/fsharplint-shim.csproj",
+  "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj",
+]
 depends = ["restore"]
 
 [tasks.format]
@@ -225,7 +236,8 @@ depends = ["compile"]
 [tasks.run]
 description = "Run the CLI"
 run = "dotnet run --project src/FsHotWatch.Cli --"
-depends = ["restore"]
+# Same daemon, same startup analyzer load as `format`/`status`/`check` (AUTOMATION-448).
+depends = ["restore", "build-analyzers"]
 
 [tasks.pack]
 description = "Create NuGet packages"
