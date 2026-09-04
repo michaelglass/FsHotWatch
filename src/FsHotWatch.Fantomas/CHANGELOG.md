@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.22 - 2026-09-04
+
 - fix!: **the plugin runs the Fantomas the repository pins, and says so** (AUTOMATION-447).
   Both `FormatPreprocessor` and `createFormatCheck` linked their own `Fantomas.Core` and
   formatted in-process with that library's defaults, while hosted CI ran the repository's
