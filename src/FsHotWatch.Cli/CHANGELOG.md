@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`
+  build a `RunMode.OneShot` host and so construct no file watcher — previously they
+  inherited the persistent daemon's FSEvents startup and a refused
+  `FSEventStreamStart` failed the one-shot run before it scanned anything. Scan,
+  plugin registration, scope, settlement, completeness, verdict file, run hooks and
+  exit codes are unchanged; every persistent command (including `start`, plain
+  `check`/`confirm`/`format`) still watches the repository. `--run-once` never wrote
+  a pidfile, took the daemon lock or listened on the IPC pipe; that remains true.
+
 ## 0.14.0-alpha.40 - 2026-09-04
 
 - chore: rebuild to bundle updated dependencies
