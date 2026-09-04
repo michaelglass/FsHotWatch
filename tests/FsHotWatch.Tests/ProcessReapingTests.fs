@@ -42,7 +42,10 @@ type private ChildSpawningPreprocessor() =
                 FsHotWatch.ProcessRegistry.track p
                 spawned.Add p
 
-            changedFiles
+            Ok
+                { FsHotWatch.Plugin.PreprocessResult.Modified = changedFiles
+                  Considered = changedFiles.Length
+                  Evidence = "child-spawner" }
 
         member _.Dispose() = ()
 
