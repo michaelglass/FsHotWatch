@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.28 - 2026-09-04
+
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
   between the workspaces of one repository — so a freshly created workspace starts
   warm.** Nothing about WHICH checkout a file was read from reaches a cache key any
