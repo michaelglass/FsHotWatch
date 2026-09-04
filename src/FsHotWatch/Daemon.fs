@@ -821,6 +821,27 @@ type internal BatchContext =
         DepsGate: (string -> DepsFreshness.GateResult) option
     }
 
+/// The reply `fshw format` prints. It names the set that was offered, and the formatter
+/// that ran over it — or the reason none did. `formatted 0 files` on its own was the
+/// AUTOMATION-447 defect: the same text for "every registered file is clean" and "no
+/// formatter was consulted", and no version to compare against CI's.
+let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : string =
+    match run.Refused with
+    | [] ->
+        match run.Evidence with
+        | [] ->
+            $"formatted 0 of %d{offered.Length} files — no preprocessor is registered (`format` is off in .fshw.json)"
+        | evidence ->
+            $"formatted %d{run.Modified.Length} of %d{offered.Length} files — "
+            + String.concat "; " evidence
+    | refused ->
+        let reasons =
+            refused
+            |> List.map (fun (name, reason) -> $"%s{name}: %s{reason}")
+            |> String.concat "; "
+
+        $"format refused — %s{reasons}"
+
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
 let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
@@ -993,7 +1014,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         let dispatchedFiles = ResizeArray<AbsFilePath>()
 
         if not allSourceFiles.IsEmpty then
-            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles)
+            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
 
             let newSuppressed =
                 Set.union remainingSuppressed (Set.ofList modifiedByPreprocessors)
@@ -1830,13 +1851,17 @@ type Daemon
                     | None ->
                         async {
                             let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
-                            let modified = host.RunPreprocessors(files)
-                            return $"formatted %d{modified.Length} files"
+                            return renderFormatAll files (host.RunPreprocessors(files))
                         }
 
                 let rerunPlugin (name: string) =
-                    async { return host.RerunFileCommandPlugin(name) }
+                    async {
+                        return
+                            host.RerunPlugin(
+                                name,
+                                (fun () -> pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value)
+                            )
+                    }
 
                 // Request-time completeness signal for `check`'s exit code. ONE
                 // definition of "registered minus checked" — shared with
@@ -2202,7 +2227,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
         if not files.IsEmpty then
             // Run preprocessors (e.g., formatter) before dispatching
-            let modified = host.RunPreprocessors(files)
+            let modified = host.RunPreprocessors(files).Modified
 
             if modified.Length > 0 then
                 Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
@@ -2531,9 +2556,9 @@ module Daemon =
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
 
-                let modified = host.RunPreprocessors(files)
-                let newSuppressed = Set.union suppressed (Set.ofList modified)
-                replyChannel.Reply($"formatted %d{modified.Length} files")
+                let run = host.RunPreprocessors(files)
+                let newSuppressed = Set.union suppressed (Set.ofList run.Modified)
+                replyChannel.Reply(renderFormatAll files run)
                 newSuppressed
 
             let changeAgent =

@@ -55,6 +55,7 @@
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />
+    <Compile Include="FantomasToolTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
     <Compile Include="FormatIgnoreTests.fs" />
     <Compile Include="PathFilterTests.fs" />

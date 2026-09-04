@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- fix!: **the plugin runs the Fantomas the repository pins, and says so** (AUTOMATION-447).
+  Both `FormatPreprocessor` and `createFormatCheck` linked their own `Fantomas.Core` and
+  formatted in-process with that library's defaults, while hosted CI ran the repository's
+  pinned `dotnet fantomas` — its version, its `.editorconfig`. On 2026-08-21 the local
+  `fshw format` reported `formatted 0 files` and the next CI run rejected four files;
+  nothing in the local output said which formatter had been asked, or whether one had.
+  - The package no longer references `Fantomas.Core`. Both components read the
+    `fantomas` pin from `.config/dotnet-tools.json` and run `dotnet tool run fantomas`
+    (`--check` for the plugin, in place for the preprocessor) from the repository root —
+    the same resolution CI's `dotnet fantomas` uses, so the version, the configuration
+    discovery and the ignore files are the same by construction.
+  - Every status line carries the evidence:
+    `format OK (12 checked) — dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)`,
+    `1 of 3 files need formatting — …`, `1 of 3 files could not be formatted — …` (a parse
+    error is an error-ledger entry naming the formatter, not a crashed plugin).
+  - **A repository that pins no `fantomas` is refused, not greened.** `FantomasTool.PinError`
+    (`ManifestMissing` | `ManifestUnreadable` | `PinMissing`) names the file and the remedy;
+    the check plugin's status is `format check refused: …`, the preprocessor returns
+    `Error`, and the cache key is `None` so the refusal is re-earned on every event. An
+    unrestored pin (`Run "dotnet tool restore"`) is `ToolFailure.NotRestored`, rendered with
+    the version and the command.
+  - The check cache key now covers the pinned version and every `.editorconfig` between
+    the repository root and the file, beside the source bytes: a pin bump or a config edit
+    is a miss, never a replayed `format OK`. Plugin-version salt `format-check-pinned-tool-v2`.
+  - **BREAKING:** `createFormatCheck` takes the repository root:
+    `createFormatCheck (repoRoot: string) (timeoutSec: int option)` — the cache key needs
+    the pin before any plugin context exists. `FormatPreprocessor(?timeoutSec, ?runner)`
+    replaces the `slowHook` test seam with a `FantomasTool.Runner`, the function that
+    stands in for the process.
+  - New public module `FsHotWatch.Fantomas.FantomasTool`: `readPin`, `parseManifest`,
+    `describe`, `check`, `format`, `parseOutput`, `editorConfigInputs`, `dotnetToolRunner`.
+
 ## 0.7.0-alpha.21 - 2026-09-01
 
 - chore: rebuild against the updated FsHotWatch core dependency.
