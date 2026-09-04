@@ -5,10 +5,21 @@ open System.IO
 open System.Threading
 open FsHotWatch.Events
 
+/// How the repository is being observed. Decided once, at watcher construction.
+[<RequireQualifiedAccess>]
+type WatcherMode =
+    /// Kernel-delivered events: FSEvents on macOS, `FileSystemWatcher` elsewhere.
+    | NativeEvents
+    /// macOS refused native setup past the retry budget (or a non-native component
+    /// faulted); a 1-second content-snapshot poller carries the same observation
+    /// contract. `reason` is the last setup error, for startup diagnostics.
+    | ContentPolling of reason: string
+
 /// Holds disposable watchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
 type FileWatcher =
-    { Disposables: IDisposable list }
+    { Mode: WatcherMode
+      Disposables: IDisposable list }
 
     interface IDisposable with
         member this.Dispose() =
@@ -340,6 +351,41 @@ module FileWatcher =
     type internal SystemWatcherFactory = (string -> unit) -> SystemWatcherSpec -> IDisposable
     type internal PollingWatcherFactory = string -> (FileChangeKind -> unit) -> FilePattern list -> IDisposable
 
+    /// Bounded backoff for a native stream macOS transiently refuses (AUTOMATION-434).
+    /// `BackoffMs` is the whole budget: one wait per retry, so an empty list means a
+    /// single attempt. Only a `MacFsEvents.NativeStreamRefusedException` spends it.
+    [<NoComparison; NoEquality>]
+    type internal NativeStartRetry =
+        { BackoffMs: int list
+          Sleep: int -> unit }
+
+    module internal NativeStartRetry =
+        /// Three retries, 1.3 s in total. A healthy start pays none of it.
+        let defaults =
+            { BackoffMs = [ 100; 300; 900 ]
+              Sleep = Thread.Sleep }
+
+        /// One attempt, no waiting.
+        let none = { BackoffMs = []; Sleep = ignore }
+
+    /// Run the native factory, retrying a refused start through the budget.
+    let private startNativeWithRetry (retry: NativeStartRetry) (start: unit -> IDisposable) =
+        let rec attempt n backoff =
+            match backoff with
+            | [] -> start ()
+            | delay :: rest ->
+                try
+                    start ()
+                with :? MacFsEvents.NativeStreamRefusedException as ex ->
+                    Logging.warn
+                        "watcher"
+                        $"native FSEvents setup refused (attempt %d{n}: %s{ex.Message}); retrying in %d{delay} ms"
+
+                    retry.Sleep delay
+                    attempt (n + 1) rest
+
+        attempt 1 retry.BackoffMs
+
     let private defaultSystemWatcherFactory handle spec =
         let watcher = new FileSystemWatcher(spec.Directory)
 
@@ -379,6 +425,7 @@ module FileWatcher =
         (onChange: FileChangeKind -> unit)
         (extraPatterns: FilePattern list)
         (latencySeconds: float)
+        (nativeStartRetry: NativeStartRetry)
         (nativeStreamFactory: NativeStreamFactory)
         (systemWatcherFactory: SystemWatcherFactory)
         (pollingWatcherFactory: PollingWatcherFactory)
@@ -406,7 +453,10 @@ module FileWatcher =
                                 if isRelevantFile file then
                                     onChange (classifyChange file)
 
-                nativeStreamFactory dirs handle onCoalesced latencySeconds |> register |> ignore
+                startNativeWithRetry nativeStartRetry (fun () ->
+                    nativeStreamFactory dirs handle onCoalesced latencySeconds)
+                |> register
+                |> ignore
 
             systemWatcherFactory
                 handle
@@ -425,7 +475,8 @@ module FileWatcher =
                 |> register
                 |> ignore
 
-            { Disposables = partial |> Seq.toList }
+            { Mode = WatcherMode.NativeEvents
+              Disposables = partial |> Seq.toList }
         with ex ->
             for disposable in Seq.rev partial do
                 try
@@ -438,7 +489,9 @@ module FileWatcher =
                 $"macOS file-event setup failed (%s{ex.Message}); using a 1-second content-snapshot polling watcher"
 
             let polling = pollingWatcherFactory repoRoot onChange extraPatterns
-            { Disposables = [ polling ] }
+
+            { Mode = WatcherMode.ContentPolling ex.Message
+              Disposables = [ polling ] }
 
     /// macOS construction seam used by deterministic failure-path tests.
     let internal createWithNativeStream
@@ -446,6 +499,7 @@ module FileWatcher =
         (onChange: FileChangeKind -> unit)
         (extraPatterns: FilePattern list)
         (latencySeconds: float)
+        (nativeStartRetry: NativeStartRetry)
         (nativeStreamFactory: NativeStreamFactory)
         =
         createMacOS
@@ -453,6 +507,7 @@ module FileWatcher =
             onChange
             extraPatterns
             latencySeconds
+            nativeStartRetry
             nativeStreamFactory
             defaultSystemWatcherFactory
             defaultPollingWatcherFactory
@@ -463,6 +518,7 @@ module FileWatcher =
         (onChange: FileChangeKind -> unit)
         (extraPatterns: FilePattern list)
         (latencySeconds: float)
+        (nativeStartRetry: NativeStartRetry)
         (nativeStreamFactory: NativeStreamFactory)
         (systemWatcherFactory: SystemWatcherFactory)
         (pollingWatcherFactory: PollingWatcherFactory)
@@ -472,6 +528,7 @@ module FileWatcher =
             onChange
             extraPatterns
             latencySeconds
+            nativeStartRetry
             nativeStreamFactory
             systemWatcherFactory
             pollingWatcherFactory
@@ -507,6 +564,7 @@ module FileWatcher =
                 onChange
                 extraPatterns
                 latencySeconds
+                NativeStartRetry.defaults
                 (fun dirs onFile onCoalesced latency ->
                     MacFsEvents.createWithCoalesced dirs onFile onCoalesced latency :> IDisposable)
                 defaultSystemWatcherFactory
@@ -546,4 +604,5 @@ module FileWatcher =
                 (Discovery.discoveryRoots repoRoot |> List.map createFsw) @ [ Some slnWatcher ]
                 |> List.choose id
 
-            { Disposables = watchers @ extraWatchers }
+            { Mode = WatcherMode.NativeEvents
+              Disposables = watchers @ extraWatchers }
