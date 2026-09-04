@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.41 - 2026-09-04
+
 - AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`
   build a `RunMode.OneShot` host and so construct no file watcher — previously they
   inherited the persistent daemon's FSEvents startup and a refused
