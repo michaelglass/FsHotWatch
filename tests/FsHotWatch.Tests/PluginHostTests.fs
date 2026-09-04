@@ -1677,27 +1677,35 @@ let ``ClearTaskCache variants forward to the cache when the host has one`` () =
     let c = cache :> FsHotWatch.TaskCache.ITaskCache
     let key = ContentHash.create "k"
 
-    let ckOf plugin file : FsHotWatch.TaskCache.CompositeKey = { Plugin = plugin; File = file }
+    let repoRoot = "/tmp/test"
 
-    let host = PluginHost(Unchecked.defaultof<_>, "/tmp/test", taskCache = c)
+    // AUTOMATION-564: entries are keyed by the REPO-RELATIVE identity, so a caller
+    // naming a file by its absolute path must be translated before it can clear
+    // anything. Storing under the same spelling the framework writes is what makes
+    // these assertions test the translation instead of assuming it away.
+    let ckOf plugin file : FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = plugin
+          File = file |> Option.map (FsHotWatch.CachePathIdentity.keyOf (Some repoRoot)) }
 
-    c.Set (ckOf "p" (Some "/a.fs")) key (cacheEntry "a")
-    test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsSome @>
-    host.ClearTaskCachePluginFile("p", "/a.fs")
-    test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsNone @>
+    let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = c)
 
-    c.Set (ckOf "p" (Some "/b.fs")) key (cacheEntry "b")
-    host.ClearTaskCacheFile("/b.fs")
-    test <@ (c.TryGet (ckOf "p" (Some "/b.fs")) key).IsNone @>
+    c.Set (ckOf "p" (Some "/tmp/test/a.fs")) key (cacheEntry "a")
+    test <@ (c.TryGet (ckOf "p" (Some "/tmp/test/a.fs")) key).IsSome @>
+    host.ClearTaskCachePluginFile("p", "/tmp/test/a.fs")
+    test <@ (c.TryGet (ckOf "p" (Some "/tmp/test/a.fs")) key).IsNone @>
 
-    c.Set (ckOf "p" (Some "/c.fs")) key (cacheEntry "c")
+    c.Set (ckOf "p" (Some "/tmp/test/b.fs")) key (cacheEntry "b")
+    host.ClearTaskCacheFile("/tmp/test/b.fs")
+    test <@ (c.TryGet (ckOf "p" (Some "/tmp/test/b.fs")) key).IsNone @>
+
+    c.Set (ckOf "p" (Some "/tmp/test/c.fs")) key (cacheEntry "c")
     host.ClearTaskCachePlugin("p")
-    test <@ (c.TryGet (ckOf "p" (Some "/c.fs")) key).IsNone @>
+    test <@ (c.TryGet (ckOf "p" (Some "/tmp/test/c.fs")) key).IsNone @>
 
-    c.Set (ckOf "p" (Some "/d.fs")) key (cacheEntry "d")
+    c.Set (ckOf "p" (Some "/tmp/test/d.fs")) key (cacheEntry "d")
     c.Set (ckOf "q" None) key (cacheEntry "q")
     host.ClearTaskCache()
-    test <@ (c.TryGet (ckOf "p" (Some "/d.fs")) key).IsNone @>
+    test <@ (c.TryGet (ckOf "p" (Some "/tmp/test/d.fs")) key).IsNone @>
     test <@ (c.TryGet (ckOf "q" None) key).IsNone @>
 
 [<Fact(Timeout = 15000)>]
