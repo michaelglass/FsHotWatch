@@ -194,7 +194,11 @@ let ``preprocessor runs before events are dispatched`` () =
 
             member _.Process (changedFiles: string list) (_repoRoot: string) =
                 preprocessorCalled <- true
-                []
+
+                Ok
+                    { Modified = []
+                      Considered = changedFiles.Length
+                      Evidence = "tracker" }
 
             member _.Dispose() = () }
 
@@ -210,13 +214,54 @@ let ``preprocessor modified files are returned`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "modifier"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) = [ "src/Formatted.fs"; "src/Other.fs" ]
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                Ok
+                    { Modified = [ "src/Formatted.fs"; "src/Other.fs" ]
+                      Considered = 1
+                      Evidence = "modifier v1" }
 
             member _.Dispose() = () }
 
     host.RegisterPreprocessor(preprocessor)
-    let modified = host.RunPreprocessors([ "src/Lib.fs" ])
-    test <@ modified = [ "src/Formatted.fs"; "src/Other.fs" ] @>
+    let run = host.RunPreprocessors([ "src/Lib.fs" ])
+    test <@ run.Modified = [ "src/Formatted.fs"; "src/Other.fs" ] @>
+    // The evidence line is the reply `fshw format` prints: what ran, over how many.
+    test <@ run.Lines = [ "modifier: rewrote 2 of 1 file(s) — modifier v1" ] @>
+    test <@ run.Evidence = [ "modifier v1" ] @>
+    test <@ List.isEmpty run.Refused @>
+
+[<Fact(Timeout = 15000)>]
+let ``a preprocessor that cannot run is a Failed status and a refusal, never "none rewritten"`` () =
+    // AUTOMATION-447: the formatter's pin was missing and the pass returned an empty
+    // list, which the host summarised as "12 file(s) checked, none rewritten" — the
+    // same words as a clean tree. A pass that did not run must say so on every surface.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "unpinned"
+
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                Result.Error "no fantomas pin in the manifest"
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    let run = host.RunPreprocessors([ "src/Lib.fs" ])
+
+    test <@ List.isEmpty run.Modified @>
+    test <@ List.isEmpty run.Lines @>
+    test <@ List.isEmpty run.Evidence @>
+    test <@ run.Refused = [ "unpinned", "no fantomas pin in the manifest" ] @>
+
+    test
+        <@
+            match host.GetStatus("unpinned") with
+            | Some(Failed(reason, _, verdict)) ->
+                reason = "no fantomas pin in the manifest"
+                && verdict.Summary = "unpinned refused: no fantomas pin in the manifest"
+            | _ -> false
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``preprocessor status is tracked`` () =
@@ -226,7 +271,11 @@ let ``preprocessor status is tracked`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "status-pp"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) = [ "a.fs" ]
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                Ok
+                    { Modified = [ "a.fs" ]
+                      Considered = 1
+                      Evidence = "status-pp" }
 
             member _.Dispose() = () }
 
@@ -542,9 +591,10 @@ let ``preprocessor exception sets Failed status`` () =
             member _.Dispose() = () }
 
     host.RegisterPreprocessor(preprocessor)
-    let modified = host.RunPreprocessors([ "src/Lib.fs" ])
+    let run = host.RunPreprocessors([ "src/Lib.fs" ])
 
-    test <@ modified |> List.isEmpty @>
+    test <@ run.Modified |> List.isEmpty @>
+    test <@ run.Refused = [ "boom-pp", "preprocessor kaboom" ] @>
 
     let status = host.GetStatus("boom-pp")
     test <@ status.IsSome @>
@@ -1467,19 +1517,111 @@ let ``RegisterFileCommandPattern overwrites on re-register`` () =
     test <@ host.GetFileCommandPattern("plugin-a") = Some(parsePattern "coverage-ratchet.json") @>
 
 [<Fact(Timeout = 15000)>]
-let ``RerunFileCommandPlugin returns Error for unregistered plugin`` () =
+let ``RerunPlugin returns Error for unregistered plugin`` () =
     let host = PluginHost.create nullChecker "/tmp"
-    let result = host.RerunFileCommandPlugin("nonexistent")
+    let result = host.RerunPlugin("nonexistent", (fun () -> []))
 
     match result with
     | Result.Error msg -> test <@ msg.Contains("nonexistent") @>
     | Result.Ok() -> failwith "expected Error"
 
 [<Fact(Timeout = 15000)>]
-let ``RerunFileCommandPlugin returns Ok for registered plugin`` () =
+let ``RerunPlugin returns Ok for registered plugin`` () =
     let host = PluginHost.create nullChecker "/tmp"
     host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
-    test <@ host.RerunFileCommandPlugin("coverage-ratchet") = Result.Ok() @>
+    test <@ host.RerunPlugin("coverage-ratchet", (fun () -> [])) = Result.Ok() @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-447 — `rerun` reaches every FileChanged subscriber, not only FileCommands
+// ---------------------------------------------------------------------------
+
+/// A FileChanged subscriber that records each batch it was handed.
+let private fileChangedRecorder (name: string) =
+    let batches = ResizeArray<string list>()
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = PluginName.create name
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged files) -> lock batches (fun () -> batches.Add files)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    handler, (fun () -> lock batches (fun () -> List.ofSeq batches))
+
+[<Fact(Timeout = 15000)>]
+let ``RerunPlugin re-fires a FileChanged subscriber over the registered source set`` () =
+    // `fshw rerun format-check` used to be refused ("no registered file pattern") — the
+    // only supported way to refresh a suspect cached verdict was to stop the daemon.
+    let host = PluginHost.create nullChecker "/tmp"
+    let handler, batches = fileChangedRecorder "fmt-like"
+    host.RegisterHandler(handler)
+
+    let sources = [ "/tmp/src/A.fs"; "/tmp/src/B.fs" ]
+    test <@ host.RerunPlugin("fmt-like", (fun () -> sources)) = Result.Ok() @>
+
+    waitUntil (fun () -> not (host.AnyPluginBusy()) && not (List.isEmpty (batches ()))) 5000
+    test <@ batches () = [ sources ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``RerunPlugin refuses a FileChanged subscriber while no source files are registered`` () =
+    // An empty re-fire would land a `no files to check` and read as a refresh that found
+    // nothing — the same shape as the "formatted 0 files" this ticket exists to end.
+    let host = PluginHost.create nullChecker "/tmp"
+    let handler, batches = fileChangedRecorder "fmt-like"
+    host.RegisterHandler(handler)
+
+    match host.RerunPlugin("fmt-like", (fun () -> [])) with
+    | Ok() -> failwith "expected a refusal with no registered sources"
+    | Result.Error msg ->
+        test <@ msg.Contains "fmt-like" @>
+        test <@ msg.Contains "no source files are registered" @>
+
+    test <@ List.isEmpty (batches ()) @>
+
+[<Fact(Timeout = 15000)>]
+let ``RerunPlugin names a preprocessor as such and points at fshw format`` () =
+    // In `"format": true` mode the formatter is the preprocessor, not a plugin: it holds
+    // no cached state, and `fshw format` is the primitive that re-runs it with evidence.
+    let host = PluginHost.create nullChecker "/tmp"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "format"
+
+            member _.Process (changedFiles: string list) (_repoRoot: string) =
+                Ok
+                    { Modified = []
+                      Considered = changedFiles.Length
+                      Evidence = "fake" }
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+
+    match host.RerunPlugin("format", (fun () -> [ "/tmp/src/A.fs" ])) with
+    | Ok() -> failwith "expected a refusal naming the preprocessor"
+    | Result.Error msg ->
+        test <@ msg.Contains "preprocessor" @>
+        test <@ msg.Contains "fshw format" @>
+
+[<Fact(Timeout = 15000)>]
+let ``RerunPlugin refuses a registered plugin that does not consume file changes`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    host.RegisterHandler(buildRecorder () |> snd)
+
+    match host.RerunPlugin("build-recorder", (fun () -> [ "/tmp/src/A.fs" ])) with
+    | Ok() -> failwith "expected a refusal for a plugin with nothing to re-fire"
+    | Result.Error msg -> test <@ msg.Contains "does not consume file changes" @>
 
 [<Fact(Timeout = 15000)>]
 let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
@@ -1572,13 +1714,13 @@ let ``ClearTaskCache variants are safe no-ops on a host with no cache`` () =
     test <@ host.GetAllStatuses() = Map.empty @>
 
 [<Fact(Timeout = 15000)>]
-let ``RerunFileCommandPlugin fails with a named reason when the plugin has no pattern`` () =
-    // Every non-FileCommand plugin (and any configured only with `afterTests`) has no
-    // registered pattern, so there is no synthetic file event to fire. That must be a named
-    // Error, never a silent Ok reporting success for a rerun that never happened.
+let ``RerunPlugin fails with a named reason when the plugin has no pattern`` () =
+    // A name that is neither a FileCommand with a pattern nor a registered plugin has
+    // nothing to re-fire. That must be a named Error, never a silent Ok reporting
+    // success for a rerun that never happened.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp/test"
 
-    match host.RerunFileCommandPlugin("no-such-plugin") with
+    match host.RerunPlugin("no-such-plugin", (fun () -> [])) with
     | Ok() -> failwith "expected an Error for a plugin with no registered pattern"
     | Result.Error msg ->
         test <@ msg.Contains "no-such-plugin" @>

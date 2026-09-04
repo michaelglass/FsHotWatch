@@ -121,6 +121,63 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+
+### format: the plugin runs the Fantomas the repository pins, and says so (AUTOMATION-447)
+
+Both format components linked their own `Fantomas.Core` and formatted in-process with
+that library's defaults, while hosted CI ran the repository's pinned `dotnet fantomas` —
+its version, its `.editorconfig`. Two formatters can only agree by coincidence, and on
+2026-08-21 they did not: the local `fshw format` reported `formatted 0 files`, the next
+CI run rejected four files, and nothing in the local output said which formatter had
+been asked — or whether one had. `formatted 0 files` was the same text for "every
+registered file is clean" and "no formatter was consulted".
+
+The package no longer carries a formatter. Both the preprocessor and the check plugin
+read the `fantomas` pin from `.config/dotnet-tools.json` and run `dotnet tool run
+fantomas` from the repository root — the resolution CI's `dotnet fantomas` uses — so the
+version, the configuration discovery and the ignore files are the same by construction.
+Every status line says what ran:
+
+```
+format OK (12 checked) — dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)
+formatted 0 of 312 files — dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)
+```
+
+A repository that pins no `fantomas` is **refused, not greened**: the check plugin's
+status is `format check refused: <manifest path> pins no fantomas — dotnet tool install
+fantomas …`, its cache key is `None` so the refusal is re-earned on every event, and
+`fshw format` replies `format refused — …`. The daemon logs the resolved pin at
+registration, or the error. The check cache key now covers the pinned version and every
+`.editorconfig` above the file beside the source bytes, so a pin bump or a config edit is
+a miss rather than a replayed `format OK`.
+
+The regression is pinned by tests that run the real pinned tool from a temp repository
+carrying a copy of this repository's manifest: a `--check` run through `ProcessHelper`
+is the oracle, and the plugin's verdict, the preprocessor's rewrite and the evidence line
+must all agree with it on the exact shape from the report (a fully-applied call split one
+argument per line, which pinned Fantomas joins). A second set substitutes a recording
+runner for the process and proves the plugin hands over the manifest's version and
+`--check "<file>"`, refuses with the typed reason when the pin is absent, and renders an
+unrestored pin with `dotnet tool restore`.
+
+**Exit codes and wire shapes.**
+
+- `IFsHotWatchPreprocessor.Process` now returns `Result<PreprocessResult, string>` —
+  `Modified`, `Considered` and `Evidence`, or the reason the pass could not run. The old
+  `string list` could not tell "nothing needed rewriting" from "nothing ran".
+  `PluginHost.RunPreprocessors` returns `PreprocessorsRun` (`Modified`, `Lines`,
+  `Evidence`, `Refused`); a refusing or throwing preprocessor is a `Failed` status.
+- **`fshw format` can now print `format refused — …`** where it printed
+  `formatted 0 files`; its success reply is `formatted N of M files — <evidence>`.
+- **`fshw rerun <plugin>` now reaches every `FileChanged` subscriber**, not only
+  FileCommand plugins with a pattern: `fshw rerun format-check` (in `"format": "check"`
+  mode) clears the plugin's cache and re-fires it over the daemon's registered source
+  set. `PluginHost.RerunFileCommandPlugin` is renamed `RerunPlugin(name, sourceFiles)`;
+  `rerun format` in `"format": true` mode is refused with a message naming the
+  preprocessor and pointing at `fshw format`, which is the primitive that re-runs it.
+- `FormatCheckPlugin.createFormatCheck` takes the repository root as its first
+  parameter (the cache key needs the pin before any context exists).
+
 ### test-prune: a changed message retains its pre-rebuild literal selection edge
 
 An incremental scan used to discover a changed producer symbol, replace that file's

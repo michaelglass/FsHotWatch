@@ -326,6 +326,9 @@ type RegisteredPlugin =
         /// does not change either. Only this counter tells that apart from a stuck
         /// plugin.
         CompletedDispatches: unit -> int64
+        /// What the handler subscribed to — so the host can tell which plugins a
+        /// re-fired `FileChanged` would reach (`PluginHost.RerunPlugin`).
+        Subscriptions: PluginSubscriptions
         /// The fault that killed this plugin's message loop, if one did.
         ///
         /// A dead agent is otherwise INDISTINGUISHABLE from a busy one: the
@@ -1311,6 +1314,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
       // bounds a genuinely wedged run.
       IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0
       CompletedDispatches = fun () -> System.Threading.Volatile.Read(&completedDispatches.contents)
+      Subscriptions = handler.Subscriptions
       Fault = fun () -> agentFault }
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
