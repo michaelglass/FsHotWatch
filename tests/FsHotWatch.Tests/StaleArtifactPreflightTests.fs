@@ -396,6 +396,118 @@ let ``AUTOMATION-201: a tripped breaker does NOT block a run with nothing stale 
         test <@ List.isEmpty outcome.Refusals @>
         test <@ List.isEmpty outcome.Healed @>)
 
+// -----------------------------------------------------------------------------
+// AUTOMATION-495 — the breaker takes ONE FILE out of service, not the round.
+//
+// Every test in this block drives TWO project pairs under one repo root, which is the
+// only arrangement in which the defect is visible at all: a single-project tree cannot
+// distinguish "the tripped file was not repaired" from "nothing was repaired". The
+// second root is a subdirectory; `run`'s `repoRoot` argument only locates the ledger,
+// and the targets carry absolute paths, so one ledger governs both pairs.
+// -----------------------------------------------------------------------------
+
+/// THE CLAIM. A file the breaker has taken out of service does not suppress the repair
+/// of a different file that is nowhere near its threshold.
+///
+/// Before this, `List.partition` split the round into `tripped` and `toRepair` and then
+/// refused BOTH — so the tree that produced the refusal was byte-identical on the next
+/// run, and the only exit was a human deleting the ledger. Observed twice in
+/// thellma/intelligence: every project passed, a queued re-run refused, executed
+/// nothing, and recorded `outcome: red, scope: none, reddenedByCount: 0`.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: a file the breaker has tripped does not block another project's repair`` () =
+    withTempDir "a495-per-file" (fun tmpDir ->
+        let now = DateTime.UtcNow
+        let blocked = synth (Path.Combine(tmpDir, "blocked"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        // Only the FIRST project's copy carries a repair history at the threshold.
+        StaleArtifactPreflight.saveLedger
+            tmpDir
+            now
+            [ for i in 1 .. StaleArtifactPreflight.Threshold ->
+                  { StaleArtifactPreflight.At = now.AddHours(-(float i))
+                    StaleArtifactPreflight.File = blocked.CommonCopy } ]
+
+        invertCopy blocked
+        invertCopy fixable
+
+        let outcome =
+            StaleArtifactPreflight.run tmpDir now [ "Blocked", blocked.Target; "Fixable", fixable.Target ]
+
+        // The under-threshold copy is repaired ON DISK, and recorded — so the next run
+        // meets a strictly better tree. This is the assertion the old code failed.
+        test <@ outcome.Healed = [ fixable.CommonCopy ] @>
+        test <@ File.ReadAllText fixable.CommonCopy = File.ReadAllText fixable.CommonDll @>
+
+        test
+            <@
+                StaleArtifactPreflight.loadLedger tmpDir
+                |> List.exists (fun r -> r.File = fixable.CommonCopy)
+            @>
+
+        // The breaker still does its job: exactly one refusal, naming the file it took
+        // out of service, and those bytes are untouched. Without this half, "per-file"
+        // would be indistinguishable from having deleted the breaker.
+        test <@ outcome.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+        test <@ outcome.Refusals.Head.Reason.Contains blocked.CommonCopy @>
+        test <@ File.ReadAllText blocked.CommonCopy = "COMMON-STALE" @>)
+
+/// THE CONVERGENCE PROPERTY, which is the reason the claim above matters: the refusal
+/// set SHRINKS across runs with no human in the loop. Before the fix these two runs were
+/// identical, forever.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: the run after a tripped refusal refuses only the still-tripped file`` () =
+    withTempDir "a495-converges" (fun tmpDir ->
+        let now = DateTime.UtcNow
+        let blocked = synth (Path.Combine(tmpDir, "blocked"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        StaleArtifactPreflight.saveLedger
+            tmpDir
+            now
+            [ for i in 1 .. StaleArtifactPreflight.Threshold ->
+                  { StaleArtifactPreflight.At = now.AddHours(-(float i))
+                    StaleArtifactPreflight.File = blocked.CommonCopy } ]
+
+        invertCopy blocked
+        invertCopy fixable
+
+        let targetPair = [ "Blocked", blocked.Target; "Fixable", fixable.Target ]
+
+        let first = StaleArtifactPreflight.run tmpDir now targetPair
+        test <@ first.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+
+        let second = StaleArtifactPreflight.run tmpDir now targetPair
+
+        // Nothing left to repair — the previous run already did it — and the one
+        // refusal that remains is the file the operator is being asked to root-cause.
+        test <@ List.isEmpty second.Healed @>
+        test <@ second.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral second.Refusals.Head.Reason @>)
+
+/// The same per-file rule for the OTHER refusal source. A stale COMPILE is unrepairable
+/// by construction, and it used to suppress every repairable copy in the round for the
+/// identical reason — the guard tested `unrepairable` and `tripped` together.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: a project needing a compile does not block another project's copy repair`` () =
+    withTempDir "a495-compile-neighbour" (fun tmpDir ->
+        let needsCompile = synth (Path.Combine(tmpDir, "needs-compile"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        File.SetLastWriteTimeUtc(needsCompile.TestsSrc, needsCompile.BuiltAt.AddMinutes 30.0)
+        invertCopy fixable
+
+        let outcome =
+            StaleArtifactPreflight.run
+                tmpDir
+                DateTime.UtcNow
+                [ "NeedsCompile", needsCompile.Target; "Fixable", fixable.Target ]
+
+        test <@ outcome.Healed = [ fixable.CommonCopy ] @>
+        test <@ File.ReadAllText fixable.CommonCopy = File.ReadAllText fixable.CommonDll @>
+        test <@ outcome.Refusals |> List.map (fun r -> r.Project) = [ "NeedsCompile" ] @>)
+
 /// A bare JSON `null` where the array should be. Distinct from a parse throw: `Parse`
 /// succeeds and hands back a null node, so the guard is a real arm rather than a
 /// theoretical one.

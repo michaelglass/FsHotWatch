@@ -32,10 +32,16 @@
 /// of ONE file inside `Window`, the preflight stops repairing and refuses instead,
 /// naming the file and the count.
 ///
-/// The breaker gates the HEAL, not the run. A tripped breaker on a clean tree changes
-/// nothing — nothing is stale, so nothing asks to be repaired and the suite runs.
-/// That is what keeps the breaker from becoming the very wedge class this ticket
-/// exists to remove, and it is why its refusal message names its own reset.
+/// The breaker gates the HEAL OF THE FILE IT NAMES — not the run, and not any other
+/// file's heal (AUTOMATION-495). A tripped breaker on a clean tree changes nothing,
+/// and on a tree where five copies are stale and one of them has tripped, the other
+/// four are still repaired. That is what keeps the breaker from becoming the very
+/// wedge class it exists to expose, and it is why its refusal message names its own
+/// reset.
+///
+/// The run still refuses while ANY file is uncertifiable, and that half is deliberate:
+/// see `adr-016`. Convergence comes from the repairs happening, not from launching a
+/// subset of the suites.
 module FsHotWatch.TestPrune.StaleArtifactPreflight
 
 open System
@@ -201,8 +207,10 @@ type Refusal =
 /// The preflight's verdict about the whole run.
 type Outcome =
     {
-        /// Copies repaired this run, absolute paths. Always reported, even on success:
-        /// a repair that fires every run is itself the finding.
+        /// Copies repaired this run, absolute paths. Always reported — on success,
+        /// because a repair that fires every run is itself the finding, and on a
+        /// refusal, because since AUTOMATION-495 a refused run still repairs every
+        /// copy the breaker did not name.
         Healed: string list
         /// EMPTY means every target is certified fresh and the suite may launch.
         /// Non-empty means nothing launches.
@@ -399,68 +407,77 @@ let runWithBudget
             let unrepairable =
                 detected |> List.filter (fun (_, s) -> Option.isNone (repairFor s))
 
-            // The breaker is consulted ONLY for files this run is about to repair, so a
-            // tripped breaker never blocks a run with nothing stale in it. That is what
-            // stops it becoming a new wedge class.
+            // The breaker is consulted per FILE, and it decides one thing: whether THAT
+            // file may be repaired again. It is not a verdict about the round, and it
+            // was never a verdict about a run with nothing stale in it.
             let tripped, toRepair =
                 repairable
                 |> List.partition (fun (_, _, (_, copy)) -> healsInWindow now ledger copy >= Threshold)
 
-            if not (List.isEmpty unrepairable) || not (List.isEmpty tripped) then
-                // Nothing is repaired in a round that is going to refuse anyway: a
-                // repair whose run never launches is a ledger entry bought for nothing.
-                { Healed = healed
-                  Refusals =
-                    (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
-                    @ (tripped
-                       |> List.map (fun (project, _, (_, copy)) ->
-                           { Project = project
-                             Reason = Reason.breakerTripped repoRoot copy (healsInWindow now ledger copy) }))
-                    @ (toRepair |> List.map (fun (project, s, _) -> refusalOf project s)) }
+            // AUTOMATION-495. These are the refusals this round has ALREADY earned —
+            // a stale case nothing can repair, and a file the breaker has taken out of
+            // service. Computing them here rather than in an `if` that also swallows the
+            // repairs is the whole fix: the repair loop below runs either way.
+            let blocked =
+                (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
+                @ (tripped
+                   |> List.map (fun (project, _, (_, copy)) ->
+                       { Project = project
+                         Reason = Reason.breakerTripped repoRoot copy (healsInWindow now ledger copy) }))
+
+            // Repair every under-threshold copy, INCLUDING in a round that is going to
+            // refuse. The old rule was the opposite — "a repair whose run never launches
+            // is a ledger entry bought for nothing" — and it is what made the wedge
+            // permanent: one tripped file suppressed every other file's repair, so the
+            // tree that made the run refuse was byte-identical on the next run, and the
+            // only exit was a human deleting the ledger. The entry is not bought for
+            // nothing; it is bought for the next run's tree. Every outcome is logged BY
+            // NAME whether it worked or not — a repair nobody can see is a signal
+            // destroyed.
+            let outcomes =
+                toRepair
+                |> List.map (fun (project, s, (origin, copy)) ->
+                    match applyRepair origin copy with
+                    | Ok() ->
+                        Logging.warn
+                            "test-prune"
+                            $"%s{project}: REPAIRED a stale build-output copy BEFORE running any suite — wrote \
+                              %s{origin} over %s{copy}, which held different bytes. The build should have made \
+                              this copy and its incremental check skipped it (equal timestamps). Recorded to \
+                              %s{ledgerPath repoRoot}; %d{Threshold} repairs of one file inside \
+                              %.0f{Window.TotalDays} days refuse to repair THAT file, and no other."
+
+                        Ok copy
+                    | Error e ->
+                        Error
+                            { Project = project
+                              Reason = Reason.repairFailed e s })
+
+            let repaired =
+                outcomes
+                |> List.choose (function
+                    | Ok copy -> Some copy
+                    | Error _ -> None)
+
+            let failures =
+                outcomes
+                |> List.choose (function
+                    | Ok _ -> None
+                    | Error refusal -> Some refusal)
+
+            let ledger' = ledger @ (repaired |> List.map (fun f -> { At = now; File = f }))
+
+            if not (List.isEmpty repaired) then
+                saveLedger repoRoot now ledger'
+
+            if not (List.isEmpty blocked) || not (List.isEmpty failures) then
+                // The RUN still refuses while anything is uncertifiable — see `adr-016`
+                // for why a partial launch is the worse of the two. What changed is that
+                // the refusal now leaves a strictly better tree behind it.
+                { Healed = healed @ repaired
+                  Refusals = blocked @ failures }
             else
-                // Repair. Every outcome is logged BY NAME whether it worked or not — a
-                // repair nobody can see is a signal destroyed.
-                let outcomes =
-                    toRepair
-                    |> List.map (fun (project, s, (origin, copy)) ->
-                        match applyRepair origin copy with
-                        | Ok() ->
-                            Logging.warn
-                                "test-prune"
-                                $"%s{project}: REPAIRED a stale build-output copy BEFORE running any suite — wrote \
-                                  %s{origin} over %s{copy}, which held different bytes. The build should have made \
-                                  this copy and its incremental check skipped it (equal timestamps). Recorded to \
-                                  %s{ledgerPath repoRoot}; %d{Threshold} repairs of one file inside \
-                                  %.0f{Window.TotalDays} days refuse instead of repairing."
-
-                            Ok copy
-                        | Error e ->
-                            Error
-                                { Project = project
-                                  Reason = Reason.repairFailed e s })
-
-                let repaired =
-                    outcomes
-                    |> List.choose (function
-                        | Ok copy -> Some copy
-                        | Error _ -> None)
-
-                let failures =
-                    outcomes
-                    |> List.choose (function
-                        | Ok _ -> None
-                        | Error refusal -> Some refusal)
-
-                let ledger' = ledger @ (repaired |> List.map (fun f -> { At = now; File = f }))
-
-                if not (List.isEmpty repaired) then
-                    saveLedger repoRoot now ledger'
-
-                if not (List.isEmpty failures) then
-                    { Healed = healed @ repaired
-                      Refusals = failures }
-                else
-                    round (remaining - 1) ledger' (healed @ repaired)
+                round (remaining - 1) ledger' (healed @ repaired)
 
     round budget (loadLedger repoRoot) []
 
