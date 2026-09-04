@@ -937,9 +937,9 @@
       },
       {
         "coveredLines": 1086,
-        "coveredBranches": 239,
+        "coveredBranches": 238,
         "platform": "linux",
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+        "reason": "Branches lowered 239 -> 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry's lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
       }
     ],
     "DaemonConfig.fs": [
