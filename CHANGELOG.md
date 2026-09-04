@@ -121,6 +121,39 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### repo tasks: every daemon-backed `mise` task materializes every configured analyzer (AUTOMATION-448)
+
+`mise run format` in a clean workspace died before formatting anything. The task graph
+built the CLI and the house rules (`analyzers/FsHotWatch.Rules`) but not
+`tools/fsharplint-shim`, and the daemon — correctly — refuses to start when a path in
+`.fshw.json` `analyzers.paths` loads zero analyzers. The same command passed on any
+workspace where an earlier `dotnet build` had happened to populate the shim's `bin/`, so
+whether `format` worked was a function of workspace history, not of the tree.
+
+- `build-rules` is replaced by **`build-analyzers`**: one `dotnet build` per configured
+  analyzer path, in config order, as a `run` array so mise stops at the first failure and
+  names the project that could not be materialized. `build` (and through it `format`,
+  `status`, `check`) and `run` depend on it. `ci` already built the whole solution.
+- `tests/FsHotWatch.Tests/AnalyzerMaterializationTests.fs` pins the graph to the config:
+  each daemon-backed task's dependency closure builds every `analyzers.paths` project,
+  exactly once, via `depends` (so it completes before the daemon command starts), and the
+  list of daemon-backed tasks is derived from the file rather than remembered.
+  `RepoTasks.fs` is the shared reader for `mise.toml` / `.fshw.json`, which
+  `ReleaseOrchestrationTests` now uses too.
+- `tools/fsharplint-shim` promotes **NU1603 to an error**. Falsifying the fix with a
+  non-existent pin showed NuGet substituting a *higher* published version with a warning
+  and a green build — a different analyzer at the same path, the exact drift the
+  `verdictInputs` hash of that project exists to catch. A missing pin (`NU1102`) already
+  failed; now a substituted one does too.
+- Linux count floor for `OperationWatchdog.fs`: covered branches 21 → 20. The first CI
+  run of this change measured 20/26 on a tree with no `src/` edit, against 21/26 on the
+  two main runs either side of it. The floor had been pinned to one run's exact value;
+  the file's own override notes say its timer-callback branches wobble under load, so
+  the floor is now the minimum observed across CI runs.
+
+Analyzer loading is unchanged: a configured path that still yields nothing is the same
+`ConfigError` naming the path, and nothing is dropped or defaulted.
+
 ### test-prune: a changed message retains its pre-rebuild literal selection edge
 
 An incremental scan used to discover a changed producer symbol, replace that file's
