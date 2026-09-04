@@ -121,6 +121,49 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### release: the publication barrier verifies a dotnet TOOL by installing and running it (AUTOMATION-602)
+
+`FsHotWatch.Cli 0.14.0-alpha.30` was published, indexed, and publicly downloadable. The
+barrier that is supposed to prove that failed all twenty attempts and reported it as
+unpublished. `scripts/wait-for-nuget.fsx` probed every package by writing a throwaway
+project with a `PackageReference` to it — a shape a `PackAsTool` package is structurally
+incapable of satisfying, so NuGet answered `NU1212` ("DotnetToolReference project style
+can only contain references of the DotnetTool type"), the loop read that as "not there
+yet", and a successful release was called a failure. A gate that goes red on success is
+a gate people learn to ignore.
+
+- A project with `<PackAsTool>true</PackAsTool>` is now probed with **`dotnet tool
+  install`** at the exact version, into a disposable `--tool-path`, against a sealed
+  single-source `NuGet.Config` with a private `NUGET_PACKAGES` and HTTP cache. A local
+  overlay or an already-warm global package folder cannot make the probe pass. Libraries
+  keep the exact-version `PackageReference` restore.
+- **Installing is not the check.** `dotnet tool install` exiting 0 proves bytes arrived.
+  The barrier now also requires that the command the project DECLARES in
+  `<ToolCommandName>` is the command the package ships — a shim of that name, executable,
+  a `DotnetToolSettings.xml` under `tools/<tfm>/any/` declaring it, its entry assembly
+  present — and that running it succeeds. A tool project with no `<ToolCommandName>` is
+  refused before any network call.
+- Each of those failures is its **own** refusal naming the artifact that was missing,
+  not "the tool install failed": the shim that was not created, the settings file that
+  was absent or misplaced, the command that was packaged under a different name, the
+  entry assembly that was not there, the invocation that exited non-zero or hung.
+- **A defect is refused once.** `NU1212`, and the SDK's own "the settings file in the
+  tool's NuGet package is invalid", both mean the package was FOUND and is wrong. They
+  now fail immediately and say so, instead of being retried nineteen more times and
+  reported as a publication delay. A version that is genuinely not on the feed keeps the
+  bounded retries, the process timeout, and the scratch-directory cleanup unchanged.
+- The installed shim is an apphost: it resolves the runtime through `DOTNET_ROOT` and
+  registered install locations, never through `PATH`. The probe now points it at the same
+  runtime the probe itself is using, so a `dotnet` that lives outside the default location
+  (mise, asdf, a CI toolcache) no longer produces a perfectly good package that "cannot
+  be run".
+- `tests/FsHotWatch.IntegrationTests/NuGetToolBarrierOracleTests.fs` packs a real tool
+  with `dotnet pack` and probes it from a local feed — accepted — then rebuilds that same
+  `.nupkg` with its packaged command renamed, and again with its entry assembly removed,
+  and pins that both are refused as defects. Neither break is reachable through a
+  `dotnet pack` switch, and nuget.org will not host a broken tool to probe, so the packed
+  output is the only honest oracle available.
+
 ### repo tasks: every daemon-backed `mise` task materializes every configured analyzer (AUTOMATION-448)
 
 `mise run format` in a clean workspace died before formatting anything. The task graph
