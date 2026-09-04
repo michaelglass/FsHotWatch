@@ -67,11 +67,16 @@ let render (at: DateTime) : string =
 ///     not log output.
 ///   * `activeVerdictWaits` covers the instants where no plugin work is in flight but
 ///     a `fshw check` client is still connected and waiting.
+///   * `scanInFlight` (AUTOMATION-609) covers a full-repository scan — cold FCS
+///     analysis of the whole graph raises NEITHER of the other two, so without it
+///     the daemon's own liveness signal went silent during its longest phase of
+///     real work.
 ///
-/// Deliberately separate from `IdleExit.busyForIdleExit` despite the identical body:
-/// they answer different questions (shut myself down? vs. tell the world I'm
-/// working?), and a change to one must not silently redefine the other.
-let runActive (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
+/// Deliberately separate from `IdleExit.idleInhibitors` despite the overlapping
+/// inputs: they answer different questions (shut myself down? vs. tell the world
+/// I'm working?), and a change to one must not silently redefine the other.
+let runActive (anyPluginBusy: bool) (activeVerdictWaits: int) (scanInFlight: bool) : bool =
+    anyPluginBusy || activeVerdictWaits > 0 || scanInFlight
 
 /// Dependencies a live heartbeat needs, all injectable so the beat/no-beat
 /// decision is unit-tested without a PluginHost, a real clock, a real timer,

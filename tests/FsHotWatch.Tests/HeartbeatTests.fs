@@ -267,18 +267,25 @@ let ``a failed beat does not consume the cadence slot`` () =
 let ``runActive is true while any plugin has work in flight`` () =
     // The leg that spans long quiet phases: a plugin's inflight count is held
     // for the whole lifetime of an exclusive run.
-    test <@ runActive true 0 = true @>
+    test <@ runActive true 0 false = true @>
 
 [<Fact>]
 let ``runActive is true while a client waits for a verdict`` () =
     // Covers the instants where no plugin work is in flight but a `fshw check`
     // client is still connected and blocked.
-    test <@ runActive false 1 = true @>
-    test <@ runActive false 3 = true @>
+    test <@ runActive false 1 false = true @>
+    test <@ runActive false 3 false = true @>
+
+[<Fact>]
+let ``runActive is true while a scan is in flight`` () =
+    // AUTOMATION-609: cold FCS analysis of the whole graph raises neither of the
+    // other two legs, so without this the daemon's liveness signal went silent
+    // during its longest phase of real work — the phase that then read as idle.
+    test <@ runActive false 0 true = true @>
 
 [<Fact>]
 let ``runActive is false only when nothing is in flight and nobody is waiting`` () =
-    test <@ runActive false 0 = false @>
+    test <@ runActive false 0 false = false @>
 
 // ---------------------------------------------------------------------------
 // Live timer wiring

@@ -947,11 +947,13 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
     let emitted = System.Collections.Concurrent.ConcurrentBag<int>()
     let check (_: AbsFilePath) = async { return Some 1 }
 
-    let unchecked =
+    let outcome =
         runChecksWithRetry 3 check (fun r -> emitted.Add r) files
         |> Async.RunSynchronously
 
-    test <@ unchecked = 0 @>
+    // AUTOMATION-610: a converged scan says so in the type, and reports ZERO
+    // extra rounds — the amplification measure this ticket asks to bound.
+    test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
     test <@ emitted.Count = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -974,11 +976,13 @@ let ``runChecksWithRetry retries a transiently-cancelled file until it converges
     let emitted = System.Collections.Concurrent.ConcurrentBag<int>()
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
-    let unchecked =
+    let outcome =
         runChecksWithRetry 3 check (fun r -> emitted.Add r) files
         |> Async.RunSynchronously
 
-    test <@ unchecked = 0 @>
+    // Converged, but it cost exactly ONE extra round — the number that
+    // distinguishes a single self-cancellation from runaway amplification.
+    test <@ outcome = ScanCheckOutcome.AllChecked 1 @>
     // Every file emitted exactly once (no duplicate emit for the converged file).
     test <@ emitted.Count = 3 @>
     test <@ attempts["/b.fs"] = 2 @>
@@ -1001,14 +1005,50 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
 
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
-    let unchecked =
+    let outcome =
         runChecksWithRetry 2 check (fun _ -> ()) files |> Async.RunSynchronously
 
-    test <@ unchecked = 1 @>
+    // AUTOMATION-610: reaching the bound is a NAMED outcome carrying the files,
+    // the rounds spent, and the budget that was exhausted — not an integer
+    // folded into a total that reads the same as "nothing to do".
+    test <@ outcome = ScanCheckOutcome.BudgetExhausted([ AbsFilePath.create "/b.fs" ], 2, 2) @>
+
+    test <@ ScanCheckOutcome.uncheckedCount outcome = 1 @>
+    test <@ ScanCheckOutcome.extraRounds outcome = 2 @>
     // Bounded: 1 initial attempt + 2 retries = 3 total for the failing file.
     test <@ attempts["/b.fs"] = 3 @>
     // Succeeding files are only attempted once.
     test <@ attempts["/a.fs"] = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry stops at the bound and never exceeds it`` () =
+    // The ceiling is exact and asserted, per AUTOMATION-610: for a file that is
+    // ALWAYS cancelled, total attempts are 1 + budget, whatever the budget is.
+    for budget in 0..4 do
+        let attempts = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+        let check (f: AbsFilePath) =
+            async {
+                attempts.AddOrUpdate(AbsFilePath.value f, 1, fun _ c -> c + 1) |> ignore
+                return None
+            }
+
+        let files = [ AbsFilePath.create "/never.fs" ]
+
+        let outcome =
+            runChecksWithRetry budget check (fun (_: int) -> ()) files
+            |> Async.RunSynchronously
+
+        test <@ attempts["/never.fs"] = budget + 1 @>
+        test <@ outcome = ScanCheckOutcome.BudgetExhausted(files, budget, budget) @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry on an empty cohort converges with no rounds`` () =
+    let outcome =
+        runChecksWithRetry 3 (fun _ -> async { return Some 1 }) (fun (_: int) -> ()) []
+        |> Async.RunSynchronously
+
+    test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` () =
@@ -1831,3 +1871,39 @@ let ``a deleted file is pruned the same way a renamed one is`` () =
 
     test <@ vanished = [ deleted ] @>
     test <@ files = [ "/repo/src/Stays.fs" ] @>
+
+// --- AUTOMATION-610: per-scan measurement is emitted and comparable ---
+
+[<Fact(Timeout = 60000)>]
+let ``five scan generations emit five parseable, fittable measurement records`` () =
+    // The ticket asks for a measurement a LATER RUN CAN COMPARE, over at least
+    // five generations. This drives the real scan path five times and reads the
+    // record back the way a later run would: from
+    // `<repoRoot>/.fshw/scan-metrics.jsonl`, through the same parser.
+    withTempDir "scan-metrics-daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        use daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+
+        for _ in 1..5 do
+            daemon.ScanAll() |> Async.RunSynchronously
+
+        let series =
+            FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+        test <@ series |> List.map (fun s -> s.Generation) = [ 1L; 2L; 3L; 4L; 5L ] @>
+        // The first scan is the cold one; every later scan is forced.
+        test <@ series |> List.map (fun s -> s.Kind) = [ "cold"; "forced"; "forced"; "forced"; "forced" ] @>
+        // Every record carries a live process reading, so the series is fittable.
+        test <@ series |> List.forall (fun s -> s.RssBytes > 0L && s.ManagedBytes > 0L) @>
+        // A quiet scan needs no retries at all — the amplification floor.
+        test <@ series |> List.forall (fun s -> s.RetryRounds = 0 && s.FilesUnchecked = 0) @>
+
+        // And the fit is a NUMBER, not an impression: with data present it is
+        // never `NotEnoughData`, whichever side of the bound it lands on.
+        match FsHotWatch.ScanMetrics.fitRetention FsHotWatch.ScanMetrics.DefaultRetentionBound series with
+        | FsHotWatch.ScanMetrics.RetentionVerdict.NotEnoughData n ->
+            failwith $"five generations fitted as NotEnoughData %d{n}"
+        | FsHotWatch.ScanMetrics.RetentionVerdict.WithinBound(slope, bound)
+        | FsHotWatch.ScanMetrics.RetentionVerdict.ExceedsBound(slope, bound) ->
+            test <@ bound = FsHotWatch.ScanMetrics.DefaultRetentionBound @>
+            test <@ Double.IsFinite slope @>)

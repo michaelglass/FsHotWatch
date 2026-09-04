@@ -762,7 +762,21 @@
       "line": 95,
       "branch": 78,
       "reason": "new file, AUTOMATION-447: the seam between the format plugin and the repository's pinned `dotnet tool run fantomas`. Floor = the MEASURED value on macOS 2026-09-04 (line 100%, branch 83% over the three format test classes) less the same ~1-5pp wobble margin every other floor here carries. The uncovered branches are coverlet's closure artifacts on the fold/choose pipelines; everything that decides a verdict is covered: manifest parsing (present/absent/case/unreadable), every exit-code interpretation (0, 99, 1-with-per-file-errors, 1-unrestored, 1-other, timeout), chunking, the measured Modified set, and the editorconfig inputs including the filesystem-root stop. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges."
-    }
+    },
+    "ScanMetrics.fs": [
+      {
+        "line": 100,
+        "branch": 93,
+        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on macOS 2026-09-04: line 100% (every line executed), branch 15/16 = 93.8%. The single uncovered edge is the compiler-generated exception filter of `tryParseLine`'s `try ... with _ ->`: the handler catches everything, so the not-matched edge cannot be reached from any input, and the reachable half IS covered (malformed JSON, a truncated line, and a line missing a field all parse to None). Everything a caller depends on is exercised: the JSON round-trip, series ordering on disk, both IO failure paths (unwritable record, locked file), the forced-GC opt-in in both directions, and all three RetentionVerdict cases including the zero-baseline guard. Left honest rather than hidden with ExcludeFromCodeCoverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 90,
+        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on Linux CI run 33870122165 (2026-09-04): line 100%, branch 20/22 = 90.9%. Linux instruments 22 branches where macOS sees 16 — the same source, a different count of compiler-generated edges — so the platforms carry separate floors per this file's convention. The uncovered edges are the unreachable halves of catch-all exception filters, not untested logic: line coverage is 100% on both platforms.",
+        "platform": "linux"
+      }
+    ]
   },
   "countFloors": {
     "AnalyzersPlugin.fs": [
