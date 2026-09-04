@@ -6290,6 +6290,101 @@ let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
 
         test <@ synthStale s = None @>)
 
+/// AUTOMATION-528, direction A — the dangerous one, and the one no other case can see.
+///
+/// `dotnet restore` rewrites `obj/project.assets.json`; only a BUILD regenerates
+/// `bin/<tfm>/<Asm>.deps.json` from it. When a restore moves on without a build — which
+/// is exactly what the deps-freshness gate's automatic recovery does — the manifest left
+/// behind lists a superseded reference closure. The compile is repaired and the LOAD is
+/// not: the host resolves assemblies through the manifest, not through the directory, so
+/// a dependency sitting in the output folder and missing from the manifest is a
+/// `FileNotFoundException` on the routes that touch it. Green build, red run, specific
+/// routes only — indistinguishable from an application bug.
+///
+/// Reproduced against a real SDK before this test was written: with the manifest of an
+/// earlier build restored over a fully-built tree, `dotnet App.dll` died with
+/// `Could not load file or assembly 'Lib'` while `Lib.dll` sat beside it in the output
+/// folder, every assembly was newer than every source, and every copy was byte-identical
+/// to its origin.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a deps manifest older than its restore is STALE though every assembly is current`` () =
+    withTempDir "tp-a528-superseded" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let expectedAssets = p [ projDir; "obj"; "project.assets.json" ]
+        let expectedManifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        // A fully-built, otherwise impeccable tree: the assembly postdates its source and
+        // there is nothing copied in to differ from an origin.
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+        writeAt expectedManifest "{}" (now.AddMinutes(-10.0))
+        // ... and a restore that moved on after that build, without one following it.
+        writeAt expectedAssets "{}" now
+
+        match staleOf $"run --project {projDir} --no-build --" tmpDir with
+        | Some(ArtifactFreshness.DepsManifestOlderThanRestore(project, assets, manifest, _, _)) ->
+            test <@ project = "Unit" @>
+            test <@ assets = expectedAssets @>
+            test <@ manifest = expectedManifest @>
+        | other -> Assert.Fail($"expected DepsManifestOlderThanRestore, got %A{other}"))
+
+/// POSITIVE CONTROL, required: the ordinary shape a build leaves — restore first, manifest
+/// after it — must NOT report staleness, and neither must one written inside the same tick
+/// (a coarse filesystem, or a build fast enough that both land on one timestamp). A
+/// detector that fired on every built tree would refuse every run and teach people to
+/// ignore it.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a deps manifest at or after its restore is fresh`` () =
+    withTempDir "tp-a528-control" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let assets = p [ projDir; "obj"; "project.assets.json" ]
+        let manifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+        writeAt assets "{}" (now.AddMinutes(-10.0))
+
+        // Generated after the restore it came from: the normal case.
+        writeAt manifest "{}" (now.AddMinutes(-9.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>
+
+        // Same tick: still the normal case, never stale.
+        writeAt manifest "{}" (now.AddMinutes(-10.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
+
+/// Either half of the pair missing means there is nothing to compare, and absence is never
+/// staleness in this module. BOTH directions are pinned: a project with no restore output
+/// (an old-style project, or one whose `obj/` was cleaned), and one that generates no
+/// runtime manifest at all (an ordinary library).
+///
+/// Pinned because every OTHER freshness test in this file builds a tree with no `obj/`, so
+/// a check that read a missing assets file as stale would redden all of them at once and
+/// the cause would present as a mass regression rather than as this one decision.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: neither half of the pair missing is judged as stale`` () =
+    withTempDir "tp-a528-absent" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let assets = p [ projDir; "obj"; "project.assets.json" ]
+        let manifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+
+        // A manifest with no restore beside it.
+        writeAt manifest "{}" (now.AddMinutes(-10.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>
+
+        // ... and a restore, newer than everything, with no manifest generated from it.
+        File.Delete manifest
+        writeAt assets "{}" now
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
+
 // Direction 2 — the real hole. A dependency's source newer than the dependency's own
 // assembly means the build has not run since the edit, so the DLL in the test project's
 // output dir is old code and `--no-build` must not run.

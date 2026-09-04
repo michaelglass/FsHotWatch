@@ -142,8 +142,8 @@ gets its own exit code.
 * *the build artifact was not produced* — a build-ordering race. It settles on the next
   build, so an autonomous loop or deploy preflight should **retry**. The rest of this
   section is about that case.
-* *`stale build output`* — the artifact exists and its bytes do not match the sources it
-  was built from. This one does **not** settle: retrying, `fshw confirm` and restarting
+* *`stale build output`* — the artifact exists and does not match what the tree says it
+  should be. This one does **not** settle: retrying, `fshw confirm` and restarting
   the daemon each spend a full cycle to arrive back at the identical refusal, because
   the problem is bytes on disk rather than anything cached. The message names every
   affected project and the file that is stale; run `dotnet build`, and if it reports
@@ -151,6 +151,16 @@ gets its own exit code.
   `dotnet build --no-incremental` re-emits it. `fshw` repairs this itself where the
   repair is provable (a build-output copy whose origin is on disk) and says so by name;
   a refusal means it was not.
+
+  One shape of it names `.deps.json` rather than a `.dll`, and it has a different
+  remedy trap: the runtime dependency manifest is older than the
+  `obj/project.assets.json` it is generated from, so the manifest lists the reference
+  closure of a restore that has been superseded. A `dotnet restore` will **not** fix
+  it — restore writes the assets file and never touches `bin/**/*.deps.json`, which is
+  why this state outlives the automatic recovery that repairs the compile. Only a build
+  regenerates it. Do not "fix" it by adding a direct `ProjectReference` to whatever
+  failed to load: that puts an entry in the manifest and makes the symptom vanish while
+  leaving the superseded restore exactly where it was.
 
 If an otherwise-unchanged re-run says the FIRST one again, the build is serving a **cached result
 its outputs no longer support**. The escape is:

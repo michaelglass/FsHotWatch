@@ -3,11 +3,13 @@
 /// sources on disk? A "yes" blocks the run.
 ///
 /// Decided per-project over the test project's own transitive `ProjectReference`
-/// closure, over the two things a build does: it COMPILES each project's sources
-/// into that project's own assembly (`AssemblyOlderThanSource`), and it COPIES
+/// closure, over the three things a build does: it COMPILES each project's sources
+/// into that project's own assembly (`AssemblyOlderThanSource`), it COPIES
 /// dependency assemblies and content/fixture items into the test project's output
-/// dir (`CopyDiffersFromOrigin`). Nothing outside the closure is asserted about, and
-/// both checks are exactly what a plain `dotnet build` fixes.
+/// dir (`CopyDiffersFromOrigin`), and it GENERATES the runtime dependency manifest
+/// the host resolves assemblies through (`DepsManifestOlderThanRestore`). Nothing
+/// outside the closure is asserted about, and all three checks are exactly what a
+/// plain `dotnet build` fixes.
 ///
 /// A copy is judged by CONTENT, never by an mtime — current iff its bytes are the
 /// bytes of one of the outputs the build could have copied it from — so a
@@ -75,6 +77,26 @@ type StaleInput =
     /// minutes apart and this module cannot know which framework MSBuild chose, so a
     /// verdict holding no mtimes cannot compare two across a TFM boundary.
     | CopyDiffersFromOrigin of origin: string * copy: string
+    /// The runtime dependency manifest the host reads — `bin/<tfm>/<Assembly>.deps.json`
+    /// — is OLDER than the restore it is generated from, `obj/project.assets.json`. The
+    /// manifest therefore lists the reference closure of a SUPERSEDED restore.
+    ///
+    /// Nothing about the compile says so, which is why the other three cases cannot see
+    /// it: every assembly can be newer than every source and every copy can hold exactly
+    /// its origin's bytes while this is true. But the host resolves assemblies from the
+    /// manifest, not from the directory, so a dependency sitting in the output folder and
+    /// missing from the manifest is a `FileNotFoundException` on precisely the code paths
+    /// that touch it — a green build and a red run, on specific routes only, which reads
+    /// like an application bug (AUTOMATION-528).
+    ///
+    /// An mtime judgement, and — as with `AssemblyOlderThanSource` — the only one
+    /// available: a restore and the manifest generated from it share no bytes.
+    | DepsManifestOlderThanRestore of
+        project: string *
+        assets: string *
+        manifest: string *
+        assetsMtime: DateTime *
+        manifestMtime: DateTime
     /// The gate could not determine what this run's inputs ARE — an unreadable or
     /// unparseable project file, or a `ProjectReference` it cannot resolve. FAIL
     /// CLOSED: a freshness gate that answers "up to date" because it could not look
@@ -103,6 +125,14 @@ let describe (stale: StaleInput) : string =
             sourceMtime
     | CopyDiffersFromOrigin(origin, copy) ->
         sprintf "%s has not been copied into the test output since it changed — %s holds different bytes" origin copy
+    | DepsManifestOlderThanRestore(project, assets, manifest, assetsMtime, manifestMtime) ->
+        sprintf
+            "%s's runtime dependency manifest %s was generated at %O from a restore that %s superseded at %O — it lists a stale reference closure, so an assembly present in the output folder can still fail to load"
+            project
+            manifest
+            manifestMtime
+            assets
+            assetsMtime
     | InputsUndeterminable(project, reason) ->
         sprintf
             "%s: cannot determine what this test run's inputs are (%s) — refusing to call it fresh; build it and let the build report the error"
@@ -504,6 +534,39 @@ let private staleContribution
         |> Option.orElseWith staleCopy
         |> Option.orElseWith staleAssemblyCopy
 
+/// Is the runtime dependency manifest in `tfmDir` older than the restore it is
+/// generated from?
+///
+/// Asked ONLY of the project that is about to run, never of its closure: the host
+/// resolves through the entry assembly's manifest, and a library's own `deps.json` is
+/// not read at all. So the question has exactly one subject, and asking it of the
+/// closure would manufacture refusals nothing can act on.
+///
+/// `dotnet restore` writes `obj/project.assets.json`; only a BUILD writes
+/// `bin/<tfm>/<Assembly>.deps.json` from it. That asymmetry is the whole defect: the
+/// deps-freshness gate's automatic restore repairs the compile and leaves the manifest
+/// behind, so the compile error looks transient while the load failure survives.
+let private staleDepsManifest (projectDir: string) (assemblyName: string) (tfmDir: string) : StaleInput option =
+    let assets = Path.Combine(projectDir, "obj", "project.assets.json")
+    let manifest = Path.Combine(tfmDir, assemblyName + ".deps.json")
+
+    // Absence is never staleness here, the same rule the rest of this module follows: a
+    // project with no restore output (an old-style project, a cleaned `obj/`) and one
+    // that generates no manifest are both legitimate, and there is nothing to compare.
+    if not (File.Exists assets) || not (File.Exists manifest) then
+        None
+    else
+        let assetsMtime = File.GetLastWriteTimeUtc assets
+        let manifestMtime = File.GetLastWriteTimeUtc manifest
+
+        // STRICT `>`. A build writes the restore first and the manifest after it, so
+        // equal timestamps — a coarse filesystem, or both inside one tick — are the
+        // NORMAL healthy shape and must not read as stale.
+        if assetsMtime > manifestMtime then
+            Some(DepsManifestOlderThanRestore(projectLabel projectDir, assets, manifest, assetsMtime, manifestMtime))
+        else
+            None
+
 /// Is the test project's output at `tfmDir` stale — i.e. is ANY project in its
 /// closure contributing something out of date to it? `ordered` is that closure,
 /// test project first.
@@ -586,8 +649,16 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         | Ok _ when Array.isEmpty candidateTfmDirs -> None // nothing built to be stale — presence probe's business
         | Ok ordered ->
             // Stale iff NO output dir is fresh (see the multi-TFM note above).
-            let perTfm =
-                candidateTfmDirs |> Array.map (staleInTfmDir cache target.AssemblyName ordered)
+            //
+            // The manifest check runs FIRST per dir: it is two `stat`s against the walk's
+            // hundreds, and when it fires it is the more specific finding — a tree whose
+            // manifest predates its restore is one no compile or copy verdict can explain.
+            let judgeTfmDir (tfmDir: string) : StaleInput option =
+                match staleDepsManifest target.ProjectDir target.AssemblyName tfmDir with
+                | Some _ as manifestStale -> manifestStale
+                | None -> staleInTfmDir cache target.AssemblyName ordered tfmDir
+
+            let perTfm = candidateTfmDirs |> Array.map judgeTfmDir
 
             // …except that IGNORANCE does not get the multi-TFM benefit of the doubt.
             // "Some other TFM is fresh, so there is a fresh way to run" is only sound

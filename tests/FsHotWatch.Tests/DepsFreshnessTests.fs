@@ -601,6 +601,48 @@ let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not s
     test <@ runs = 1 @>
     test <@ second = RecoveredOk @>
 
+/// AUTOMATION-528, direction B. `Stale` is TWO facts wearing one label: "the assets are
+/// older than a dep file" and "there are no assets at all". The content baseline can only
+/// vouch for the first — nothing in the signature is derived from `obj/`, so a
+/// `rm -rf obj/` (an ordinary repository clean) leaves the signature exactly where it was
+/// and the suppression arm would certify a project with NO restore output on disk. FCS
+/// would then type-check against an empty reference set and produce the phantom
+/// "namespace/type not found" storm this gate exists to prevent.
+///
+/// The signature matching is what makes this reachable, so the fix is not to weaken it:
+/// presence is a separate question and `evaluateProject` is already handed the probe that
+/// answers it. `evaluateProject: mtime-Stale but dep signature matches baseline ->
+/// Proceed with NO restore` is the positive control — the suppression this guards must
+/// keep firing on a workspace whose assets are still there.
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-528: a matching baseline never certifies a project whose assets are GONE`` () =
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded(ProcessOutput.Drained "restored")
+
+    let sigStable (_: string) = "dep-sig-stable"
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    // Cycle 1: genuinely Fresh, assets on disk — records the known-good baseline.
+    let first = evaluateProject (fun _ -> Fresh) sigStable assetsYes runner tracker proj
+
+    // Cycle 2: `obj/` was cleaned. The declared deps did not move, so the signature
+    // still matches — but there is nothing left to be fresh.
+    let second = evaluateProject (fun _ -> Stale) sigStable assetsNo runner tracker proj
+
+    test <@ first = Proceed @>
+    test <@ runs = 1 @>
+
+    // A restore that reports success without producing assets is the existing FailFast,
+    // and it is the honest answer here: the gate asked for a restore and did not get one.
+    match second with
+    | FailFast(msg, _) -> test <@ msg.Contains "still missing" @>
+    | other -> failwithf "expected the cleaned workspace to be restored, not certified; got %A" other
+
 /// Suppression only fires against a previously-recorded known-good baseline.
 [<Fact(Timeout = 5000)>]
 let ``evaluateProject: Stale on first sighting (no baseline) still restores`` () =
