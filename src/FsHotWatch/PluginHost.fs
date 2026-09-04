@@ -14,6 +14,21 @@ type private StatusMsg =
     | GetStatus of string * AsyncReplyChannel<PluginStatus option>
     | GetAllStatuses of AsyncReplyChannel<Map<string, PluginStatus>>
 
+/// What one pass of every registered preprocessor did, for the caller that needs more
+/// than the suppression set: `fshw format` renders `Lines` as its reply and `Refused`
+/// as its failure, so the reply names the formatter that ran — or the reason none did.
+type PreprocessorsRun =
+    {
+        /// Union of every preprocessor's `Modified` — the daemon's watcher-suppression set.
+        Modified: string list
+        /// One status line per preprocessor that ran (`format: rewrote 0 of 12 file(s) — …`).
+        Lines: string list
+        /// What each preprocessor that ran actually ran — its `PreprocessResult.Evidence`.
+        Evidence: string list
+        /// `(name, reason)` for every preprocessor that could not run at all.
+        Refused: (string * string) list
+    }
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (
@@ -260,27 +275,50 @@ type PluginHost
         setStatus preprocessor.Name Idle
         preprocessors.Add(preprocessor)
 
-    /// Run all preprocessors on the given files. Returns files that were modified.
-    member _.RunPreprocessors(files: string list) : string list =
+    /// Run all preprocessors on the given files.
+    ///
+    /// Each preprocessor's status line is its own evidence — `formatted 0 of 12 files —
+    /// dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)` — and a pass that
+    /// could not run (`Error`) or threw is a FAILED status carrying the reason, so it can
+    /// never be read as "nothing needed rewriting" (AUTOMATION-447).
+    member _.RunPreprocessors(files: string list) : PreprocessorsRun =
         let mutable modifiedFiles = []
+        let mutable lines = []
+        let mutable evidence = []
+        let mutable refused = []
 
         for preprocessor in preprocessors do
             let startedAt = System.DateTime.UtcNow
             setStatus preprocessor.Name (Running(since = startedAt))
 
+            // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
             try
-                let modified = preprocessor.Process files repoRoot
-                modifiedFiles <- modified @ modifiedFiles
-                let finishedAt = System.DateTime.UtcNow
+                match preprocessor.Process files repoRoot with
+                | Result.Ok result ->
+                    modifiedFiles <- result.Modified @ modifiedFiles
+                    let finishedAt = System.DateTime.UtcNow
 
-                let summary =
-                    match modified.Length with
-                    | 0 -> $"%d{files.Length} file(s) checked, none rewritten"
-                    | n -> $"%d{n} of %d{files.Length} file(s) rewritten"
+                    let summary =
+                        $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
 
-                setStatus preprocessor.Name (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                    lines <- summary :: lines
+                    evidence <- result.Evidence :: evidence
+
+                    setStatus
+                        preprocessor.Name
+                        (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                | Result.Error reason ->
+                    let finishedAt = System.DateTime.UtcNow
+                    let summary = $"%s{preprocessor.Name} refused: %s{reason}"
+                    refused <- (preprocessor.Name, reason) :: refused
+                    Logging.error preprocessor.Name summary
+
+                    setStatus
+                        preprocessor.Name
+                        (Failed(reason, finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
             with ex ->
                 let finishedAt = System.DateTime.UtcNow
+                refused <- (preprocessor.Name, ex.Message) :: refused
 
                 setStatus
                     preprocessor.Name
@@ -290,7 +328,10 @@ type PluginHost
                         RunVerdict.create $"preprocessor failed: %s{ex.Message}" (finishedAt - startedAt)
                     ))
 
-        modifiedFiles |> List.distinct
+        { Modified = modifiedFiles |> List.distinct
+          Lines = List.rev lines
+          Evidence = List.rev evidence
+          Refused = List.rev refused }
 
     /// Emit a file change event to all registered plugins.
     ///
@@ -616,24 +657,51 @@ type PluginHost
         | true, p -> Some p
         | false, _ -> None
 
-    /// Force a specific FileCommandPlugin to re-run. Clears the plugin's task
-    /// cache and emits a synthetic FileChanged event whose path matches the
-    /// plugin's registered pattern — other plugins cache-hit (commit unchanged),
-    /// only the target plugin sees a cache miss.
+    /// Force a plugin to re-run from a cleared task cache.
     ///
-    /// Returns `Error` if the plugin has no registered pattern (which is the
-    /// case for non-FileCommand plugins and for FileCommand plugins configured
-    /// only with `afterTests`). The caller is responsible for waiting until
-    /// plugins settle before inspecting status.
-    member this.RerunFileCommandPlugin(name: string) : Result<unit, string> =
+    /// A FileCommand plugin with a registered pattern gets a synthetic `FileChanged`
+    /// whose path matches only it — other plugins cache-hit, only the target sees a
+    /// miss. Any other plugin subscribed to `FileChanged` (format-check, AUTOMATION-447)
+    /// gets a `SourceChanged` over `sourceFiles ()` — the daemon's registered source
+    /// set, the same files a cold scan would deliver — with its cache cleared first,
+    /// so the run it produces is a fresh one over the real tree, not a replay.
+    ///
+    /// Returns `Error` with the reason when nothing can be re-fired: no such plugin, a
+    /// plugin that does not consume file changes (a FileCommand configured only with
+    /// `afterTests`, a build-triggered plugin), a preprocessor (which has no cached
+    /// state to refresh — `fshw format` re-runs it over every registered file), or a
+    /// registered source set that is still empty. The caller waits for plugins to
+    /// settle before inspecting status.
+    member this.RerunPlugin(name: string, sourceFiles: unit -> string list) : Result<unit, string> =
         match this.GetFileCommandPattern(name) with
-        | None ->
-            Result.Error
-                $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)"
         | Some pattern ->
             this.ClearTaskCachePlugin(name)
             this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath pattern ])
             Result.Ok()
+        | None ->
+            let registered =
+                registeredPlugins
+                |> Seq.tryFind (fun p -> PluginFramework.PluginName.value p.Name = name)
+
+            let isPreprocessor = preprocessors |> Seq.exists (fun p -> p.Name = name)
+
+            match registered with
+            | Some p when p.Subscriptions.Contains PluginFramework.SubscribeFileChanged ->
+                match sourceFiles () with
+                | [] ->
+                    Result.Error
+                        $"Plugin '%s{name}' consumes file changes, but no source files are registered yet — run `fshw scan` first"
+                | files ->
+                    this.ClearTaskCachePlugin(name)
+                    this.EmitFileChanged(SourceChanged files)
+                    Result.Ok()
+            | Some _ ->
+                Result.Error
+                    $"Plugin '%s{name}' has no registered file pattern and does not consume file changes, so there is no event to re-fire (only FileCommand plugins with a pattern and FileChanged subscribers support rerun)"
+            | None when isPreprocessor ->
+                Result.Error
+                    $"'%s{name}' is a preprocessor, not a plugin: it keeps no cached state to refresh — `fshw format` re-runs it over every registered file and reports what ran"
+            | None -> Result.Error $"Plugin '%s{name}' has no registered file pattern and is not a registered plugin"
 
     /// Tear down all plugins that have a Teardown function.
     member _.Teardown() =

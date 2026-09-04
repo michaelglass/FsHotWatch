@@ -1464,10 +1464,23 @@ let internal buildTestExtensions
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
-    // Format plugin
+    // Format plugin. Both shapes run the repository's PINNED `dotnet fantomas`
+    // (AUTOMATION-447): say which one at registration so the daemon log carries the
+    // version before any file is touched, and say loudly when there is none — the
+    // plugin will refuse every run until the pin exists, and that must not read as
+    // a formatter that found nothing to do.
+    let logFormatPin () =
+        match FsHotWatch.Fantomas.FantomasTool.readPin repoRoot with
+        | Result.Ok pin -> Logging.info "config" $"format: %s{FsHotWatch.Fantomas.FantomasTool.describe repoRoot pin}"
+        | Result.Error e ->
+            Logging.error
+                "config"
+                $"format: %s{FsHotWatch.Fantomas.FantomasTool.PinError.render e} — the format plugin refuses every run until then"
+
     match config.Format with
     | Auto ->
         Logging.info "config" "Registering FormatPreprocessor"
+        logFormatPin ()
 
         // A preprocessor runs inside the change agent AND inside the scan, so an
         // unbounded one is the worse of the two to leave uncapped.
@@ -1478,7 +1491,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         )
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
-        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck config.TimeoutSec)
+        logFormatPin ()
+        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck repoRoot config.TimeoutSec)
     | Off -> ()
 
     // When includeOutsideRepo is false (default), the report-producing plugins

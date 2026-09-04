@@ -40,9 +40,10 @@ let runFullPipeline (repoRoot: string) =
     // a file on save doesn't re-trigger the whole pipeline.
     daemon.RegisterPreprocessor(FormatPreprocessor())
 
-    // Read-only format check (reports unformatted files).
+    // Read-only format check (reports unformatted files). Runs the Fantomas the
+    // repository pins in `.config/dotnet-tools.json`, from `repoRoot`.
     daemon.RegisterHandler(
-        FormatCheckPlugin.createFormatCheck None // timeoutSec
+        FormatCheckPlugin.createFormatCheck repoRoot None // timeoutSec
     )
 
     // FSharpLint, using the warm checker's results.
