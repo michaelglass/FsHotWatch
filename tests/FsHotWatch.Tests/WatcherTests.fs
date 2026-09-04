@@ -3,6 +3,7 @@ module FsHotWatch.Tests.WatcherTests
 
 open System
 open System.IO
+open System.Runtime.InteropServices
 open System.Threading
 open Xunit
 open Swensen.Unquote
@@ -549,11 +550,192 @@ let ``macOS native start failure selects one polling watcher`` () =
             new PollingFileWatcher(tmpDir, ignore, [], false, None, None) :> IDisposable
 
         use watcher =
-            FileWatcher.createWithFactories tmpDir ignore [] 0.05 failNative system polling
+            FileWatcher.createWithFactories
+                tmpDir
+                ignore
+                []
+                0.05
+                FileWatcher.NativeStartRetry.none
+                failNative
+                system
+                polling
 
         test <@ systemCreations = 0 @>
         test <@ watcher.Disposables.Length = 1 @>
         test <@ watcher.Disposables.Head :? PollingFileWatcher @>)
+
+// === AUTOMATION-434: a transiently refused native start is retried, not demoted ===
+
+/// A retry budget whose waits are recorded instead of slept.
+let private recordingRetry (backoffMs: int list) =
+    let sleeps = ResizeArray<int>()
+
+    ({ BackoffMs = backoffMs
+       Sleep = sleeps.Add }
+    : FileWatcher.NativeStartRetry),
+    sleeps
+
+let private inert (_name: string) =
+    { new IDisposable with
+        member _.Dispose() = () }
+
+/// A native factory that raises `refusal` for the first `refusals` attempts, then succeeds.
+let private nativeRefusing (refusals: int) (refusal: unit -> exn) =
+    let mutable attempts = 0
+
+    let factory _dirs _onFile _onCoalesced _latency : IDisposable =
+        attempts <- attempts + 1
+
+        if attempts <= refusals then
+            raise (refusal ())
+        else
+            inert "native"
+
+    factory, (fun () -> attempts)
+
+let private countingPolling () =
+    let mutable created = 0
+
+    let factory _repo _onChange _extras : IDisposable =
+        created <- created + 1
+        inert "polling"
+
+    factory, (fun () -> created)
+
+let private inertSystem _handle _spec = inert "system"
+
+[<Fact(Timeout = 15000)>]
+let ``macOS native start refused once then accepted keeps the native watcher`` () =
+    withTempDir "watcher-native-transient" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let retry, sleeps = recordingRetry [ 100; 300; 900 ]
+
+        let native, attempts =
+            nativeRefusing 1 (fun () -> FsHotWatch.MacFsEvents.StartFailedException() :> exn)
+
+        let polling, pollingCreated = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+
+        test <@ attempts () = 2 @>
+        test <@ sleeps |> Seq.toList = [ 100 ] @>
+        test <@ pollingCreated () = 0 @>
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>)
+
+[<Fact(Timeout = 15000)>]
+let ``macOS native create refusal spends the same retry budget as a start refusal`` () =
+    withTempDir "watcher-native-create" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let retry, sleeps = recordingRetry [ 100; 300; 900 ]
+
+        let native, attempts =
+            nativeRefusing 2 (fun () -> FsHotWatch.MacFsEvents.CreateFailedException() :> exn)
+
+        let polling, pollingCreated = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+
+        test <@ attempts () = 3 @>
+        test <@ sleeps |> Seq.toList = [ 100; 300 ] @>
+        test <@ pollingCreated () = 0 @>
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>)
+
+[<Fact(Timeout = 15000)>]
+let ``macOS native start refused past the retry budget falls back to polling and names the refusal`` () =
+    withTempDir "watcher-native-persistent" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let retry, sleeps = recordingRetry [ 100; 300; 900 ]
+
+        let native, attempts =
+            nativeRefusing Int32.MaxValue (fun () -> FsHotWatch.MacFsEvents.StartFailedException() :> exn)
+
+        let polling, pollingCreated = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+
+        // One attempt per budget entry plus the first: the budget is bounded and fully spent.
+        test <@ attempts () = 4 @>
+        test <@ sleeps |> Seq.toList = [ 100; 300; 900 ] @>
+        test <@ pollingCreated () = 1 @>
+        test <@ watcher.Disposables.Length = 1 @>
+
+        let reason =
+            match watcher.Mode with
+            | WatcherMode.ContentPolling reason -> reason
+            | WatcherMode.NativeEvents -> ""
+
+        test <@ reason.Contains("FSEventStreamStart") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``macOS non-refusal native fault falls back at once without spending the budget`` () =
+    withTempDir "watcher-native-fault" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let retry, sleeps = recordingRetry [ 100; 300; 900 ]
+
+        let native, attempts =
+            nativeRefusing Int32.MaxValue (fun () -> InvalidOperationException("callback pin failed") :> exn)
+
+        let polling, pollingCreated = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+
+        test <@ attempts () = 1 @>
+        test <@ sleeps.Count = 0 @>
+        test <@ pollingCreated () = 1 @>
+        test <@ watcher.Mode = WatcherMode.ContentPolling "callback pin failed" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``macOS healthy native start pays no retry delay`` () =
+    withTempDir "watcher-native-healthy" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let retry, sleeps = recordingRetry [ 100; 300; 900 ]
+        let native, attempts = nativeRefusing 0 (fun () -> failwith "unreachable")
+        let polling, pollingCreated = countingPolling ()
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native inertSystem polling
+
+        test <@ attempts () = 1 @>
+        test <@ sleeps.Count = 0 @>
+        test <@ pollingCreated () = 0 @>
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>)
+
+[<Fact(Timeout = 150000)>]
+let ``macOS native watcher recovered from one refused start delivers real file events`` () =
+    if not (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) then
+        Assert.Skip("macOS only")
+    else
+        withTempDir "watcher-native-recovered" (fun tmpDir ->
+            let srcDir = Path.Combine(tmpDir, "src")
+            Directory.CreateDirectory(srcDir) |> ignore
+            let retry, sleeps = recordingRetry [ 100 ]
+            let mutable attempts = 0
+
+            // First attempt: the refusal seen on 2026-08-21. Second: the real stream.
+            let native dirs onFile onCoalesced latency : IDisposable =
+                attempts <- attempts + 1
+
+                if attempts = 1 then
+                    raise (FsHotWatch.MacFsEvents.StartFailedException())
+                else
+                    FsHotWatch.MacFsEvents.createWithCoalesced dirs onFile onCoalesced latency :> IDisposable
+
+            let changes = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+
+            use watcher =
+                FileWatcher.createWithNativeStream tmpDir changes.Add [] 0.05 retry native
+
+            test <@ attempts = 2 @>
+            test <@ sleeps |> Seq.toList = [ 100 ] @>
+            test <@ watcher.Mode = WatcherMode.NativeEvents @>
+
+            // Recovery is only real if the stream that finally started delivers.
+            probeUntilEvent srcDir (fun () -> changes.Count >= 1) 60000
+            test <@ changes.Count >= 1 @>)
 
 [<Fact(Timeout = 15000)>]
 let ``macOS setup creates native first and rolls every partial watcher back`` () =
@@ -589,6 +771,7 @@ let ``macOS setup creates native first and rolls every partial watcher back`` ()
                 ignore
                 [ FilePattern.parse "*.ratchet.json" ]
                 0.05
+                FileWatcher.NativeStartRetry.none
                 native
                 system
                 polling

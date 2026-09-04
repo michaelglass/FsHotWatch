@@ -179,10 +179,21 @@ let private createCFStringArray (paths: string list) =
 
 // ─── FsEventStream ──────────────────────────────────────────────────
 
+/// macOS refused one of the native stream's setup calls. Refusals are the transient
+/// class of native failure (AUTOMATION-434: `FSEventStreamStart` returning false on a
+/// healthy `fseventsd`), so watcher setup retries them with bounded backoff before
+/// failing over to polling; every other exception fails over at once.
+type internal NativeStreamRefusedException(message: string) =
+    inherit Exception(message)
+
+/// `FSEventStreamCreate` returned a null stream.
+type internal CreateFailedException() =
+    inherit NativeStreamRefusedException("FSEventStreamCreate returned null — failed to create FSEvents stream")
+
 /// The native stream was created and scheduled, but macOS refused to start it.
 /// Kept distinct so watcher setup can fail over without string-matching a native error.
 type internal StartFailedException() =
-    inherit Exception("FSEventStreamStart returned false — failed to start FSEvents stream")
+    inherit NativeStreamRefusedException("FSEventStreamStart returned false — failed to start FSEvents stream")
 
 /// Serializes native teardown and keeps release behind run-loop termination.
 /// A timed-out join leaks rather than releasing memory a live native thread may use.
@@ -369,7 +380,7 @@ type FsEventStream
                 )
 
             if streamRef = nativeint 0 then
-                failwith "FSEventStreamCreate returned null — failed to create FSEvents stream"
+                raise (CreateFailedException())
 
             // kCFRunLoopDefaultMode is a CFString constant — create it by value
             runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", kCFStringEncodingUTF8)
