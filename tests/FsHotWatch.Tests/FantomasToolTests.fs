@@ -386,13 +386,13 @@ let ``editorConfigInputs collects every editorconfig from the repo root down to 
         File.WriteAllText(file, "module A\n")
 
         let inputs = editorConfigInputs dir [ file ]
-        let rootConfig = Path.Combine(dir, ".editorconfig")
-        let srcConfig = Path.Combine(dir, "src", ".editorconfig")
 
+        // AUTOMATION-564: the LABEL is repo-relative, so the same `.editorconfig` is
+        // the same cache-key input in every checkout of the repository.
         test
             <@
-                inputs = [ $"editorconfig:%s{rootConfig}", "root = true\n"
-                           $"editorconfig:%s{srcConfig}", "[*.fs]\nmax_line_length = 80\n" ]
+                inputs = [ "editorconfig:repo:.editorconfig", "root = true\n"
+                           "editorconfig:repo:src/.editorconfig", "[*.fs]\nmax_line_length = 80\n" ]
             @>
 
         // A file that does not exist yet still resolves its directories' configs.

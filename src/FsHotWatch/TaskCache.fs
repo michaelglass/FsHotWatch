@@ -59,11 +59,118 @@ type TaskCacheResult =
         EmittedEvents: CachedEvent list
     }
 
+/// Why a cache lookup produced nothing. A cold start must be able to say WHICH
+/// input moved, not merely that it missed: with content-addressed keys shared
+/// across checkouts, "miss" is the only observable difference between a key that
+/// correctly noticed an edit and a key that is accidentally salted with something
+/// machine-local (an absolute path, a temp directory). Naming the differing label
+/// is what makes the second case visible instead of merely slow.
+[<RequireQualifiedAccess>]
+type CacheMissReason =
+    /// Nothing has ever been written under this plugin (+ file). A genuinely cold key.
+    | NoEntryForKey
+    /// An entry for this plugin (+ file) exists under a DIFFERENT key, and these
+    /// merkle input labels are the ones whose values differ. Sorted, so the reason
+    /// is stable across runs.
+    | InputsChanged of labels: string list
+    /// An entry exists under a different key, but the two keys cannot be compared:
+    /// one of them was not minted by `merkleCacheKey` (e.g. a commit-id key), or the
+    /// stored entry predates input recording. Honest "different, reason unknown".
+    | InputsNotComparable
+    /// The entry file was found but could not be read as a result — corrupt, written
+    /// by another entry format, or carrying paths that cannot be rebound into THIS
+    /// checkout. Always a miss, never a partial replay.
+    | UnreadableEntry of detail: string
+
+/// The outcome of a cache lookup. `CacheMiss` carries its reason so the caller can
+/// log why a task is about to be recomputed.
+[<NoComparison>]
+type CacheLookup =
+    | CacheHit of TaskCacheResult
+    | CacheMiss of CacheMissReason
+
+/// Human-readable rendering of a miss reason, for the daemon log.
+[<RequireQualifiedAccess>]
+module CacheMissReason =
+    let describe (reason: CacheMissReason) =
+        match reason with
+        | CacheMissReason.NoEntryForKey -> "no-entry"
+        | CacheMissReason.InputsChanged labels -> "inputs-changed:" + String.concat "," (List.sort labels)
+        | CacheMissReason.InputsNotComparable -> "key-differs (inputs not comparable)"
+        | CacheMissReason.UnreadableEntry detail -> $"unreadable-entry (%s{detail})"
+
+/// Per-label digests of the inputs that produced a merkle cache key, remembered in
+/// process so a miss can be explained.
+///
+/// Diagnostics only. Nothing here participates in a hit/miss DECISION — the decision
+/// is `storedKey = requestedKey`, exactly as before. A registry that has forgotten a
+/// key degrades the reason to `InputsNotComparable`; it can never turn a miss into a
+/// hit.
+module KeyFingerprints =
+    open System.Collections.Concurrent
+
+    /// Bounded, because a long-lived daemon mints a key per file per event and this
+    /// map would otherwise grow without limit. On overflow the whole map is dropped
+    /// rather than evicted one entry at a time: losing a fingerprint costs a less
+    /// specific miss reason and nothing else, so the simplest bound is the right one.
+    [<Literal>]
+    let internal Capacity = 8192
+
+    let private fingerprints = ConcurrentDictionary<string, (string * string) list>()
+
+    /// Digest of one input VALUE. Truncated: the fingerprint is stored in every cache
+    /// entry, and 16 hex characters is far past the point where two genuinely
+    /// different values collide often enough to mislabel a miss reason.
+    let digest (value: string) =
+        (FsHotWatch.CheckCache.sha256Hex value).Substring(0, 16)
+
+    /// Remember the labelled digests behind `hash`.
+    let record (hash: string) (labelDigests: (string * string) list) =
+        if fingerprints.Count >= Capacity then
+            fingerprints.Clear()
+
+        fingerprints[hash] <- labelDigests
+
+    /// The labelled digests behind `hash`, if this process minted it.
+    let tryGet (hash: string) =
+        match fingerprints.TryGetValue hash with
+        | true, inputs -> Some inputs
+        | false, _ -> None
+
+    /// The labels on which two fingerprints disagree — including labels present in
+    /// only one of them, because an input APPEARING or DISAPPEARING is exactly as
+    /// much of a difference as its value moving.
+    let differingLabels (stored: (string * string) list) (requested: (string * string) list) =
+        let storedMap = Map.ofList stored
+        let requestedMap = Map.ofList requested
+
+        Set.union (storedMap |> Map.keys |> Set.ofSeq) (requestedMap |> Map.keys |> Set.ofSeq)
+        |> Set.filter (fun label -> Map.tryFind label storedMap <> Map.tryFind label requestedMap)
+        |> Set.toList
+
+/// Explain a key mismatch: name the differing inputs when both fingerprints are
+/// known, and say so honestly when they are not.
+///
+/// `storedInputs` is `None` when the entry carries no recorded fingerprint (a
+/// commit-id key, or an entry written before fingerprints were stored).
+let missReasonForKeys (storedInputs: (string * string) list option) (requestedKey: ContentHash) : CacheMissReason =
+    match storedInputs, KeyFingerprints.tryGet (ContentHash.value requestedKey) with
+    | Some stored, Some requested ->
+        match KeyFingerprints.differingLabels stored requested with
+        // Different hashes with identical labelled digests means the difference lies
+        // somewhere the fingerprint does not see. Do not claim to know which input.
+        | [] -> CacheMissReason.InputsNotComparable
+        | labels -> CacheMissReason.InputsChanged labels
+    | _ -> CacheMissReason.InputsNotComparable
+
 /// Cache for plugin task results.
 type ITaskCache =
     /// Try to retrieve a cached result. Returns Some only when the compositeKey
     /// matches AND the stored result's CacheKey matches the provided cacheKey.
     abstract TryGet: compositeKey: CompositeKey -> cacheKey: ContentHash -> TaskCacheResult option
+    /// As `TryGet`, but a miss carries WHY. Same hit/miss decision by construction —
+    /// implementations define `TryGet` in terms of this one so the two cannot drift.
+    abstract Lookup: compositeKey: CompositeKey -> cacheKey: ContentHash -> CacheLookup
     /// Store a result under the given compositeKey.
     abstract Set: compositeKey: CompositeKey -> cacheKey: ContentHash -> result: TaskCacheResult -> unit
     /// Remove all cached entries.
@@ -81,15 +188,32 @@ type InMemoryTaskCache() =
     let cache =
         ConcurrentDictionary<struct (CompositeKey * ContentHash), TaskCacheResult>()
 
-    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
+    /// The key each composite was last written under, so a miss can name the inputs
+    /// that moved without scanning every entry. Mirrors `FileTaskCache`'s `livePaths`.
+    let latestKey = ConcurrentDictionary<CompositeKey, ContentHash>()
+
+    let lookup (compositeKey: CompositeKey) (cacheKey: ContentHash) =
         match cache.TryGetValue(struct (compositeKey, cacheKey)) with
-        | true, result -> Some result
-        | _ -> None
+        | true, result -> CacheHit result
+        | _ ->
+            match latestKey.TryGetValue compositeKey with
+            | true, storedKey ->
+                missReasonForKeys (KeyFingerprints.tryGet (ContentHash.value storedKey)) cacheKey
+                |> CacheMiss
+            | false, _ -> CacheMiss CacheMissReason.NoEntryForKey
+
+    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
+        match lookup compositeKey cacheKey with
+        | CacheHit result -> Some result
+        | CacheMiss _ -> None
 
     let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         cache.[struct (compositeKey, cacheKey)] <- result
+        latestKey[compositeKey] <- cacheKey
 
-    let clear () = cache.Clear()
+    let clear () =
+        cache.Clear()
+        latestKey.Clear()
 
     let clearPlugin (plugin: string) =
         for key in cache.Keys |> Seq.toArray do
@@ -97,6 +221,7 @@ type InMemoryTaskCache() =
 
             if compKey.Plugin = plugin then
                 cache.TryRemove(key) |> ignore
+                latestKey.TryRemove(compKey) |> ignore
 
     let clearFile (file: string) =
         for key in cache.Keys |> Seq.toArray do
@@ -104,6 +229,7 @@ type InMemoryTaskCache() =
 
             if compKey.File = Some file then
                 cache.TryRemove(key) |> ignore
+                latestKey.TryRemove(compKey) |> ignore
 
     let clearPluginFile (plugin: string) (file: string) =
         for key in cache.Keys |> Seq.toArray do
@@ -111,9 +237,13 @@ type InMemoryTaskCache() =
 
             if compKey.Plugin = plugin && compKey.File = Some file then
                 cache.TryRemove(key) |> ignore
+                latestKey.TryRemove(compKey) |> ignore
 
     /// Try to retrieve a cached result.
     member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
+
+    /// Retrieve a cached result, or the reason there is none.
+    member _.Lookup(compositeKey: CompositeKey, cacheKey: ContentHash) = lookup compositeKey cacheKey
 
     /// Store a result under the given compositeKey.
     member _.Set(compositeKey: CompositeKey, cacheKey: ContentHash, result: TaskCacheResult) =
@@ -133,6 +263,7 @@ type InMemoryTaskCache() =
 
     interface ITaskCache with
         member _.TryGet compositeKey cacheKey = tryGet compositeKey cacheKey
+        member _.Lookup compositeKey cacheKey = lookup compositeKey cacheKey
         member _.Set compositeKey cacheKey result = set compositeKey cacheKey result
         member _.Clear() = clear ()
         member _.ClearPlugin plugin = clearPlugin plugin
@@ -189,4 +320,11 @@ let merkleCacheKey (inputs: (string * string) list) : ContentHash =
         sb.Append(value) |> ignore
         sb.Append('|') |> ignore
 
-    ContentHash.create (FsHotWatch.CheckCache.sha256Hex (sb.ToString()))
+    let hash = FsHotWatch.CheckCache.sha256Hex (sb.ToString())
+
+    // Remember what went into this key so a later MISS can name the input that moved.
+    // Diagnostics only: the returned hash is byte-for-byte what it was before this
+    // line existed, so no hit/miss decision depends on the registry.
+    KeyFingerprints.record hash (inputs |> List.map (fun (label, value) -> label, KeyFingerprints.digest value))
+
+    ContentHash.create hash
