@@ -44,12 +44,11 @@ let internal canonicalGitDir (gitDir: string) =
 /// turns into a private namespace.
 let private tryReadPointer (path: string) =
     try
-        if File.Exists path then
-            match File.ReadAllText(path).Trim() with
-            | "" -> None
-            | text -> Some text
-        else
+        if not (File.Exists path) then
             None
+        else
+            let text = File.ReadAllText(path).Trim()
+            if String.IsNullOrEmpty text then None else Some text
     with _ ->
         None
 

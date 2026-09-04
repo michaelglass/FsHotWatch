@@ -45,17 +45,19 @@ let CacheHomeEnvVar = "FSHW_CACHE_HOME"
 /// decide it. A pure function of its arguments so the precedence is testable without
 /// mutating the process environment — which a parallel test suite cannot do safely.
 let internal sharedCacheHomeFrom (cacheHomeOverride: string) (xdgCacheHome: string) (userProfile: string) =
-    match cacheHomeOverride with
-    | null
-    | "" ->
+    // `IsNullOrEmpty`, not a `null | ""` pattern: an unset variable and one exported
+    // empty by a wrapper script are the SAME state — "not configured" — and writing
+    // them as one test says so.
+    if not (System.String.IsNullOrEmpty cacheHomeOverride) then
+        cacheHomeOverride
+    else
         let baseDir =
-            match xdgCacheHome with
-            | null
-            | "" -> Path.Combine(userProfile, ".cache")
-            | xdg -> xdg
+            if System.String.IsNullOrEmpty xdgCacheHome then
+                Path.Combine(userProfile, ".cache")
+            else
+                xdgCacheHome
 
         Path.Combine(baseDir, "fshw")
-    | explicitHome -> explicitHome
 
 /// The box-wide directory shared caches live under — `$FSHW_CACHE_HOME`, else
 /// `$XDG_CACHE_HOME/fshw`, else `~/.cache/fshw`.

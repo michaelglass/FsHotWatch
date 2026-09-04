@@ -103,11 +103,17 @@ let internal relativizeOption (repoRoot: string option) (option: string) =
 let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpProjectOptions) : string =
     let relativize = relativizeOption repoRoot
 
+    // One spelling of "relativize these and join them", used by both string arrays.
+    // Two copies of it would be two places for the encoding to drift apart, and a
+    // drift there is a hash that silently stops matching across checkouts.
+    let relativizeJoined (values: string array) =
+        values |> Array.map relativize |> String.concat "|"
+
     let parts =
         [ relativize (string options.ProjectFileName)
-          String.concat "|" (options.SourceFiles |> Array.map relativize)
+          relativizeJoined options.SourceFiles
           string (Array.length options.ReferencedProjects)
-          String.concat "|" (options.OtherOptions |> Array.map relativize) ]
+          relativizeJoined options.OtherOptions ]
 
     sha256Hex (String.concat "||" parts)
 
