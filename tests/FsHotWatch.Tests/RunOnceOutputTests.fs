@@ -548,6 +548,73 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         (noTestProjectsConfig ())
         None
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-435. `--run-once` scans, settles, publishes and exits; it must never
+// depend on native watcher startup. The host is built exactly as the CLI builds it
+// (`runModeFor` on the parsed command) over a factory that THROWS, so reaching
+// watcher construction fails the test on that exception rather than on an assertion.
+// ---------------------------------------------------------------------------
+
+let private throwingWatcherFactory: Daemon.WatcherFactory =
+    fun _ _ _ _ _ -> failwith "--run-once must never construct a file watcher"
+
+/// The CLI's own host for `command`, minus the cache/config plumbing this test does
+/// not exercise: `RunMode` comes from `runModeFor`, so the test pins the wiring, not
+/// a hand-picked `OneShot`.
+let private hostFor (command: FsHotWatch.Cli.Program.Command) (root: string) =
+    Daemon.createWithWatcherFactory
+        (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+        root
+        { Daemon.DaemonOptions.defaults with
+            RunMode = FsHotWatch.Cli.Program.runModeFor command }
+        throwingWatcherFactory
+
+[<Theory(Timeout = 60000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``check and confirm --run-once complete without constructing a file watcher`` (confirm: bool) =
+    withProjectOnlyRepo "runonce-no-watcher" (fun repoRoot ->
+        let command, mode =
+            if confirm then
+                FsHotWatch.Cli.Program.Command.Confirm [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.CheckVerdict.Confirmation
+            else
+                FsHotWatch.Cli.Program.Command.Check [ FsHotWatch.Cli.Program.RunOnce ],
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+
+        let exitCode =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdict
+                (fun _ -> "")
+                mode
+                false
+                (hostFor command)
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        // The exit codes are the ones the watcher-backed tests above establish for this
+        // tree: `check` tolerates the unknown scope, `confirm` refuses it. A one-shot host
+        // changes what is CONSTRUCTED, not what is verdicted.
+        let expected = if confirm then 3 else 0
+        test <@ exitCode = expected @>)
+
+[<Fact(Timeout = 60000)>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``format --run-once completes without constructing a file watcher`` () =
+    withProjectOnlyRepo "runonce-format-no-watcher" (fun repoRoot ->
+        let exitCode =
+            runOnceAndReport
+                (fun _ -> "")
+                false
+                (hostFor (FsHotWatch.Cli.Program.Command.Format [ FsHotWatch.Cli.Program.RunOnce ]))
+                repoRoot
+                { noTestProjectsConfig () with
+                    Format = Auto }
+                (Some "format")
+
+        test <@ exitCode = 0 @>)
+
 let private daemonWithLateVanishedDiagnostic (root: string) =
     let daemon =
         Daemon.createWith

@@ -1581,7 +1581,7 @@ type Daemon
     internal
     (
         host: PluginHost,
-        watcher: FileWatcher,
+        watcher: FileWatcher option,
         pipeline: CheckPipeline,
         graph: ProjectGraph,
         repoRoot: string,
@@ -1711,7 +1711,7 @@ type Daemon
                 processRegistry.KillAll()
                 lifetime.Cancel()
                 lifetime.Dispose()
-                (watcher :> IDisposable).Dispose()
+                watcher |> Option.iter (fun w -> (w :> IDisposable).Dispose())
 
     /// Register a declarative framework-managed plugin handler.
     member _.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
@@ -2312,11 +2312,35 @@ module Daemon =
     let private sourceDebounceMs = 500
     let private projectDebounceMs = 200
 
+    /// Whether the daemon keeps observing the repository after its first scan.
+    /// Decided by the command that constructs the host, so a one-shot run cannot
+    /// reach watcher construction by accident (AUTOMATION-435): a `--run-once`
+    /// check used to inherit the persistent daemon's FSEvents startup and fail
+    /// there, in a stream it would never have read from.
+    [<RequireQualifiedAccess>]
+    type RunMode =
+        /// Persistent daemon: a `FileWatcher` (native events, or the polling
+        /// fallback) feeds edits into the change agent for the daemon's lifetime.
+        | Watching
+        /// One shot (`--run-once`): a single scan settles the verdict and the host
+        /// is disposed. No native FSEvents stream, `FileSystemWatcher`, or polling
+        /// thread is ever constructed — `ExtraWatchPatterns` and
+        /// `FsEventsLatencySeconds` are watcher inputs and have nothing to act on.
+        | OneShot
+
+    /// Constructs the repository watcher for a `Watching` daemon. The arguments
+    /// are `FileWatcher.create`'s; the seam exists so a test can prove a
+    /// `OneShot` host never calls it.
+    type WatcherFactory = string -> (FileChangeKind -> unit) -> bool option -> FilePattern list -> float -> FileWatcher
+
     /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
     /// and modify only what they need.
     [<NoComparison; NoEquality>]
     type DaemonOptions =
         {
+            /// `Watching` (the default) for a persistent daemon; `OneShot` for a
+            /// `--run-once` host, which then constructs no file watcher at all.
+            RunMode: RunMode
             CacheBackend: ICheckCacheBackend option
             CacheKeyProvider: ICacheKeyProvider option
             /// FCS diagnostic codes to suppress globally. `None` means no
@@ -2354,7 +2378,8 @@ module Daemon =
 
     module DaemonOptions =
         let defaults: DaemonOptions =
-            { CacheBackend = None
+            { RunMode = RunMode.Watching
+              CacheBackend = None
               CacheKeyProvider = None
               FcsSuppressedCodes = None
               ExcludePatterns = []
@@ -2377,6 +2402,7 @@ module Daemon =
         (workspaceLoader: IWorkspaceLoader option)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         (watcherIsMacOSOverride: bool option)
+        (watcherFactory: WatcherFactory)
         =
         // This MUST be the first thing that happens (AUTOMATION-147).
         //
@@ -2567,8 +2593,20 @@ module Daemon =
                 Logging.debug "watcher" $"%O{change}"
                 changeAgent.Post(Choice1Of2 change)
 
+            // The ONLY place a watcher can come from. A `OneShot` host never reaches
+            // the factory, so its verdict cannot depend on native watcher startup.
             let watcher =
-                FileWatcher.create repoRoot onChange watcherIsMacOSOverride extraWatchPatterns fsEventsLatencySeconds
+                match opts.RunMode with
+                | RunMode.Watching ->
+                    Some(
+                        watcherFactory
+                            repoRoot
+                            onChange
+                            watcherIsMacOSOverride
+                            extraWatchPatterns
+                            fsEventsLatencySeconds
+                    )
+                | RunMode.OneShot -> None
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
@@ -2639,7 +2677,24 @@ module Daemon =
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) None
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            None
+            FileWatcher.create
+
+    /// Deterministic watcher-construction seam: proves `RunMode.OneShot` never
+    /// invokes the factory and `RunMode.Watching` invokes it exactly once.
+    let internal createWithWatcherFactory
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (watcherFactory: WatcherFactory)
+        =
+        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) None watcherFactory
 
     /// Deterministic watcher-platform seam for daemon integration tests. Native
     /// FSEvents behavior has dedicated tests; scoped daemon tests use the
@@ -2651,7 +2706,14 @@ module Daemon =
         (opts: DaemonOptions)
         (isMacOSOverride: bool option)
         =
-        createWithCore checker repoRoot opts None (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList) isMacOSOverride
+        createWithCore
+            checker
+            repoRoot
+            opts
+            None
+            (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
+            isMacOSOverride
+            FileWatcher.create
 
     /// Deterministic loader/mapping seam for discovery concurrency tests.
     let internal createWithWorkspaceLoader
@@ -2661,7 +2723,7 @@ module Daemon =
         (loader: IWorkspaceLoader)
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
-        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None FileWatcher.create
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

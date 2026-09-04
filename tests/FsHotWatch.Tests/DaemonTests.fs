@@ -256,6 +256,60 @@ let ``daemon starts and stops without error`` () =
 
         test <@ task.IsCompleted @>)
 
+// --- AUTOMATION-435: `RunMode` is the ONLY thing that decides watcher construction ---
+
+/// A watcher factory that records how often the daemon asked for a watcher and
+/// hands back one that observes nothing — no FSEvents, no `FileSystemWatcher`.
+let private countingWatcherFactory (calls: int ref) : Daemon.WatcherFactory =
+    fun _ _ _ _ _ ->
+        Interlocked.Increment(&calls.contents) |> ignore
+
+        let inert: FsHotWatch.Watcher.FileWatcher =
+            { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+              Disposables = [] }
+
+        inert
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``a Watching daemon constructs its watcher exactly once`` () =
+    // Positive control for the OneShot test below: the same construction path, the
+    // default `RunMode`, and the factory IS reached — once, at construction.
+    withTempDir "daemon-watching" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let calls = ref 0
+
+        use _daemon =
+            Daemon.createWithWatcherFactory
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                (countingWatcherFactory calls)
+
+        test <@ calls.Value = 1 @>)
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``a OneShot daemon never touches the watcher factory`` () =
+    // The factory THROWS: had construction reached it, `createWithWatcherFactory`
+    // would raise and the test would fail on that exception, not on an assertion.
+    withTempDir "daemon-oneshot" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let throwingFactory: Daemon.WatcherFactory =
+            fun _ _ _ _ _ -> failwith "a OneShot host must never construct a file watcher"
+
+        use daemon =
+            Daemon.createWithWatcherFactory
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                throwingFactory
+
+        // The host is a fully usable daemon in every other respect.
+        test <@ daemon.GetScanState() = ScanIdle @>)
+
 [<Fact(Timeout = 15000)>]
 let ``daemon Dispose kills tracked child processes`` () =
     // Regression: `dotnet fshw stop` used to leak in-flight test runners.

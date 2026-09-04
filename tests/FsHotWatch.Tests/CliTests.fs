@@ -68,6 +68,18 @@ let ``parse check --run-once returns Check RunOnce`` () =
     test <@ CommandTree.parse tree [| "check"; "--run-once" |] = Ok(Check [ RunOnce ]) @>
 
 [<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-435")>]
+let ``only --run-once commands get a OneShot host`` () =
+    test <@ runModeFor (Check [ RunOnce ]) = Daemon.RunMode.OneShot @>
+    test <@ runModeFor (Confirm [ RunOnce ]) = Daemon.RunMode.OneShot @>
+    test <@ runModeFor (Format [ RunOnce ]) = Daemon.RunMode.OneShot @>
+    // Every persistent command keeps watching — including the daemon itself.
+    test <@ runModeFor Start = Daemon.RunMode.Watching @>
+    test <@ runModeFor (Check []) = Daemon.RunMode.Watching @>
+    test <@ runModeFor (Confirm []) = Daemon.RunMode.Watching @>
+    test <@ runModeFor (Format []) = Daemon.RunMode.Watching @>
+
+[<Fact(Timeout = 15000)>]
 let ``parse test-rerun returns TestRerun with no flags`` () =
     test <@ CommandTree.parse tree [| "test-rerun" |] = Ok(TestRerun []) @>
 

@@ -201,6 +201,16 @@ let cliName = "fshw"
 
 let private isRunOnce = List.contains RunOnce
 
+/// The run mode a command's in-process host is constructed with. `--run-once`
+/// scans, settles and exits, so its host is `OneShot` and constructs no file
+/// watcher (AUTOMATION-435); every persistent command keeps `Watching`.
+let internal runModeFor (command: Command) : Daemon.RunMode =
+    match command with
+    | Check flags
+    | Confirm flags
+    | Format flags when isRunOnce flags -> Daemon.RunMode.OneShot
+    | _ -> Daemon.RunMode.Watching
+
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
 /// wins when both are set.
 let private pickMode (agentMode: bool) (compactMode: bool) : ProgressRenderer.RenderMode =
@@ -2333,6 +2343,7 @@ let main args =
                     Daemon.create
                         root
                         { Daemon.DaemonOptions.defaults with
+                            RunMode = runModeFor command
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
                             ExcludePatterns = config.Exclude

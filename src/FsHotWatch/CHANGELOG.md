@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- AUTOMATION-435: `DaemonOptions` gains `RunMode` — `Watching` (the default: a
+  persistent daemon builds its `FileWatcher` exactly as before) or `OneShot`, under
+  which daemon construction never reaches watcher construction at all: no native
+  FSEvents stream, no `FileSystemWatcher`, no polling fallback, no watcher thread. A
+  one-shot host's verdict can therefore no longer fail at `FSEventStreamStart` for a
+  stream it would never have read from. Callers building `DaemonOptions` by hand must
+  supply the field; `{ DaemonOptions.defaults with ... }` is unaffected.
+- `Daemon.WatcherFactory` names the `FileWatcher.create` signature, and the internal
+  `createWithWatcherFactory` seam proves the two modes: `OneShot` never invokes the
+  factory, `Watching` invokes it once.
+
 ## 0.10.0-alpha.26 - 2026-09-04
 
 - AUTOMATION-434: a native FSEvents stream macOS transiently refuses is retried with
