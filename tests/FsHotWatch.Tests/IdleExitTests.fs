@@ -5,50 +5,112 @@ open System.Threading
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open FsHotWatch
 open FsHotWatch.IdleExit
 
 let private threshold = TimeSpan.FromMinutes(30.0)
 
-// --- busyForIdleExit (in-flight verdict wait inhibits idle-exit) ---
+// --- idleInhibitors (what forbids an idle exit, named) ---
 
 [<Fact>]
-let ``busyForIdleExit is true while a verdict wait is in flight`` () =
+let ``idleInhibitors names an in-flight verdict wait`` () =
     // Regression for AUTOMATION-65: an in-flight WaitForComplete (connected check
-    // client) must count as busy so idle-exit never fires out from under it, even
-    // when every plugin mailbox is quiet (anyPluginBusy = false).
-    test <@ busyForIdleExit false 1 = true @>
-    test <@ busyForIdleExit false 3 = true @>
+    // client) must inhibit idle-exit even when every plugin mailbox is quiet.
+    test <@ idleInhibitors false 1 [] = [ IdleInhibitor.VerdictWait 1 ] @>
+    test <@ idleInhibitors false 3 [] = [ IdleInhibitor.VerdictWait 3 ] @>
 
 [<Fact>]
-let ``busyForIdleExit is true when a plugin mailbox is in flight`` () =
-    test <@ busyForIdleExit true 0 = true @>
-    test <@ busyForIdleExit true 2 = true @>
+let ``idleInhibitors names an in-flight plugin mailbox`` () =
+    test <@ idleInhibitors true 0 [] = [ IdleInhibitor.PluginBusy ] @>
 
 [<Fact>]
-let ``busyForIdleExit is idle only when nothing is in flight and no client waits`` () =
-    test <@ busyForIdleExit false 0 = false @>
+let ``idleInhibitors names an in-flight cold scan`` () =
+    // AUTOMATION-609: the leg that did not exist. A cold `fshw check` spends its
+    // first minutes in performScan with no plugin mailbox in flight and no
+    // verdict wait yet bracketed — the daemon read as idle and killed itself.
+    test
+        <@
+            idleInhibitors false 0 [ ScanActivity.ScanKind.Cold ] = [ IdleInhibitor.ScanInFlight
+                                                                          ScanActivity.ScanKind.Cold ]
+        @>
 
-// --- shouldFire (pure decision) ---
+[<Fact>]
+let ``idleInhibitors names a forced scan distinctly from a cold one`` () =
+    // The kind is reported, not decided upon: both inhibit, but a log line that
+    // says "forced" is a `fshw scan` and one that says "cold" is a startup stall.
+    test
+        <@
+            idleInhibitors false 0 [ ScanActivity.ScanKind.Forced ] = [ IdleInhibitor.ScanInFlight
+                                                                            ScanActivity.ScanKind.Forced ]
+        @>
+
+[<Fact>]
+let ``idleInhibitors is empty only when nothing is in flight`` () =
+    test <@ List.isEmpty (idleInhibitors false 0 []) @>
+
+[<Fact>]
+let ``idleInhibitors reports every concurrent reason, not just the first`` () =
+    // An operator reading a deferral wants all of it: suppressing the rest once
+    // one leg is true is how the scan leg could have gone missing unnoticed.
+    let inhibitors = idleInhibitors true 2 [ ScanActivity.ScanKind.Cold ]
+
+    test <@ List.length inhibitors = 3 @>
+    test <@ List.contains IdleInhibitor.PluginBusy inhibitors @>
+    test <@ List.contains (IdleInhibitor.VerdictWait 2) inhibitors @>
+    test <@ List.contains (IdleInhibitor.ScanInFlight ScanActivity.ScanKind.Cold) inhibitors @>
+
+[<Fact>]
+let ``describeAll renders every inhibitor into one line`` () =
+    let rendered =
+        IdleInhibitor.describeAll (idleInhibitors true 1 [ ScanActivity.ScanKind.Cold ])
+
+    test <@ rendered.Contains "plugin" @>
+    test <@ rendered.Contains "verdict wait" @>
+    test <@ rendered.Contains "cold scan is in flight" @>
+
+// --- decide (pure decision) ---
 
 [<Fact>]
 let ``below threshold does not fire`` () =
-    test <@ shouldFire threshold (TimeSpan.FromMinutes 29.0) false false = false @>
+    test
+        <@
+            decide threshold (TimeSpan.FromMinutes 29.0) [] false = TickOutcome.WithinWindow(
+                TimeSpan.FromMinutes 29.0,
+                threshold
+            )
+        @>
 
 [<Fact>]
 let ``at threshold boundary fires`` () =
-    test <@ shouldFire threshold threshold false false = true @>
+    test <@ decide threshold threshold [] false = TickOutcome.Fired @>
 
 [<Fact>]
 let ``past threshold fires`` () =
-    test <@ shouldFire threshold (TimeSpan.FromMinutes 31.0) false false = true @>
+    test <@ decide threshold (TimeSpan.FromMinutes 31.0) [] false = TickOutcome.Fired @>
 
 [<Fact>]
-let ``busy defers even past threshold`` () =
-    test <@ shouldFire threshold (TimeSpan.FromMinutes 31.0) true false = false @>
+let ``work in flight defers even past threshold, naming the reason`` () =
+    let inhibitors = [ IdleInhibitor.ScanInFlight ScanActivity.ScanKind.Cold ]
+
+    test <@ decide threshold (TimeSpan.FromMinutes 31.0) inhibitors false = TickOutcome.Inhibited inhibitors @>
 
 [<Fact>]
 let ``already fired never fires again`` () =
-    test <@ shouldFire threshold (TimeSpan.FromMinutes 31.0) false true = false @>
+    test <@ decide threshold (TimeSpan.FromMinutes 31.0) [] true = TickOutcome.AlreadyFired @>
+
+[<Fact>]
+let ``inside the window reports the window, not the work in flight`` () =
+    // Ordering matters for the log: `Inhibited` is reserved for "would have
+    // exited right now but for this work", which is the AUTOMATION-609 event.
+    let inhibitors = [ IdleInhibitor.PluginBusy ]
+
+    test
+        <@
+            decide threshold (TimeSpan.FromMinutes 1.0) inhibitors false = TickOutcome.WithinWindow(
+                TimeSpan.FromMinutes 1.0,
+                threshold
+            )
+        @>
 
 // --- FireLatch atomicity ---
 
@@ -192,7 +254,7 @@ let private makeDeps (idleMinutes: float) (busy: bool) =
           PressureFloorMin = Some 2
           Pressure = fun () -> false
           Now = fun () -> now
-          Busy = fun () -> busy
+          Inhibitors = fun () -> if busy then [ IdleInhibitor.PluginBusy ] else []
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
           Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
           Log = fun msg -> lock logs (fun () -> logs.Add msg) }
@@ -204,9 +266,9 @@ let ``runTick fires shutdown and logs when idle past threshold`` () =
     let deps, shutdownCalls, logs = makeDeps 31.0 false
     let latch = FireLatch.create ()
 
-    let fired = runTick deps latch
+    let outcome = runTick deps latch
 
-    test <@ fired = true @>
+    test <@ outcome = TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 1 @>
     test <@ logs |> Seq.exists (fun m -> m.Contains "[idle-exit] idle for") @>
     test <@ FireLatch.hasFired latch @>
@@ -216,9 +278,9 @@ let ``runTick does not fire below threshold`` () =
     let deps, shutdownCalls, _ = makeDeps 10.0 false
     let latch = FireLatch.create ()
 
-    let fired = runTick deps latch
+    let outcome = runTick deps latch
 
-    test <@ fired = false @>
+    test <@ outcome = TickOutcome.WithinWindow(TimeSpan.FromMinutes 10.0, TimeSpan.FromMinutes 30.0) @>
     test <@ shutdownCalls.Value = 0 @>
 
 [<Fact>]
@@ -232,18 +294,18 @@ let ``runTick defers when busy then fires when free`` () =
           PressureFloorMin = Some 2
           Pressure = fun () -> false
           Now = fun () -> now
-          Busy = fun () -> busy.Value
+          Inhibitors = fun () -> if busy.Value then [ IdleInhibitor.PluginBusy ] else []
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
           Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
           Log = ignore }
 
     let latch = FireLatch.create ()
 
-    test <@ runTick deps latch = false @>
+    test <@ runTick deps latch = TickOutcome.Inhibited [ IdleInhibitor.PluginBusy ] @>
     test <@ shutdownCalls.Value = 0 @>
 
     busy.Value <- false
-    test <@ runTick deps latch = true @>
+    test <@ runTick deps latch = TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 1 @>
 
 // --- runTick: pressure shortens the effective window ---
@@ -258,7 +320,7 @@ let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: i
           PressureFloorMin = floor
           Pressure = fun () -> pressure.Value
           Now = fun () -> now
-          Busy = fun () -> false
+          Inhibitors = fun () -> []
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
           Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
           Log = fun msg -> lock logs (fun () -> logs.Add msg) }
@@ -269,14 +331,14 @@ let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: i
 let ``runTick under pressure fires at the 2min floor, not before`` () =
     // Base 30min, floor 2min, idle 1min, under pressure → 1 < 2 → no fire.
     let deps, shutdownCalls, _ = makePressureDeps 1.0 (ref true) (Some 2)
-    test <@ runTick deps (FireLatch.create ()) = false @>
+    test <@ runTick deps (FireLatch.create ()) <> TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 0 @>
 
 [<Fact>]
 let ``runTick under pressure fires at the floor boundary`` () =
     // idle 2min == floor → fires (well below the 30min base).
     let deps, shutdownCalls, logs = makePressureDeps 2.0 (ref true) (Some 2)
-    test <@ runTick deps (FireLatch.create ()) = true @>
+    test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 1 @>
     test <@ logs |> Seq.exists (fun m -> m.Contains "memory pressure shortened") @>
 
@@ -289,18 +351,18 @@ let ``runTick re-evaluates pressure each tick - subsiding restores the full wind
     let deps, shutdownCalls, _ = makePressureDeps 2.0 pressure (Some 2)
     let latch = FireLatch.create ()
 
-    test <@ runTick deps latch = false @>
+    test <@ runTick deps latch <> TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 0 @>
 
     pressure.Value <- true
-    test <@ runTick deps latch = true @>
+    test <@ runTick deps latch = TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 1 @>
 
 [<Fact>]
 let ``runTick with floor disabled ignores pressure`` () =
     // Floor None, idle 2min, under pressure → still uses the 30min base → defer.
     let deps, shutdownCalls, _ = makePressureDeps 2.0 (ref true) None
-    test <@ runTick deps (FireLatch.create ()) = false @>
+    test <@ runTick deps (FireLatch.create ()) <> TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 0 @>
 
 [<Fact>]
@@ -323,16 +385,16 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
           PressureFloorMin = Some 2
           Pressure = fun () -> false
           Now = fun () -> now
-          Busy = fun () -> false
+          Inhibitors = fun () -> []
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
           Shutdown = fun () -> failwith "boom"
           Log = fun msg -> logs.Add msg }
 
     let latch = FireLatch.create ()
 
-    let fired = runTick deps latch
+    let outcome = runTick deps latch
 
-    test <@ fired = false @>
+    test <@ outcome = TickOutcome.TickFailed "boom" @>
     test <@ logs |> Seq.exists (fun m -> m.Contains "tick failed") @>
 
 // --- createTimer ---
@@ -348,7 +410,7 @@ let ``createTimer logs the enable line and is disposable`` () =
           Pressure = fun () -> false
           // Activity is "now" so the timer never fires within the test window.
           Now = fun () -> now
-          Busy = fun () -> false
+          Inhibitors = fun () -> []
           LastActivityAt = fun () -> now
           Shutdown = ignore
           Log = fun msg -> lock logs (fun () -> logs.Add msg) }
@@ -357,3 +419,79 @@ let ``createTimer logs the enable line and is disposable`` () =
 
     test <@ logs |> Seq.exists (fun m -> m.Contains "[idle-exit] enabled") @>
     ignore timer
+
+// --- AUTOMATION-609: a scan in flight is not idleness ---
+//
+// The confirmed failure: a cold `fshw check` was more than two minutes into FCS
+// analysis when the memory-pressure floor (2min) elapsed. Nothing else was in
+// flight — no plugin mailbox, no bracketed verdict wait — so the scheduler read
+// the daemon as idle and shut it down mid-scan, and the caller exited 2 with no
+// verdict. These tests drive the SAME scheduler over a real `ScanLeases`.
+
+let private makeScanDeps (leases: ScanActivity.ScanLeases) (idleMinutes: float) =
+    let shutdownCalls = ref 0
+    let logs = ResizeArray<string>()
+    let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
+
+    let deps: IdleExitDeps =
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          // Pressure ON: this is the shortened-window case that actually fired.
+          Pressure = fun () -> true
+          Now = fun () -> now
+          Inhibitors = fun () -> idleInhibitors false 0 (ScanActivity.ScanLeases.inFlight leases)
+          LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
+          Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
+          Log = fun msg -> lock logs (fun () -> logs.Add msg) }
+
+    deps, shutdownCalls, logs
+
+[<Fact>]
+let ``idle timer firing during a cold scan does not exit, and says why`` () =
+    let leases = ScanActivity.ScanLeases.create ()
+    // 11 minutes idle by the last-activity clock, far past the 2min pressure floor.
+    let deps, shutdownCalls, logs = makeScanDeps leases 11.0
+    let latch = FireLatch.create ()
+
+    use _lease = ScanActivity.ScanLeases.acquire leases ScanActivity.ScanKind.Cold
+
+    let outcome = runTick deps latch
+
+    test <@ outcome = TickOutcome.Inhibited [ IdleInhibitor.ScanInFlight ScanActivity.ScanKind.Cold ] @>
+    test <@ shutdownCalls.Value = 0 @>
+    test <@ FireLatch.hasFired latch = false @>
+    // The audit trail the incident could not produce: the window elapsed and the
+    // daemon stayed up, naming the work that held it.
+    test <@ logs |> Seq.exists (fun m -> m.Contains "window elapsed but work is in flight") @>
+    test <@ logs |> Seq.exists (fun m -> m.Contains "cold scan is in flight") @>
+
+[<Fact>]
+let ``the daemon becomes idle-exit eligible once the scan releases its lease`` () =
+    // The other half of the invariant: inhibiting must not become pinning. A
+    // genuinely quiescent daemon still sheds itself under the pressure floor.
+    let leases = ScanActivity.ScanLeases.create ()
+    let deps, shutdownCalls, _ = makeScanDeps leases 11.0
+    let latch = FireLatch.create ()
+    let lease = ScanActivity.ScanLeases.acquire leases ScanActivity.ScanKind.Cold
+
+    test <@ runTick deps latch <> TickOutcome.Fired @>
+
+    lease.Dispose()
+
+    test <@ runTick deps latch = TickOutcome.Fired @>
+    test <@ shutdownCalls.Value = 1 @>
+
+[<Fact>]
+let ``a forced scan inhibits idle-exit exactly as a cold one does`` () =
+    let leases = ScanActivity.ScanLeases.create ()
+    let deps, shutdownCalls, _ = makeScanDeps leases 11.0
+
+    use _lease = ScanActivity.ScanLeases.acquire leases ScanActivity.ScanKind.Forced
+
+    test
+        <@
+            runTick deps (FireLatch.create ()) = TickOutcome.Inhibited
+                [ IdleInhibitor.ScanInFlight ScanActivity.ScanKind.Forced ]
+        @>
+
+    test <@ shutdownCalls.Value = 0 @>

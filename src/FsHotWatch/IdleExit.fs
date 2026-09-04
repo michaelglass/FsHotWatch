@@ -124,21 +124,89 @@ module FireLatch =
     /// True once the latch has fired (or is firing). Read for diagnostics/tests.
     let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.state) = 1
 
-/// The daemon is "busy" for idle-exit purposes when EITHER any plugin mailbox is in
-/// flight OR at least one client is actively blocked on a verdict wait
-/// (`WaitForComplete`). The wait leg matters: a background `RunExclusive` run holds a
-/// plugin Running in a way that mailbox-inflight (`AnyPluginBusy`) does not observe,
-/// so without it idle-exit could fire out from under a connected `fshw check` and drop
-/// the client with a connection error instead of a verdict. Pure; the daemon injects
-/// the two live signals.
-let busyForIdleExit (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
+/// A typed reason the daemon must NOT idle-exit right now. AUTOMATION-609 —
+/// "busy" used to collapse to a bare bool, which is why a whole class of work
+/// (a cold or forced scan) could be missing from it without anything in the log
+/// or the type saying so. Each inhibitor names itself, so a deferral is
+/// explainable and a missing one is a missing CASE rather than a silent `false`.
+[<RequireQualifiedAccess>]
+type IdleInhibitor =
+    /// At least one plugin mailbox has work in flight (includes the whole
+    /// lifetime of an exclusive background run).
+    | PluginBusy
+    /// `n` connected clients are blocked on a verdict wait (`WaitForComplete`).
+    | VerdictWait of waits: int
+    /// A full-repository scan of this kind is in flight (`ScanActivity`).
+    | ScanInFlight of kind: ScanActivity.ScanKind
 
-/// Pure decision: fire when the idle duration has met the threshold, no work is
-/// running, and the latch has not already fired. `busy` collapses "any plugin running /
-/// any check in flight" to a bool at the call site, keeping this free of host/FCS
-/// types. `alreadyFired = true` always vetoes.
-let shouldFire (idleThreshold: TimeSpan) (idleFor: TimeSpan) (busy: bool) (alreadyFired: bool) : bool =
-    idleFor >= idleThreshold && not busy && not alreadyFired
+/// Rendering for `IdleInhibitor`, used in the deferral log line.
+module IdleInhibitor =
+    /// Human-readable phrase for one inhibitor.
+    let describe (inhibitor: IdleInhibitor) : string =
+        match inhibitor with
+        | IdleInhibitor.PluginBusy -> "a plugin has work in flight"
+        | IdleInhibitor.VerdictWait n -> $"%d{n} client verdict wait(s) in flight"
+        | IdleInhibitor.ScanInFlight kind -> $"a %s{ScanActivity.ScanKind.describe kind} scan is in flight"
+
+    /// Comma-joined phrases, for one log line.
+    let describeAll (inhibitors: IdleInhibitor list) : string =
+        inhibitors |> List.map describe |> String.concat ", "
+
+/// Everything that currently forbids an idle exit. Empty means genuinely idle.
+///
+/// The scan leg is the AUTOMATION-609 fix: a cold `fshw check` spends minutes in
+/// `performScan` where no plugin mailbox is in flight and the client's verdict
+/// wait has not yet been bracketed, so the first two legs alone read a working
+/// daemon as idle. Pure; the daemon injects the three live signals.
+let idleInhibitors
+    (anyPluginBusy: bool)
+    (activeVerdictWaits: int)
+    (scansInFlight: ScanActivity.ScanKind list)
+    : IdleInhibitor list =
+    [ if anyPluginBusy then
+          yield IdleInhibitor.PluginBusy
+      if activeVerdictWaits > 0 then
+          yield IdleInhibitor.VerdictWait activeVerdictWaits
+      for kind in scansInFlight do
+          yield IdleInhibitor.ScanInFlight kind ]
+
+/// What one scheduler tick decided. Returned (rather than a bare bool) so the
+/// deferral REASON is available to the caller and to tests: "deferred because a
+/// cold scan is in flight" and "deferred because the window has not elapsed" are
+/// different facts, and AUTOMATION-609 was a bug in exactly that distinction.
+[<RequireQualifiedAccess>]
+type TickOutcome =
+    /// The latch was claimed and `Shutdown` was invoked (exactly one tick ever).
+    | Fired
+    /// Still inside the (possibly pressure-shortened) idle window.
+    | WithinWindow of idleFor: TimeSpan * window: TimeSpan
+    /// The window has elapsed but work is in flight. Never empty.
+    | Inhibited of inhibitors: IdleInhibitor list
+    /// A previous tick already fired; this one is a no-op.
+    | AlreadyFired
+    /// The tick body threw; logged and swallowed so the timer callback survives.
+    | TickFailed of message: string
+
+/// Pure decision for one tick. Order is deliberate and load-bearing for the
+/// logs: `alreadyFired` vetoes first (a fired latch makes every other fact
+/// irrelevant), then the window, then live work. Checking the window BEFORE the
+/// inhibitors means `Inhibited` carries the strong statement "this daemon would
+/// have exited right now had it not been working" — the exact event
+/// AUTOMATION-609 needed in the log and could not find.
+let decide
+    (idleThreshold: TimeSpan)
+    (idleFor: TimeSpan)
+    (inhibitors: IdleInhibitor list)
+    (alreadyFired: bool)
+    : TickOutcome =
+    if alreadyFired then
+        TickOutcome.AlreadyFired
+    elif idleFor < idleThreshold then
+        TickOutcome.WithinWindow(idleFor, idleThreshold)
+    elif not (List.isEmpty inhibitors) then
+        TickOutcome.Inhibited inhibitors
+    else
+        TickOutcome.Fired
 
 /// Dependencies a live idle-exit scheduler needs, all injectable so the
 /// scheduler's wiring can be unit-tested without FCS, a PluginHost, or a real
@@ -160,8 +228,11 @@ type IdleExitDeps =
         Pressure: unit -> bool
         /// Current UTC time.
         Now: unit -> DateTime
-        /// True when any plugin/check is in flight (defers the exit).
-        Busy: unit -> bool
+        /// Everything currently forbidding an exit — plugin work, connected
+        /// verdict waits, and in-flight scans (`idleInhibitors`). Empty means
+        /// genuinely idle. Typed rather than a bool so the deferral reason
+        /// reaches the log.
+        Inhibitors: unit -> IdleInhibitor list
         /// UTC of the most recent activity (event / completed work).
         LastActivityAt: unit -> DateTime
         /// The graceful-shutdown action (cts.Cancel() in production). Invoked at
@@ -172,16 +243,21 @@ type IdleExitDeps =
     }
 
 /// Run one scheduler tick: resolve the (possibly pressure-shortened) effective
-/// window, run the pure `shouldFire` decision, and on a fire atomically claim the
-/// latch, log, then invoke the graceful shutdown. Pressure is re-evaluated every tick,
-/// so if it subsides the full window is restored. The latch means `Shutdown` runs at
+/// window, run the pure `decide`, and on a fire atomically claim the latch, log,
+/// then invoke the graceful shutdown. Pressure is re-evaluated every tick, so if
+/// it subsides the full window is restored. The latch means `Shutdown` runs at
 /// most once even if many ticks reach this point concurrently. The whole body is
-/// guarded so a thrown exception is logged rather than escaping the timer callback.
-/// Returns `true` iff this tick fired the shutdown (for tests).
-let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
+/// guarded so a thrown exception is logged rather than escaping the timer
+/// callback. Returns what the tick decided.
+///
+/// An `Inhibited` tick LOGS: the window had elapsed and the daemon stayed up
+/// only because work was in flight. That line is the audit trail AUTOMATION-609
+/// wanted — a cold scan that outlives the (pressure-shortened) window says so
+/// every 30s instead of being terminated in silence.
+let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
     try
         let idleFor = deps.Now() - deps.LastActivityAt()
-        let busy = deps.Busy()
+        let inhibitors = deps.Inhibitors()
         let pressure = deps.Pressure()
         // BaseThresholdMin is always > 0 here — createTimer is only wired once
         // resolveThreshold returned Some, so the daemon is already eligible.
@@ -190,7 +266,8 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
 
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
 
-        if shouldFire threshold idleFor busy (FireLatch.hasFired latch) then
+        match decide threshold idleFor inhibitors (FireLatch.hasFired latch) with
+        | TickOutcome.Fired ->
             // Even if the pure check above raced past for several threads, only one
             // wins tryFire.
             if FireLatch.tryFire latch then
@@ -204,14 +281,18 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
                     $"[idle-exit] idle for %d{effectiveMin}min — shutting down (next fshw command auto-restarts)%s{pressureNote}"
 
                 deps.Shutdown()
-                true
+                TickOutcome.Fired
             else
-                false
-        else
-            false
+                TickOutcome.AlreadyFired
+        | TickOutcome.Inhibited reasons as outcome ->
+            deps.Log
+                $"[idle-exit] %d{effectiveMin}min window elapsed but work is in flight — staying up: %s{IdleInhibitor.describeAll reasons}"
+
+            outcome
+        | outcome -> outcome
     with ex ->
         deps.Log $"[idle-exit] tick failed: %s{ex.ToString()}"
-        false
+        TickOutcome.TickFailed(ex.Message)
 
 /// Create the live scheduler `System.Threading.Timer` (period 30s). The caller
 /// owns disposal. Logs the enable line on creation. Pure wiring around `runTick`
