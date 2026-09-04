@@ -633,16 +633,23 @@ type PluginHost
         | Some c -> c.ClearPlugin(plugin)
         | None -> ()
 
+    /// The spelling the task cache knows a file by. Entries are keyed by the
+    /// repo-relative identity (so they are portable between checkouts), so a caller
+    /// naming a file by its absolute path must be translated before it can clear
+    /// anything — otherwise `fshw cache clear --file=...` silently matches nothing.
+    member private _.TaskCacheFileKey(file: string) =
+        CachePathIdentity.ofPath repoRoot file |> CachePathIdentity.toKey
+
     /// Clear task cache entries for a specific file.
-    member _.ClearTaskCacheFile(file: string) =
+    member this.ClearTaskCacheFile(file: string) =
         match taskCache with
-        | Some c -> c.ClearFile(file)
+        | Some c -> c.ClearFile(this.TaskCacheFileKey file)
         | None -> ()
 
     /// Clear a specific plugin+file task cache entry.
-    member _.ClearTaskCachePluginFile(plugin: string, file: string) =
+    member this.ClearTaskCachePluginFile(plugin: string, file: string) =
         match taskCache with
-        | Some c -> c.ClearPluginFile plugin file
+        | Some c -> c.ClearPluginFile plugin (this.TaskCacheFileKey file)
         | None -> ()
 
     /// Register a FileCommandPlugin's parsed file pattern by plugin name.

@@ -11,6 +11,13 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
+/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE
+/// (AUTOMATION-564), so an entry survives being read in another checkout. A test that
+/// stores under the absolute path stores under a key the framework will never look up.
+let private compositeFileKey (repoRoot: string) (file: string) =
+    FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
+
+
 // `Unchecked.defaultof` for ParseResults is deliberate: it stands in for the null FCS
 // hands back on an abort, which the plugin must guard against.
 let private fakeResult file =
@@ -412,7 +419,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
 
     let key: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
-          File = Some "/tmp/test/Replay.fs" }
+          File = Some(compositeFileKey "/tmp" "/tmp/test/Replay.fs") }
 
     let cacheKeyFn = handler.CacheKey.Value
     let event = FileChecked(fakeResult "/tmp/test/Replay.fs")
@@ -463,7 +470,7 @@ let ``regression AUTOMATION-186: cache replay must not resurrect a stale global 
 
     let compKey: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
-          File = Some cleanFile }
+          File = Some(compositeFileKey "/tmp" cleanFile) }
 
     cacheIface.Set compKey cacheKey cleanEntry
 
@@ -526,7 +533,7 @@ let ``AUTOMATION-186: per-file replay WITH findings derives EXACTLY those findin
 
     let compKey: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
-          File = Some dirtyFile }
+          File = Some(compositeFileKey "/tmp" dirtyFile) }
 
     cacheIface.Set compKey cacheKey dirtyEntry
 
@@ -575,7 +582,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
 
     let key: FsHotWatch.TaskCache.CompositeKey =
         { Plugin = "analyzers"
-          File = Some "/tmp/test/CacheRegression.fs" }
+          File = Some(compositeFileKey "/tmp" "/tmp/test/CacheRegression.fs") }
 
     let cacheKeyFn = handler.CacheKey.Value
     let event = FileChecked(fakeResult "/tmp/test/CacheRegression.fs")

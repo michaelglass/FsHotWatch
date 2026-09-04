@@ -68,8 +68,20 @@ depends = ["build", "lint-project", "coverage-ratchet"]
 # CI uses `mise run ci`, which invokes `coverage-check` and fails on regression.
 
 [tasks.cache-clear]
-description = "Clear the check result cache"
-run = "rm -rf .fshw/cache/"
+description = "Clear the check result cache (BOTH the workspace store and the box-wide shared one)"
+# Not `rm -rf .fshw/cache/` alone: since AUTOMATION-564 the pure-content plugins'
+# entries live in a box-wide store OUTSIDE the checkout, and deleting only the
+# workspace half leaves those replaying.
+#
+# The second path takes every repository's shared entries, not just this one's. That
+# is deliberate: the per-repository namespace is a digest, so naming just this repo's
+# share from a shell means recomputing that digest here — a second spelling of an
+# identity that must not be allowed to disagree. These are caches; over-deleting costs
+# one cold run on another repository and cannot be wrong.
+run = [
+  "rm -rf .fshw/cache/",
+  "rm -rf \"${FSHW_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/fshw}/cache/tasks\"",
+]
 
 # === Direct tasks (CI, docs, packaging) ===
 

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
+  between the workspaces of one repository — so a freshly created workspace starts
+  warm.** Nothing about WHICH checkout a file was read from reaches a cache key any
+  more:
+  - Every per-file cache key names its file REPO-RELATIVELY (`CachePathIdentity`),
+    across the plugin framework's composite key (which becomes the on-disk entry's
+    file name), the format-check merkle (path AND `.editorconfig` labels), the lint
+    merkle and the analyzers merkle (including the analyzer directory hash). Two
+    checkouts of one repository now mint the SAME key for byte-identical content.
+    Each plugin's salt is bumped (`format-check-pinned-tool-v3`, `lint-merkle-v2`,
+    `analyzers-merkle-v4`), so entries written under the old absolute-path keys are
+    orphaned rather than misread.
+  - `CheckCache.getProjectOptionsHashRelativeTo` names in-repo paths relatively in the
+    compiler-options hash — the recorded prerequisite for a single shared daemon,
+    which would otherwise hold one disjoint compiler snapshot per workspace of
+    identical code. Out-of-repo references (the NuGet cache, the SDK) stay absolute:
+    they are machine-local, and on one machine they are identical for every workspace.
+    `CheckPipeline` takes an optional `repoRoot`; without one the hash is exactly what
+    it was.
+  - A second, BOX-WIDE store lives outside every checkout, under `$FSHW_CACHE_HOME`
+    (else `$XDG_CACHE_HOME/fshw`, else `~/.cache/fshw`), namespaced per REPOSITORY by
+    `RepoIdentity` — which reads jj's `.jj/repo` workspace pointer or git's `gitdir:`
+    worktree pointer as a directory-layout question, with a per-checkout fallback when
+    neither is recognised, so an unknown layout means "no sharing", never "sharing with
+    the wrong repository".
+  - `CacheResidency` decides, per plugin, which store an entry lives in. It is an
+    ALLOWLIST and it fails closed. **Shared:** `format-check`, `lint`, `analyzers` —
+    each a pure function of the inputs its key names, each producing diagnostics only.
+    **Deliberately NOT shared:** `build` (a cached verdict asserts artifacts a fresh
+    checkout has not produced — and its `replayBlockers` gate already refuses such a
+    replay), `test-prune` (a cached green asserts a test process that did not run
+    here), `coverage` (declares no key) and `file-command` (an arbitrary shell
+    command's effects are unmodelled). An unclassified plugin is workspace-local.
+  - Entries are PORTABLE, not merely their keys: every file path an entry names is
+    stored `repo:`-relative and rebound into whichever checkout reads it back, so a
+    replayed finding lands on the right file. A path that cannot be honestly resolved
+    here reads as a MISS. Entry format bumped to 4.
+- AUTOMATION-564: `ITaskCache.Lookup` returns a typed `CacheMissReason` beside the
+  result, so a cold start says WHY: `NoEntryForKey`, `InputsChanged [labels]` (the
+  merkle inputs that actually differ, named), `InputsNotComparable`, or
+  `UnreadableEntry`. Each entry persists the per-label digests of the key that minted
+  it, so the diff works against an entry another workspace wrote. `TryGet` is retained
+  and is defined in terms of `Lookup`, so the two cannot disagree about hit or miss.
+- `FsHwPaths.atomicWriteAllText` gives each write a unique temp name. With a store
+  shared between two daemons, two processes can be mid-write to one entry path, and a
+  single fixed `.tmp` name let them truncate each other's partial file.
+
 ## 0.10.0-alpha.27 - 2026-09-04
 
 - AUTOMATION-435: `DaemonOptions` gains `RunMode` — `Watching` (the default: a

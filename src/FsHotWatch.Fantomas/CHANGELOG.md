@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- AUTOMATION-564: the format-check cache key names its files — and its `.editorconfig`
+  inputs — REPO-RELATIVELY, so two checkouts of one repository mint the same key for
+  byte-identical content and a fresh workspace replays a `format OK` instead of
+  re-scanning the tree. The pin, the `.editorconfig` contents and the source bytes are
+  unchanged inputs, so a bumped formatter or an edited config is still a miss. Salt
+  bumped to `format-check-pinned-tool-v3`, orphaning the old absolute-path entries.
+
 ## 0.7.0-alpha.22 - 2026-09-04
 
 - fix!: **the plugin runs the Fantomas the repository pins, and says so** (AUTOMATION-447).

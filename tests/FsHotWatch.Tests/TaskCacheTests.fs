@@ -12,6 +12,13 @@ open FsHotWatch.TaskCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.FileTaskCache
 
+/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE
+/// (AUTOMATION-564), so an entry survives being read in another checkout. A test that
+/// stores under the absolute path stores under a key the framework will never look up.
+let private compositeFileKey (repoRoot: string) (file: string) =
+    FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
+
+
 let private fixedTime = DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 
 /// Helper to construct a CompositeKey with a file.
@@ -415,7 +422,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
           Status = cachedFileDone
           EmittedEvents = [] }
 
-    cache.Set(ck "test-plugin" "/src/A.fs", hash "commit-abc", cachedResult)
+    cache.Set(ck "test-plugin" (compositeFileKey "/tmp/test" "/src/A.fs"), hash "commit-abc", cachedResult)
 
     let mutable updateCallCount = 0
 

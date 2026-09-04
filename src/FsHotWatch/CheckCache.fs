@@ -61,15 +61,60 @@ type TimestampCacheKeyProvider() =
                 Logging.debug "cache" $"Could not read %s{normalizedPath}: %s{ex.Message}"
                 None
 
-/// Computes ProjectOptionsHash from FSharpProjectOptions
-let getProjectOptionsHash (options: FSharpProjectOptions) : string =
+/// The placeholder an in-repo path collapses to inside a compiler-option string.
+/// Not a path that can exist: `$` and `{}` are excluded from `CachePathIdentity`'s
+/// portable grammar, so it cannot be confused with a real relative path.
+[<Literal>]
+let RepoRootPlaceholder = "${repo}"
+
+/// Rewrite one compiler option so that everything inside `repoRoot` is named
+/// relatively. Options are opaque strings (`-r:/abs/path.dll`, `--define:X`,
+/// `--out:/abs/obj/x.dll`), so this is a prefix substitution rather than a path
+/// parse — which is exactly right: it touches only the machine-local prefix and
+/// leaves every flag, separator and out-of-repo reference untouched.
+let internal relativizeOption (repoRoot: string option) (option: string) =
+    match repoRoot with
+    | None -> option
+    | Some root ->
+        let full =
+            try
+                Path.GetFullPath root
+            with _ ->
+                root
+
+        let withSeparator =
+            full.TrimEnd(Path.DirectorySeparatorChar) + string Path.DirectorySeparatorChar
+
+        option
+            .Replace(withSeparator, RepoRootPlaceholder + string Path.DirectorySeparatorChar)
+            .Replace(full, RepoRootPlaceholder)
+
+/// Computes ProjectOptionsHash from FSharpProjectOptions.
+///
+/// With a `repoRoot`, every path inside the repository is named RELATIVELY, so two
+/// checkouts of the same repository at the same revision produce the SAME hash for
+/// byte-identical compiler options. That is the prerequisite AUTOMATION-564 records
+/// for a single shared daemon: with absolute paths in here, one daemon serving N
+/// workspaces would hold N disjoint compiler snapshots of identical code.
+///
+/// Paths OUTSIDE the repository (the NuGet cache, the SDK) stay absolute. They are
+/// machine-local, and on one machine they are the same for every workspace — so they
+/// separate two machines' entries, which is correct, and never two workspaces'.
+let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpProjectOptions) : string =
+    let relativize = relativizeOption repoRoot
+
     let parts =
-        [ string options.ProjectFileName
-          String.concat "|" options.SourceFiles
+        [ relativize (string options.ProjectFileName)
+          String.concat "|" (options.SourceFiles |> Array.map relativize)
           string (Array.length options.ReferencedProjects)
-          String.concat "|" options.OtherOptions ]
+          String.concat "|" (options.OtherOptions |> Array.map relativize) ]
 
     sha256Hex (String.concat "||" parts)
+
+/// Computes ProjectOptionsHash from FSharpProjectOptions, with no repository root to
+/// relativize against — every path is hashed as written.
+let getProjectOptionsHash (options: FSharpProjectOptions) : string =
+    getProjectOptionsHashRelativeTo None options
 
 /// Compact tuple representation of an FCS diagnostic — what the hash actually
 /// depends on. Extracted from fcsCheckSignature so the hashing/sorting logic

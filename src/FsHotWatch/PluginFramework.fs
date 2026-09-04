@@ -781,13 +781,25 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 (fun inbox ->
 
                     /// Compute the composite key for a given event.
+                    ///
+                    /// The file half is REPO-RELATIVE, not the absolute path. It ends up
+                    /// in the on-disk entry's file NAME, so an absolute path there gave
+                    /// two checkouts of one repository entirely different names for
+                    /// byte-identical work — the cache could not be shared even when
+                    /// every key input agreed. `CachePathIdentity` keeps a path outside
+                    /// the repo explicitly machine-local, so nothing is silently made
+                    /// portable that is not.
                     let compositeKey (event: PluginEvent<'Msg>) : TaskCache.CompositeKey =
                         let nameStr = PluginName.value handler.Name
 
                         match event with
                         | FileChecked r ->
                             { Plugin = nameStr
-                              File = Some(AbsFilePath.value r.File) }
+                              File =
+                                Some(
+                                    CachePathIdentity.ofPath services.RepoRoot (AbsFilePath.value r.File)
+                                    |> CachePathIdentity.toKey
+                                ) }
                         | _ -> { Plugin = nameStr; File = None }
 
                     /// Try to replay a cached result. Returns true if cache hit.
@@ -803,10 +815,24 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         match services.TaskCache, cacheKeyOpt with
                         | Some cache, Some cacheKey ->
                             let compKey = compositeKey event
-                            let lookupResult = cache.TryGet compKey cacheKey
                             let pluginName = PluginName.value handler.Name
 
-                            FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
+                            // The typed miss reason is the whole point of `Lookup` over
+                            // `TryGet`: with content-addressed keys a cold start is
+                            // indistinguishable from a key accidentally salted with
+                            // something machine-local unless the miss NAMES the input
+                            // that moved.
+                            let lookupResult =
+                                match cache.Lookup compKey cacheKey with
+                                | TaskCache.CacheHit result ->
+                                    FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=true"
+                                    Some result
+                                | TaskCache.CacheMiss reason ->
+                                    FsHotWatch.Logging.debug
+                                        "task-cache"
+                                        $"plugin=%s{pluginName} hit=false miss=%s{TaskCache.CacheMissReason.describe reason}"
+
+                                    None
 
                             match lookupResult with
                             | Some result ->

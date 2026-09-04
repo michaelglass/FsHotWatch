@@ -133,3 +133,17 @@ module CachePathIdentity =
 
                     if reboundRelative = relative then Some absolute else None)
             |> Option.flatten
+
+    /// The portable cache-key spelling of `path`. With a `repoRoot`, paths beneath it
+    /// become `repo:`-relative so two checkouts of one repository agree; without one,
+    /// the path stays explicitly machine-local rather than pretending to be portable.
+    let keyOf (repoRoot: string option) (path: string) =
+        match repoRoot with
+        | Some root -> ofPath root path |> toKey
+        | None ->
+            let absolute =
+                match tryPathOperation (fun () -> Path.GetFullPath path) with
+                | Some full -> full
+                | None -> path
+
+            toKey (CachePathIdentity.ExternalAbsolute absolute)
