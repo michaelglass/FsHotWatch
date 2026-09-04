@@ -7,69 +7,161 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
+open FsHotWatch.ProcessHelper
+open FsHotWatch.Fantomas.FantomasTool
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.Tests.TestHelpers
 
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+//
+// Two kinds of test live here. The PINNED-REPO tests run the real `dotnet tool run
+// fantomas` from a temp repository whose manifest is a copy of this repository's — so
+// the tool resolves to the exact version the repo's own `dotnet tool restore` put in
+// the NuGet cache, and what the plugin says is what CI's `dotnet fantomas --check`
+// says. The FAKE-RUNNER tests substitute a recorder for the process, to pin the
+// contract at the seam (which pin, which arguments, how each outcome is rendered)
+// without a NuGet cache in the loop.
+
+/// This checkout's root — the manifest the pinned-repo fixtures copy.
+let private thisRepoRoot =
+    Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", ".."))
+
+/// The version this repository pins, read the same way the plugin reads it.
+let private thisRepoPin =
+    match readPin thisRepoRoot with
+    | Ok p -> p
+    | Error e -> failwith $"this repository must pin fantomas for the format tests to run: %A{e}"
+
+/// A temp repository that pins the SAME fantomas this repository pins.
+let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a =
+    withTempDir prefix (fun dir ->
+        Directory.CreateDirectory(Path.Combine(dir, ".config")) |> ignore
+
+        File.Copy(
+            Path.Combine(thisRepoRoot, ".config", "dotnet-tools.json"),
+            Path.Combine(dir, ".config", "dotnet-tools.json")
+        )
+
+        body dir)
+
+/// A temp repository whose manifest pins a version that exists nowhere — for the
+/// fake-runner tests, where the pin is an input to be echoed, not a tool to run.
+let private withFakePin (prefix: string) (version: string) (body: string -> 'a) : 'a =
+    withTempDir prefix (fun dir ->
+        Directory.CreateDirectory(Path.Combine(dir, ".config")) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(dir, ".config", "dotnet-tools.json"),
+            $"""{{ "version": 1, "isRoot": true, "tools": {{ "fantomas": {{ "version": "%s{version}", "commands": ["fantomas"] }} }} }}"""
+        )
+
+        body dir)
+
+/// The evidence line the plugin must print for a repository at `dir`.
+let private evidenceFor (_dir: string) (version: string) =
+    let manifest = Path.Combine(".config", "dotnet-tools.json")
+    $"dotnet fantomas %s{version} (pinned in %s{manifest})"
+
+/// `dotnet tool run fantomas --check <file>` run DIRECTLY — the oracle the plugin
+/// must agree with. Exit 0 = clean, 99 = needs formatting.
+let private directCheck (repoRoot: string) (file: string) : int =
+    match
+        runProcess
+            "dotnet"
+            $"tool run fantomas --check \"%s{file}\""
+            repoRoot
+            []
+            (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+    with
+    | Succeeded _ -> 0
+    | Failed(code, _) -> code
+    | TimedOut _ -> failwith "direct fantomas check timed out"
+
+/// Runner that records every invocation and answers with `outcome`.
+let private recorder (outcome: ProcessOutcome) =
+    let calls = ResizeArray<FantomasPin * string * string * TimeSpan>()
+
+    let runner: Runner =
+        fun pin args workDir timeout ->
+            calls.Add((pin, args, workDir, timeout))
+            outcome
+
+    runner, (fun () -> List.ofSeq calls)
+
+let private waitCompleted (host: PluginHost) (timeoutMs: int) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus("format-check") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        timeoutMs
+
+let private waitTerminal (host: PluginHost) (timeoutMs: int) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus("format-check") with
+            | Some(Completed _)
+            | Some(PluginStatus.Failed _) -> true
+            | _ -> false)
+        timeoutMs
+
+let private summaryOf (host: PluginHost) : string =
+    match host.GetStatus("format-check") with
+    | Some(Completed(_, verdict)) -> verdict.Summary
+    | other -> failwith $"expected format-check Completed, got %A{other}"
+
+let private unformattedCount (host: PluginHost) : string =
+    (host.RunCommand("unformatted", [||]) |> Async.RunSynchronously).Value
+
+/// The shape from the AUTOMATION-447 report: a fully-applied call split one argument
+/// per line although it fits in 120 columns. Pinned Fantomas joins it back onto one
+/// line; anything that leaves it alone is not the pinned Fantomas.
+let private reflowFixture =
+    String.concat
+        "\n"
+        [ "module Fixture"
+          ""
+          "let runOnceAndVerdictWith a b c d e f g h = a + b + c + d + e + f + g + h"
+          ""
+          "let run (runOnce: int) (render: int) (mode: int) (warn: int) (create: int) (root: int) (config: int) ="
+          "    runOnceAndVerdictWith"
+          "        runOnce"
+          "        render"
+          "        mode"
+          "        warn"
+          "        create"
+          "        root"
+          "        config"
+          "        0"
+          "" ]
+
+// ---------------------------------------------------------------------------
+// Basics
+// ---------------------------------------------------------------------------
+
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
-    let handler = createFormatCheck None
+    let handler = createFormatCheck "/tmp" None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "format-check" @>
-
-[<Fact(Timeout = 20000)>]
-let ``format-check handler times out when formatter exceeds TimeoutSec`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-to-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-    let tmpFile = Path.Combine(tmpDir, "Slow.fs")
-    File.WriteAllText(tmpFile, "module Slow")
-
-    try
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let slowHook () = System.Threading.Thread.Sleep 3000
-        let handler = createFormatCheckWithSlowHook (Some 1) (Some slowHook)
-        host.RegisterHandler(handler)
-
-        host.EmitFileChanged(SourceChanged [ tmpFile ])
-        waitForTerminalStatus host "format-check" 5000
-
-        let snap = host.GetActivitySnapshot("format-check")
-
-        match snap.LastRun with
-        | Some r ->
-            match r.Outcome with
-            | TimedOut _ -> ()
-            | other -> Assert.Fail($"Expected TimedOut, got {other}")
-        | None -> Assert.Fail "Expected LastRun record"
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
 
 [<Fact(Timeout = 15000)>]
 let ``unformatted command returns zero count when no files processed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = createFormatCheck None
-    host.RegisterHandler(handler)
-
-    let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
-    test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"count\": 0") @>
+    host.RegisterHandler(createFormatCheck "/tmp" None)
+    test <@ (unformattedCount host).Contains("\"count\": 0") @>
 
 [<Fact(Timeout = 20000)>]
 let ``format check handles non-source change events without crashing`` () =
+    // No manifest under /tmp — and none is needed: an event with nothing to check
+    // completes as `no files to check` without consulting a formatter.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = createFormatCheck None
-    host.RegisterHandler(handler)
+    host.RegisterHandler(createFormatCheck "/tmp" None)
 
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged)
 
-    // Wait until Completed AND no events still queued: the two EmitFileChanged
-    // calls are dispatched asynchronously, so waitUntil could otherwise see
-    // Completed after the first event but before SolutionChanged is dequeued.
-    // 17s is under the 20s Fact timeout with headroom for slow Linux CI.
     waitUntil
         (fun () ->
             (not (host.AnyPluginBusy()))
@@ -78,356 +170,452 @@ let ``format check handles non-source change events without crashing`` () =
                 | _ -> false))
         17000
 
-    let status = host.GetStatus("format-check")
-    test <@ status.IsSome @>
-
-    match status.Value with
-    | Completed _ -> ()
-    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+    test <@ summaryOf host = "no files to check" @>
 
 [<Fact(Timeout = 15000)>]
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = createFormatCheck None
-    host.RegisterHandler(handler)
+    host.RegisterHandler(createFormatCheck "/tmp" None)
 
     host.EmitFileChanged(SourceChanged [ "/tmp/nonexistent/Fake.fs" ])
+    waitCompleted host 5000
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("format-check") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        5000
+    test <@ summaryOf host = "no files to check" @>
+    test <@ (unformattedCount host).Contains("\"count\": 0") @>
 
-    let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
-    test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"count\": 0") @>
-
-// --- F2 regression: unreadable file in the format-check merkle ---
-// See docs/plans/2026-05-02-error-handling-audit.md §F2.
+// ---------------------------------------------------------------------------
+// AUTOMATION-447 — the plugin runs the PINNED Fantomas, says so, or refuses
+// ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
-let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =
-    // F2 — the cacheKey lambda used to substitute "" for an unreadable file, which
-    // collided with a real empty file and across distinct read-failure causes,
-    // producing stale "format OK" hits on transient locks. None bypasses the cache.
-    let handler = createFormatCheck None
+let ``format-check hands the manifest's version to the runner and names it in the summary`` () =
+    withFakePin "fmt-agree" "9.9.9-agreement" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n\nlet x = 1\n")
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
 
-    let cacheKeyFn =
-        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheckWith runner dir (Some 9))
+        host.EmitFileChanged(SourceChanged [ file ])
+        waitCompleted host 10000
 
-    let nonExistentFile =
-        Path.Combine(Path.GetTempPath(), $"fshw-f2-missing-{Guid.NewGuid():N}.fs")
+        // What was run: the pin the manifest names, `--check`, this file, from the
+        // repo root, under the configured budget.
+        test <@ calls () |> List.map (fun (p, _, _, _) -> p.Version) = [ "9.9.9-agreement" ] @>
+        test <@ calls () |> List.map (fun (_, args, _, _) -> args) = [ $"--check \"%s{file}\"" ] @>
+        test <@ calls () |> List.map (fun (_, _, wd, _) -> wd) = [ dir ] @>
+        test <@ calls () |> List.map (fun (_, _, _, t) -> t) = [ TimeSpan.FromSeconds 9.0 ] @>
 
-    let key = cacheKeyFn (FileChanged(SourceChanged [ nonExistentFile ]))
-
-    test <@ key = None @>
-
-[<Fact(Timeout = 15000)>]
-let ``format-check cacheKey returns None when one of multiple files is unreadable (F2 short-circuit)`` () =
-    // Covers the post-None short-circuit branch in the fold.
-    let handler = createFormatCheck None
-
-    let cacheKeyFn =
-        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
-
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-f2-mixed-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-    // After alphabetical sort, "Good.fs" comes before "missing-...fs". The
-    // good file is read first (Some path), then the missing one drives None.
-    let goodFile = Path.Combine(tmpDir, "Good.fs")
-    File.WriteAllText(goodFile, "module Good\n")
-    let missingFile = Path.Combine(tmpDir, $"missing-{Guid.NewGuid():N}.fs")
-    // "AAA-missing" sorts BEFORE "ZZZ-good", so Option.bind sees None first and
-    // skips the still-readable successor.
-    let sortedFirstMissing = Path.Combine(tmpDir, "AAA-still-missing.fs")
-    let sortedSecondGood = Path.Combine(tmpDir, "ZZZ-good.fs")
-    File.WriteAllText(sortedSecondGood, "module ZZZ\n")
-
-    try
-        let key = cacheKeyFn (FileChanged(SourceChanged [ goodFile; missingFile ]))
-        test <@ key = None @>
-
-        let key2 =
-            cacheKeyFn (FileChanged(SourceChanged [ sortedFirstMissing; sortedSecondGood ]))
-
-        test <@ key2 = None @>
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
+        // And the evidence says so.
+        let evidence = evidenceFor dir "9.9.9-agreement"
+        test <@ summaryOf host = $"format OK (1 checked) — %s{evidence}" @>)
 
 [<Fact(Timeout = 15000)>]
-let ``format-check cacheKey returns Some for readable files`` () =
-    let handler = createFormatCheck None
+let ``format-check refuses with a typed reason when the repository pins no fantomas`` () =
+    withTempDir "fmt-nopin" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\nlet   x=1\n")
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
 
-    let cacheKeyFn =
-        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheckWith runner dir None)
+        host.EmitFileChanged(SourceChanged [ file ])
+        waitTerminal host 10000
 
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-f2-ok-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-    let file = Path.Combine(tmpDir, "F2Ok.fs")
-    File.WriteAllText(file, "module F2Ok\n")
+        // Nothing ran, and the status says why — naming the file to fix.
+        test <@ List.isEmpty (calls ()) @>
 
-    try
-        let key = cacheKeyFn (FileChanged(SourceChanged [ file ]))
-        test <@ key.IsSome @>
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
+        match host.GetStatus("format-check") with
+        | Some(PluginStatus.Failed(reason, _, verdict)) ->
+            test <@ reason.Contains(Path.Combine(dir, ".config", "dotnet-tools.json")) @>
+            test <@ reason.Contains "dotnet tool install fantomas" @>
+            test <@ verdict.Summary.StartsWith "format check refused:" @>
+        | other -> failwith $"expected a refusal, got %A{other}"
+
+        // A refusal is not a verdict about the file: no ledger entry either way.
+        test <@ host.GetErrors() |> Map.tryFind file = None @>
+        test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
 [<Fact(Timeout = 15000)>]
-let ``FormatPreprocessor formats unformatted file`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
+let ``format-check fails, naming dotnet tool restore, when the pinned version is not restored`` () =
+    withFakePin "fmt-unrestored" "1.2.3-nowhere" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n\nlet x = 1\n")
 
-    try
-        let file = Path.Combine(tmpDir, "Bad.fs")
-        File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
+        let runner, _ =
+            recorder (
+                Failed(
+                    1,
+                    ProcessOutput.Drained "Run \"dotnet tool restore\" to make the \"fantomas\" command available."
+                )
+            )
 
-        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        let modified = preprocessor.Process [ file ] tmpDir
-        test <@ modified.Length = 1 @>
-        test <@ modified.[0] = file @>
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheckWith runner dir None)
+        host.EmitFileChanged(SourceChanged [ file ])
+        waitTerminal host 10000
 
-        let contents = File.ReadAllText(file)
-        test <@ contents <> "module Bad\nlet   x=1\nlet   y   =   2\n" @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        match host.GetStatus("format-check") with
+        | Some(PluginStatus.Failed(reason, _, _)) ->
+            test <@ reason.Contains "1.2.3-nowhere" @>
+            test <@ reason.Contains "dotnet tool restore" @>
+        | other -> failwith $"expected a failure, got %A{other}")
 
 [<Fact(Timeout = 20000)>]
-let ``FormatPreprocessor skips already formatted file`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
+let ``format-check records TimedOut when the tool is killed at its budget`` () =
+    withFakePin "fmt-to" "7.0.5" (fun dir ->
+        let file = Path.Combine(dir, "Slow.fs")
+        File.WriteAllText(file, "module Slow\n")
 
-    try
-        let file = Path.Combine(tmpDir, "Good.fs")
-        File.WriteAllText(file, "module Good\n\nlet x = 1\nlet y = 2\n")
+        let runner, _ =
+            recorder (
+                TimedOut(
+                    TimeSpan.FromSeconds 1.0,
+                    ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0),
+                    KillOutcome.Killed
+                )
+            )
 
-        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        let modified = preprocessor.Process [ file ] tmpDir
-        test <@ modified.IsEmpty @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheckWith runner dir (Some 1))
+        host.EmitFileChanged(SourceChanged [ file ])
+        waitForTerminalStatus host "format-check" 5000
+
+        match host.GetActivitySnapshot("format-check").LastRun with
+        | Some r ->
+            match r.Outcome with
+            | RunOutcome.TimedOut _ -> ()
+            | other -> Assert.Fail($"Expected TimedOut, got {other}")
+        | None -> Assert.Fail "Expected LastRun record")
 
 [<Fact(Timeout = 15000)>]
-let ``FormatPreprocessor skips non-fs files`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
+let ``FormatPreprocessor hands the manifest's version to the runner and reports it as evidence`` () =
+    withFakePin "pre-agree" "9.9.9-agreement" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n\nlet x = 1\n")
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
 
-    try
-        let file = Path.Combine(tmpDir, "readme.txt")
+        let preprocessor =
+            FormatPreprocessor(timeoutSec = 9, runner = runner) :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result ->
+            test <@ List.isEmpty result.Modified @>
+            test <@ result.Considered = 1 @>
+            test <@ result.Evidence = evidenceFor dir "9.9.9-agreement" @>
+        | Error e -> failwith $"expected a run, got %s{e}"
+
+        test
+            <@
+                calls () |> List.map (fun (p, args, wd, t) -> p.Version, args, wd, t) = [ "9.9.9-agreement",
+                                                                                          $"\"%s{file}\"",
+                                                                                          dir,
+                                                                                          TimeSpan.FromSeconds 9.0 ]
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FormatPreprocessor refuses, naming dotnet tool restore, when the pinned version is not restored`` () =
+    withFakePin "pre-unrestored" "1.2.3-nowhere" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n\nlet x = 1\n")
+
+        let runner, _ =
+            recorder (
+                Failed(
+                    1,
+                    ProcessOutput.Drained "Run \"dotnet tool restore\" to make the \"fantomas\" command available."
+                )
+            )
+
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+        test <@ preprocessor.Name = "format" @>
+
+        match preprocessor.Process [ file ] dir with
+        | Error reason ->
+            test <@ reason.Contains "1.2.3-nowhere" @>
+            test <@ reason.Contains "dotnet tool restore" @>
+        | Ok r -> failwith $"expected a refusal, got %A{r}")
+
+[<Fact(Timeout = 15000)>]
+let ``FormatPreprocessor refuses when the repository pins no fantomas`` () =
+    withTempDir "pre-nopin" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        let original = "module A\nlet   x=1\n"
+        File.WriteAllText(file, original)
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
+
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Error reason ->
+            test <@ reason.Contains "dotnet-tools.json" @>
+            test <@ reason.Contains "fantomas" @>
+        | Ok r -> failwith $"expected a refusal, got %A{r}"
+
+        test <@ List.isEmpty (calls ()) @>
+        test <@ File.ReadAllText file = original @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FormatPreprocessor leaves a file alone when the tool exceeds its timeout`` () =
+    // A timed-out format must never write a half-formatted document — and must not
+    // stop the batch: the daemon's change agent runs inside this call.
+    withFakePin "pre-to" "7.0.5" (fun dir ->
+        let file = Path.Combine(dir, "Bad.fs")
+        let original = "module Bad\nlet   x=1\nlet   y   =   2\n"
+        File.WriteAllText(file, original)
+
+        let runner, _ =
+            recorder (
+                TimedOut(
+                    TimeSpan.FromSeconds 1.0,
+                    ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0),
+                    KillOutcome.Killed
+                )
+            )
+
+        let preprocessor =
+            FormatPreprocessor(timeoutSec = 1, runner = runner) :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result ->
+            test <@ List.isEmpty result.Modified @>
+            test <@ result.Considered = 1 @>
+        | Error e -> failwith $"a timeout is not a refusal: %s{e}"
+
+        test <@ File.ReadAllText(file) = original @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FormatPreprocessor skips non-fs files without consulting the tool`` () =
+    withFakePin "pre-nonfs" "7.0.5" (fun dir ->
+        let file = Path.Combine(dir, "readme.txt")
         File.WriteAllText(file, "hello world")
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
 
-        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        let modified = preprocessor.Process [ file ] tmpDir
-        test <@ modified.IsEmpty @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-[<Fact(Timeout = 15000)>]
-let ``FormatPreprocessor handles non-existent file gracefully`` () =
-    let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-    let modified = preprocessor.Process [ "/tmp/nonexistent-file-xyz.fs" ] "/tmp"
-    test <@ modified.IsEmpty @>
+        match preprocessor.Process [ file ] dir with
+        | Ok result ->
+            test <@ List.isEmpty result.Modified @>
+            test <@ result.Considered = 0 @>
+        | Error e -> failwith e
+
+        test <@ List.isEmpty (calls ()) @>)
 
 [<Fact(Timeout = 15000)>]
-let ``FormatPreprocessor handles format error gracefully`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-err-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
+let ``FormatPreprocessor handles a non-existent file as nothing to consider`` () =
+    withFakePin "pre-missing" "7.0.5" (fun dir ->
+        let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-    try
-        let file = Path.Combine(tmpDir, "Bad.fs")
-        // Write invalid F# that Fantomas cannot parse
-        File.WriteAllText(file, "module \x00\x00\x00")
+        match preprocessor.Process [ Path.Combine(dir, "nonexistent-file-xyz.fs") ] dir with
+        | Ok result -> test <@ result.Considered = 0 @>
+        | Error e -> failwith e
 
-        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        let modified = preprocessor.Process [ file ] tmpDir
-        // The result is Fantomas-dependent; the contract is only that it does not throw.
-        test <@ true @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ List.isEmpty (calls ()) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor dispose is callable`` () =
     let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
     preprocessor.Dispose()
 
-[<Fact(Timeout = 20000)>]
-let ``format check handles exception gracefully`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-err-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
+// ---------------------------------------------------------------------------
+// AUTOMATION-447 — the regression fixture: the plugin AGREES with the pinned tool
+// ---------------------------------------------------------------------------
 
-    try
-        let file = Path.Combine(tmpDir, "Bad.fs")
+[<Fact(Timeout = 60000)>]
+let ``format-check and the preprocessor agree with a direct pinned fantomas --check on a shape it reflows`` () =
+    withPinnedRepo "fmt-oracle" (fun dir ->
+        let file = Path.Combine(dir, "Fixture.fs")
+        File.WriteAllText(file, reflowFixture)
+
+        // The oracle: the pinned tool, run the way CI runs it, rejects the shape.
+        test <@ directCheck dir file = NeedsFormattingExitCode @>
+
+        // The plugin says the same, and says which tool it asked.
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheck dir None)
+        host.EmitFileChanged(SourceChanged [ file ])
+        waitCompleted host 30000
+
+        test <@ summaryOf host = $"1 of 1 files need formatting — %s{evidenceFor dir thisRepoPin.Version}" @>
+        test <@ (unformattedCount host).Contains("\"count\": 1") @>
+
+        // The preprocessor rewrites it with the same tool …
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result ->
+            test <@ result.Modified = [ file ] @>
+            test <@ result.Evidence = evidenceFor dir thisRepoPin.Version @>
+        | Error e -> failwith e
+
+        // … after which the oracle is clean, and so is the plugin. The reflow the
+        // report describes (one argument per line → one line) is what happened.
+        test <@ directCheck dir file = 0 @>
+
+        test
+            <@ File.ReadAllText(file).Contains "runOnceAndVerdictWith runOnce render mode warn create root config 0" @>
+
+        let second = beginAwaitNextTerminal host "format-check"
+        host.EmitFileChanged(SourceChanged [ file ])
+        test <@ second.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ summaryOf host = $"format OK (1 checked) — %s{evidenceFor dir thisRepoPin.Version}" @>
+        test <@ (unformattedCount host).Contains("\"count\": 0") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``the pinned tool the plugin runs reports the version the manifest pins`` () =
+    // `dotnet tool run` resolves the version from the manifest by construction; this
+    // pins that construction against the binary's own answer, so a future resolver
+    // change (a global fallback, a roll-forward) would surface here.
+    withPinnedRepo "fmt-version" (fun dir ->
+        match
+            runProcess "dotnet" "tool run fantomas --version" dir [] (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+        with
+        | Succeeded output -> test <@ (ProcessOutput.text output).Contains $"v%s{thisRepoPin.Version}" @>
+        | other -> failwith $"fantomas --version failed: %A{other}")
+
+// ---------------------------------------------------------------------------
+// Behaviour over the real pinned tool
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``FormatPreprocessor formats unformatted file`` () =
+    withPinnedRepo "fmt" (fun dir ->
+        let file = Path.Combine(dir, "Bad.fs")
+        File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result -> test <@ result.Modified = [ file ] @>
+        | Error e -> failwith e
+
+        test <@ File.ReadAllText(file) = "module Bad\n\nlet x = 1\nlet y = 2\n" @>)
+
+[<Fact(Timeout = 30000)>]
+let ``FormatPreprocessor skips already formatted file`` () =
+    withPinnedRepo "fmt" (fun dir ->
+        let file = Path.Combine(dir, "Good.fs")
+        File.WriteAllText(file, "module Good\n\nlet x = 1\nlet y = 2\n")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result ->
+            test <@ List.isEmpty result.Modified @>
+            test <@ result.Considered = 1 @>
+        | Error e -> failwith e)
+
+[<Fact(Timeout = 30000)>]
+let ``FormatPreprocessor reports a file the tool cannot parse and leaves it alone`` () =
+    withPinnedRepo "fmt-err" (fun dir ->
+        let file = Path.Combine(dir, "Bad.fs")
+        let original = "module \x00\x00\x00"
+        File.WriteAllText(file, original)
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+
+        match preprocessor.Process [ file ] dir with
+        | Ok result -> test <@ List.isEmpty result.Modified @>
+        | Error e -> failwith $"a parse error is a per-file finding, not a refusal: %s{e}"
+
+        test <@ File.ReadAllText(file) = original @>)
+
+[<Fact(Timeout = 30000)>]
+let ``format check reports a file the tool cannot parse as a ledger error`` () =
+    withPinnedRepo "fmtchk-err" (fun dir ->
+        let file = Path.Combine(dir, "Bad.fs")
         File.WriteAllText(file, "module \x00\x00\x00")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-        let handler = createFormatCheck None
-        host.RegisterHandler(handler)
-
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheck dir None)
         host.EmitFileChanged(SourceChanged [ file ])
+        waitTerminal host 25000
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _)
-                | Some(PluginStatus.Failed _) -> true
-                | _ -> false)
-            15000
+        test <@ (summaryOf host).StartsWith "1 of 1 files could not be formatted" @>
 
-        let status = host.GetStatus("format-check")
-        test <@ status.IsSome @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        let entries =
+            host.GetErrors()
+            |> Map.tryFind file
+            |> Option.defaultValue []
+            |> List.filter (fun (plugin, _) -> plugin = "format-check")
 
-[<Fact(Timeout = 15000)>]
+        test
+            <@
+                entries
+                |> List.exists (fun (_, e) ->
+                    e.Severity = FsHotWatch.ErrorLedger.Error
+                    && e.Message.Contains "could not format")
+            @>)
+
+[<Fact(Timeout = 30000)>]
 let ``format check detects formatting change even with same commit ID`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-cache-{Guid.NewGuid():N}")
+    withPinnedRepo "fmtchk-cache" (fun dir ->
+        let file = Path.Combine(dir, "Test.fs")
 
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
-        let file = Path.Combine(tmpDir, "Test.fs")
-
-        let mockGetCommitId () = Some "fixed-commit-id"
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None
-        host.RegisterHandler(handler)
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheck dir None)
 
         // First: file is unformatted
         File.WriteAllText(file, "module Test\nlet   x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
-
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            15000
-
-        let result1 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
-        test <@ result1.IsSome @>
-        test <@ result1.Value.Contains("\"count\": 1") @>
+        waitCompleted host 25000
+        test <@ (unformattedCount host).Contains("\"count\": 1") @>
 
         // Second: file is now formatted, but commit ID hasn't changed
+        let second = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Test\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
+        test <@ second.Wait(TimeSpan.FromSeconds 25.0) @>
+        test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            15000
-
-        let result2 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
-        test <@ result2.IsSome @>
-        test <@ result2.Value.Contains("\"count\": 0") @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
-
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = 30000)>]
 let ``format check reports unformatted files to error ledger`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-ledger-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
-        let file = Path.Combine(tmpDir, "Bad.fs")
+    withPinnedRepo "fmtchk-ledger" (fun dir ->
+        let file = Path.Combine(dir, "Bad.fs")
         File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None
-        host.RegisterHandler(handler)
-
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheck dir None)
         host.EmitFileChanged(SourceChanged [ file ])
-
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            15000
-
-        let errors = host.GetErrors()
-        test <@ not errors.IsEmpty @>
-
-        let fileErrors = errors |> Map.tryFind file
-        test <@ fileErrors.IsSome @>
+        waitCompleted host 25000
 
         let formatErrors =
-            fileErrors.Value |> List.filter (fun (plugin, _) -> plugin = "format-check")
+            host.GetErrors()
+            |> Map.tryFind file
+            |> Option.defaultValue []
+            |> List.filter (fun (plugin, _) -> plugin = "format-check")
 
         test <@ not formatErrors.IsEmpty @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
-
-[<Fact(Timeout = 20000)>]
-let ``format check clears errors when file becomes formatted`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-clear-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
-        let file = Path.Combine(tmpDir, "Fix.fs")
-        File.WriteAllText(file, "module Fix\nlet   x=1\n")
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None
-        host.RegisterHandler(handler)
-
-        // First: unformatted
-        let firstTerminal = beginAwaitTerminal host "format-check"
-        host.EmitFileChanged(SourceChanged [ file ])
-
-        test <@ firstTerminal.Wait(TimeSpan.FromSeconds 15.0) @>
-
+        // The ledger entry names the formatter whose opinion it is.
         test
             <@
-                match firstTerminal.Result with
-                | Completed _ -> true
-                | _ -> false
-            @>
+                formatErrors
+                |> List.forall (fun (_, e) -> e.Message.Contains $"dotnet fantomas %s{thisRepoPin.Version}")
+            @>)
 
-        let errors1 = host.GetErrors()
-        test <@ not errors1.IsEmpty @>
+[<Fact(Timeout = 40000)>]
+let ``format check clears errors when file becomes formatted`` () =
+    withPinnedRepo "fmtchk-clear" (fun dir ->
+        let file = Path.Combine(dir, "Fix.fs")
+        File.WriteAllText(file, "module Fix\nlet   x=1\n")
 
-        // Now fix the file
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheck dir None)
+
+        let firstTerminal = beginAwaitTerminal host "format-check"
+        host.EmitFileChanged(SourceChanged [ file ])
+        test <@ firstTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
+        test <@ not (host.GetErrors()).IsEmpty @>
+
         // Subscribe before emitting: this small clean-file run can otherwise pass
         // through Running to Completed between two status polls.
         let secondTerminal = beginAwaitNextTerminal host "format-check"
         File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
+        test <@ secondTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
 
-        test <@ secondTerminal.Wait(TimeSpan.FromSeconds 15.0) @>
-
-        test
-            <@
-                match secondTerminal.Result with
-                | Completed _ -> true
-                | _ -> false
-            @>
-
-        let errors2 = host.GetErrors()
-        let fileErrors = errors2 |> Map.tryFind file
+        let fileErrors = host.GetErrors() |> Map.tryFind file
 
         test
             <@
@@ -435,10 +623,77 @@ let ``format check clears errors when file becomes formatted`` () =
                 || fileErrors.Value
                    |> List.filter (fun (p, _) -> p = "format-check")
                    |> List.isEmpty
-            @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+            @>)
+
+// ---------------------------------------------------------------------------
+// Cache key — content, pin and config
+// ---------------------------------------------------------------------------
+
+let private cacheKeyOf (dir: string) =
+    (createFormatCheck dir None).CacheKey
+    |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =
+    // F2 — the cacheKey lambda used to substitute "" for an unreadable file, which
+    // collided with a real empty file and across distinct read-failure causes,
+    // producing stale "format OK" hits on transient locks. None bypasses the cache.
+    withFakePin "f2-missing" "7.0.5" (fun dir ->
+        let nonExistentFile = Path.Combine(dir, "missing.fs")
+        test <@ cacheKeyOf dir (FileChanged(SourceChanged [ nonExistentFile ])) = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns None when one of multiple files is unreadable (F2 short-circuit)`` () =
+    withFakePin "f2-mixed" "7.0.5" (fun dir ->
+        let goodFile = Path.Combine(dir, "Good.fs")
+        File.WriteAllText(goodFile, "module Good\n")
+        let missingFile = Path.Combine(dir, "missing.fs")
+        // "AAA-missing" sorts BEFORE "ZZZ-good", so Option.bind sees None first and
+        // skips the still-readable successor.
+        let sortedFirstMissing = Path.Combine(dir, "AAA-still-missing.fs")
+        let sortedSecondGood = Path.Combine(dir, "ZZZ-good.fs")
+        File.WriteAllText(sortedSecondGood, "module ZZZ\n")
+
+        test <@ cacheKeyOf dir (FileChanged(SourceChanged [ goodFile; missingFile ])) = None @>
+        test <@ cacheKeyOf dir (FileChanged(SourceChanged [ sortedFirstMissing; sortedSecondGood ])) = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns Some for readable files under a pinned repository`` () =
+    withFakePin "f2-ok" "7.0.5" (fun dir ->
+        let file = Path.Combine(dir, "F2Ok.fs")
+        File.WriteAllText(file, "module F2Ok\n")
+        test <@ (cacheKeyOf dir (FileChanged(SourceChanged [ file ]))).IsSome @>)
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey is None when the repository pins no fantomas`` () =
+    // A refusal is re-earned on every event; it must never be replayed as a verdict.
+    withTempDir "key-nopin" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n")
+        test <@ cacheKeyOf dir (FileChanged(SourceChanged [ file ])) = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey changes with the pinned version and with the editorconfig`` () =
+    // Same bytes, different formatter or different settings = a different answer, so
+    // a replayed `format OK` across either edit would be the AUTOMATION-447 defect in
+    // cached form.
+    withFakePin "key-inputs" "7.0.5" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A\n")
+        let event = FileChanged(SourceChanged [ file ])
+        let baseline = cacheKeyOf dir event
+
+        File.WriteAllText(
+            Path.Combine(dir, ".config", "dotnet-tools.json"),
+            """{ "version": 1, "tools": { "fantomas": { "version": "7.0.6", "commands": ["fantomas"] } } }"""
+        )
+
+        let bumped = cacheKeyOf dir event
+        test <@ bumped.IsSome && bumped <> baseline @>
+
+        File.WriteAllText(Path.Combine(dir, ".editorconfig"), "[*.fs]\nmax_line_length = 80\n")
+        let reconfigured = cacheKeyOf dir event
+        test <@ reconfigured.IsSome && reconfigured <> bumped @>)
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-191 — a cached format-check verdict may only assert what its key covers.
@@ -472,7 +727,7 @@ let private runFormatCheckBatches
         | Some cache -> PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
         | None -> PluginHost(Unchecked.defaultof<_>, tmpDir)
 
-    host.RegisterHandler(createFormatCheck None)
+    host.RegisterHandler(createFormatCheck tmpDir None)
 
     for batch in batches do
         host.EmitFileChanged(SourceChanged batch)
@@ -485,15 +740,9 @@ let private runFormatCheckBatches
                 && (match host.GetStatus("format-check") with
                     | Some(Completed _) -> true
                     | _ -> false))
-            20000
+            30000
 
     host
-
-/// The terminal summary format-check is currently reporting.
-let private formatCheckSummary (host: PluginHost) : string =
-    match host.GetStatus("format-check") with
-    | Some(Completed(_, verdict)) -> verdict.Summary
-    | other -> failwith $"expected format-check Completed, got %A{other}"
 
 /// How many files the plugin's LIVE ledger — the set the verdict gates on —
 /// currently holds a format-check finding for.
@@ -507,12 +756,7 @@ let private formatCheckLedgerCount (host: PluginHost) : int =
 
 [<Fact(Timeout = 120000)>]
 let ``a replayed format-check verdict cannot claim files its cache key never covered`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-stale-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withPinnedRepo "fmtchk-stale" (fun tmpDir ->
         let bad = Path.Combine(tmpDir, "Bad.fs")
         File.WriteAllText(bad, "module Bad\nlet   x=1\nlet   y   =   2\n")
         let good = Path.Combine(tmpDir, "Good.fs")
@@ -528,32 +772,24 @@ let ``a replayed format-check verdict cannot claim files its cache key never cov
 
         // What a run over `Good` alone actually finds, with no cache in play.
         let fresh = runFormatCheckBatches tmpDir None [ [ good ] ]
-        let freshSummary = formatCheckSummary fresh
+        let freshSummary = summaryOf fresh
         test <@ formatCheckLedgerCount fresh = 0 @>
 
         // Same inputs, but served from session 1's entry.
         let replayed = runFormatCheckBatches tmpDir (Some cache) [ [ good ] ]
-        let replayedSummary = formatCheckSummary replayed
+        let replayedSummary = summaryOf replayed
 
         // The replay landed a green ledger; a summary claiming otherwise would be
         // a `summary:` line contradicting the verdict it sits beside.
         test <@ formatCheckLedgerCount replayed = 0 @>
-        test <@ replayedSummary = freshSummary + " (cached)" @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ replayedSummary = freshSummary + " (cached)" @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a replayed format-check verdict still reports a finding that is genuinely current`` () =
     // The positive control for the test above. Same plugin, same replay path, same
     // comparison — but the cached entry's claim is TRUE at replay time, so it must
     // survive intact and still name the finding.
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-current-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withPinnedRepo "fmtchk-current" (fun tmpDir ->
         let bad = Path.Combine(tmpDir, "Bad.fs")
         File.WriteAllText(bad, "module Bad\nlet   x=1\nlet   y   =   2\n")
 
@@ -563,11 +799,11 @@ let ``a replayed format-check verdict still reports a finding that is genuinely 
         runFormatCheckBatches tmpDir (Some cache) [ [ bad ] ] |> ignore
 
         let fresh = runFormatCheckBatches tmpDir None [ [ bad ] ]
-        let freshSummary = formatCheckSummary fresh
+        let freshSummary = summaryOf fresh
         test <@ formatCheckLedgerCount fresh = 1 @>
 
         let replayed = runFormatCheckBatches tmpDir (Some cache) [ [ bad ] ]
-        let replayedSummary = formatCheckSummary replayed
+        let replayedSummary = summaryOf replayed
 
         // Replayed from cache, and still red: the entry's error replay put the
         // finding back in the ledger.
@@ -576,47 +812,4 @@ let ``a replayed format-check verdict still reports a finding that is genuinely 
 
         // And the summary names it, rather than passing the comparison by being a
         // constant that never mentions a finding at all.
-        test <@ replayedSummary.Contains "need formatting" @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
-
-// ---------------------------------------------------------------------------
-// AUTOMATION-98 finding 1(a) — the FormatPreprocessor must be BOUNDED.
-// ---------------------------------------------------------------------------
-//
-// The regression this pins: `FormatPreprocessor.Process` ran Fantomas via a bare
-// `Async.RunSynchronously` with NO timeout, while its twin `createFormatCheck`
-// wrapped the IDENTICAL call in `runWithCancellableTimeout`. A preprocessor runs
-// inside the daemon's `processBatch`, so a Fantomas hang there wedges the
-// changeAgent — the daemon stops processing file changes, forever. It also runs
-// inside `performScan`, which `WaitForScan` — `check`'s first step — blocks on.
-
-[<Fact(Timeout = 15000)>]
-let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-fmt-timeout-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
-        let file = Path.Combine(tmpDir, "Bad.fs")
-        let original = "module Bad\nlet   x=1\nlet   y   =   2\n"
-        File.WriteAllText(file, original)
-
-        // Force the timeout DETERMINISTICALLY via the same seam the format-check
-        // plugin has: a slow hook inside the guarded region and a real (1 s)
-        // budget. Do not go back to `timeoutSec = 0` — that races the timer
-        // against Fantomas, and on a warm box the format wins.
-        let slowHook () = System.Threading.Thread.Sleep 3000
-
-        let preprocessor =
-            FormatPreprocessor(timeoutSec = 1, slowHook = slowHook) :> IFsHotWatchPreprocessor
-
-        let modified = preprocessor.Process [ file ] tmpDir
-
-        test <@ modified.IsEmpty @>
-        // A timed-out format must never write a half-formatted document.
-        test <@ File.ReadAllText(file) = original @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ replayedSummary.Contains "need formatting" @>)

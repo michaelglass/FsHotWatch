@@ -336,7 +336,11 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "test-formatter"
 
-                member _.Process (changedFiles: string list) (_repoRoot: string) = changedFiles
+                member _.Process (changedFiles: string list) (_repoRoot: string) =
+                    Ok
+                        { Modified = changedFiles
+                          Considered = changedFiles.Length
+                          Evidence = "test-formatter" }
 
                 member _.Dispose() = () }
 
@@ -365,7 +369,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         let host = daemon.Host
         let testFiles = [ Path.Combine(srcDir, "Fmt.fs") ]
-        let modified = host.RunPreprocessors(testFiles)
+        let modified = host.RunPreprocessors(testFiles).Modified
         test <@ modified.Length = testFiles.Length @>
 
         let status = host.GetStatus("test-formatter")

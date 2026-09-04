@@ -107,7 +107,7 @@ let ``all plugins receive events when checking a file`` () =
     let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
 
     let lint = LintPlugin.create None None None None
-    let fantomas = createFormatCheck None
+    let fantomas = createFormatCheck repoRoot None
     let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
 
     host.RegisterHandler(testPrune)
@@ -401,7 +401,19 @@ let x = 5
         with ex ->
             Assert.True(true, $"Skipped due to FCS exception: {ex.Message}"))
 
-[<Fact(Timeout = 5000)>]
+// The format tests below run the REAL pinned tool (`dotnet tool run fantomas`,
+// resolved from this checkout's `.config/dotnet-tools.json`) with the checkout as the
+// repository root — the same resolution CI's `dotnet fantomas --check` uses
+// (AUTOMATION-447). A cold `dotnet tool run` costs a few hundred milliseconds, hence
+// the budgets.
+
+/// The pinned version this checkout runs, for the evidence lines.
+let private pinnedFantomasVersion =
+    match FsHotWatch.Fantomas.FantomasTool.readPin (findRepoRoot ()) with
+    | Result.Ok pin -> pin.Version
+    | Result.Error e -> failwith $"this checkout must pin fantomas: %A{e}"
+
+[<Fact(Timeout = 30000)>]
 let ``format check plugin detects unformatted code`` () =
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
@@ -410,7 +422,7 @@ let ``format check plugin detects unformatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -420,27 +432,24 @@ let ``format check plugin detects unformatted code`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            25000
 
-        let status = host.GetStatus("format-check")
-        test <@ status.IsSome @>
-
-        match status.Value with
-        | Completed _ -> ()
+        match host.GetStatus("format-check") with
+        | Some(Completed(_, verdict)) ->
+            test
+                <@
+                    verdict.Summary = $"1 of 1 files need formatting — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
+                @>
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``format check plugin passes on well-formatted code`` () =
-    let wellFormatted =
-        Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, "module Temp\n\nlet x = 5\n")
-        |> Async.RunSynchronously
-
-    withTempFsFile wellFormatted.Code (fun _dir filePath ->
+    withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -450,16 +459,17 @@ let ``format check plugin passes on well-formatted code`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            25000
 
-        let status = host.GetStatus("format-check")
-        test <@ status.IsSome @>
-
-        match status.Value with
-        | Completed _ -> ()
+        match host.GetStatus("format-check") with
+        | Some(Completed(_, verdict)) ->
+            test
+                <@
+                    verdict.Summary = $"format OK (1 checked) — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
+                @>
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``plugin status reflects running to completed lifecycle`` () =
     let content = "module Temp\n\nlet x = 5\n"
 
@@ -468,7 +478,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
 
         let beforeStatus = host.GetStatus("format-check")
@@ -481,7 +491,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            25000
 
         let afterStatus = host.GetStatus("format-check")
         test <@ afterStatus.IsSome @>
@@ -490,7 +500,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-debounce-{Guid.NewGuid():N}")
     Directory.CreateDirectory(dir) |> ignore
@@ -504,11 +514,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
                       if i % 2 = 0 then
                           $"module    File{i}\nlet   x   =   {i}\n"
                       else
-                          let formatted =
-                              Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, $"module File{i}\n\nlet x = {i}\n")
-                              |> Async.RunSynchronously
-
-                          formatted.Code
+                          $"module File{i}\n\nlet x = {i}\n"
 
                   File.WriteAllText(fp, content)
                   fp ]
@@ -517,7 +523,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged files)
@@ -527,13 +533,10 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            25000
 
-        let status = host.GetStatus("format-check")
-        test <@ status.IsSome @>
-
-        match status.Value with
-        | Completed _ -> ()
+        match host.GetStatus("format-check") with
+        | Some(Completed(_, verdict)) -> test <@ verdict.Summary.StartsWith "2 of 5 files need formatting" @>
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}")
     finally
         try
@@ -545,27 +548,30 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 // FormatPreprocessor — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor succeeds on well-formatted file`` () =
-    let wellFormatted =
-        Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, "module Temp\n\nlet x = 5\n")
-        |> Async.RunSynchronously
-
-    withTempFsFile wellFormatted.Code (fun _dir filePath ->
+    withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
-        let modified = preprocessor.Process [ filePath ] "/tmp"
-        test <@ modified |> List.isEmpty @>)
 
-[<Fact(Timeout = 5000)>]
+        match preprocessor.Process [ filePath ] (findRepoRoot ()) with
+        | Result.Ok result ->
+            test <@ result.Modified |> List.isEmpty @>
+            test <@ result.Considered = 1 @>
+
+            test
+                <@ result.Evidence = $"dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)" @>
+        | Result.Error e -> Assert.Fail e)
+
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor reformats badly formatted file`` () =
     let badCode = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
     withTempFsFile badCode (fun _dir filePath ->
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
         let contentBefore = File.ReadAllText(filePath)
-        let modified = preprocessor.Process [ filePath ] "/tmp"
+        let result = preprocessor.Process [ filePath ] (findRepoRoot ())
         let contentAfter = File.ReadAllText(filePath)
-        test <@ modified |> List.contains filePath @>
+        test <@ result |> Result.map (fun r -> r.Modified) = Ok [ filePath ] @>
         test <@ contentAfter <> contentBefore @>)
 
 // ===========================================================================
@@ -1545,7 +1551,7 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
         // Rerun via the public host API — same call the IPC endpoint makes.
-        let rerunResult = host.RerunFileCommandPlugin(pluginName)
+        let rerunResult = host.RerunPlugin(pluginName, (fun () -> []))
         test <@ rerunResult = Result.Ok() @>
 
         // Status still reads Completed from the previous run, so `waitForStatusSettled`
@@ -1568,6 +1574,15 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
 let ``Full pipeline: format → build → test`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
+
+    // The formatter is the REPOSITORY's pinned tool (AUTOMATION-447): a repo without
+    // a manifest gets a refusal, so this temp repo pins what this checkout pins.
+    Directory.CreateDirectory(Path.Combine(tmpDir, ".config")) |> ignore
+
+    File.Copy(
+        Path.Combine(findRepoRoot (), ".config", "dotnet-tools.json"),
+        Path.Combine(tmpDir, ".config", "dotnet-tools.json")
+    )
 
     let dbPath = Path.Combine(tmpDir, "test-prune.db")
 
@@ -1600,7 +1615,7 @@ let ``Full pipeline: format → build → test`` () =
 
         let fsFile = Path.Combine(tmpDir, "Temp.fs")
         File.WriteAllText(fsFile, "module Temp\n\nlet x = 5\n")
-        let modified = host.RunPreprocessors([ fsFile ])
+        let modified = host.RunPreprocessors([ fsFile ]).Modified
         test <@ modified |> List.contains fsFile |> not @>
 
         host.EmitFileChanged(SourceChanged [ fsFile ])
@@ -1632,10 +1647,11 @@ let ``Full pipeline: format → build → test`` () =
         let fmtStatus = host.GetStatus("format")
         test <@ fmtStatus.IsSome @>
 
+        // The preprocessor's status line is its evidence: the pinned tool, by version.
         test
             <@
                 match fmtStatus.Value with
-                | Completed _ -> true
+                | Completed(_, verdict) -> verdict.Summary.Contains $"dotnet fantomas %s{pinnedFantomasVersion}"
                 | _ -> false
             @>
     finally
