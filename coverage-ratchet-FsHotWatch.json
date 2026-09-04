@@ -1329,9 +1329,9 @@
       },
       {
         "coveredLines": 59,
-        "coveredBranches": 21,
+        "coveredBranches": 20,
         "platform": "linux",
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+        "reason": "Branches 21 -> 20 on 2026-09-04 (AUTOMATION-448, PR #14): CI run 33834835515 measured 20/26 on a tree with NO src/ change, while main runs 33742353641 and 33833361422 measured 21/26. Floor = the min observed across CI runs: this file's override entries already document that the timer-callback branches wobble +/-1 under load, and a count floor pinned to one run's exact value re-reds the gate on the next wobble for no signal. || Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
       }
     ],
     "OutputCopyFreshness.fs": [

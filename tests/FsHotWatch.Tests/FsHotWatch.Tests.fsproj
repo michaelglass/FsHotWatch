@@ -81,7 +81,9 @@
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="RunLevelHookGapTests.fs" />
+    <Compile Include="RepoTasks.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />
+    <Compile Include="AnalyzerMaterializationTests.fs" />
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
     <Compile Include="LoggingTests.fs" />
