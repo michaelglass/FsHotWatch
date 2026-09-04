@@ -23,7 +23,8 @@
 ///     any "repair" would be fabrication.
 ///   * `InputsUndeterminable` — we could not establish what this run's inputs ARE.
 ///     Repairing a tree we cannot describe is how silent degradation starts.
-/// Both refuse, and both name `dotnet build` — the remedy that actually works.
+/// Both refuse, and both name the command that produces the missing bytes. See
+/// `remedyFor` for why that command is an `fshw` verb and not a raw `dotnet build`.
 ///
 /// A heal is NEVER silent. Repeated origin/copy disagreements mean something upstream
 /// keeps rebuilding origins without their consumers, and a repair that absorbs that forever
@@ -154,18 +155,36 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
 ///
 /// Deliberately does NOT say "stop the daemon". That is folk knowledge and it is
 /// wrong as a remedy: the task cache is file-backed and survives a restart, so a
-/// restart alone clears nothing. `dotnet build` is what re-emits the file pair every
-/// verdict names.
+/// restart alone clears nothing.
+///
+/// AUTOMATION-495: it no longer says `dotnet build` either, and that is wrong in two
+/// directions rather than one.
+///
+///   * A REPOSITORY MAY REFUSE IT. thellma/intelligence puts a shim first on `PATH`
+///     that rejects `dotnet build`, `test`, `exec` and friends outright (its ADR 0200),
+///     because raw builds bypass the analyzer and format plugins that are part of its
+///     gate. A refusal that prescribes an action the operator cannot take is a dead
+///     end wearing the clothes of a remedy — and this text is read exactly when
+///     somebody is stuck.
+///   * IT IS THE WEAKER COMMAND ANYWAY. `dotnet build` consults the same incremental
+///     state that produced the staleness: the copy target skips while the source is
+///     not newer than the destination, which is precisely how a byte-differing copy
+///     survives a build that reports success. `dotnet fshw rerun build` clears the
+///     cached build result and re-drives the build this daemon owns, and deleting the
+///     named copy makes the copy target run because its destination is gone. Both are
+///     available in every repository that has an `fshw` to be reading this message.
 let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
     match stale with
     | ArtifactFreshness.CopyDiffersFromOrigin _ ->
-        "build the consumer (normally with a plain `dotnet build`) so its copy target runs. If that consumer build \
-         reports success and the bytes still differ, run `dotnet build --no-incremental` or delete the named copy \
-         and build again"
+        "delete the named copy, then run `dotnet fshw rerun build` — with the destination gone the consumer's copy \
+         target runs, where the incremental check that produced this state skipped it because the source is not \
+         newer than the destination"
     | ArtifactFreshness.AssemblyOlderThanSource _ ->
-        "run `dotnet build` — the compile has not run since that edit, so there is nothing on disk to copy from"
+        "run `dotnet fshw rerun build` — the compile has not run since that edit, so there is nothing on disk to \
+         copy from, and `rerun` is what clears the cached build result that let the compile be skipped"
     | ArtifactFreshness.InputsUndeterminable _ ->
-        "run `dotnet build` and read its error — it fails loudly on the same project file this gate could not read"
+        "run `dotnet fshw rerun build`, then `dotnet fshw status build` — the build fails loudly on the same project \
+         file this gate could not read"
 
 /// The words EVERY refusal this module produces begins with, and the only thing any
 /// downstream surface uses to recognise one.

@@ -3529,9 +3529,18 @@ let private executeTests
                             | None ->
                                 config.Project,
                                 TestsDeferred
+                                    // AUTOMATION-495: the remedy points at the projects
+                                    // that carry one rather than restating a generic
+                                    // build command. Each named project's own deferral
+                                    // holds the remedy for ITS cause, and those causes
+                                    // need different actions — a raw `dotnet build`
+                                    // fixes neither a tripped repair breaker nor a
+                                    // byte-differing copy, and some repositories refuse
+                                    // that command outright.
                                     $"not run — the whole run was refused before any suite launched because \
                                       %d{preflight.Refusals.Length} project(s) have stale build output: \
-                                      %s{names}. Remedy: run `dotnet build`, then re-run.")
+                                      %s{names}. Remedy: read those projects' own deferrals — each names its \
+                                      cause and what to do about it — then re-run.")
 
                 foldAndEmit results
                 return [| results |]

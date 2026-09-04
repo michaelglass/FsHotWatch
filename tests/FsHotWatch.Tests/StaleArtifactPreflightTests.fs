@@ -124,14 +124,23 @@ let ``AUTOMATION-201: a stale compile refuses with a remedy instead of being 're
         test <@ List.isEmpty outcome.Healed @>
         test <@ outcome.Refusals.Length = 1 @>
         test <@ outcome.Refusals.Head.Project = "Tests" @>
-        test <@ outcome.Refusals.Head.Reason.Contains "dotnet build" @>)
+        test <@ outcome.Refusals.Head.Reason.Contains "dotnet fshw rerun build" @>)
 
 /// The remedy text is the whole point of the "diagnoses but does not prescribe" defect,
-/// and one specific wrong answer must stay out of it: restarting the daemon. The task
-/// cache is file-backed and survives a restart, so `fshw stop` clears nothing — it was
-/// folk knowledge that happened to correlate with a rebuild.
+/// and two specific wrong answers must stay out of it.
+///
+/// Restarting the daemon: the task cache is file-backed and survives a restart, so
+/// `fshw stop` clears nothing — it was folk knowledge that happened to correlate with a
+/// rebuild.
+///
+/// A raw `dotnet build` (AUTOMATION-495): a consuming repository may refuse that command
+/// outright — thellma/intelligence puts a shim first on `PATH` that rejects it, so the
+/// gate was prescribing an action its own operator cannot take — and it is the weaker
+/// command anyway, because the cached build result is exactly what let the work be
+/// skipped. `dotnet fshw rerun build` clears that result, and every repository reading
+/// this message has an `fshw` to run it with.
 [<Fact(Timeout = 15000)>]
-let ``AUTOMATION-201: every remedy names a command that works, and none says 'stop the daemon'`` () =
+let ``AUTOMATION-495: every remedy names a command an fshw repository can actually run`` () =
     let cases =
         [ ArtifactFreshness.CopyDiffersFromOrigin("/o.dll", "/c.dll")
           ArtifactFreshness.AssemblyOlderThanSource("P", "/s.fs", DateTime.UtcNow, DateTime.UtcNow)
@@ -139,12 +148,16 @@ let ``AUTOMATION-201: every remedy names a command that works, and none says 'st
 
     for case in cases do
         let remedy = StaleArtifactPreflight.remedyFor case
-        test <@ remedy.Contains "dotnet build" @>
+
+        // A command, never a ritual — and one this repository's shell permits.
+        test <@ remedy.Contains "dotnet fshw rerun build" @>
+        test <@ not (remedy.Contains "dotnet build") @>
+        test <@ not (remedy.Contains "--no-incremental") @>
         test <@ not (remedy.Contains "fshw stop") @>
         test <@ not (remedy.ToLowerInvariant().Contains "restart") @>
 
 [<Fact(Timeout = 15000)>]
-let ``AUTOMATION-516: a stale copy reports build scope before exceptional incremental recovery`` () =
+let ``AUTOMATION-516: a stale copy names the consumer whose copy target did not run`` () =
     let stale =
         ArtifactFreshness.CopyDiffersFromOrigin("/origin.dll", "/consumer/copy.dll")
 
@@ -154,8 +167,9 @@ let ``AUTOMATION-516: a stale copy reports build scope before exceptional increm
         StaleArtifactPreflight.Reason.breakerTripped "/repo" "/consumer/copy.dll" 10
 
     test <@ remedy.Contains "consumer" @>
-    test <@ remedy.Contains "plain `dotnet build`" @>
-    test <@ remedy.IndexOf("plain `dotnet build`") < remedy.IndexOf("--no-incremental") @>
+    // AUTOMATION-495 replaced the `--no-incremental` escalation with the step that
+    // needs no build flag at all: with the destination gone, the copy target runs.
+    test <@ remedy.Contains "delete the named copy" @>
     test <@ breaker.Contains "origins without their consumers" @>
 
     // CopyDiffersFromOrigin carries no timestamps. Neither surface may invent one.
@@ -201,7 +215,7 @@ let ``AUTOMATION-201: a repair that fails refuses the run and says so`` () =
             test <@ List.isEmpty outcome.Healed @>
             test <@ outcome.Refusals.Length = 1 @>
             test <@ outcome.Refusals.Head.Reason.Contains "repair FAILED" @>
-            test <@ outcome.Refusals.Head.Reason.Contains "dotnet build" @>
+            test <@ outcome.Refusals.Head.Reason.Contains "dotnet fshw rerun build" @>
         finally
             File.SetAttributes(s.CommonCopy, FileAttributes.Normal))
 
@@ -573,7 +587,7 @@ let ``AUTOMATION-201: every refusal shape this module builds is recognised as a 
         test <@ StaleArtifactPreflight.isStaleOutputDeferral m @>
         // And each still says what to do — the marker replaced prose, it did not
         // displace the remedy.
-        test <@ m.Contains "dotnet build" || m.Contains "root-cause" @>
+        test <@ m.Contains "dotnet fshw rerun build" || m.Contains "root-cause" @>
 
 /// NEGATIVE CONTROL. Without this, `isStaleOutputDeferral` could answer `true` to
 /// everything and every assertion above would still pass — while the build-ordering

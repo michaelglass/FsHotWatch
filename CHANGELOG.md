@@ -74,6 +74,23 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- AUTOMATION-495: **the stale-artifact preflight no longer prescribes a command a
+  repository may refuse.** `StaleArtifactPreflight.remedyFor` said `dotnet build` in all
+  three arms and escalated to `dotnet build --no-incremental` for a byte-differing copy.
+  thellma/intelligence puts a shim first on `PATH` that rejects `dotnet build` outright
+  (its ADR 0200, because raw builds bypass the analyzer and format plugins in its gate),
+  so the message an operator reads while wedged named the one action they cannot take.
+  It is also the weaker command: the cached build result is precisely what let the work
+  be skipped. The three arms now name `dotnet fshw rerun build` (which clears that
+  result), and the copy arm leads with deleting the named copy — with the destination
+  gone the consumer's copy target runs, so no build flag is needed at all. The run-level
+  deferral in `TestPrunePlugin` stops restating a generic build command and points at the
+  per-project deferrals, which carry the remedy for their own causes.
+  **Not yet unified:** `BuildPlugin`, `Verdict`, `CheckVerdict` and the CLI README still
+  prescribe `dotnet build --no-incremental` for the same condition, each pinned by a
+  test. Making them agree is a change of its own, and probably wants the build command to
+  become configurable rather than seven hand-edited strings.
+
 - AUTOMATION-495: **the stale-copy repair breaker takes ONE FILE out of service, not
   the whole round — so a refused run now leaves a better tree than it found.** The
   breaker's intent was always per-file (`healsInWindow` counts by destination path),
