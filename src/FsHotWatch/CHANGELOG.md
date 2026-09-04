@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- AUTOMATION-434: a native FSEvents stream macOS transiently refuses is retried with
+  bounded backoff (100/300/900 ms) before the polling fallback is chosen, so one refused
+  `FSEventStreamStart` no longer demotes the daemon's whole lifetime to 1-second
+  content-snapshot polling. Only `MacFsEvents.NativeStreamRefusedException` (the new
+  base of `StartFailedException` and `CreateFailedException`, which replaces the
+  untyped `FSEventStreamCreate` failure) spends the budget; any other setup fault falls
+  back at once, and a healthy start pays no delay.
+- `FileWatcher` gains `Mode: WatcherMode` — `NativeEvents` or `ContentPolling of reason`
+  — so a caller can tell a recovered native watcher from a polling fallback without
+  reading logs. Consumers constructing the record must supply it.
+- The `createWithFactories` / `createWithNativeStream` test seams take a
+  `NativeStartRetry` (`defaults` or `none`, or a recording one) as their new argument
+  after `latencySeconds`.
+
 ## 0.10.0-alpha.25 - 2026-09-01
 
 - AUTOMATION-300: authoritative daemon and run-once verdict reads now remove late
