@@ -819,3 +819,31 @@ let ``two keys with identical recorded inputs but different hashes refuse to nam
         (KeyFingerprints.tryGet (ContentHash.value written) |> Option.defaultValue [])
 
     test <@ cache.Lookup(composite, impostor) = CacheMiss CacheMissReason.InputsNotComparable @>
+
+[<Fact(Timeout = 15000)>]
+let ``the project options hash relativizes every source file, not just the first`` () =
+    // A one-file project cannot tell "the map ran" from "the map ran once". A project
+    // with several sources — the normal case — is what proves each one is rewritten.
+    let a = "/checkouts/a"
+    let b = "/checkouts/b"
+
+    let manySources (root: string) =
+        { optionsAt root with
+            SourceFiles =
+                [| Path.Combine(root, "src", "A.fs")
+                   Path.Combine(root, "src", "B.fs")
+                   Path.Combine(root, "src", "C.fs") |] }
+
+    test
+        <@
+            CheckCache.getProjectOptionsHashRelativeTo (Some a) (manySources a) = CheckCache.getProjectOptionsHashRelativeTo
+                (Some b)
+                (manySources b)
+        @>
+
+    // And a source added is still a different project.
+    test
+        <@
+            CheckCache.getProjectOptionsHashRelativeTo (Some a) (manySources a)
+            <> CheckCache.getProjectOptionsHashRelativeTo (Some a) (optionsAt a)
+        @>
