@@ -3492,6 +3492,12 @@ let private executeTests
         // happen to be fresh buys minutes of partial execution for signal the verdict
         // cannot use — which is the "reads like progress" half of the defect.
         //
+        // AUTOMATION-495 (adr-016) kept this and changed the layer below it: the refusal
+        // is still run-wide, but the preflight now repairs every copy its breaker did not
+        // name, so a refused run leaves a better tree than it found and the refusal set
+        // shrinks run over run. `preflight.Healed` above can therefore be non-empty on
+        // this path — repairs happened, the launch did not.
+        //
         // Both arms are bound as functions rather than inlined into the `if`, so the
         // 390-line group loop keeps the indentation it has always had. A run-level
         // guard should cost one line here, not re-flow every line it guards.

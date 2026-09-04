@@ -74,6 +74,26 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- AUTOMATION-495: **the stale-copy repair breaker takes ONE FILE out of service, not
+  the whole round — so a refused run now leaves a better tree than it found.** The
+  breaker's intent was always per-file (`healsInWindow` counts by destination path),
+  but `runWithBudget` refused the entire round when either the tripped list or the
+  unrepairable list was non-empty, mapping every under-threshold, provably repairable
+  copy into refusals alongside it. Nothing was repaired, so the next run met a
+  byte-identical tree and refused identically: the only exit was a human deleting
+  `.fshw/test-prune/stale-heals.json`, and in one consuming repo that ledger regrew to
+  95 entries in six hours. Observed twice as a suite where every project PASSED
+  followed by a queued re-run recording `outcome: red, scope: {"kind":"none"},
+  reddenedByCount: 0` with nothing failed and nothing covered. A round now computes its
+  refusals and then repairs every under-threshold copy anyway, so the refusal set
+  shrinks run over run until only the file the operator is being asked to root-cause
+  remains. **The RUN still refuses while anything is uncertifiable** — the preflight is
+  unchanged there, and `TestPrunePlugin` is untouched. `Outcome.Healed` can now be
+  non-empty alongside a non-empty `Outcome.Refusals`: repairs happened, the launch did
+  not. See `docs/adr-016-the-stale-copy-breaker-is-per-file-the-run-refusal-is-not.md`
+  for why per-file EXECUTION — launching the fresh projects and reporting the tripped
+  one as unverified — was rejected.
+
 - AUTOMATION-609: **a cold or forced scan is no longer mistaken for idleness — the
   daemon cannot shut itself down while it is analysing.** Idle-exit's notion of
   "busy" was a bare bool over two signals — plugin mailboxes in flight, and
