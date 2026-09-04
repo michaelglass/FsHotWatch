@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.26 - 2026-09-04
+
 - AUTOMATION-434: a native FSEvents stream macOS transiently refuses is retried with
   bounded backoff (100/300/900 ms) before the polling fallback is chosen, so one refused
   `FSEventStreamStart` no longer demotes the daemon's whole lifetime to 1-second
