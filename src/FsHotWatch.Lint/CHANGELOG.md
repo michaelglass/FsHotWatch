@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- AUTOMATION-564: the lint cache key names its file REPO-RELATIVELY, so a lint verdict
+  is shared between the workspaces of one repository. The tool version, the
+  configuration hash, the source and the FCS check signature are unchanged inputs.
+  Salt bumped to `lint-merkle-v2`, orphaning the old absolute-path entries.
+
 ## 0.7.0-alpha.22 - 2026-09-01
 
 - chore: rebuild against the updated FsHotWatch core dependency.

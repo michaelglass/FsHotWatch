@@ -24,6 +24,50 @@ let atomicWriteAllText (path: string) (contents: string) : unit =
     if not (System.String.IsNullOrEmpty dir) then
         Directory.CreateDirectory(dir) |> ignore
 
-    let tmp = path + ".tmp"
+    // The temp name is UNIQUE per write, not a fixed `path + ".tmp"`. Since
+    // AUTOMATION-564 a cache store can be shared between the daemons of two
+    // workspaces, so two processes can be mid-write to the SAME entry path at the
+    // same time; with one shared temp name each would truncate the other's partial
+    // file and one of the two `File.Move`s would fail on a file that vanished.
+    // Distinct temp files make the rename the only contended step, and a rename is
+    // atomic — last writer wins, and both wrote the same content anyway.
+    let unique = System.Guid.NewGuid().ToString("N")
+    let tmp = $"%s{path}.%s{unique}.tmp"
     File.WriteAllText(tmp, contents)
     File.Move(tmp, path, overwrite = true)
+
+/// Environment override for the box-wide cache home. Set it to keep every shared
+/// cache entry inside one directory (a sandbox, a CI cache mount, a test fixture).
+[<Literal>]
+let CacheHomeEnvVar = "FSHW_CACHE_HOME"
+
+/// The box-wide directory shared caches live under, from the three values that
+/// decide it. A pure function of its arguments so the precedence is testable without
+/// mutating the process environment — which a parallel test suite cannot do safely.
+let internal sharedCacheHomeFrom (cacheHomeOverride: string) (xdgCacheHome: string) (userProfile: string) =
+    // `IsNullOrEmpty`, not a `null | ""` pattern: an unset variable and one exported
+    // empty by a wrapper script are the SAME state — "not configured" — and writing
+    // them as one test says so.
+    if not (System.String.IsNullOrEmpty cacheHomeOverride) then
+        cacheHomeOverride
+    else
+        let baseDir =
+            if System.String.IsNullOrEmpty xdgCacheHome then
+                Path.Combine(userProfile, ".cache")
+            else
+                xdgCacheHome
+
+        Path.Combine(baseDir, "fshw")
+
+/// The box-wide directory shared caches live under — `$FSHW_CACHE_HOME`, else
+/// `$XDG_CACHE_HOME/fshw`, else `~/.cache/fshw`.
+///
+/// Deliberately OUTSIDE any checkout: an entry keyed purely on content is valid for
+/// every checkout of the repository on this machine, and a store under `.fshw/` is
+/// destroyed by the very act this feature exists to make cheap — creating a fresh
+/// workspace.
+let sharedCacheHome () =
+    sharedCacheHomeFrom
+        (System.Environment.GetEnvironmentVariable CacheHomeEnvVar)
+        (System.Environment.GetEnvironmentVariable "XDG_CACHE_HOME")
+        (System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)

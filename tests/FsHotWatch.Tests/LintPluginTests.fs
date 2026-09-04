@@ -12,6 +12,13 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Lint.LintPlugin
 open FsHotWatch.Tests.TestHelpers
 
+/// The spelling the plugin framework keys a per-file cache entry by: REPO-RELATIVE
+/// (AUTOMATION-564), so an entry survives being read in another checkout. A test that
+/// stores under the absolute path stores under a key the framework will never look up.
+let private compositeFileKey (repoRoot: string) (file: string) =
+    FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
+
+
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler = create None None None None
@@ -323,7 +330,11 @@ let ``AUTOMATION-186: lint per-file cache replay derives its summary from the li
           Status = FsHotWatch.TaskCache.CachedFileCompleted(System.TimeSpan.FromMilliseconds 7.0)
           EmittedEvents = [] }
 
-    cacheIface.Set { Plugin = "lint"; File = Some file } cacheKey entry
+    cacheIface.Set
+        { Plugin = "lint"
+          File = Some(compositeFileKey "/tmp" file) }
+        cacheKey
+        entry
 
     host.EmitFileChecked(checkResult)
     waitForTerminalStatus host "lint" 15000

@@ -2461,13 +2461,47 @@ module Daemon =
                 FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
 
             fileReporter.ClearAll()
+            // TWO stores, and which one a plugin's entries land in is decided by
+            // `CacheResidency`, not by whichever directory happens to be handy.
+            //
+            // The workspace-local store keeps its historical home inside `.fshw/`. It
+            // holds every verdict that asserts something about THIS checkout — a build's
+            // artifacts, a test run that happened.
+            //
+            // The shared store lives OUTSIDE any checkout, namespaced by the repository
+            // (not the workspace), so a freshly created workspace starts warm: its
+            // entries are keyed purely on content, and a store under `.fshw/` would be
+            // destroyed by the very act this exists to make cheap. It is handed the
+            // repo root so the paths inside an entry are stored relatively and rebound
+            // into whichever checkout reads them back.
             let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
-            let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
-            let stats = taskCache.Stats
+            let localTaskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
+
+            let sharedTaskCacheDir =
+                Path.Combine(FsHwPaths.sharedCacheHome (), "cache", "tasks", RepoIdentity.namespaceOf repoRoot)
+
+            let sharedTaskCache =
+                FsHotWatch.FileTaskCache.FileTaskCache(sharedTaskCacheDir, repoRoot = repoRoot)
+
+            let taskCache =
+                FsHotWatch.CacheResidency.RoutedTaskCache(
+                    localTaskCache,
+                    sharedTaskCache,
+                    FsHotWatch.CacheResidency.of_
+                )
+
+            let stats = localTaskCache.Stats
+            let sharedStats = sharedTaskCache.Stats
 
             Logging.info
                 "task-cache"
-                $"On-disk cache: %d{stats.EntryCount} entries, %.1f{float stats.SizeBytes / 1024.0 / 1024.0} MB"
+                $"Workspace cache: %d{stats.EntryCount} entries, %.1f{float stats.SizeBytes / 1024.0 / 1024.0} MB"
+
+            let sharedPluginList = String.concat ", " FsHotWatch.CacheResidency.sharedPlugins
+
+            Logging.info
+                "task-cache"
+                $"Shared cache (%s{sharedTaskCacheDir}): %d{sharedStats.EntryCount} entries, %.1f{float sharedStats.SizeBytes / 1024.0 / 1024.0} MB — shared plugins: %s{sharedPluginList}"
 
             let host =
                 PluginHost(
@@ -2482,9 +2516,16 @@ module Daemon =
 
             let pipeline =
                 match cacheBackend, cacheKeyProvider with
-                | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp, activity = fcsSink)
-                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink)
-                | _ -> CheckPipeline(checker, activity = fcsSink)
+                | Some b, Some kp ->
+                    CheckPipeline(
+                        checker,
+                        cacheBackend = b,
+                        cacheKeyProvider = kp,
+                        activity = fcsSink,
+                        repoRoot = repoRoot
+                    )
+                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink, repoRoot = repoRoot)
+                | _ -> CheckPipeline(checker, activity = fcsSink, repoRoot = repoRoot)
 
             let graph = ProjectGraph()
 

@@ -74,6 +74,8 @@
     <Compile Include="Plugin.fs" />
     <Compile Include="TaskCache.fs" />
     <Compile Include="FileTaskCache.fs" />
+    <Compile Include="RepoIdentity.fs" />
+    <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginFramework.fs" />
     <Compile Include="PluginActivity.fs" />
     <Compile Include="MacFsEvents.fs" />
