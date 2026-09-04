@@ -52,9 +52,15 @@ type CheckPipeline
         checker: FSharpChecker,
         ?cacheBackend: ICheckCacheBackend,
         ?cacheKeyProvider: ICacheKeyProvider,
-        ?activity: PluginActivity.IActivitySink
+        ?activity: PluginActivity.IActivitySink,
+        ?repoRoot: string
     ) =
     let activity = defaultArg activity noopSink
+
+    /// Present, the project-options hash names in-repo paths relatively, so the hash
+    /// is identical across two checkouts of one repository. See
+    /// `CheckCache.getProjectOptionsHashRelativeTo`.
+    let repoRoot = repoRoot
 
     let keyProvider =
         defaultArg cacheKeyProvider (TimestampCacheKeyProvider() :> ICacheKeyProvider)
@@ -71,7 +77,7 @@ type CheckPipeline
         let optionsHash =
             match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
             | true, hash -> hash
-            | false, _ -> getProjectOptionsHash options
+            | false, _ -> getProjectOptionsHashRelativeTo repoRoot options
 
         // GetFileHash returns None when the file is unreadable. Propagate
         // that None upstream so the cache lookup is bypassed and the next
@@ -137,7 +143,7 @@ type CheckPipeline
                     |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
 
         projectOptionsByProject[projectPath] <- filteredOptions
-        projectOptionsHashCache[projectPath] <- getProjectOptionsHash filteredOptions
+        projectOptionsHashCache[projectPath] <- getProjectOptionsHashRelativeTo repoRoot filteredOptions
 
         for sourceFile in filteredOptions.SourceFiles do
             projectOptionsByFile.AddOrUpdate(

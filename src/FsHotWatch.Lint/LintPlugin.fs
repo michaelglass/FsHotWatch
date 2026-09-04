@@ -32,7 +32,9 @@ let private fsharpLintVersion =
 /// previously-cached results must be discarded. Independent of FSharpLint's
 /// own version.
 [<Literal>]
-let private pluginCacheSalt = "lint-merkle-v1"
+// v2 orphans every entry written under the path-ABSOLUTE key (v1), which no other
+// checkout could have read anyway.
+let private pluginCacheSalt = "lint-merkle-v2"
 
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
@@ -68,7 +70,12 @@ let create
                     [ "plugin-version", pluginCacheSalt
                       "tool", fsharpLintVersion
                       "config", configHash
-                      "file", AbsFilePath.value r.File
+                      // REPO-RELATIVE. FSharpLint's verdict depends on where a file
+                      // sits in the repository (naming rules read the path), never on
+                      // which checkout of that repository it was read from — so the
+                      // absolute path that used to be here was salt, and it was the
+                      // only reason two workspaces could not share a lint result.
+                      "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value r.File)
                       "source", r.Source
                       "fcs-signature", fcsSignature ]
             )

@@ -379,6 +379,9 @@ let editorConfigInputs (repoRoot: string) (files: string list) : (string * strin
         // A config that exists but cannot be read is still an input; substituting
         // "nothing" would key the verdict as if no config applied.
         if File.Exists candidate then
-            Some($"editorconfig:%s{candidate}", File.ReadAllText candidate)
+            // The label is REPO-RELATIVE so the same `.editorconfig` produces the same
+            // key input in every checkout of the repository; the value is its content.
+            let key = FsHotWatch.CachePathIdentity.keyOf (Some root) candidate
+            Some($"editorconfig:%s{key}", File.ReadAllText candidate)
         else
             None)
