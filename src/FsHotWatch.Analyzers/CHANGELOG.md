@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-09-04
+
 - AUTOMATION-564: the analyzers cache key names its file — and the analyzer
   directories — REPO-RELATIVELY, so an analyzer verdict is shared between the
   workspaces of one repository. The analyzer assembly CONTENT hashes, the source and

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.23 - 2026-09-04
+
 - AUTOMATION-564: the lint cache key names its file REPO-RELATIVELY, so a lint verdict
   is shared between the workspaces of one repository. The tool version, the
   configuration hash, the source and the FCS check signature are unchanged inputs.
