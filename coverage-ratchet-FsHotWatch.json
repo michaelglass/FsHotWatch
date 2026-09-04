@@ -758,5 +758,945 @@
         "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in `implicitImportsFor`'s ancestor walk: `Path.GetDirectoryName` returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run's number went red on the next one."
       }
     ]
+  },
+  "countFloors": {
+    "AnalyzersPlugin.fs": [
+      {
+        "coveredLines": 359,
+        "coveredBranches": 17,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 342,
+        "coveredBranches": 30,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 30/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ArtifactFreshness.fs": [
+      {
+        "coveredLines": 200,
+        "coveredBranches": 37,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 198,
+        "coveredBranches": 77,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 77/77 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "BuildDiagnostics.fs": [
+      {
+        "coveredLines": 32,
+        "coveredBranches": 7,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 30,
+        "coveredBranches": 9,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "BuildPlugin.fs": [
+      {
+        "coveredLines": 766,
+        "coveredBranches": 75,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 754,
+        "coveredBranches": 158,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 158/179 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 12 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "CachePathIdentity.fs": [
+      {
+        "coveredLines": 73,
+        "coveredBranches": 20,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 55,
+        "coveredBranches": 28,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/46 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "CheckCache.fs": [
+      {
+        "coveredLines": 45,
+        "coveredBranches": 11,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 45,
+        "coveredBranches": 7,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 7/8 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "CheckPipeline.fs": [
+      {
+        "coveredLines": 167,
+        "coveredBranches": 28,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 160,
+        "coveredBranches": 46,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/66 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "CheckVerdict.fs": [
+      {
+        "coveredLines": 84,
+        "coveredBranches": 26,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 84,
+        "coveredBranches": 79,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 79/80 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ContentDedup.fs": [
+      {
+        "coveredLines": 14,
+        "coveredBranches": 2,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 13,
+        "coveredBranches": 6,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 6/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ContentHash.fs": [
+      {
+        "coveredLines": 9,
+        "coveredBranches": 4,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 9,
+        "coveredBranches": 4,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "CoveragePlugin.fs": [
+      {
+        "coveredLines": 209,
+        "coveredBranches": 7,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 209,
+        "coveredBranches": 41,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Ctrf.fs": [
+      {
+        "coveredLines": 77,
+        "coveredBranches": 31,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 77,
+        "coveredBranches": 31,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Daemon.fs": [
+      {
+        "coveredLines": 1071,
+        "coveredBranches": 141,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered lines wobbled 1074 -> 1071 between the two runs (daemon timing paths); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 1086,
+        "coveredBranches": 238,
+        "platform": "linux",
+        "reason": "Branches lowered 239 -> 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry's lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "DaemonConfig.fs": [
+      {
+        "coveredLines": 806,
+        "coveredBranches": 179,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 798,
+        "coveredBranches": 371,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 371/430 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 8 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "DaemonIdentity.fs": [
+      {
+        "coveredLines": 52,
+        "coveredBranches": 22,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 51,
+        "coveredBranches": 24,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 24/24 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "DeadCode.fs": [
+      {
+        "coveredLines": 70,
+        "coveredBranches": 15,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 60,
+        "coveredBranches": 23,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/30 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 10 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "DependencyFanout.fs": [
+      {
+        "coveredLines": 41,
+        "coveredBranches": 6,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 41,
+        "coveredBranches": 13,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "DepsFreshness.fs": [
+      {
+        "coveredLines": 171,
+        "coveredBranches": 31,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 156,
+        "coveredBranches": 46,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 15 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Discovery.fs": [
+      {
+        "coveredLines": 6,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 6,
+        "coveredBranches": 0,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ErrorLedger.fs": [
+      {
+        "coveredLines": 324,
+        "coveredBranches": 22,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 321,
+        "coveredBranches": 95,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 95/95 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Events.fs": [
+      {
+        "coveredLines": 78,
+        "coveredBranches": 2,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 78,
+        "coveredBranches": 49,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 49/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FcsDiagnosticFilter.fs": [
+      {
+        "coveredLines": 9,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 9,
+        "coveredBranches": 2,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FileCommandPlugin.fs": [
+      {
+        "coveredLines": 250,
+        "coveredBranches": 48,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 247,
+        "coveredBranches": 63,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 63/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FileErrorReporter.fs": [
+      {
+        "coveredLines": 30,
+        "coveredBranches": 12,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 27,
+        "coveredBranches": 14,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 14/16 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FileFreshness.fs": [
+      {
+        "coveredLines": 92,
+        "coveredBranches": 22,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 92,
+        "coveredBranches": 47,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 47/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FileTaskCache.fs": [
+      {
+        "coveredLines": 307,
+        "coveredBranches": 61,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 305,
+        "coveredBranches": 133,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 133/152 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Flakiness.fs": [
+      {
+        "coveredLines": 107,
+        "coveredBranches": 29,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 107,
+        "coveredBranches": 38,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FormatCheckPlugin.fs": [
+      {
+        "coveredLines": 224,
+        "coveredBranches": 30,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 224,
+        "coveredBranches": 39,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 39/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "FsHwPaths.fs": [
+      {
+        "coveredLines": 8,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 8,
+        "coveredBranches": 1,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 1/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Heartbeat.fs": [
+      {
+        "coveredLines": 37,
+        "coveredBranches": 6,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 33,
+        "coveredBranches": 10,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 10/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "IdleExit.fs": [
+      {
+        "coveredLines": 51,
+        "coveredBranches": 24,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 51,
+        "coveredBranches": 35,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 35/38 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "InMemoryCheckCache.fs": [
+      {
+        "coveredLines": 44,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 44,
+        "coveredBranches": 13,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "InitConfig.fs": [
+      {
+        "coveredLines": 133,
+        "coveredBranches": 31,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 133,
+        "coveredBranches": 41,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Ipc.fs": [
+      {
+        "coveredLines": 271,
+        "coveredBranches": 40,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 266,
+        "coveredBranches": 55,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 55/78 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "IpcOutput.fs": [
+      {
+        "coveredLines": 565,
+        "coveredBranches": 131,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 563,
+        "coveredBranches": 218,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/282 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "IpcParsing.fs": [
+      {
+        "coveredLines": 298,
+        "coveredBranches": 131,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 298,
+        "coveredBranches": 223,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 223/279 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Lifecycle.fs": [
+      {
+        "coveredLines": 4,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 4,
+        "coveredBranches": 0,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "LintPlugin.fs": [
+      {
+        "coveredLines": 141,
+        "coveredBranches": 16,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 135,
+        "coveredBranches": 20,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Logging.fs": [
+      {
+        "coveredLines": 12,
+        "coveredBranches": 0,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 10,
+        "coveredBranches": 2,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "MacFsEvents.fs": [
+      {
+        "coveredLines": 172,
+        "coveredBranches": 34,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 47,
+        "coveredBranches": 21,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/84 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "OperationWatchdog.fs": [
+      {
+        "coveredLines": 63,
+        "coveredBranches": 11,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered branches wobbled 12 -> 11 between the two runs (watchdog timing path); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 59,
+        "coveredBranches": 21,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "OutputCopyFreshness.fs": [
+      {
+        "coveredLines": 84,
+        "coveredBranches": 18,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 84,
+        "coveredBranches": 28,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/28 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PathFilter.fs": [
+      {
+        "coveredLines": 60,
+        "coveredBranches": 20,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 60,
+        "coveredBranches": 23,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/34 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PendingVerification.fs": [
+      {
+        "coveredLines": 43,
+        "coveredBranches": 10,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 42,
+        "coveredBranches": 14,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 14/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PluginActivity.fs": [
+      {
+        "coveredLines": 181,
+        "coveredBranches": 40,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 172,
+        "coveredBranches": 54,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 54/96 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 9 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PluginFramework.fs": [
+      {
+        "coveredLines": 762,
+        "coveredBranches": 47,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 760,
+        "coveredBranches": 149,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 149/169 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PluginHost.fs": [
+      {
+        "coveredLines": 278,
+        "coveredBranches": 54,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 281,
+        "coveredBranches": 75,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 75/87 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "PluginWedge.fs": [
+      {
+        "coveredLines": 83,
+        "coveredBranches": 21,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 79,
+        "coveredBranches": 39,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 39/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ProcessHelper.fs": [
+      {
+        "coveredLines": 300,
+        "coveredBranches": 70,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 271,
+        "coveredBranches": 115,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 115/118 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 29 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ProcessRegistry.fs": [
+      {
+        "coveredLines": 69,
+        "coveredBranches": 29,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 68,
+        "coveredBranches": 32,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 32/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Program.fs": [
+      {
+        "coveredLines": 792,
+        "coveredBranches": 151,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 745,
+        "coveredBranches": 294,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 294/398 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 47 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ProgressRenderer.fs": [
+      {
+        "coveredLines": 395,
+        "coveredBranches": 143,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 384,
+        "coveredBranches": 218,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/262 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 11 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "ProjectGraph.fs": [
+      {
+        "coveredLines": 154,
+        "coveredBranches": 26,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 154,
+        "coveredBranches": 58,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 58/60 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "RunLog.fs": [
+      {
+        "coveredLines": 35,
+        "coveredBranches": 9,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 35,
+        "coveredBranches": 12,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 12/16 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "RunOnceCheck.fs": [
+      {
+        "coveredLines": 193,
+        "coveredBranches": 19,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 189,
+        "coveredBranches": 31,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "RunOnceOutput.fs": [
+      {
+        "coveredLines": 120,
+        "coveredBranches": 22,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 119,
+        "coveredBranches": 51,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "SafeWalk.fs": [
+      {
+        "coveredLines": 81,
+        "coveredBranches": 12,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 64,
+        "coveredBranches": 18,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "SolutionScope.fs": [
+      {
+        "coveredLines": 193,
+        "coveredBranches": 53,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 192,
+        "coveredBranches": 101,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 101/117 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "SourceRef.fs": [
+      {
+        "coveredLines": 24,
+        "coveredBranches": 14,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 24,
+        "coveredBranches": 18,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/18 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "StaleArtifactPreflight.fs": [
+      {
+        "coveredLines": 160,
+        "coveredBranches": 28,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 153,
+        "coveredBranches": 40,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 40/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 7 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "StringHelpers.fs": [
+      {
+        "coveredLines": 15,
+        "coveredBranches": 4,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 15,
+        "coveredBranches": 4,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "StructureFiles.fs": [
+      {
+        "coveredLines": 19,
+        "coveredBranches": 9,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 13,
+        "coveredBranches": 9,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "TaskCache.fs": [
+      {
+        "coveredLines": 51,
+        "coveredBranches": 17,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 51,
+        "coveredBranches": 20,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "TreeHash.fs": [
+      {
+        "coveredLines": 41,
+        "coveredBranches": 2,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 40,
+        "coveredBranches": 2,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Verdict.fs": [
+      {
+        "coveredLines": 1205,
+        "coveredBranches": 371,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 1173,
+        "coveredBranches": 551,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "VerdictInputs.fs": [
+      {
+        "coveredLines": 153,
+        "coveredBranches": 19,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 135,
+        "coveredBranches": 45,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 45/48 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ],
+    "Watcher.fs": [
+      {
+        "coveredLines": 261,
+        "coveredBranches": 56,
+        "platform": "macos",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312)."
+      },
+      {
+        "coveredLines": 248,
+        "coveredBranches": 74,
+        "platform": "linux",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box."
+      }
+    ]
   }
 }
