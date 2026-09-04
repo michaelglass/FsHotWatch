@@ -573,8 +573,18 @@ let internal createWithSlowHook
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key (file source + analyzer identity + fcs-signature).
+        // REPO-RELATIVE, like every other path in this key: an analyzer directory
+        // inside the repository (`analyzers/`, the usual layout) named absolutely made
+        // the key workspace-specific for no analytical reason. The CONTENT of the
+        // assemblies is what decides the verdict, and that is the next slot down.
         let analyzerPathsHash =
-            FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
+            FsHotWatch.CheckCache.sha256Hex (
+                String.concat
+                    "|"
+                    (analyzerPaths
+                     |> List.map (FsHotWatch.CachePathIdentity.keyOf repoRoot)
+                     |> List.sort)
+            )
 
         // CONTENT identity, not just the path strings — see `analyzerAssemblyIdentity`.
         let analyzerAssemblyHash =
@@ -589,13 +599,12 @@ let internal createWithSlowHook
 
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
-                        // v3 makes every entry cached under the path-only key (v2)
-                        // non-matching, so a daemon cannot replay a "clean" verdict
-                        // recorded before the analyzer set was part of the key.
-                        [ "plugin-version", "analyzers-merkle-v3"
+                        // v4 orphans every entry written under the path-ABSOLUTE key
+                        // (v3), which could not be read in another checkout anyway.
+                        [ "plugin-version", "analyzers-merkle-v4"
                           "analyzer-paths", analyzerPathsHash
                           "analyzer-assemblies", analyzerAssemblyHash
-                          "file", AbsFilePath.value result.File
+                          "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value result.File)
                           "source", result.Source
                           "fcs-signature", fcsSignature ]
                 )

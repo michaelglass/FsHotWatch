@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- AUTOMATION-564: the analyzers cache key names its file — and the analyzer
+  directories — REPO-RELATIVELY, so an analyzer verdict is shared between the
+  workspaces of one repository. The analyzer assembly CONTENT hashes, the source and
+  the FCS check signature are unchanged inputs. Salt bumped to `analyzers-merkle-v4`,
+  orphaning the old absolute-path entries.
+
 ## 0.7.0-alpha.29 - 2026-09-01
 
 - chore: rebuild against the updated FsHotWatch core dependency.

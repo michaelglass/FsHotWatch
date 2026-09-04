@@ -252,6 +252,15 @@ let internal createFormatCheckWith
         // them. Formatting is deterministic in (version, config, source), so two
         // daemons agree on the cache value regardless of working-copy state, and a
         // pin bump or a config edit is a miss rather than a replayed `format OK`.
+        // REPO-RELATIVE spelling of a path, for both the label and the value. Fantomas
+        // formats a file as a pure function of its bytes, the pinned tool version and
+        // the `.editorconfig` files above it — never of which checkout it was read
+        // from. The absolute path that used to sit here was the ONLY thing keeping two
+        // workspaces of one repository from sharing a `format OK`, and this plugin's
+        // whole-tree scan is the largest cold-start cost the ticket measures.
+        let pathKey (f: string) =
+            FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) f
+
         let tryReadFileForMerkle (f: string) : (string * string) list option =
             // Refuse to produce a key when any input is unreadable — substituting
             // "" would collide with real empty files and with each other, so the
@@ -259,7 +268,8 @@ let internal createFormatCheckWith
             // poisoning a "format OK" verdict.
             try
                 let source = File.ReadAllText(f)
-                Some [ $"file:{f}", f; $"source:{f}", source ]
+                let key = pathKey f
+                Some [ $"file:{key}", key; $"source:{key}", source ]
             with ex ->
                 Logging.debug
                     "format-check"
@@ -287,7 +297,9 @@ let internal createFormatCheckWith
                 | Ok pin, Some fileInputs ->
                     Some(
                         FsHotWatch.TaskCache.merkleCacheKey (
-                            [ "plugin-version", "format-check-pinned-tool-v2"; "fantomas-pin", pin.Version ]
+                            // v3 orphans every entry written under the path-ABSOLUTE
+                            // key (v2), which no other checkout could have read.
+                            [ "plugin-version", "format-check-pinned-tool-v3"; "fantomas-pin", pin.Version ]
                             @ editorConfigInputs repoRoot sortedFiles
                             @ fileInputs
                         )
