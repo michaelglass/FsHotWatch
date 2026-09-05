@@ -691,6 +691,37 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
          && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
 
+/// True when `ex` (walking its inner-exception chain) is memory exhaustion — in THIS
+/// process or in the daemon. AUTOMATION-747.
+///
+/// Matched by TYPE, never by message text: `OutOfMemoryException`'s message is a
+/// localized framework resource string, and a predicate that decides a merge gate's
+/// exit code on a substring of it answers differently in another locale. A fault raised
+/// on the daemon crosses the wire as `RemoteInvocationException` — never as the
+/// daemon's own exception type — so the remote error payload's `TypeName` is the
+/// evidence on that side, exactly as `Program.remoteFaultDetails` reads it.
+///
+/// `OverflowException` counts: System.Text.Json's UTF-8 transcoder raises it, not an
+/// OOM, when one string token is too large to encode. Both are the same fact — a
+/// payload nobody can build — and both used to reach a caller as a bare exit 2.
+let rec isMemoryExhaustion (ex: exn) : bool =
+    match ex with
+    | null -> false
+    | :? OutOfMemoryException
+    | :? OverflowException -> true
+    | :? StreamJsonRpc.RemoteInvocationException as remote ->
+        let rec namesMemoryFault (data: StreamJsonRpc.Protocol.CommonErrorData) =
+            not (isNull data)
+            && (data.TypeName = "System.OutOfMemoryException"
+                || data.TypeName = "System.OverflowException"
+                || namesMemoryFault data.Inner)
+
+        (match remote.DeserializedErrorData with
+         | :? StreamJsonRpc.Protocol.CommonErrorData as data -> namesMemoryFault data
+         | _ -> false)
+        || (not (isNull ex.InnerException) && isMemoryExhaustion ex.InnerException)
+    | _ -> not (isNull ex.InnerException) && isMemoryExhaustion ex.InnerException
+
 /// The tree a check had just finished verifying, captured by the TRANSPORT at the
 /// instant it settled.
 ///
@@ -750,6 +781,38 @@ module internal TestRunEvidence =
         | Some _, NoTestsRun _
         | Some _, ScopeUnknown
         | Some _, ScopeUnreadable _ -> false
+
+    /// AUTOMATION-533. The runs THIS CHECK is accountable for, folded from one reading
+    /// of the daemon.
+    ///
+    /// Both ends are DECLARED. `baseline` is the session ledger the driver read from the
+    /// daemon BEFORE its scan, so a run belonging to an earlier check cannot be adopted
+    /// by this one; `report.SessionRuns` is the same ledger as it stands now. Everything
+    /// the daemon has completed since the baseline was taken belongs to this check —
+    /// including the batches nobody watched go by, which is the whole difficulty: a run
+    /// the CLI never happened to observe is exactly the one a reader later fails to find
+    /// their tests in.
+    ///
+    /// Oldest first, so the list reads in the order the batches ran, and `distinct`, so
+    /// re-reading the daemon cannot double-count. A daemon that predates the ledger
+    /// sends nothing, and then the only run this can name is the one it observed — which
+    /// is today's behaviour exactly, never worse.
+    ///
+    /// `None` is NO BASELINE — the driver could not take one — and is NOT an empty
+    /// baseline. An empty one is the positive claim "the daemon had run nothing", which a
+    /// fresh in-process host can make; treating a failed read as that claim would hand
+    /// this check every run an earlier one left in the ledger. Unknown therefore falls
+    /// back to attributing only what this check OBSERVED, which under-reports rather
+    /// than over-claims.
+    let attribute (baseline: Set<Guid> option) (soFar: Guid list) (report: TestRunReport) : Guid list =
+        let newlyRun =
+            match baseline with
+            | None -> Option.toList report.RunId
+            | Some known ->
+                (List.rev report.SessionRuns) @ Option.toList report.RunId
+                |> List.filter (fun id -> not (known.Contains id))
+
+        soFar @ newlyRun |> List.distinct
 
     let reconcile
         (settledTree: SettledTree)
@@ -830,7 +893,9 @@ let private publishVerdictWithReason
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
     try
-        let suites = Verdict.suiteVerdicts repoRoot runReport.RunId
+        // AUTOMATION-533. EVERY batch this check has evidence from, not just the one the
+        // daemon's receipt names — see `Verdict.runSuites`.
+        let runs = Verdict.runSuites repoRoot runReport
         let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
@@ -967,17 +1032,7 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create
-                command
-                runReport
-                atWrite
-                excluded
-                verdictOutcome
-                exitCode
-                plugins
-                suites
-                comparison
-                redCauses
+            Verdict.create command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1219,11 +1274,38 @@ let pollAndRenderForInvocation
 
     let retainedTestRun: RetainedTestRun option ref = ref None
 
+    // AUTOMATION-533. What the daemon had ALREADY completed before this check began.
+    // Read HERE, before the scan provokes anything, because it is the only moment at
+    // which "not this check's" is knowable: afterwards the ledger holds both. One
+    // read-only round trip, on a transport that answers even mid-run.
+    let baselineRuns =
+        try
+            Some(getTestRun().SessionRuns |> Set.ofList)
+        with _ ->
+            // A baseline that could not be taken must not read as an empty one — see
+            // `attribute`. And it may not fail the check: this is a reporting input, and
+            // the whole point of the verdict file is that it exists on the bad paths too.
+            None
+
+    // Every run this check has provoked so far, oldest first. Folded at every reading
+    // rather than derived at the end: a check that aborts still publishes a verdict, and
+    // it must name the batches it had already run by then.
+    let checkRuns: Guid list ref = ref []
+
     let observeTestRun (run: TestRunReport) : TestRunReport =
+        checkRuns.Value <- TestRunEvidence.attribute baselineRuns checkRuns.Value run
+
         let effective, retained =
             TestRunEvidence.reconcile settledTree.Value run retainedTestRun.Value
 
         retainedTestRun.Value <- retained
+        // Attribution is a fact about the CHECK, so it rides on whichever report the
+        // reconciliation kept — including a retained earlier full-suite run, whose own
+        // batch the verdict names through `runId`.
+        let effective =
+            { effective with
+                CheckRuns = checkRuns.Value }
+
         finalRun.Value <- effective
         effective
 
@@ -1369,6 +1451,53 @@ let pollAndRenderForInvocation
 
         UI.fail reason
         exitCode
+    // AUTOMATION-747. Memory exhaustion — here or in the daemon — AFTER the run
+    // settled.
+    //
+    // The guard is the settle, not the fault: `settledTree` is `VerifiedTree` only once
+    // `WaitForComplete` has returned, which is the daemon saying it built, ran and
+    // committed. So this arm is reachable only when the work is DONE and the answer was
+    // lost carrying it back, which is the one thing that distinguishes this from a
+    // refusal. The same fault BEFORE the settle keeps its old exit 2: nothing had
+    // completed, and claiming otherwise would be the same lie in the other direction.
+    //
+    // It publishes, like every other terminal here. Without a publish the verdict on
+    // disk stays whatever the LAST run left — in the incident that produced this ticket,
+    // a refusal stub for a different tree — and seven finished runs in a row read back
+    // as that stub.
+    | ex when
+        isMemoryExhaustion ex
+        && (match settledTree.Value with
+            | VerifiedTree _ -> true
+            | NeverSettled -> false)
+        ->
+        let reason = ex.Message
+
+        let abortExitCode =
+            publishVerdictForInvocation
+                invocation
+                repoRoot
+                excludePatterns
+                checkMode
+                noWarnFail
+                finalRun.Value
+                // Same reasoning as the two aborts below: an escalation's EXECUTED
+                // reading is already in hand; asking the daemon for a fresh projection
+                // on a path that just failed for want of memory is the last thing to do.
+                (match impactScoped.Value with
+                 | Some reading ->
+                     Verdict.ExecutedReading(
+                         reading,
+                         IpcParsing.ReachUnavailable "the check ran out of memory before recall could be read"
+                     )
+                 | None -> Verdict.NoReading)
+                finalStatuses.Value
+                finalCauses.Value
+                settledTree.Value
+                (CheckVerdict.CheckOutcome.ResultUnreceived reason)
+
+        UI.fail (Verdict.CheckProse.resultUnreceived reason)
+        abortExitCode
     | ex when isVerdictWaitTimeout ex ->
         // The daemon's hard verdict deadline fired: a plugin overran the bound and is
         // most likely wedged. The remote message names the plugin and its elapsed time

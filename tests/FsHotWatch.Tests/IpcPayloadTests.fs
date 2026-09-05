@@ -169,3 +169,97 @@ let ``GetDiagnostics payload carries nonzero unchecked count -> Incomplete cover
     let json = target.GetDiagnostics("")
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Incomplete 4 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — the diagnostics reply is SIZE-BOUNDED.
+//
+// The gate this ticket came from died at its very last IPC call, six seconds after the
+// daemon had logged `Tests complete: 7 projects, 117.1s` and `WaitForComplete()
+// resolved`. The reply it died building was this one: the test-prune plugin attached the
+// whole captured project output to EVERY parsed per-test failure, so a project with 753
+// failing tests and a 48 MB capture (measured: `Intelligence.Tests.Integration.output.log`
+// = 50,660,713 bytes) asks this method for ~36 GB of JSON in a single string. Seven
+// finished runs in a row were discarded that way.
+//
+// The tests below pin the two halves of the bound separately, because they fail for
+// different reasons and a fix to either one alone still leaves the gate killable:
+// the growth LAW (a reply may not grow with failures × output) and the response
+// BUDGET (a plugin that ignores the law still cannot produce an unbounded reply).
+// ---------------------------------------------------------------------------
+
+/// One ledger entry per "failing test", all sharing ONE detail string — exactly the
+/// shape `TestPrunePlugin.failuresOf` produced. Sharing the reference is the point:
+/// it costs one allocation to HOLD and `entries × |detail|` to SERIALIZE, which is
+/// why this defect is invisible in the daemon's own memory and fatal on the wire.
+let private ledgerOfSharedDetail (entries: int) (detailChars: int) : PluginHost =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let shared = String.replicate detailChars "x"
+
+    for i in 1..entries do
+        host.ReportErrors(
+            "test-prune",
+            $"tests/Suite%d{i}.fs",
+            [ FsHotWatch.ErrorLedger.ErrorEntry.errorWithDetail $"failed Suite%d{i}.the test (0ms)" shared ]
+        )
+
+    waitUntil (fun () -> host.GetErrors() |> Map.count = entries) 12000
+    host
+
+[<Fact(Timeout = 60000)>]
+let ``GetDiagnostics does not grow with failures times output — the reply is a sum, not a product`` () =
+    // The LAW. Doubling the failing entries over the same captured output must not
+    // double the reply: that product is the whole defect, and it is what makes a reply
+    // reach gigabytes from a ledger holding one string.
+    let detailChars = 50_000
+
+    let replyChars (entries: int) =
+        let host = ledgerOfSharedDetail entries detailChars
+        (DaemonRpcTarget(defaultRpcConfig host)).GetDiagnostics("").Length
+
+    let small = replyChars 100
+    let large = replyChars 200
+
+    // Every entry still travels — the count is what the exit code is computed from.
+    test
+        <@
+            (parseDiagnosticsResponse (
+                (DaemonRpcTarget(defaultRpcConfig (ledgerOfSharedDetail 200 detailChars))).GetDiagnostics("")
+            ))
+                .Files.Count = 200
+        @>
+
+    // Growth is bounded by the per-entry MESSAGE text, not by the shared output. A
+    // couple of hundred characters an entry, not fifty thousand.
+    test <@ large - small < 100 * 1_000 @>
+    // And before the bound existed, `small` alone was 100 × 50,000 = 5,000,000 chars.
+    test <@ small < 1_000_000 @>
+
+[<Fact(Timeout = 60000)>]
+let ``GetDiagnostics caps the whole response's detail, and says so rather than dropping it silently`` () =
+    // The BUDGET. A plugin that still attaches a large detail per entry cannot make this
+    // reply unbounded — but the entries it cost are NAMED, because "detail: null" and
+    // "detail: elided" are different facts and only one of them means "go and look".
+    let host = ledgerOfSharedDetail 200 50_000
+    let json = (DaemonRpcTarget(defaultRpcConfig host)).GetDiagnostics("")
+
+    let details =
+        (parseDiagnosticsResponse json).Files
+        |> Map.toList
+        |> List.collect (fun (_, entries) -> entries |> List.choose (fun e -> e.Detail))
+
+    test <@ details.Length = 200 @>
+
+    let marked =
+        details
+        |> List.filter (fun d -> d = FsHotWatch.ErrorLedger.Transport.DetailBudgetSpentMarker)
+
+    // Some entries carried their (truncated) text; the rest say why they did not.
+    test <@ not marked.IsEmpty @>
+    test <@ marked.Length < 200 @>
+
+    // Every carried detail respects the per-field cap.
+    test
+        <@
+            details
+            |> List.forall (fun d -> d.Length <= FsHotWatch.ErrorLedger.Transport.MaxFieldChars + 64)
+        @>

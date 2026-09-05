@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- AUTOMATION-747: `ErrorLedger.Transport` bounds every mirror of the ledger with one
+  per-field cap and one response-wide `detail` budget. `DaemonRpcTarget.GetDiagnostics`
+  had no cap at all, so a broadly red suite asked it for a reply of `failing entries ×
+  captured output` characters — ~45 GB on the measured incident — and it faulted with an
+  out-of-memory error at the end of a run that had already succeeded. Entries are
+  trimmed, never dropped (the count and severities decide the exit code); an entry whose
+  detail the budget could not carry says so. `FileErrorReporter`'s existing cap is now
+  the same one.
+
 ## 0.10.0-alpha.28 - 2026-09-04
 
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared

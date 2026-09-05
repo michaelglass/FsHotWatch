@@ -95,6 +95,16 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
+/// AUTOMATION-533. How many completed runs the session ledger keeps, and therefore how
+/// many `test-scope` declares.
+///
+/// Generous against the worst check anyone has recorded (four batches) so the bound
+/// never truncates a real one, and small enough that the reply stays a reply: 64 ids is
+/// ~2 KB on a path that earns verdicts, and a growing-without-bound diagnostic in that
+/// path is a new failure mode.
+[<Literal>]
+let SessionRunLedger = 64
+
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
 /// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
@@ -1083,21 +1093,49 @@ let internal persistRuntimeCoverageTransitionWith
     with ex ->
         Error(current, ex)
 
+/// AUTOMATION-572. An obligation that names NO project is not a debt, and admitting one
+/// is the silent full-suite escalation this ticket closes.
+///
+/// `selectByRuntimeCoverage` maps EVERY changed file — `Set.union current
+/// widenedProjects` is empty whenever nothing attributes runtime coverage to that file
+/// and every configured project's baseline is current, which is the ordinary case for
+/// an edit to a file no runtime tracer ever reached. The caller merges the selection
+/// whenever the MAP is non-empty, so those files used to enter the ledger as
+/// `file -> map []`. The result satisfies neither of the two questions asked of it:
+///
+///   * `nothingOwed` asks `Map.isEmpty`, and reads a non-empty map — so for the rest of
+///     the session the zero-affected green skip and the stale-rerun guard are both
+///     refused, and every cycle that selects nothing runs tests anyway;
+///   * `runtimeForceProjects` asks for the projects the ledger NAMES, and gets none — so
+///     the run it forces has an EMPTY selection, and an empty selection means every
+///     configured project, in full.
+///
+/// A debt nothing can select and nothing can discharge, costing a whole suite. The
+/// observation that a file changed is not itself an obligation: only a file with at
+/// least one obligated project may enter the ledger, and only the run that covered it
+/// may take it out again.
 let internal mergeRuntimeCoverageObligations
     (existing: RuntimeCoverageObligations)
     (incoming: Map<string, Set<string>>)
     =
     (existing, incoming)
     ||> Map.fold (fun acc file projects ->
-        let prior = Map.tryFind file acc |> Option.defaultValue Map.empty
+        if Set.isEmpty projects then
+            // Nothing to owe for this file. Leave any PRIOR obligation for it exactly
+            // as it stands: a real debt is discharged by the run that covers it
+            // (`retireRuntimeCoverageObligations`), never by a later cycle observing
+            // the same file and finding nothing to add.
+            acc
+        else
+            let prior = Map.tryFind file acc |> Option.defaultValue Map.empty
 
-        let next =
-            (prior, projects)
-            ||> Set.fold (fun obligations project ->
-                let generation = Map.tryFind project obligations |> Option.defaultValue 0L
-                Map.add project (generation + 1L) obligations)
+            let next =
+                (prior, projects)
+                ||> Set.fold (fun obligations project ->
+                    let generation = Map.tryFind project obligations |> Option.defaultValue 0L
+                    Map.add project (generation + 1L) obligations)
 
-        Map.add file next acc)
+            Map.add file next acc)
 
 let internal retireRuntimeCoverageObligations
     (current: RuntimeCoverageObligations)
@@ -1175,6 +1213,82 @@ let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: R
         | StaleBaseline observedAt ->
             warn
                 $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
+
+/// AUTOMATION-572. Why a cycle that found ZERO symbol-affected classes is running tests
+/// anyway — one arm per debt that can refuse the zero-affected green skip.
+///
+/// The single sentence this replaces ("No affected classes (cold start / pending queue)
+/// — running all tests") named two causes for five, was printed for runs that were
+/// neither, and claimed "all tests" for runs that were a handful of force-run projects.
+/// A widening nobody can attribute is a widening nobody measures: 404 of 1,221 launches
+/// in the logs this ticket cites took that line, and the line is the only record any of
+/// them left.
+[<RequireQualifiedAccess>]
+type internal ZeroAffectedWidening =
+    /// No run has completed in this session, so there is nothing for this tree to be
+    /// test-equivalent TO. Expected exactly once per session — the baseline run.
+    | NoSessionBaseline
+    /// Symbols are still awaiting a green covering run.
+    | QueuedSymbols of count: int
+    /// Runtime-coverage obligations are outstanding over `files` file(s), naming
+    /// `projects` project(s) between them.
+    | RuntimeCoverageDebt of files: int * projects: int
+    /// The pending-verification ledger could not be read, so what is owed is unknown
+    /// (AUTOMATION-150) and only a full suite can prove it.
+    | UnreadableLedger
+    /// A prior red is outstanding and must be re-executed before anything goes green.
+    | OutstandingFailures of count: int
+
+module internal ZeroAffectedWidening =
+    let describe (cause: ZeroAffectedWidening) =
+        match cause with
+        | ZeroAffectedWidening.NoSessionBaseline ->
+            "no run has completed in this session yet (no baseline to be equivalent to)"
+        | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
+        | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
+            $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
+        | ZeroAffectedWidening.UnreadableLedger ->
+            "the pending-verification ledger could not be read, so what is owed is UNKNOWN"
+        | ZeroAffectedWidening.OutstandingFailures count -> $"%d{count} outstanding test failure(s) from a prior run"
+
+    let describeMany (causes: ZeroAffectedWidening list) =
+        causes |> List.map describe |> String.concat "; "
+
+/// Every reason this run is not taking the zero-affected skip, named and counted.
+///
+/// Returns EVERY applicable cause rather than the first: two debts outstanding at once
+/// is the case where a reader picks the wrong one and goes looking for a bug in the
+/// selector. An EMPTY list is the finding that matters most — nothing is owed and a
+/// baseline exists, so the skip should have fired and did not. The caller says that out
+/// loud instead of running a whole suite quietly, which is how AUTOMATION-572's phantom
+/// obligation survived 12 full-suite reruns without leaving a single attributable line.
+let internal zeroAffectedWidening
+    (hasSessionBaseline: bool)
+    (ledgerUnreadable: bool)
+    (queuedSymbols: int)
+    (runtimeObligations: RuntimeCoverageObligations)
+    (outstandingFailures: int)
+    : ZeroAffectedWidening list =
+    [ if not hasSessionBaseline then
+          ZeroAffectedWidening.NoSessionBaseline
+      if ledgerUnreadable then
+          ZeroAffectedWidening.UnreadableLedger
+      if queuedSymbols > 0 then
+          ZeroAffectedWidening.QueuedSymbols queuedSymbols
+      // Counted through the projects it NAMES, never through `Map.isEmpty`: a file
+      // entry naming no project selects nothing, so reporting it as debt would restate
+      // the very confusion this function exists to end.
+      let namedProjects =
+          runtimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
+
+      if not (Set.isEmpty namedProjects) then
+          let files =
+              runtimeObligations |> Map.filter (fun _ ps -> not (Map.isEmpty ps)) |> Map.count
+
+          ZeroAffectedWidening.RuntimeCoverageDebt(files, Set.count namedProjects)
+
+      if outstandingFailures > 0 then
+          ZeroAffectedWidening.OutstandingFailures outstandingFailures ]
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -3189,6 +3303,10 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
             let parsed = parseFailedTests output
 
             if parsed.IsEmpty then
+                // ONE entry for the project, so the whole captured output is carried
+                // ONCE. This is the only arm where that text is the entry's own
+                // subject: no test was named, so the run itself is what the reader has
+                // to go on.
                 [ projectLevel (ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output) ]
             else
                 parsed
@@ -3200,7 +3318,25 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                       Class = (if isTimeout then None else Some className)
                       Method = (if isTimeout then None else Some methodName)
                       File = file
-                      Entry = ErrorLedger.ErrorEntry.errorWithDetail line output })
+                      // The failing LINE, and no detail. AUTOMATION-747.
+                      //
+                      // This used to attach `output` — the whole captured project run —
+                      // to every parsed failure, which made the ledger's size the
+                      // PRODUCT of two unbounded numbers rather than their sum. 753
+                      // failing tests against a 48 MB capture is 36 GB once a mirror of
+                      // the ledger writes each entry's copy out, and the merge gate died
+                      // building exactly that reply after the daemon had already
+                      // finished the run.
+                      //
+                      // Nothing is lost by dropping it, because it was never this
+                      // entry's fact: it was the same project-wide string repeated per
+                      // test, no renderer has ever printed a ledger `Detail`, and the
+                      // untruncated capture is on disk at
+                      // `.fshw/test-runs/<runId>/<project>.output.log`. The transport
+                      // bound in `ErrorLedger.Transport` still stands behind this — a
+                      // plugin must not be able to do it again — but the bound is a
+                      // backstop, and this is the defect.
+                      Entry = ErrorLedger.ErrorEntry.error line })
         | TestsDeferred reason ->
             // NOT a test failure — surface an honest "waiting on build / did not
             // run" diagnostic at `Deferred` severity so the verdict is NON-green
@@ -3492,6 +3628,12 @@ let private executeTests
         // happen to be fresh buys minutes of partial execution for signal the verdict
         // cannot use — which is the "reads like progress" half of the defect.
         //
+        // AUTOMATION-495 (adr-016) kept this and changed the layer below it: the refusal
+        // is still run-wide, but the preflight now repairs every copy its breaker did not
+        // name, so a refused run leaves a better tree than it found and the refusal set
+        // shrinks run over run. `preflight.Healed` above can therefore be non-empty on
+        // this path — repairs happened, the launch did not.
+        //
         // Both arms are bound as functions rather than inlined into the `if`, so the
         // 390-line group loop keeps the indentation it has always had. A run-level
         // guard should cost one line here, not re-flow every line it guards.
@@ -3523,9 +3665,18 @@ let private executeTests
                             | None ->
                                 config.Project,
                                 TestsDeferred
+                                    // AUTOMATION-495: the remedy points at the projects
+                                    // that carry one rather than restating a generic
+                                    // build command. Each named project's own deferral
+                                    // holds the remedy for ITS cause, and those causes
+                                    // need different actions — a raw `dotnet build`
+                                    // fixes neither a tripped repair breaker nor a
+                                    // byte-differing copy, and some repositories refuse
+                                    // that command outright.
                                     $"not run — the whole run was refused before any suite launched because \
                                       %d{preflight.Refusals.Length} project(s) have stale build output: \
-                                      %s{names}. Remedy: run `dotnet build`, then re-run.")
+                                      %s{names}. Remedy: read those projects' own deferrals — each names its \
+                                      cause and what to do about it — then re-run.")
 
                 foldAndEmit results
                 return [| results |]
@@ -4675,6 +4826,28 @@ let internal createWithLaunchDeadline
     let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option =
         None
 
+    /// AUTOMATION-533. Every run this daemon session has COMPLETED, newest first — the
+    /// ledger `test-scope` reports so a check can name every batch it ran instead of
+    /// only the last.
+    ///
+    /// One check provokes several runs: the impact-selected batch, the rerun a mid-run
+    /// change queues behind it, `confirm`'s forced full suite, the drain of a queued
+    /// `run-tests`. Each writes its own `.fshw/test-runs/<runId>/`. The CLI cannot
+    /// enumerate them from the filesystem without inferring membership from mtimes —
+    /// which is precisely what the run directory exists to avoid — so the daemon that
+    /// ran them DECLARES them.
+    ///
+    /// A ref rather than a `TestPruneState` field for the same reason `checkReachRef` is
+    /// one: the completion handler returns state through five branches, and a record
+    /// copy one of them forgot would drop a batch — which is the exact failure this
+    /// ledger exists to end, reintroduced one layer down. Written ONCE, before the
+    /// branches.
+    ///
+    /// Bounded at `SessionRunLedger`. A check that runs more batches than that would be
+    /// under-reported by the oldest ones, which is worse than the truth and much better
+    /// than naming one.
+    let mutable completedRunsRef: Guid list = []
+
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
@@ -5438,7 +5611,48 @@ let internal createWithLaunchDeadline
                         )
                 else
                     if totalClasses = 0 then
-                        Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
+                        // AUTOMATION-572 — NAME the debt that refused the zero-affected
+                        // skip, and say what will actually run. Both halves were wrong
+                        // before: the cause was hard-coded to two of five possibilities,
+                        // and "running all tests" was printed over runs that were a
+                        // couple of force-run projects.
+                        let widenings =
+                            zeroAffectedWidening
+                                hasCachedResults
+                                ledgerUnreadable
+                                (Set.count pendingQueueRef)
+                                runtimeObligationsRef
+                                (List.length inputs.OutstandingFailures)
+
+                        // An EMPTY selection is not "a few projects": `selectionOf` reads
+                        // it as no selection at all and every configured project runs in
+                        // full. That is the expensive outcome, so it is the one named.
+                        let willRun =
+                            if Map.isEmpty affectedByProject then
+                                "EVERY configured project, in full"
+                            else
+                                $"%d{affectedByProject.Count} force-run project(s)"
+
+                        match widenings with
+                        | [] ->
+                            // Nothing is owed and a baseline exists, so the zero-affected
+                            // skip should have discharged this cycle for free — and did
+                            // not. That is a defect in whichever arm consumed the signal,
+                            // and it costs `willRun`. AUTOMATION-572's phantom
+                            // runtime-coverage obligation was exactly this shape and left
+                            // no attributable line at all; this one is the alarm that a
+                            // DIFFERENT arm has re-opened the same hole.
+                            Logging.warn
+                                "test-prune"
+                                $"No affected classes, and NOTHING is owed — the zero-affected skip should have discharged \
+                                  this cycle without running anything, yet it is running %s{willRun}. Some verification \
+                                  debt is being reported as outstanding while naming nothing that can select or discharge \
+                                  it (AUTOMATION-572)."
+                        | causes ->
+                            Logging.info
+                                "test-prune"
+                                $"No affected classes, but the zero-affected skip is refused — \
+                                  %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
                             // Never `%A` here: it caps the list at 100, so a
@@ -5777,8 +5991,23 @@ let internal createWithLaunchDeadline
                         let seeds = evidenceSeeds |> List.truncate 8 |> List.toArray
                         let seedCount = List.length evidenceSeeds
 
+                        // AUTOMATION-533. Every run this session has completed, newest
+                        // first. Sent on EVERY branch — including `running`, which is
+                        // what a check reads when it takes its baseline against a busy
+                        // daemon, and a baseline that came back silent would hand the
+                        // check its predecessor's runs.
+                        let runIds =
+                            Volatile.Read(&completedRunsRef)
+                            |> List.map (fun id -> id.ToString("N"))
+                            |> List.toArray
+
                         if ctx.IsRunning "tests" then
-                            return JsonSerializer.Serialize({| scope = "running"; runId = runId |})
+                            return
+                                JsonSerializer.Serialize(
+                                    {| scope = "running"
+                                       runId = runId
+                                       runIds = runIds |}
+                                )
                         else
                             let evidenceCoverage =
                                 state.EvidenceReceipt
@@ -5790,6 +6019,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "full"
+                                           runIds = runIds
                                            ranProjects = n
                                            totalProjects = n
                                            runId = runId
@@ -5800,6 +6030,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "filtered"
+                                           runIds = runIds
                                            ranProjects = ran
                                            totalProjects = total
                                            runId = runId
@@ -5815,6 +6046,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
+                                           runIds = runIds
                                            ranProjects = 0
                                            totalProjects = total
                                            runId = runId
@@ -6248,38 +6480,60 @@ let internal createWithLaunchDeadline
                             // when this run is the one that wrote them.
                             let storedTrust = FileFreshness.trustStoredRows storedFreshness storedRows
 
-                            let (changedNames, suppressedDiff) =
-                                // `EverySymbolIsNew` diffs against the empty stored set on
-                                // purpose rather than listing `normalizedSymbols` directly:
-                                // detectChanges filters externs internally, and an extern
-                                // has no body to have changed. Same call, named outcome.
-                                match currentClean, storedTrust with
-                                | true, (FileFreshness.DiffAgainstStored | FileFreshness.EverySymbolIsNew) ->
-                                    let (changes, _events) = detectChanges normalizedSymbols storedSymbols
+                            // AUTOMATION-526. `planLook` is the whole decision, and it
+                            // names the two ways of contributing nothing separately — so
+                            // the one that HIDES a file's changes cannot go out at the
+                            // same log level as the one that hides nothing. It replaced a
+                            // `(names, bool)` pair whose bool this call site computed and
+                            // then `ignore`d.
+                            let changedNames =
+                                match FileFreshness.planLook currentClean storedTrust with
+                                | FileFreshness.Diffable baseline ->
+                                    // WHAT to diff against is the plan's decision, not
+                                    // `storedSymbols`'s. This call site used to pass the
+                                    // stored rows for BOTH diffable arms, which made
+                                    // `EverySymbolIsNew` behave exactly like
+                                    // `DiffAgainstStored` — and whenever the rows were
+                                    // this run's own, that is the self-comparison
+                                    // AUTOMATION-228 introduced the widening to replace.
+                                    // A self-comparison reports zero changes every time.
+                                    let priorSymbols = FileFreshness.baselineRows baseline storedSymbols
+
+                                    let (changes, _events) = detectChanges normalizedSymbols priorSymbols
 
                                     // AUTOMATION-228. A trustworthy extraction has now
                                     // been taken AND consumed, so the rows it leaves
                                     // behind are a real "before" for the next look —
                                     // which is what keeps a missing baseline costing ONE
                                     // widening per file rather than one on every save.
-                                    // Marked only here: the bypass arm below discards its
-                                    // extraction, and a baseline it never established
-                                    // must not be claimed.
+                                    // Marked only here: the bypass arms below discard
+                                    // their extraction, and a baseline they never
+                                    // established must not be claimed.
                                     priorRows.MarkBaselineEstablished relPath
 
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, baseline=%A{baseline}): %d{changes.Length} changes, %d{priorSymbols.Length} diffed against, %d{normalizedSymbols.Length} current"
 
-                                    changedSymbolNames changes, false
-                                | _ ->
+                                    changedSymbolNames changes
+                                | FileFreshness.NothingHidden ->
+                                    // The ordinary cold scan. Its full-suite baseline runs
+                                    // anyway, so there is no wider answer being declined.
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, storedRowCount=%d{storedSymbols.Length}); falling back to no-diff for this file"
+                                        $"no baseline and no sidecar record for %s{relPath} (rows=%A{storedRows}); the cold-scan full-suite run covers it"
 
-                                    [], true
+                                    []
+                                | FileFreshness.FileUnverified ->
+                                    // The one arm that DROPS a file's changes. At warn,
+                                    // and stating the consequence rather than the
+                                    // mechanism, because "detectChanges bypassed" at info
+                                    // is what this defect looked like for three runs.
+                                    Logging.warn
+                                        "test-prune"
+                                        $"NOT SELECTED: %s{relPath} changed but FCS reported errors for it on this check, so its symbols may be partial and no tests were selected from it (stored=%A{storedFreshness}, rows=%A{storedRows}, storedRowCount=%d{storedSymbols.Length}). The next FCS-clean check of this file widens it back in."
 
-                            ignore suppressedDiff
+                                    []
 
                             let newChangedSymbols =
                                 if not changedNames.IsEmpty then
@@ -6668,6 +6922,18 @@ let internal createWithLaunchDeadline
                     // and re-fire on cache replay — subscribers that key off
                     // TestRunCompleted (FileCommandPlugin) must see it on a hit.
                     ctx.EmitTestRunCompleted completed
+
+                    // AUTOMATION-533. This run joins the session ledger HERE, before the
+                    // branch explosion below, so no return path can drop it. A run that
+                    // completed is a run whose directory a reader may need, whatever the
+                    // handler goes on to decide about its results.
+                    Volatile.Write(
+                        &completedRunsRef,
+                        completed.RunId
+                        :: (Volatile.Read(&completedRunsRef)
+                            |> List.filter (fun id -> id <> completed.RunId)
+                            |> List.truncate (SessionRunLedger - 1))
+                    )
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.

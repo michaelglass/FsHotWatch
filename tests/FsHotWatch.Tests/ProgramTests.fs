@@ -695,7 +695,9 @@ let ``unwrapIpcException stops at multi-inner AggregateException`` () =
 let ``OOM in StreamJsonRpc frame reader is classified as a corrupted frame`` () =
     let ex = OutOfMemoryException("Insufficient memory") :> exn
 
-    match classifyIpcFaultAt (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex with
+    match
+        classifyIpcFaultAt FaultOrigin.Client (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex
+    with
     | IpcFault.CorruptedFrame actual -> test <@ obj.ReferenceEquals(actual, ex) @>
     | actual -> failwithf "expected CorruptedFrame, got %A" actual
 
@@ -703,7 +705,7 @@ let ``OOM in StreamJsonRpc frame reader is classified as a corrupted frame`` () 
 let ``OOM without frame-reader evidence is a genuine client OOM`` () =
     let oom = OutOfMemoryException("Insufficient memory")
 
-    match classifyIpcFaultAt None oom with
+    match classifyIpcFaultAt FaultOrigin.Client None oom with
     | IpcFault.ClientOutOfMemory actual -> test <@ obj.ReferenceEquals(actual, oom) @>
     | actual -> failwithf "expected ClientOutOfMemory, got %A" actual
 
@@ -716,7 +718,9 @@ let ``OOM without frame-reader evidence is a genuine client OOM`` () =
 let ``overflow in StreamJsonRpc frame reader is classified as a corrupted frame`` () =
     let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
 
-    match classifyIpcFaultAt (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex with
+    match
+        classifyIpcFaultAt FaultOrigin.Client (Some "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()") ex
+    with
     | IpcFault.CorruptedFrame actual -> test <@ obj.ReferenceEquals(actual, ex) @>
     | actual -> failwithf "expected CorruptedFrame, got %A" actual
 
@@ -724,7 +728,7 @@ let ``overflow in StreamJsonRpc frame reader is classified as a corrupted frame`
 let ``overflow without frame-reader evidence is not classified as corruption`` () =
     let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
 
-    match classifyIpcFaultAt None ex with
+    match classifyIpcFaultAt FaultOrigin.Client None ex with
     | IpcFault.Other actual -> test <@ obj.ReferenceEquals(actual, ex) @>
     | actual -> failwithf "expected Other, got %A" actual
 
@@ -861,3 +865,84 @@ let ``tryDeleteForCleanup logs at debug and returns None on failure (F9)`` () =
     finally
         System.Console.SetError(prevErr)
         FsHotWatch.Logging.setLogLevel original
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — an out-of-memory fault must name the process that HAD it.
+//
+// The incident: `dotnet fshw check` printed "The fshw CLI ran out of memory while
+// handling daemon IPC" seven times. It was investigated seven times as a client
+// problem — `DOTNET_GCConserveMemory=9` set on the CLI, the box's free memory measured
+// at 6-8 GB — and none of that could have mattered, because a fault raised on the
+// DAEMON crosses the wire reconstructed as an ordinary local `OutOfMemoryException`,
+// and the classifier had no way to say where it came from. Everything outside the frame
+// reader was called a client OOM by construction.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon-side OOM outside the frame reader is the DAEMON's, not this CLI's`` () =
+    // Where an over-large reply actually fails: building the JSON, not reading the frame.
+    let remote =
+        remoteFault
+            "System.OutOfMemoryException"
+            "Insufficient memory to continue the execution of the program."
+            "at System.Text.Json.JsonSerializer.Serialize[TValue](TValue value)"
+
+    match classifyIpcFault remote with
+    | IpcFault.DaemonOutOfMemory actual -> test <@ actual :? OutOfMemoryException @>
+    | actual -> failwithf "expected DaemonOutOfMemory, got %A" actual
+
+    // And every surface a reader actually sees says so.
+    let headline = ipcErrorHeadline remote
+    test <@ headline.Contains "DAEMON" @>
+    test <@ not (headline.Contains "CLI ran out of memory") @>
+
+    let hint = ipcErrorHint remote
+    test <@ hint.IsSome @>
+    test <@ hint.Value.Contains "on that side" @>
+    // The lever that IS available — the run's evidence survives on disk.
+    test <@ hint.Value.Contains ".fshw/test-runs/" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon-side transcoder overflow is the same fact as its OOM, not a client bug`` () =
+    // System.Text.Json raises OverflowException, not OOM, when one string token is too
+    // large to encode. Both mean "this reply cannot exist"; only one used to be named.
+    let remote =
+        remoteFault
+            "System.OverflowException"
+            "Arithmetic operation resulted in an overflow."
+            "at System.Text.Json.Utf8JsonWriter.WriteStringValue(String value)"
+
+    match classifyIpcFault remote with
+    | IpcFault.DaemonOutOfMemory _ -> ()
+    | actual -> failwithf "expected DaemonOutOfMemory, got %A" actual
+
+[<Fact(Timeout = 15000)>]
+let ``a local OOM is still this CLI's — the fix does not move the blame the other way`` () =
+    let oom = OutOfMemoryException("Insufficient memory") :> exn
+
+    match classifyIpcFault oom with
+    | IpcFault.ClientOutOfMemory _ -> ()
+    | actual -> failwithf "expected ClientOutOfMemory, got %A" actual
+
+    test <@ (ipcErrorHeadline oom).Contains "fshw CLI ran out of memory" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon OOM never restarts the daemon — that would discard the run it just finished`` () =
+    let remote =
+        remoteFault
+            "System.OutOfMemoryException"
+            "Insufficient memory to continue the execution of the program."
+            "at System.Text.Json.JsonSerializer.Serialize[TValue](TValue value)"
+
+    let mutable restarts = 0
+
+    let exitCode =
+        runIpcWithSelfHeal
+            (fun () ->
+                restarts <- restarts + 1
+                true)
+            (fun _ -> 7)
+            (fun () -> raise remote)
+
+    test <@ restarts = 0 @>
+    test <@ exitCode = 7 @>

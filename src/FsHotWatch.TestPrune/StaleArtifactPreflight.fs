@@ -17,13 +17,18 @@
 /// build would have left. Nothing is inferred, and the destination is regenerable
 /// build output, so the repair is idempotent and destroys nothing.
 ///
-/// The other two cases are NOT healed, deliberately:
+/// The other three cases are NOT healed, deliberately:
 ///   * `AssemblyOlderThanSource` — the work that did not happen is a COMPILE. There
 ///     is no file anywhere on disk holding the bytes that compile would produce, so
 ///     any "repair" would be fabrication.
+///   * `DepsManifestOlderThanRestore` — likewise. The manifest is GENERATED from the
+///     restore by MSBuild's own target; nothing on disk holds the bytes it would
+///     produce, and writing a plausible one would put this module in the business of
+///     inventing a reference closure.
 ///   * `InputsUndeterminable` — we could not establish what this run's inputs ARE.
 ///     Repairing a tree we cannot describe is how silent degradation starts.
-/// Both refuse, and both name `dotnet build` — the remedy that actually works.
+/// All three refuse, and all three name the command that produces the missing bytes.
+/// See `remedyFor` for why that command is an `fshw` verb and not a raw `dotnet build`.
 ///
 /// A heal is NEVER silent. Repeated origin/copy disagreements mean something upstream
 /// keeps rebuilding origins without their consumers, and a repair that absorbs that forever
@@ -32,10 +37,16 @@
 /// of ONE file inside `Window`, the preflight stops repairing and refuses instead,
 /// naming the file and the count.
 ///
-/// The breaker gates the HEAL, not the run. A tripped breaker on a clean tree changes
-/// nothing — nothing is stale, so nothing asks to be repaired and the suite runs.
-/// That is what keeps the breaker from becoming the very wedge class this ticket
-/// exists to remove, and it is why its refusal message names its own reset.
+/// The breaker gates the HEAL OF THE FILE IT NAMES — not the run, and not any other
+/// file's heal (AUTOMATION-495). A tripped breaker on a clean tree changes nothing,
+/// and on a tree where five copies are stale and one of them has tripped, the other
+/// four are still repaired. That is what keeps the breaker from becoming the very
+/// wedge class it exists to expose, and it is why its refusal message names its own
+/// reset.
+///
+/// The run still refuses while ANY file is uncertifiable, and that half is deliberate:
+/// see `adr-016`. Convergence comes from the repairs happening, not from launching a
+/// subset of the suites.
 module FsHotWatch.TestPrune.StaleArtifactPreflight
 
 open System
@@ -141,6 +152,7 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
     match stale with
     | ArtifactFreshness.CopyDiffersFromOrigin(origin, copy) -> Some(origin, copy)
     | ArtifactFreshness.AssemblyOlderThanSource _
+    | ArtifactFreshness.DepsManifestOlderThanRestore _
     | ArtifactFreshness.InputsUndeterminable _ -> None
 
 /// What to actually DO about a stale verdict this module would not repair. Names a
@@ -148,18 +160,43 @@ let repairFor (stale: ArtifactFreshness.StaleInput) : (string * string) option =
 ///
 /// Deliberately does NOT say "stop the daemon". That is folk knowledge and it is
 /// wrong as a remedy: the task cache is file-backed and survives a restart, so a
-/// restart alone clears nothing. `dotnet build` is what re-emits the file pair every
-/// verdict names.
+/// restart alone clears nothing.
+///
+/// AUTOMATION-495: it no longer says `dotnet build` either, and that is wrong in two
+/// directions rather than one.
+///
+///   * A REPOSITORY MAY REFUSE IT. thellma/intelligence puts a shim first on `PATH`
+///     that rejects `dotnet build`, `test`, `exec` and friends outright (its ADR 0200),
+///     because raw builds bypass the analyzer and format plugins that are part of its
+///     gate. A refusal that prescribes an action the operator cannot take is a dead
+///     end wearing the clothes of a remedy — and this text is read exactly when
+///     somebody is stuck.
+///   * IT IS THE WEAKER COMMAND ANYWAY. `dotnet build` consults the same incremental
+///     state that produced the staleness: the copy target skips while the source is
+///     not newer than the destination, which is precisely how a byte-differing copy
+///     survives a build that reports success. `dotnet fshw rerun build` clears the
+///     cached build result and re-drives the build this daemon owns, and deleting the
+///     named copy makes the copy target run because its destination is gone. Both are
+///     available in every repository that has an `fshw` to be reading this message.
 let remedyFor (stale: ArtifactFreshness.StaleInput) : string =
     match stale with
     | ArtifactFreshness.CopyDiffersFromOrigin _ ->
-        "build the consumer (normally with a plain `dotnet build`) so its copy target runs. If that consumer build \
-         reports success and the bytes still differ, run `dotnet build --no-incremental` or delete the named copy \
-         and build again"
+        "delete the named copy, then run `dotnet fshw rerun build` — with the destination gone the consumer's copy \
+         target runs, where the incremental check that produced this state skipped it because the source is not \
+         newer than the destination"
     | ArtifactFreshness.AssemblyOlderThanSource _ ->
-        "run `dotnet build` — the compile has not run since that edit, so there is nothing on disk to copy from"
+        "run `dotnet fshw rerun build` — the compile has not run since that edit, so there is nothing on disk to \
+         copy from, and `rerun` is what clears the cached build result that let the compile be skipped"
+    | ArtifactFreshness.DepsManifestOlderThanRestore _ ->
+        "run `dotnet fshw rerun build` — only a build regenerates the manifest from the restore, and `rerun` is \
+         what clears the cached build result that let it be skipped. A `dotnet restore` will NOT: it rewrites \
+         `obj/project.assets.json` and never touches `bin/**/*.deps.json`, which is why this state outlives the \
+         automatic recovery that repairs the compile. Do NOT add a direct `ProjectReference` to whatever failed \
+         to load — that puts an entry in the manifest and makes the symptom vanish while the superseded restore \
+         stays in place"
     | ArtifactFreshness.InputsUndeterminable _ ->
-        "run `dotnet build` and read its error — it fails loudly on the same project file this gate could not read"
+        "run `dotnet fshw rerun build`, then `dotnet fshw status build` — the build fails loudly on the same project \
+         file this gate could not read"
 
 /// The words EVERY refusal this module produces begins with, and the only thing any
 /// downstream surface uses to recognise one.
@@ -201,8 +238,10 @@ type Refusal =
 /// The preflight's verdict about the whole run.
 type Outcome =
     {
-        /// Copies repaired this run, absolute paths. Always reported, even on success:
-        /// a repair that fires every run is itself the finding.
+        /// Copies repaired this run, absolute paths. Always reported — on success,
+        /// because a repair that fires every run is itself the finding, and on a
+        /// refusal, because since AUTOMATION-495 a refused run still repairs every
+        /// copy the breaker did not name.
         Healed: string list
         /// EMPTY means every target is certified fresh and the suite may launch.
         /// Non-empty means nothing launches.
@@ -399,68 +438,77 @@ let runWithBudget
             let unrepairable =
                 detected |> List.filter (fun (_, s) -> Option.isNone (repairFor s))
 
-            // The breaker is consulted ONLY for files this run is about to repair, so a
-            // tripped breaker never blocks a run with nothing stale in it. That is what
-            // stops it becoming a new wedge class.
+            // The breaker is consulted per FILE, and it decides one thing: whether THAT
+            // file may be repaired again. It is not a verdict about the round, and it
+            // was never a verdict about a run with nothing stale in it.
             let tripped, toRepair =
                 repairable
                 |> List.partition (fun (_, _, (_, copy)) -> healsInWindow now ledger copy >= Threshold)
 
-            if not (List.isEmpty unrepairable) || not (List.isEmpty tripped) then
-                // Nothing is repaired in a round that is going to refuse anyway: a
-                // repair whose run never launches is a ledger entry bought for nothing.
-                { Healed = healed
-                  Refusals =
-                    (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
-                    @ (tripped
-                       |> List.map (fun (project, _, (_, copy)) ->
-                           { Project = project
-                             Reason = Reason.breakerTripped repoRoot copy (healsInWindow now ledger copy) }))
-                    @ (toRepair |> List.map (fun (project, s, _) -> refusalOf project s)) }
+            // AUTOMATION-495. These are the refusals this round has ALREADY earned —
+            // a stale case nothing can repair, and a file the breaker has taken out of
+            // service. Computing them here rather than in an `if` that also swallows the
+            // repairs is the whole fix: the repair loop below runs either way.
+            let blocked =
+                (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
+                @ (tripped
+                   |> List.map (fun (project, _, (_, copy)) ->
+                       { Project = project
+                         Reason = Reason.breakerTripped repoRoot copy (healsInWindow now ledger copy) }))
+
+            // Repair every under-threshold copy, INCLUDING in a round that is going to
+            // refuse. The old rule was the opposite — "a repair whose run never launches
+            // is a ledger entry bought for nothing" — and it is what made the wedge
+            // permanent: one tripped file suppressed every other file's repair, so the
+            // tree that made the run refuse was byte-identical on the next run, and the
+            // only exit was a human deleting the ledger. The entry is not bought for
+            // nothing; it is bought for the next run's tree. Every outcome is logged BY
+            // NAME whether it worked or not — a repair nobody can see is a signal
+            // destroyed.
+            let outcomes =
+                toRepair
+                |> List.map (fun (project, s, (origin, copy)) ->
+                    match applyRepair origin copy with
+                    | Ok() ->
+                        Logging.warn
+                            "test-prune"
+                            $"%s{project}: REPAIRED a stale build-output copy BEFORE running any suite — wrote \
+                              %s{origin} over %s{copy}, which held different bytes. The build should have made \
+                              this copy and its incremental check skipped it (equal timestamps). Recorded to \
+                              %s{ledgerPath repoRoot}; %d{Threshold} repairs of one file inside \
+                              %.0f{Window.TotalDays} days refuse to repair THAT file, and no other."
+
+                        Ok copy
+                    | Error e ->
+                        Error
+                            { Project = project
+                              Reason = Reason.repairFailed e s })
+
+            let repaired =
+                outcomes
+                |> List.choose (function
+                    | Ok copy -> Some copy
+                    | Error _ -> None)
+
+            let failures =
+                outcomes
+                |> List.choose (function
+                    | Ok _ -> None
+                    | Error refusal -> Some refusal)
+
+            let ledger' = ledger @ (repaired |> List.map (fun f -> { At = now; File = f }))
+
+            if not (List.isEmpty repaired) then
+                saveLedger repoRoot now ledger'
+
+            if not (List.isEmpty blocked) || not (List.isEmpty failures) then
+                // The RUN still refuses while anything is uncertifiable — see `adr-016`
+                // for why a partial launch is the worse of the two. What changed is that
+                // the refusal now leaves a strictly better tree behind it.
+                { Healed = healed @ repaired
+                  Refusals = blocked @ failures }
             else
-                // Repair. Every outcome is logged BY NAME whether it worked or not — a
-                // repair nobody can see is a signal destroyed.
-                let outcomes =
-                    toRepair
-                    |> List.map (fun (project, s, (origin, copy)) ->
-                        match applyRepair origin copy with
-                        | Ok() ->
-                            Logging.warn
-                                "test-prune"
-                                $"%s{project}: REPAIRED a stale build-output copy BEFORE running any suite — wrote \
-                                  %s{origin} over %s{copy}, which held different bytes. The build should have made \
-                                  this copy and its incremental check skipped it (equal timestamps). Recorded to \
-                                  %s{ledgerPath repoRoot}; %d{Threshold} repairs of one file inside \
-                                  %.0f{Window.TotalDays} days refuse instead of repairing."
-
-                            Ok copy
-                        | Error e ->
-                            Error
-                                { Project = project
-                                  Reason = Reason.repairFailed e s })
-
-                let repaired =
-                    outcomes
-                    |> List.choose (function
-                        | Ok copy -> Some copy
-                        | Error _ -> None)
-
-                let failures =
-                    outcomes
-                    |> List.choose (function
-                        | Ok _ -> None
-                        | Error refusal -> Some refusal)
-
-                let ledger' = ledger @ (repaired |> List.map (fun f -> { At = now; File = f }))
-
-                if not (List.isEmpty repaired) then
-                    saveLedger repoRoot now ledger'
-
-                if not (List.isEmpty failures) then
-                    { Healed = healed @ repaired
-                      Refusals = failures }
-                else
-                    round (remaining - 1) ledger' (healed @ repaired)
+                round (remaining - 1) ledger' (healed @ repaired)
 
     round budget (loadLedger repoRoot) []
 

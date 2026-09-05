@@ -70,6 +70,15 @@ let private invertCopy (s: Synth) =
     File.WriteAllText(s.CommonCopy, "COMMON-STALE")
     File.SetLastWriteTimeUtc(s.CommonCopy, s.BuiltAt)
 
+/// AUTOMATION-528: the restore moves on after the build that generated the runtime
+/// manifest — which is precisely what the deps-freshness gate's automatic recovery does,
+/// since `dotnet restore` writes `obj/project.assets.json` and never touches
+/// `bin/**/*.deps.json`.
+let private supersedeRestore (s: Synth) =
+    let testsOut = Path.Combine(s.Root, "Tests", "bin", "Debug", "net10.0")
+    writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" s.BuiltAt
+    writeAt (Path.Combine(s.Root, "Tests", "obj", "project.assets.json")) "{}" (s.BuiltAt.AddMinutes 30.0)
+
 let private targets (s: Synth) = [ "Tests", s.Target ]
 
 let private runPreflight (s: Synth) =
@@ -124,27 +133,95 @@ let ``AUTOMATION-201: a stale compile refuses with a remedy instead of being 're
         test <@ List.isEmpty outcome.Healed @>
         test <@ outcome.Refusals.Length = 1 @>
         test <@ outcome.Refusals.Head.Project = "Tests" @>
-        test <@ outcome.Refusals.Head.Reason.Contains "dotnet build" @>)
+        test <@ outcome.Refusals.Head.Reason.Contains "dotnet fshw rerun build" @>)
+
+/// AUTOMATION-528: a superseded restore is REPORTED, by name, before anything launches —
+/// instead of surfacing later as a `FileNotFoundException` inside an unrelated-looking
+/// test. It is not healable: the manifest is generated from the restore by MSBuild's own
+/// target and no file on disk holds the bytes that target would produce, so writing a
+/// plausible one would mean inventing a reference closure.
+///
+/// The refusal must also name the WRONG fix. Adding a direct `ProjectReference` to
+/// whatever failed to load puts an entry in the manifest and makes the symptom vanish
+/// while the superseded restore stays exactly where it was — a fix that works for the
+/// wrong reason, and the one a reader reaches for first.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a superseded restore refuses, names both files, and rules out the wrong fix`` () =
+    withTempDir "a528-superseded" (fun tmpDir ->
+        let s = synth tmpDir
+        supersedeRestore s
+
+        let outcome = runPreflight s
+
+        test <@ List.isEmpty outcome.Healed @>
+        test <@ outcome.Refusals.Length = 1 @>
+        test <@ outcome.Refusals.Head.Project = "Tests" @>
+
+        let reason = outcome.Refusals.Head.Reason
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral reason @>
+        test <@ reason.Contains "Tests.deps.json" @>
+        test <@ reason.Contains "project.assets.json" @>
+        test <@ reason.Contains "dotnet build" @>
+        test <@ reason.Contains "ProjectReference" @>
+
+        // Nothing was repaired, so nothing is on the ledger — a refusal must not spend
+        // breaker budget it never used.
+        test <@ not (File.Exists(StaleArtifactPreflight.ledgerPath tmpDir)) @>)
+
+/// POSITIVE CONTROL for the test above: the same tree with the manifest generated AFTER
+/// its restore — the shape every healthy build leaves — still gates normally.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a manifest generated after its restore is not reported`` () =
+    withTempDir "a528-control" (fun tmpDir ->
+        let s = synth tmpDir
+        let testsOut = Path.Combine(tmpDir, "Tests", "bin", "Debug", "net10.0")
+        writeAt (Path.Combine(tmpDir, "Tests", "obj", "project.assets.json")) "{}" s.BuiltAt
+        writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" (s.BuiltAt.AddMinutes 1.0)
+
+        let outcome = runPreflight s
+
+        test <@ List.isEmpty outcome.Refusals @>
+        test <@ List.isEmpty outcome.Healed @>)
 
 /// The remedy text is the whole point of the "diagnoses but does not prescribe" defect,
-/// and one specific wrong answer must stay out of it: restarting the daemon. The task
-/// cache is file-backed and survives a restart, so `fshw stop` clears nothing — it was
-/// folk knowledge that happened to correlate with a rebuild.
+/// and two specific wrong answers must stay out of it.
+///
+/// Restarting the daemon: the task cache is file-backed and survives a restart, so
+/// `fshw stop` clears nothing — it was folk knowledge that happened to correlate with a
+/// rebuild.
+///
+/// A raw `dotnet build` (AUTOMATION-495): a consuming repository may refuse that command
+/// outright — thellma/intelligence puts a shim first on `PATH` that rejects it, so the
+/// gate was prescribing an action its own operator cannot take — and it is the weaker
+/// command anyway, because the cached build result is exactly what let the work be
+/// skipped. `dotnet fshw rerun build` clears that result, and every repository reading
+/// this message has an `fshw` to run it with.
 [<Fact(Timeout = 15000)>]
-let ``AUTOMATION-201: every remedy names a command that works, and none says 'stop the daemon'`` () =
+let ``AUTOMATION-495: every remedy names a command an fshw repository can actually run`` () =
     let cases =
         [ ArtifactFreshness.CopyDiffersFromOrigin("/o.dll", "/c.dll")
           ArtifactFreshness.AssemblyOlderThanSource("P", "/s.fs", DateTime.UtcNow, DateTime.UtcNow)
+          ArtifactFreshness.DepsManifestOlderThanRestore(
+              "P",
+              "/P/obj/project.assets.json",
+              "/P/bin/Debug/net10.0/P.deps.json",
+              DateTime.UtcNow,
+              DateTime.UtcNow
+          )
           ArtifactFreshness.InputsUndeterminable("P", "unreadable") ]
 
     for case in cases do
         let remedy = StaleArtifactPreflight.remedyFor case
-        test <@ remedy.Contains "dotnet build" @>
+
+        // A command, never a ritual — and one this repository's shell permits.
+        test <@ remedy.Contains "dotnet fshw rerun build" @>
+        test <@ not (remedy.Contains "dotnet build") @>
+        test <@ not (remedy.Contains "--no-incremental") @>
         test <@ not (remedy.Contains "fshw stop") @>
         test <@ not (remedy.ToLowerInvariant().Contains "restart") @>
 
 [<Fact(Timeout = 15000)>]
-let ``AUTOMATION-516: a stale copy reports build scope before exceptional incremental recovery`` () =
+let ``AUTOMATION-516: a stale copy names the consumer whose copy target did not run`` () =
     let stale =
         ArtifactFreshness.CopyDiffersFromOrigin("/origin.dll", "/consumer/copy.dll")
 
@@ -154,8 +231,9 @@ let ``AUTOMATION-516: a stale copy reports build scope before exceptional increm
         StaleArtifactPreflight.Reason.breakerTripped "/repo" "/consumer/copy.dll" 10
 
     test <@ remedy.Contains "consumer" @>
-    test <@ remedy.Contains "plain `dotnet build`" @>
-    test <@ remedy.IndexOf("plain `dotnet build`") < remedy.IndexOf("--no-incremental") @>
+    // AUTOMATION-495 replaced the `--no-incremental` escalation with the step that
+    // needs no build flag at all: with the destination gone, the copy target runs.
+    test <@ remedy.Contains "delete the named copy" @>
     test <@ breaker.Contains "origins without their consumers" @>
 
     // CopyDiffersFromOrigin carries no timestamps. Neither surface may invent one.
@@ -183,6 +261,19 @@ let ``AUTOMATION-201: exactly one stale case is repairable`` () =
             ) = None
         @>
 
+    test
+        <@
+            StaleArtifactPreflight.repairFor (
+                ArtifactFreshness.DepsManifestOlderThanRestore(
+                    "P",
+                    "/P/obj/project.assets.json",
+                    "/P/bin/Debug/net10.0/P.deps.json",
+                    DateTime.UtcNow,
+                    DateTime.UtcNow
+                )
+            ) = None
+        @>
+
     test <@ StaleArtifactPreflight.repairFor (ArtifactFreshness.InputsUndeterminable("P", "why")) = None @>
 
 /// A repair that cannot be made must REFUSE, never proceed. Proceeding on bytes the
@@ -201,7 +292,7 @@ let ``AUTOMATION-201: a repair that fails refuses the run and says so`` () =
             test <@ List.isEmpty outcome.Healed @>
             test <@ outcome.Refusals.Length = 1 @>
             test <@ outcome.Refusals.Head.Reason.Contains "repair FAILED" @>
-            test <@ outcome.Refusals.Head.Reason.Contains "dotnet build" @>
+            test <@ outcome.Refusals.Head.Reason.Contains "dotnet fshw rerun build" @>
         finally
             File.SetAttributes(s.CommonCopy, FileAttributes.Normal))
 
@@ -396,6 +487,118 @@ let ``AUTOMATION-201: a tripped breaker does NOT block a run with nothing stale 
         test <@ List.isEmpty outcome.Refusals @>
         test <@ List.isEmpty outcome.Healed @>)
 
+// -----------------------------------------------------------------------------
+// AUTOMATION-495 — the breaker takes ONE FILE out of service, not the round.
+//
+// Every test in this block drives TWO project pairs under one repo root, which is the
+// only arrangement in which the defect is visible at all: a single-project tree cannot
+// distinguish "the tripped file was not repaired" from "nothing was repaired". The
+// second root is a subdirectory; `run`'s `repoRoot` argument only locates the ledger,
+// and the targets carry absolute paths, so one ledger governs both pairs.
+// -----------------------------------------------------------------------------
+
+/// THE CLAIM. A file the breaker has taken out of service does not suppress the repair
+/// of a different file that is nowhere near its threshold.
+///
+/// Before this, `List.partition` split the round into `tripped` and `toRepair` and then
+/// refused BOTH — so the tree that produced the refusal was byte-identical on the next
+/// run, and the only exit was a human deleting the ledger. Observed twice in
+/// thellma/intelligence: every project passed, a queued re-run refused, executed
+/// nothing, and recorded `outcome: red, scope: none, reddenedByCount: 0`.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: a file the breaker has tripped does not block another project's repair`` () =
+    withTempDir "a495-per-file" (fun tmpDir ->
+        let now = DateTime.UtcNow
+        let blocked = synth (Path.Combine(tmpDir, "blocked"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        // Only the FIRST project's copy carries a repair history at the threshold.
+        StaleArtifactPreflight.saveLedger
+            tmpDir
+            now
+            [ for i in 1 .. StaleArtifactPreflight.Threshold ->
+                  { StaleArtifactPreflight.At = now.AddHours(-(float i))
+                    StaleArtifactPreflight.File = blocked.CommonCopy } ]
+
+        invertCopy blocked
+        invertCopy fixable
+
+        let outcome =
+            StaleArtifactPreflight.run tmpDir now [ "Blocked", blocked.Target; "Fixable", fixable.Target ]
+
+        // The under-threshold copy is repaired ON DISK, and recorded — so the next run
+        // meets a strictly better tree. This is the assertion the old code failed.
+        test <@ outcome.Healed = [ fixable.CommonCopy ] @>
+        test <@ File.ReadAllText fixable.CommonCopy = File.ReadAllText fixable.CommonDll @>
+
+        test
+            <@
+                StaleArtifactPreflight.loadLedger tmpDir
+                |> List.exists (fun r -> r.File = fixable.CommonCopy)
+            @>
+
+        // The breaker still does its job: exactly one refusal, naming the file it took
+        // out of service, and those bytes are untouched. Without this half, "per-file"
+        // would be indistinguishable from having deleted the breaker.
+        test <@ outcome.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+        test <@ outcome.Refusals.Head.Reason.Contains blocked.CommonCopy @>
+        test <@ File.ReadAllText blocked.CommonCopy = "COMMON-STALE" @>)
+
+/// THE CONVERGENCE PROPERTY, which is the reason the claim above matters: the refusal
+/// set SHRINKS across runs with no human in the loop. Before the fix these two runs were
+/// identical, forever.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: the run after a tripped refusal refuses only the still-tripped file`` () =
+    withTempDir "a495-converges" (fun tmpDir ->
+        let now = DateTime.UtcNow
+        let blocked = synth (Path.Combine(tmpDir, "blocked"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        StaleArtifactPreflight.saveLedger
+            tmpDir
+            now
+            [ for i in 1 .. StaleArtifactPreflight.Threshold ->
+                  { StaleArtifactPreflight.At = now.AddHours(-(float i))
+                    StaleArtifactPreflight.File = blocked.CommonCopy } ]
+
+        invertCopy blocked
+        invertCopy fixable
+
+        let targetPair = [ "Blocked", blocked.Target; "Fixable", fixable.Target ]
+
+        let first = StaleArtifactPreflight.run tmpDir now targetPair
+        test <@ first.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+
+        let second = StaleArtifactPreflight.run tmpDir now targetPair
+
+        // Nothing left to repair — the previous run already did it — and the one
+        // refusal that remains is the file the operator is being asked to root-cause.
+        test <@ List.isEmpty second.Healed @>
+        test <@ second.Refusals |> List.map (fun r -> r.Project) = [ "Blocked" ] @>
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral second.Refusals.Head.Reason @>)
+
+/// The same per-file rule for the OTHER refusal source. A stale COMPILE is unrepairable
+/// by construction, and it used to suppress every repairable copy in the round for the
+/// identical reason — the guard tested `unrepairable` and `tripped` together.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-495: a project needing a compile does not block another project's copy repair`` () =
+    withTempDir "a495-compile-neighbour" (fun tmpDir ->
+        let needsCompile = synth (Path.Combine(tmpDir, "needs-compile"))
+        let fixable = synth (Path.Combine(tmpDir, "fixable"))
+
+        File.SetLastWriteTimeUtc(needsCompile.TestsSrc, needsCompile.BuiltAt.AddMinutes 30.0)
+        invertCopy fixable
+
+        let outcome =
+            StaleArtifactPreflight.run
+                tmpDir
+                DateTime.UtcNow
+                [ "NeedsCompile", needsCompile.Target; "Fixable", fixable.Target ]
+
+        test <@ outcome.Healed = [ fixable.CommonCopy ] @>
+        test <@ File.ReadAllText fixable.CommonCopy = File.ReadAllText fixable.CommonDll @>
+        test <@ outcome.Refusals |> List.map (fun r -> r.Project) = [ "NeedsCompile" ] @>)
+
 /// A bare JSON `null` where the array should be. Distinct from a parse throw: `Parse`
 /// succeeds and hands back a null node, so the guard is a real arm rather than a
 /// theoretical one.
@@ -461,7 +664,7 @@ let ``AUTOMATION-201: every refusal shape this module builds is recognised as a 
         test <@ StaleArtifactPreflight.isStaleOutputDeferral m @>
         // And each still says what to do — the marker replaced prose, it did not
         // displace the remedy.
-        test <@ m.Contains "dotnet build" || m.Contains "root-cause" @>
+        test <@ m.Contains "dotnet fshw rerun build" || m.Contains "root-cause" @>
 
 /// NEGATIVE CONTROL. Without this, `isStaleOutputDeferral` could answer `true` to
 /// everything and every assertion above would still pass — while the build-ordering
