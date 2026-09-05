@@ -475,6 +475,7 @@ let private runOnceAndVerdictIn
                 finalRun.Value
                 checkScoped
                 finalStatuses.Value
+                (IpcParsing.DaemonEvidence.ofHost daemon.Host)
                 (redCauses daemon noWarnFail pluginName)
                 settledTree.Value
                 outcome
