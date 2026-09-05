@@ -457,6 +457,39 @@ let ``parseTestRunReport: seeds and their true count come through`` () =
     // claiming that is all of them is the same lie as "no tests ran".
     test <@ r.SeedCount = 7 @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: the session's run ledger comes through, newest first`` () =
+    // AUTOMATION-533. The daemon DECLARES every run it has completed, because the CLI
+    // cannot enumerate them from disk without inferring membership from mtimes — which
+    // is the one thing the run-directory layout exists to make unnecessary.
+    let json =
+        """{"scope":"full","ranProjects":3,"totalProjects":3,"runId":"7843b74bf301422bbaf3b482d1d97834","runIds":["7843b74bf301422bbaf3b482d1d97834","7713a463808e4b059c2a51eaf76d6a94"]}"""
+
+    let r = parseTestRunReport json
+
+    test <@ r.RunId = Some(System.Guid "7843b74b-f301-422b-baf3-b482d1d97834") @>
+
+    test
+        <@
+            r.SessionRuns = [ System.Guid "7843b74b-f301-422b-baf3-b482d1d97834"
+                              System.Guid "7713a463-808e-4b05-9c2a-51eaf76d6a94" ]
+        @>
+
+    // The parser never guesses which of those belong to a given check: only the driver
+    // knows what had already run when it started.
+    test <@ List.isEmpty r.CheckRuns @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestRunReport: a reply with no run ledger still parses its scope`` () =
+    // AUTOMATION-533's half of the same compatibility guarantee the seeds fields carry:
+    // a daemon older than `runIds` sends none, and the check must degrade to naming the
+    // one run it was told about — today's behaviour — never to a refusal.
+    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    let r = parseTestRunReport json
+
+    test <@ r.Scope = FullSuite 3 @>
+    test <@ List.isEmpty r.SessionRuns @>
+
 /// THE compatibility guarantee for this field, and the reason it is safe to add to
 /// a reply that earns merge verdicts: a daemon older than `seeds` sends none, and
 /// that MUST degrade to silence — never to `ScopeUnreadable`, which both check and
@@ -898,3 +931,41 @@ let ``AUTOMATION-294: converge does NOT retry an abort — no automatic retry to
 
     test <@ outcome = CheckOutcome.RunnerAborted abortMessages @>
     test <@ scans = 0 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — "the run finished and its result was lost" has its own code.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``exitCode: ResultUnreceived -> 7, and never a code that claims something about the code`` () =
+    test <@ exitCode (CheckOutcome.ResultUnreceived "the daemon ran out of memory") = 7 @>
+
+    // The point of the case is that a caller can ACT on it differently. 2 says "nothing
+    // was verified, spend the time"; 7 says "the time was already spent". A retry loop
+    // reading 2 for both re-runs a twenty-minute suite to re-derive an answer that
+    // already exists on disk — which is what happened seven times before this existed.
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.Incomplete -1)
+        @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.RunnerAborted [ "y" ])
+        @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.UnearnedScope anyScope)
+        @>
+
+    test <@ exitCode (CheckOutcome.ResultUnreceived "x") <> exitCode CheckOutcome.Clean @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode CheckOutcome.FailuresFound
+        @>

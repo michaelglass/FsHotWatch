@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- AUTOMATION-533: **the verdict accounts for every test run the check produced, not
+  only the last one.** A check runs the tests in batches — the impact-selected run,
+  the rerun a mid-run change queues behind it, `confirm`'s forced full suite, the
+  drain of a queued `run-tests` — and each writes its own
+  `.fshw/test-runs/<runId>/`. `verdict.json` named ONE of them, and a reader who did
+  the documented thing (open the directory the verdict names, look for their tests)
+  landed in one recorded case on 566 tests out of the 10,979 that had run and
+  concluded the gate never executed their work. Three such conclusions in one
+  session; two nearly caused already-green work to be redone.
+  - `runs[]` is new: every batch the check ran, graded run FIRST, each with the
+    reports it wrote. A batch that executed nothing still gets an entry — its run
+    directory exists, and saying so is how a reader tells it apart from a batch the
+    verdict forgot.
+  - `suites[]` is now the flattening of `runs[]`, so it covers ALL of them. It is a
+    derived view of the same list rather than a second field, so the flat and
+    per-batch answers cannot disagree. One project can appear twice, from two
+    batches, with different counts; the surfaces that print a total say "across N
+    batches" when there was more than one.
+  - `runId` is unchanged and still means the run this verdict was GRADED from — one
+    batch of several, and never again the answer to "what did this check execute".
+  - The check attributes runs by DIFFERENCE against a baseline it reads from the
+    daemon before its scan (one extra read-only round trip), so a batch nobody
+    watched go by is still counted and an earlier check's runs are never adopted.
+  - The steering block names the batch count before it lists the report paths.
+  - A verdict written before `runs[]` rehydrates as ONE batch named by its `runId`;
+    a daemon too old to declare its run ledger degrades to today's behaviour, never
+    to a refusal. See
+    [ADR-018](../../docs/adr-018-a-checks-evidence-is-every-run-it-produced.md).
+
+- AUTOMATION-573: `fshw verdict` gains **exit 6 — a run is in flight over this tree**.
+  The verdict file is stamped only at completion, so mid-run it holds the previous run's
+  result; over an unchanged tree that reads green. A run now writes a claim under
+  `.fshw/in-flight/<invocationId>.json` for its duration (both transports, released in
+  the run bracket's finalizer after the verdict is written), and `verdict` refuses a
+  verdict published by a run OTHER than one currently holding a claim. The envelope gains
+  an additive `inFlight` boolean beside `applies`, on every case; the schema string is
+  unchanged. Exits 0/1/2/3/4/5 are reached exactly as before — the in-flight question is
+  asked only where the verdict would otherwise apply. A claim whose process is provably
+  gone is reaped; every unknown leans in-flight. `confirm`'s prior-verdict fast path is
+  deliberately unchanged. See ADR-019.
+
+- AUTOMATION-747: `check`/`confirm` gained **exit 7** — the daemon settled (it built,
+  ran the suite and committed its evidence) and this CLI then failed before it could
+  receive that result. Its own `CheckOutcome.ResultUnreceived`, its own verdict-file
+  reason pointing at `.fshw/test-runs/`, and a publish on that path so a finished run
+  stops leaving the previous run's verdict standing as current. Exit 2 is unchanged for
+  a fault BEFORE the settle: nothing had completed there.
+- AUTOMATION-747: an out-of-memory fault reported by the DAEMON is no longer printed as
+  "the fshw CLI ran out of memory". `IpcFault.DaemonOutOfMemory` is chosen from the
+  fault's origin rather than guessed from its stack trace, carries a headline and hint
+  naming the daemon and `.fshw/test-runs/`, and — like a client OOM — never restarts the
+  daemon.
+  - **BREAKING (internal):** `classifyIpcFaultAt` takes a `FaultOrigin` first.
+
 ## 0.14.0-alpha.42 - 2026-09-04
 
 - chore: rebuild to bundle updated dependencies

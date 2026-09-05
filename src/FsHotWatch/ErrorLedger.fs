@@ -142,6 +142,83 @@ module ErrorEntry =
           Column = 0
           Detail = Some detail }
 
+/// How much of the ledger a single mirror of it — a file on disk, an IPC reply — is
+/// allowed to carry. AUTOMATION-747.
+///
+/// `Message` and `Detail` are plugin-supplied text with no natural bound, and one
+/// plugin makes that unboundedness MULTIPLICATIVE: the test-prune plugin attaches the
+/// whole captured project output to EVERY parsed per-test failure, so a broadly red
+/// project contributes `failures × |output|` characters, not `failures + |output|`.
+/// The run this module exists because of had 753 failing tests in one project whose
+/// captured output was 48 MB: 36 GB of `detail` for that project alone, from a ledger
+/// holding one shared string. Nothing can serialize that, and nothing can hold it.
+///
+/// `FileErrorReporter` has capped its own fields since the same product crashed the
+/// on-disk mirror. The IPC mirror had no cap at all, so the identical defect survived
+/// one mirror over and killed the merge gate instead of the reporter. The bound
+/// therefore lives HERE, above every mirror, rather than in the mirror that noticed
+/// it first — a cap that one writer applies and another forgets is the shape of this
+/// whole bug.
+///
+/// Entries are never DROPPED, only their text trimmed: the entry COUNT and the
+/// severities are what the exit code and the verdict's `reddenedBy` are computed
+/// from, so a bound that removed entries would buy memory by corrupting the answer.
+module Transport =
+    /// Per-field cap. System.Text.Json's UTF-8 transcoder throws `OverflowException`
+    /// on a single string token beyond ~700M chars, so this is far below the point
+    /// where any one field is even representable; it is sized for READABILITY — an
+    /// excerpt an operator can scan — because the full text always exists elsewhere
+    /// (the plugin's own run log, `.fshw/test-runs/<runId>/<project>.output.log` for
+    /// a test failure).
+    [<Literal>]
+    let MaxFieldChars = 20000
+
+    /// Cap on the total `detail` text in ONE response, across every entry in it.
+    ///
+    /// The per-field cap alone does not bound a response: 2,414 entries each holding a
+    /// 20,000-char excerpt is still ~48 MB of pure `detail`, and `detail` is the one
+    /// field no consumer of this ledger reads — the terminal renders `Message`, the
+    /// verdict records `Message`. So the response budget is deliberately much smaller
+    /// than `MaxFieldChars × entries`: the first few details are worth carrying, the
+    /// two-thousandth is not, and the marker says so rather than pretending the entry
+    /// had none.
+    [<Literal>]
+    let MaxDetailCharsPerResponse = 262144
+
+    /// Stands in for a `detail` this response had no budget left to carry. Says which
+    /// bound was hit and where the untruncated text lives, because "detail: null" and
+    /// "detail: elided" are different facts and only one of them means "go and look".
+    /// Short on purpose: it is repeated once per entry past the budget, and a paragraph
+    /// repeated two thousand times is the very shape being bounded.
+    [<Literal>]
+    let DetailBudgetSpentMarker =
+        "… [detail omitted: this response's detail budget was spent by earlier entries; see the plugin's own run log]"
+
+    /// Trim one field to `MaxFieldChars`, naming how much was dropped. Total: a null
+    /// or already-short field is returned unchanged.
+    let truncateField (s: string) : string =
+        if isNull s || s.Length <= MaxFieldChars then
+            s
+        else
+            let dropped = s.Length - MaxFieldChars
+            s.Substring(0, MaxFieldChars) + $"… [truncated %d{dropped} chars]"
+
+    /// What one entry's `detail` may carry, given the characters earlier entries in
+    /// the SAME response have already spent, and what the budget stands at afterwards.
+    ///
+    /// Pure and total, so the bound is assertable without a socket: fold it over a
+    /// response's entries in wire order and the response can never exceed
+    /// `MaxDetailCharsPerResponse` plus one field's worth of overshoot from the entry
+    /// that crossed the line.
+    let takeDetail (spent: int) (detail: string option) : string option * int =
+        match detail with
+        | None -> None, spent
+        | Some d when isNull d -> None, spent
+        | Some _ when spent >= MaxDetailCharsPerResponse -> Some DetailBudgetSpentMarker, spent
+        | Some d ->
+            let capped = truncateField d
+            Some capped, spent + capped.Length
+
 /// Per-plugin tally of ledger entries by severity — a lightweight projection of the ledger
 /// used by the status renderer to decide the "completed-with-issues" glyph without pulling
 /// the full entry list across the IPC wire.

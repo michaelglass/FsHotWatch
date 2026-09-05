@@ -11,21 +11,14 @@ let private errorFileName (plugin: string) (file: string) =
 
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
-/// System.Text.Json's UTF-8 transcoder throws OverflowException when serializing a
-/// single string token larger than ~700M chars. A misbehaving plugin can stuff an
-/// entire test-suite output into a diagnostic message/detail (observed when many
-/// integration tests fail at once), which crashes the reporter and wedges the daemon.
-/// Cap each string field far below that bound; the full output is preserved elsewhere
-/// (e.g. per-test-run logs), so the on-disk ledger only needs a readable excerpt.
-[<Literal>]
-let maxFieldChars = 20000
+/// The per-field cap, re-exported from `ErrorLedger.Transport` — where it moved so the
+/// IPC mirror is bound by the SAME number rather than by nothing at all
+/// (AUTOMATION-747). Kept as a name here because this file's own readers and tests ask
+/// "what does the on-disk ledger cap a field at?" and the answer must not require
+/// knowing which module owns it.
+let maxFieldChars = ErrorLedger.Transport.MaxFieldChars
 
-let internal truncateField (s: string) : string =
-    if isNull s || s.Length <= maxFieldChars then
-        s
-    else
-        let dropped = s.Length - maxFieldChars
-        s.Substring(0, maxFieldChars) + $"… [truncated %d{dropped} chars]"
+let internal truncateField (s: string) : string = ErrorLedger.Transport.truncateField s
 
 let private tryDelete path = File.Delete(path)
 

@@ -571,3 +571,54 @@ let ``GetCountsByPlugin sums a plugin's counts across its files and tallies did-
 
     // A plugin that reported nothing is ABSENT, not zero — the documented contract.
     test <@ Map.tryFind "format" counts = None @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — `Transport`: how much of the ledger a mirror of it may carry.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``Transport.truncateField leaves a short field alone and names what it drops`` () =
+    test <@ Transport.truncateField "short" = "short" @>
+    test <@ isNull (Transport.truncateField null) @>
+
+    let oversized = String.replicate (Transport.MaxFieldChars + 500) "x"
+    let trimmed = Transport.truncateField oversized
+
+    test <@ trimmed.Length < oversized.Length @>
+    test <@ trimmed.StartsWith(String.replicate 100 "x", StringComparison.Ordinal) @>
+    // The count is the point: a field that says only "truncated" cannot tell a reader
+    // whether they are missing a line or a million.
+    test <@ trimmed.Contains "500 chars" @>
+
+[<Fact(Timeout = 15000)>]
+let ``Transport.takeDetail bounds a whole response, and marks the entries it could not carry`` () =
+    // The response-wide budget is what the per-field cap alone does not give: 2,414
+    // entries each holding a 20,000-char excerpt is still ~48 MB of a field nothing
+    // renders.
+    let oneDetail = Some(String.replicate 40_000 "y")
+
+    let carried, spent =
+        List.replicate 200 oneDetail |> List.mapFold Transport.takeDetail 0
+
+    test <@ carried.Length = 200 @>
+    // Never dropped to `None`: absence and elision are different facts.
+    test <@ carried |> List.forall Option.isSome @>
+
+    let marker = Transport.DetailBudgetSpentMarker
+    let real = carried |> List.filter (fun d -> d <> Some marker)
+    let elided = carried |> List.filter (fun d -> d = Some marker)
+
+    test <@ not real.IsEmpty @>
+    test <@ not elided.IsEmpty @>
+    // Overshoot is at most the one entry that crossed the line.
+    test <@ spent <= Transport.MaxDetailCharsPerResponse + Transport.MaxFieldChars + 64 @>
+
+[<Fact(Timeout = 15000)>]
+let ``Transport.takeDetail spends nothing on an entry that has no detail`` () =
+    // A ledger of detail-free entries — the ordinary case — must not have its budget
+    // eaten by entries that were never going to carry anything.
+    let carried, spent =
+        List.replicate 5_000 None |> List.mapFold Transport.takeDetail 0
+
+    test <@ spent = 0 @>
+    test <@ carried |> List.forall Option.isNone @>

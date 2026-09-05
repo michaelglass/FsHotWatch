@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-526): a file whose last FCS check reported errors is stamped
+  `fcsClean = false`, and on the pass that RECOVERED — FCS clean again, extraction
+  complete — `FileFreshness.trustStoredRows` answered `NoDiff`, so the file
+  contributed no changed symbols and none of its tests were selected. Silently, and
+  under a green check: a four-test guard was invisible to three consecutive
+  impact-filtered runs. The `Dirty` stamp describes the stored ROWS, which may be
+  partial and so are never a diff baseline; it says nothing about the file. The answer
+  is now the one a `Clean` stamp over an empty index already gives — there is no usable
+  before, so every symbol currently in the file is new. The widening is per FILE, not
+  per project, and is bounded to one pass per recovery.
+  - `NoDiff` is now reachable from exactly one pair, `Unknown, NoRows` — the ordinary
+    cold scan, whose full-suite baseline runs anyway. A test enumerates the whole 3×3
+    decision table and fails if any other pair drifts into it.
+  - The call site diffed against the stored rows for BOTH diffable arms, which made
+    `EverySymbolIsNew` behave exactly like `DiffAgainstStored`: AUTOMATION-228's
+    widening existed in the type and its unit tests but never in the running daemon,
+    and whenever the rows were the ones that run had just written it was the
+    self-comparison the widening was introduced to replace. `FileFreshness.planLook`
+    now carries the baseline (`AgainstStoredRows` / `AgainstNothing`) and
+    `FileFreshness.baselineRows` applies it.
+  - The two ways of contributing nothing are named separately — `NothingHidden` (the
+    cold scan; nothing is being declined) and `FileUnverified` (the file's changes were
+    DROPPED). The latter logs at warn and states the consequence; the call site
+    previously computed a `bool` for this and then `ignore`d it, so both went out at
+    info and looked identical.
+
+- AUTOMATION-533: `test-scope` declares `runIds` — every run this daemon session has
+  completed, newest first (bounded at 64) — beside the unchanged `runId`, which still
+  names the run the evidence receipt points at. One check provokes several runs, and
+  the CLI cannot enumerate them without inferring membership from mtimes; now it does
+  not have to. The ledger is written at the top of the completion handler, before the
+  branches it returns through, so no drain path can drop a batch. See
+  [ADR-018](../../docs/adr-018-a-checks-evidence-is-every-run-it-produced.md).
+
+- fix(AUTOMATION-572): a changed file that obligates no project no longer enters the
+  runtime-coverage obligation ledger. An entry naming no project made `nothingOwed`
+  report outstanding debt for the rest of the session while selecting nothing, so every
+  cycle with zero affected classes ran every configured project in full.
+- fix(AUTOMATION-572): a run that widens past the zero-affected skip names every debt
+  that refused it (no session baseline, queued symbols, runtime-coverage debt, an
+  unreadable ledger, outstanding failures) and says whether it is running the whole
+  suite or a few force-run projects. Zero affected classes with nothing owed is now a
+  warning naming the cost, not a silent full suite.
+
+- AUTOMATION-747: `failuresOf` no longer attaches the whole captured project output to
+  every parsed per-test failure — it was one string repeated per test, so a project with
+  753 failures and a 48 MB capture contributed 36 GB to any mirror of the ledger. Each
+  per-test entry carries its failing line; the untruncated output remains on disk at
+  `.fshw/test-runs/<runId>/<project>.output.log`. The project-level entry for a run
+  where NO test could be named still carries it — there, it is the entry's own subject.
+
 ## 0.13.0-alpha.30 - 2026-09-03
 
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under

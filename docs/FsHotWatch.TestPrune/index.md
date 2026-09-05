@@ -78,6 +78,29 @@ of a first-ever creation, so it cannot tell a schema bump from a fresh clone, an
 says nothing about an individual file. Ask the index what it *holds*, never how it came
 to be that way.
 
+### "I cannot tell what changed" is not "nothing changed"
+
+Rows written while FCS reported errors may be partial, so they are never a diff
+baseline. That much was always right. What was wrong was the conclusion drawn from it:
+a `Dirty` stamp used to resolve to `NoDiff`, so on the pass that **recovered** from a
+transient FCS error the file contributed no changed symbols and none of its tests were
+selected — silently, under a green check.
+
+The `Dirty` stamp is a statement about the stored *rows*, not about the file. The
+current extraction is FCS-clean by the time the call site consults it, so the honest
+reading is the one `Clean, NoRows` already gives: there is no usable *before*, and every
+symbol currently in the file is new. The widening is **per file**, not per project, and
+it is bounded — the baseline is marked established once the extraction is consumed, so a
+recovery costs one widening rather than one on every save.
+
+`NoDiff` is now reachable from exactly one pair, `Unknown, NoRows` — the ordinary cold
+scan, whose full-suite baseline runs anyway, so nothing is being declined. A test
+enumerates the whole 3×3 table and fails if any other pair drifts into it.
+
+The two ways of contributing nothing are also named separately (`FileFreshness.planLook`
+→ `NothingHidden` vs `FileUnverified`), because a run that skipped a file and a run that
+had nothing to skip used to produce the same info-level log line and the same green.
+
 ## Configuration
 
 In `.fshw.json`:

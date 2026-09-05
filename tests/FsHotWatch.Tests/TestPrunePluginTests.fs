@@ -3666,6 +3666,148 @@ let ``AUTOMATION-315 a recovery marker failure does not accept an undurable obli
         test <@ ex.Message.Contains "recovery marker" @>
     | Ok _ -> Assert.Fail "an obligation transition cannot be accepted before its recovery marker is durable"
 
+// ── AUTOMATION-572 ────────────────────────────────────────────────────────────────────
+// A scan's OBSERVATION that a file changed is not an obligation. Recording one for a
+// file that obligates no project produces a debt `nothingOwed` reports as outstanding
+// forever and `runtimeForceProjects` can select nothing for — which is an empty
+// selection, which is every configured project in full.
+
+[<Fact>]
+let ``AUTOMATION-572 a changed file that obligates no project records no runtime debt`` () =
+    // The shape `selectByRuntimeCoverage` produces for an edit nothing has ever traced:
+    // the file is present (it changed) and its project set is empty.
+    let ledger =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/Untraced.fs", Set.empty ])
+
+    // `Map.isEmpty` is the exact question `nothingOwed` asks. Before this fix it
+    // answered "something is owed" for the rest of the daemon session.
+    test <@ Map.isEmpty ledger @>
+
+[<Fact>]
+let ``AUTOMATION-572 an untraced file in the same cycle as a traced one owes only the traced one`` () =
+    // The mixed cycle is the one that hid the defect: the ledger looked populated and
+    // correct, because one real obligation was in it.
+    let ledger =
+        mergeRuntimeCoverageObligations
+            Map.empty
+            (Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ]; "src/Untraced.fs", Set.empty ])
+
+    test <@ Map.toList ledger = [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ] @>
+
+[<Fact>]
+let ``AUTOMATION-572 a later cycle finding nothing to add leaves a real obligation standing`` () =
+    // Skipping the empty set must not become a way to DISCHARGE debt: only the run that
+    // covered the file may do that (`retireRuntimeCoverageObligations`).
+    let owed =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ] ])
+
+    let afterUntracedCycle =
+        mergeRuntimeCoverageObligations owed (Map.ofList [ "src/Traced.fs", Set.empty ])
+
+    test <@ afterUntracedCycle = owed @>
+
+[<Fact>]
+let ``AUTOMATION-572 selectByRuntimeCoverage over an untraced file leaves the ledger empty`` () =
+    withTempDir "runtime-untraced" (fun dir ->
+        let db = Database.create (Path.Combine(dir, "test.db"))
+
+        // The project has a CURRENT runtime baseline, so nothing widens; the changed
+        // file simply has no attribution of its own. Both halves of
+        // `Set.union current widenedProjects` are therefore empty.
+        db.ReplaceRuntimeCoverage("IntegrationTests", "current", [ "src/Traced.fs" ])
+
+        let selection =
+            selectByRuntimeCoverage
+                db
+                [ "IntegrationTests" ]
+                [ "src/Untraced.fs" ]
+                (DateTimeOffset.UtcNow.Subtract RuntimeCoverageMaxAge)
+
+        // The selection reports the file — this is not the bug, and callers rely on the
+        // map being keyed by every changed file.
+        test <@ selection.ProjectsByFile = Map.ofList [ "src/Untraced.fs", Set.empty ] @>
+        test <@ selection.Widenings.IsEmpty @>
+
+        // The ledger is what must stay clean.
+        test <@ Map.isEmpty (mergeRuntimeCoverageObligations Map.empty selection.ProjectsByFile) @>)
+
+[<Fact>]
+let ``AUTOMATION-572 no runtime obligation ledger transition may name zero projects`` () =
+    // The re-consumption guard. The failure mode is SILENT — an entry naming nothing
+    // costs a full suite and logs nothing — so the invariant is asserted over every
+    // transition that can produce a ledger, not just the one that broke it. A new arm
+    // that admits an empty entry fails here rather than in a gate run three days later.
+    let namesAProject (label: string) (ledger: RuntimeCoverageObligations) =
+        let offenders =
+            ledger |> Map.filter (fun _ projects -> Map.isEmpty projects) |> Map.keys
+
+        Assert.True(
+            Seq.isEmpty offenders,
+            $"%s{label} left an obligation naming no project: %A{List.ofSeq offenders}. \
+              Nothing can select it and nothing can discharge it, but `nothingOwed` reports \
+              it as debt — so every cycle that selects nothing runs the whole suite."
+        )
+
+    let real = Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ] ]
+    let untraced = Map.ofList [ "src/Untraced.fs", Set.empty ]
+
+    let merged = mergeRuntimeCoverageObligations Map.empty real
+    namesAProject "merge of a real obligation" merged
+    namesAProject "merge of an untraced file" (mergeRuntimeCoverageObligations Map.empty untraced)
+    namesAProject "merge of an untraced file onto real debt" (mergeRuntimeCoverageObligations merged untraced)
+
+    namesAProject
+        "retire of the only obligated project"
+        (retireRuntimeCoverageObligations merged merged (fun _ -> true))
+
+    namesAProject "prune of the only allowed project" (pruneRuntimeCoverageObligations Set.empty merged)
+
+    withTempDir "runtime-invariant-roundtrip" (fun dir ->
+        saveRuntimeCoverageObligations dir merged
+
+        match loadRuntimeCoverageObligations dir with
+        | Ok loaded -> namesAProject "save/load round trip" loaded
+        | Error reason -> Assert.Fail $"the ledger could not be read back: %s{reason}")
+
+[<Fact>]
+let ``AUTOMATION-572 a zero-affected widening names every outstanding debt`` () =
+    let causes =
+        zeroAffectedWidening false true 3 (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ]) 2
+
+    test
+        <@
+            causes = [ ZeroAffectedWidening.NoSessionBaseline
+                       ZeroAffectedWidening.UnreadableLedger
+                       ZeroAffectedWidening.QueuedSymbols 3
+                       ZeroAffectedWidening.RuntimeCoverageDebt(1, 1)
+                       ZeroAffectedWidening.OutstandingFailures 2 ]
+        @>
+
+    let rendered = ZeroAffectedWidening.describeMany causes
+    test <@ rendered.Contains "3 symbol(s)" @>
+    test <@ rendered.Contains "1 file(s) naming 1 project(s)" @>
+    test <@ rendered.Contains "2 outstanding test failure(s)" @>
+
+[<Fact>]
+let ``AUTOMATION-572 an obligation naming no project is not counted as a reason to widen`` () =
+    // The alarm, stated as a test. If some future arm re-admits an entry naming nothing,
+    // this function must NOT dress it up as runtime-coverage debt — it must return the
+    // empty list, which is what makes the daemon warn instead of quietly running a whole
+    // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
+    let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
+
+    test <@ zeroAffectedWidening true false 0 phantom 0 = [] @>
+
+    // And a real obligation beside the phantom is still counted — once, for the file
+    // that actually owes something.
+    let mixed = Map.add "src/Traced.fs" (Map.ofList [ "IntegrationTests", 1L ]) phantom
+
+    test <@ zeroAffectedWidening true false 0 mixed 0 = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
+
+[<Fact>]
+let ``AUTOMATION-572 nothing owed and a baseline in hand is no reason to widen at all`` () =
+    test <@ zeroAffectedWidening true false 0 Map.empty 0 = [] @>
+
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared
 // cobertura file.
@@ -5547,14 +5689,22 @@ let badTypeUse : int = "wrong-type"
 
 // =============================================================================
 // The per-file freshness sidecar gates the detectChanges call site, so cross-restart
-// Phase B replay only computes a real diff for files that ended their last session
-// FCS-clean. Without it a fresh daemon's first FCS check sees ~0 stored rows for files
-// whose prior session ended dirty, and reports a phantom "all symbols changed" delta —
-// the 4921-affected-tests regression.
+// Phase B replay never DIFFS against rows that ended their last session FCS-dirty:
+// those rows may be partial, and diffing a complete extraction against them reports a
+// phantom "all symbols changed" delta — the 4921-affected-tests regression.
+//
+// AUTOMATION-526. "Never diff against them" was always right. "Therefore contribute
+// nothing" was not, and that is what this gate used to do. A file whose last check hit
+// a transient FCS error had its tests selected by NO impact-filtered run afterwards —
+// silently, under a green check, because nothing distinguished "I cannot tell what
+// changed in this file" from "nothing changed in this file". The stored rows are not a
+// baseline; the CURRENT extraction, which the gate has already established is clean, is
+// complete. So the answer is the one `Clean, NoRows` already gives: there is no before,
+// and every symbol in the file is new.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
-let ``Phase B replay: stored=dirty, current=clean → detectChanges bypassed`` () =
+let ``Phase B replay: stored=dirty, current=clean → the file's tests are SELECTED, not dropped`` () =
     withTempDir "tp-phaseb-bypass" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let relPath = "PhaseB.fsx"
@@ -5620,14 +5770,20 @@ let phaseBTest () = ()
 
         emitFileAndQuiesce host result
 
-        // Stored=empty against current=N would produce N changes without the gate. The
-        // sidecar said dirty when the FileChecked arrived, so the diff is skipped.
+        // AUTOMATION-526. This read `= "[]"` before the fix, and that empty list IS the
+        // defect: the sidecar said dirty when the FileChecked arrived, so the file was
+        // dropped from selection entirely on the very pass that recovered from the FCS
+        // error. Nothing warned; the run was green.
         let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
-        test <@ changedFiles.Value = "[]" @>
+        // Exactly this one file. `Contains` alone would also pass a fix that escalated
+        // to "everything changed" — the over-widening AUTOMATION-526's positive control
+        // forbids — so the whole list is pinned: the widening is per FILE.
+        test <@ changedFiles.Value = $"[\"%s{relPath}\"]" @>
 
         // The clean recheck flips the sidecar dirty → clean, so the NEXT restart's Phase B
-        // trusts the rows.
+        // trusts the rows — which is what bounds the widening to ONE pass per recovery
+        // rather than one on every subsequent save.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean relPath freshness @>)
 
@@ -6289,6 +6445,101 @@ let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
         File.SetLastWriteTimeUtc(s.LeafSrc, s.BuiltAt.AddMinutes(30.0))
 
         test <@ synthStale s = None @>)
+
+/// AUTOMATION-528, direction A — the dangerous one, and the one no other case can see.
+///
+/// `dotnet restore` rewrites `obj/project.assets.json`; only a BUILD regenerates
+/// `bin/<tfm>/<Asm>.deps.json` from it. When a restore moves on without a build — which
+/// is exactly what the deps-freshness gate's automatic recovery does — the manifest left
+/// behind lists a superseded reference closure. The compile is repaired and the LOAD is
+/// not: the host resolves assemblies through the manifest, not through the directory, so
+/// a dependency sitting in the output folder and missing from the manifest is a
+/// `FileNotFoundException` on the routes that touch it. Green build, red run, specific
+/// routes only — indistinguishable from an application bug.
+///
+/// Reproduced against a real SDK before this test was written: with the manifest of an
+/// earlier build restored over a fully-built tree, `dotnet App.dll` died with
+/// `Could not load file or assembly 'Lib'` while `Lib.dll` sat beside it in the output
+/// folder, every assembly was newer than every source, and every copy was byte-identical
+/// to its origin.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a deps manifest older than its restore is STALE though every assembly is current`` () =
+    withTempDir "tp-a528-superseded" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let expectedAssets = p [ projDir; "obj"; "project.assets.json" ]
+        let expectedManifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        // A fully-built, otherwise impeccable tree: the assembly postdates its source and
+        // there is nothing copied in to differ from an origin.
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+        writeAt expectedManifest "{}" (now.AddMinutes(-10.0))
+        // ... and a restore that moved on after that build, without one following it.
+        writeAt expectedAssets "{}" now
+
+        match staleOf $"run --project {projDir} --no-build --" tmpDir with
+        | Some(ArtifactFreshness.DepsManifestOlderThanRestore(project, assets, manifest, _, _)) ->
+            test <@ project = "Unit" @>
+            test <@ assets = expectedAssets @>
+            test <@ manifest = expectedManifest @>
+        | other -> Assert.Fail($"expected DepsManifestOlderThanRestore, got %A{other}"))
+
+/// POSITIVE CONTROL, required: the ordinary shape a build leaves — restore first, manifest
+/// after it — must NOT report staleness, and neither must one written inside the same tick
+/// (a coarse filesystem, or a build fast enough that both land on one timestamp). A
+/// detector that fired on every built tree would refuse every run and teach people to
+/// ignore it.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: a deps manifest at or after its restore is fresh`` () =
+    withTempDir "tp-a528-control" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let assets = p [ projDir; "obj"; "project.assets.json" ]
+        let manifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+        writeAt assets "{}" (now.AddMinutes(-10.0))
+
+        // Generated after the restore it came from: the normal case.
+        writeAt manifest "{}" (now.AddMinutes(-9.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>
+
+        // Same tick: still the normal case, never stale.
+        writeAt manifest "{}" (now.AddMinutes(-10.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
+
+/// Either half of the pair missing means there is nothing to compare, and absence is never
+/// staleness in this module. BOTH directions are pinned: a project with no restore output
+/// (an old-style project, or one whose `obj/` was cleaned), and one that generates no
+/// runtime manifest at all (an ordinary library).
+///
+/// Pinned because every OTHER freshness test in this file builds a tree with no `obj/`, so
+/// a check that read a missing assets file as stale would redden all of them at once and
+/// the cause would present as a mass regression rather than as this one decision.
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-528: neither half of the pair missing is judged as stale`` () =
+    withTempDir "tp-a528-absent" (fun tmpDir ->
+        let projDir = p [ tmpDir; "Unit" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let assets = p [ projDir; "obj"; "project.assets.json" ]
+        let manifest = p [ tfmDir; "Unit.deps.json" ]
+        let now = DateTime.UtcNow
+
+        writeAt (p [ projDir; "Foo.fs" ]) "module Foo" (now.AddMinutes(-30.0))
+        writeAt (p [ tfmDir; "Unit.dll" ]) "" (now.AddMinutes(-10.0))
+
+        // A manifest with no restore beside it.
+        writeAt manifest "{}" (now.AddMinutes(-10.0))
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>
+
+        // ... and a restore, newer than everything, with no manifest generated from it.
+        File.Delete manifest
+        writeAt assets "{}" now
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
 // Direction 2 — the real hole. A dependency's source newer than the dependency's own
 // assembly means the build has not run since the edit, so the DLL in the test project's
@@ -10527,6 +10778,59 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
     | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}")
 
 [<Fact(Timeout = 20000)>]
+let ``test-scope declares EVERY run the session completed, not only the one the receipt names`` () =
+    // AUTOMATION-533. The receipt deliberately holds ONE run — the full-suite one, which
+    // a later narrow drain may not downgrade (the test above). That is right for grading
+    // and wrong for reporting: both runs wrote a directory, both hold reports, and a
+    // reader looking for their own tests in the receipt's directory alone finds only
+    // what the last batch happened to cover.
+    //
+    // So the reply carries both questions. `runId` is what this verdict was graded from;
+    // `runIds` is everything this session ran, and it is what lets a check name every
+    // batch it produced instead of only the last.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let narrowRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let runIdOf event =
+        match event with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
+
+    let fullRunId = runIdOf fullRun
+    let narrowRunId = runIdOf narrowRun
+
+    let _ctx, _statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
+
+    let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    let report =
+        scopeCommand commandCtx final [||]
+        |> Async.RunSynchronously
+        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+    // Graded from the full-suite run, as before — this must not have moved.
+    test <@ report.RunId = Some fullRunId @>
+
+    // ...and the narrow drain, whose directory holds the only reports that batch wrote,
+    // is no longer invisible. Newest first.
+    test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>
+
+[<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
@@ -11622,3 +11926,57 @@ let ``AUTOMATION-67 failure recall requires every observed failure to be decidab
     match CheckReach.measure (Some inFull) [ a259Failure "Alpha.Tests" None ] with
     | RecallNotMeasurable reason -> test <@ reason.Contains("exact failing-test denominator") @>
     | measured -> Assert.Fail($"an undecidable failure cannot enter a recall denominator, got %A{measured}")
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — a red project's ledger slice is a SUM, not a PRODUCT.
+//
+// `failuresOf` used to attach `output` — the whole captured project run — to every
+// parsed per-test failure. In the incident this ticket records that made one project's
+// ledger slice 753 × 48 MB: ~36 GB, from a plugin holding a single string. It is
+// invisible in the daemon's own heap (every entry is the same reference) and fatal the
+// moment any mirror of the ledger writes each entry's copy out — which is exactly where
+// seven finished merge gates died.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``failuresOf does not attach the whole project output to every parsed failure`` () =
+    let failures = 200
+    let noise = String.replicate 40_000 "n"
+
+    let output =
+        [ yield noise
+          for i in 1..failures do
+              yield $"  failed Some.Suite%d{i}.the test (0ms)" ]
+        |> String.concat "\n"
+
+    let results: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entries = failuresOf Map.empty results
+
+    // Every failure is still FILED — this bound may not be bought by losing reds.
+    test <@ entries.Length = failures @>
+
+    let totalChars =
+        entries
+        |> List.sumBy (fun f ->
+            f.Entry.Message.Length
+            + (f.Entry.Detail |> Option.map String.length |> Option.defaultValue 0))
+
+    // The law: the slice is bounded by the failures PLUS the output, never their
+    // product. Before this fix the same input produced 200 × 40,000 = 8,000,000 chars.
+    test <@ totalChars < output.Length @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf still carries the whole output when NO test could be named`` () =
+    // The one arm where that text is the entry's own subject: nothing named a test, so
+    // the run itself is all the reader has. ONE entry, so it is carried once.
+    let output = "the host said something unparseable\n" + String.replicate 5_000 "z"
+
+    let results: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry = (failuresOf Map.empty results |> List.exactlyOne).Entry
+    test <@ entry.Detail = Some output @>

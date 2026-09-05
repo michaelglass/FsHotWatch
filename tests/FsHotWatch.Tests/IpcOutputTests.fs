@@ -217,10 +217,14 @@ let ``daemon command retains executed evidence across a same-tree quiet converge
             else
                 """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
 
+        // AUTOMATION-533. The FIRST read is the driver's baseline, taken before the scan
+        // so it can tell this check's runs from the ones that preceded it; the executed
+        // run is what the check then settles on, and the third read is the quiet
+        // convergence one this test is about.
         let getTestRun () =
             scopeReads <- scopeReads + 1
 
-            if scopeReads = 1 then
+            if scopeReads <= 2 then
                 executedA
             else
                 TestRunReport.ofScopeOnly (NoTestsRun NoTestsReason.AlreadyVerified)
@@ -769,6 +773,156 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
 
     test <@ exitCode = 0 @>
     test <@ recordedInvocation = Some invocationId @>
+
+// --- AUTOMATION-533: one check, several run directories ---
+
+/// One CTRF report, in the run directory that OWNS it.
+let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: string) (tests: int) : unit =
+    let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
+    System.IO.Directory.CreateDirectory(runDir) |> ignore
+
+    let json =
+        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"batch","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":N,"passed":N,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            .Replace("N", string<int> tests)
+
+    System.IO.File.WriteAllText(System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix), json)
+
+[<Fact(Timeout = 15000)>]
+let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH run directories`` () =
+    // The ticket's own case, driven through the real check loop.
+    //
+    // The daemon here is a check away from a fresh start: it has already completed a run
+    // for a PREVIOUS check (`earlier`), and during this check it completes two more —
+    // the impact-selected batch that holds the change's acceptance tests, then a small
+    // build-tooling batch thirty seconds later. `test-scope` names the LAST one, which
+    // is how a reader following the documented procedure landed on 566 tests out of
+    // 10,979 and concluded their own tests had never run.
+    //
+    // Both directions are asserted, because a verdict that simply listed every run
+    // directory it could find would pass the first half and be wrong: `earlier` belongs
+    // to another check and must NOT be adopted by this one.
+    use completed = new System.Threading.ManualResetEventSlim(false)
+    let mutable firstStatusPoll = true
+
+    let waitForComplete () : string =
+        let r = statusJsonFor true
+        completed.Set()
+        r
+
+    let getStatus () : string =
+        if firstStatusPoll then
+            firstStatusPoll <- false
+            completed.Wait()
+
+        statusJsonFor true
+
+    let cleanDiagnostics () : string =
+        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+    let earlier = System.Guid.NewGuid()
+    let firstBatch = System.Guid.NewGuid()
+    let secondBatch = System.Guid.NewGuid()
+
+    // The daemon's own ledger, newest first, exactly as `test-scope` declares it. The
+    // FIRST reading is the baseline the driver takes before its scan — at that point
+    // only the previous check's run has happened.
+    let mutable readings = 0
+
+    let getTestRun () : TestRunReport =
+        readings <- readings + 1
+
+        if readings = 1 then
+            { TestRunReport.ofScopeOnly (FullSuite 2) with
+                RunId = Some earlier
+                SessionRuns = [ earlier ] }
+        else
+            { TestRunReport.ofScopeOnly (FullSuite 2) with
+                RunId = Some secondBatch
+                SessionRuns = [ secondBatch; firstBatch; earlier ] }
+
+    let v =
+        TestHelpers.withTempDir "ipcoutput-533-two-batches" (fun repoRoot ->
+            writeRunReport repoRoot earlier "PreviousCheck.Tests" 42
+            writeRunReport repoRoot firstBatch "Acceptance.Tests" 23
+            writeRunReport repoRoot secondBatch "BuildTooling.Tests" 566
+
+            pollAndRenderForInvocation
+                (Verdict.Invocation.startAs "a533")
+                ProgressRenderer.Agent
+                CheckVerdict.InnerLoop
+                repoRoot
+                []
+                (fun _ -> [])
+                false
+                (fun () -> "idle")
+                waitForComplete
+                getStatus
+                cleanDiagnostics
+                getTestRun
+                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                ignore
+                (fun () -> "idle")
+            |> ignore
+
+            match Verdict.read repoRoot with
+            | Verdict.Reading.Found v -> v
+            | other -> failwith $"expected a verdict, got %A{other}")
+
+    // Graded from the run the daemon's receipt names — unchanged, and still the answer
+    // to "which run was this verdict computed from".
+    test <@ v.RunId = Some secondBatch @>
+
+    // ...and accountable for BOTH of this check's batches. `Acceptance.Tests` ran only
+    // in the first one: under the old verdict it was absent, and its absence was read
+    // as "it never ran".
+    test <@ v.Runs |> List.map (fun r -> r.RunId) = [ Some secondBatch; Some firstBatch ] @>
+
+    let projects = v.Suites |> List.map (fun s -> s.Project) |> List.sort
+    test <@ projects = [ "Acceptance.Tests"; "BuildTooling.Tests" ] @>
+
+    // The negative half: the previous check's run is still on disk, and is not this
+    // check's evidence.
+    test <@ not (projects |> List.contains "PreviousCheck.Tests") @>
+
+[<Fact(Timeout = 15000)>]
+let ``run attribution takes every run the daemon completed after the baseline, oldest first, once each`` () =
+    // The fold on its own. `attribute` is what makes the batches a check never watched
+    // go by — the rerun a mid-run change queues, the drain of a queued force-run —
+    // countable at all: they are in the daemon's ledger without ever having been the
+    // answer to a `test-scope`.
+    let baselineRun = System.Guid.NewGuid()
+    let a = System.Guid.NewGuid()
+    let b = System.Guid.NewGuid()
+    let c = System.Guid.NewGuid()
+
+    let reading (runId: System.Guid) (session: System.Guid list) =
+        { TestRunReport.ofScopeOnly (FullSuite 1) with
+            RunId = Some runId
+            SessionRuns = session }
+
+    let baseline = Some(Set.ofList [ baselineRun ])
+
+    // First reading: two runs the driver never saw individually.
+    let afterFirst =
+        IpcOutput.TestRunEvidence.attribute baseline [] (reading b [ b; a; baselineRun ])
+
+    test <@ afterFirst = [ a; b ] @>
+
+    // Second reading: one more run, and the same ones again. Re-reading the daemon
+    // cannot double-count, and the order stays the order they ran in.
+    let afterSecond =
+        IpcOutput.TestRunEvidence.attribute baseline afterFirst (reading c [ c; b; a; baselineRun ])
+
+    test <@ afterSecond = [ a; b; c ] @>
+
+    // A daemon too old to send a ledger says nothing, and then the only run this can
+    // name is the one it observed — today's behaviour, never worse.
+    test <@ IpcOutput.TestRunEvidence.attribute (Some Set.empty) [] (reading a []) = [ a ] @>
+
+    // And a baseline that could not be TAKEN is not an empty one. With no baseline the
+    // ledger cannot be diffed, so only the observed run is claimed — under-reporting,
+    // never adopting an earlier check's runs.
+    test <@ IpcOutput.TestRunEvidence.attribute None [] (reading b [ b; a; baselineRun ]) = [ b ] @>
 
 // --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
 // AUTOMATION-65: a WaitForComplete that faults because the daemon shut down or the pipe
@@ -1776,3 +1930,120 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT LOADING FAILED") @>
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected a published discovery verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — a run that FINISHED and could not be received is its own answer.
+//
+// The shape of the incident, exactly: `WaitForComplete` returns (the daemon has built,
+// run the suite and committed its evidence), and the very next call — the diagnostics
+// read — dies for want of memory. That used to reach the caller as a bare exit 2 with
+// no verdict written, so the file on disk stayed whatever the previous run left; seven
+// completed runs in a row read back as an earlier refusal stub for a different tree.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``isMemoryExhaustion recognises memory exhaustion on EITHER side of the wire`` () =
+    test <@ isMemoryExhaustion (System.OutOfMemoryException("Insufficient memory")) @>
+    // The transcoder's refusal of an over-large string token is the same fact.
+    test <@ isMemoryExhaustion (System.OverflowException("too large")) @>
+    // Through the inner chain, which is how it arrives once a Task has wrapped it.
+    test <@ isMemoryExhaustion (exn ("outer", System.OutOfMemoryException("inner"))) @>
+
+    // A daemon-side fault crosses as RemoteInvocationException and is recognised by the
+    // remote payload's TYPE — never by its message, which is a localized framework
+    // resource string.
+    let remote =
+        StreamJsonRpc.RemoteInvocationException(
+            "Insufficient memory to continue the execution of the program.",
+            0,
+            null,
+            StreamJsonRpc.Protocol.CommonErrorData(
+                TypeName = "System.OutOfMemoryException",
+                Message = "Insufficient memory to continue the execution of the program."
+            )
+        )
+
+    test <@ isMemoryExhaustion remote @>
+
+[<Fact(Timeout = 15000)>]
+let ``isMemoryExhaustion ignores unrelated faults`` () =
+    test <@ not (isMemoryExhaustion (exn "boom")) @>
+    test <@ not (isMemoryExhaustion (System.IO.IOException("pipe is broken"))) @>
+    test <@ not (isMemoryExhaustion (System.TimeoutException("WaitForComplete timed out"))) @>
+
+[<Fact(Timeout = 20000)>]
+let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after the run settled`` () =
+    // Settle succeeds — the daemon finished the run — and the diagnostics read then dies.
+    let getErrors () : string =
+        raise (System.OutOfMemoryException("Insufficient memory to continue the execution of the program."))
+
+    let exitCode, published =
+        TestHelpers.withTempDir "ipcoutput-a747" (fun repoRoot ->
+            let code =
+                pollAndRender
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    (fun () -> "{}") // waitForComplete SUCCEEDS: the run is done
+                    (fun () -> "{}")
+                    getErrors
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+
+            code, Verdict.read repoRoot)
+
+    // NOT 2. The work was done; a caller that re-runs on this is paying twice.
+    test <@ exitCode = 7 @>
+
+    // And the finished run leaves a verdict behind rather than the previous run's.
+    match published with
+    | Verdict.Reading.Found verdict ->
+        test <@ verdict.ExitCode = 7 @>
+
+        match verdict.Outcome with
+        | Verdict.Incomplete reason ->
+            // The words point at the evidence, not at another twenty minutes.
+            test <@ reason.Contains ".fshw/test-runs/" @>
+            test <@ reason.Contains "FINISHED" @>
+        | other -> failwithf "expected an incomplete outcome, got %A" other
+    | other -> failwithf "expected a published verdict, got %A" other
+
+[<Fact(Timeout = 20000)>]
+let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` () =
+    // The distinction the new exit code exists to carry, in the other direction. Dying
+    // on the way IN is a run that never happened, and calling that "the result was lost"
+    // would be the same lie pointed the other way. So this arm does not fire: the fault
+    // propagates to the caller's un-completable exit-2 path exactly as it always did.
+    let waitForComplete () : string =
+        raise (System.OutOfMemoryException("Insufficient memory to continue the execution of the program."))
+
+    TestHelpers.withTempDir "ipcoutput-a747-early" (fun repoRoot ->
+        raises<System.OutOfMemoryException>
+            <@
+                pollAndRender
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    waitForComplete
+                    (fun () -> "{}")
+                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+            @>
+
+        // And nothing was published: there is no finished run to record.
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
+        | _ -> ())

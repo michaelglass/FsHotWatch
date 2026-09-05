@@ -329,11 +329,23 @@ let private runOnceAndVerdictIn
         let finalRun = ref (TestRunReport.ofScopeOnly ScopeUnknown)
         let retainedTestRun: IpcOutput.RetainedTestRun option ref = ref None
 
+        // AUTOMATION-533. Every run this check has provoked, oldest first. The baseline
+        // is KNOWN-EMPTY and needs no read: `createDaemon` above made this host for this
+        // invocation, so every run in its session ledger is by definition this check's.
+        let checkRuns: System.Guid list ref = ref []
+
         let observeTestRun (run: TestRunReport) : TestRunReport =
+            checkRuns.Value <- IpcOutput.TestRunEvidence.attribute (Some Set.empty) checkRuns.Value run
+
             let effective, retained =
                 IpcOutput.TestRunEvidence.reconcile settledTree.Value run retainedTestRun.Value
 
             retainedTestRun.Value <- retained
+
+            let effective =
+                { effective with
+                    CheckRuns = checkRuns.Value }
+
             finalRun.Value <- effective
             effective
 

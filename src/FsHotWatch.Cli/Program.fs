@@ -125,7 +125,7 @@ type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
     | [<CmdExample("", "--run-once");
-        Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, which is a latency optimization and not the basis for a merge decision (use `confirm` for that)")>] Check of
+        Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, so a green says nothing you changed broke anything the selector chose to look at, NOT that the whole suite is green. `confirm` runs the same checks unfiltered when you need that stronger claim")>] Check of
         RunFlag list
     /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH. Same checks as
     /// `check`, but the tests run UNFILTERED — and the verdict is refused unless they
@@ -409,24 +409,56 @@ let rec unwrapIpcException (ex: exn) : exn =
 type IpcFault =
     | CorruptedFrame of exn
     | ClientOutOfMemory of OutOfMemoryException
+    /// AUTOMATION-747. The DAEMON exhausted memory serving this call — most often
+    /// building a reply too large to represent, not running short of heap.
+    ///
+    /// Its own case because the old code had none, and a remote OOM therefore landed in
+    /// `ClientOutOfMemory` and printed "the fshw CLI ran out of memory". That sentence
+    /// is a diagnosis, and it sent seven consecutive investigations at the client:
+    /// `DOTNET_GCConserveMemory` was set on the CLI, the box's free memory was measured
+    /// and re-measured, and none of it could ever have mattered, because the process
+    /// that failed was the other one.
+    | DaemonOutOfMemory of exn
     | TimedOut of TimeoutException
     | Other of exn
+
+/// Which process an IPC fault was RAISED in. Not derivable from the exception once it
+/// has crossed the wire: a daemon-side fault is reconstructed on this side from an
+/// error payload, so it arrives as an ordinary local exception object and only the
+/// CALLER knows where it came from. AUTOMATION-747.
+[<RequireQualifiedAccess>]
+type FaultOrigin =
+    /// Thrown in this CLI process.
+    | Client
+    /// Reported by the daemon and rebuilt here from its error payload.
+    | Daemon
 
 /// StreamJsonRpc's header-delimited reader is the evidence that distinguishes an
 /// absurd Content-Length allocation from an unrelated allocation failure in this
 /// process. Kept as a pure seam because Exception.StackTrace cannot be constructed
 /// portably in a unit test.
-let internal classifyIpcFaultAt (stackTrace: string option) (inner: exn) : IpcFault =
+///
+/// `origin` is the second piece of evidence, and it is the one a stack trace cannot
+/// supply: a frame-reader trace proves a corrupted frame wherever it ran, but an OOM
+/// with any OTHER trace is only attributable to a process by knowing which process
+/// reported it.
+let internal classifyIpcFaultAt (origin: FaultOrigin) (stackTrace: string option) (inner: exn) : IpcFault =
     let aroseInFrameReader =
         stackTrace
         |> Option.exists (fun trace -> trace.Contains("HeaderDelimitedMessageHandler", StringComparison.Ordinal))
 
     match inner with
     | :? OutOfMemoryException as oom ->
-        if aroseInFrameReader then
-            IpcFault.CorruptedFrame inner
-        else
-            IpcFault.ClientOutOfMemory oom
+        match aroseInFrameReader, origin with
+        | true, _ -> IpcFault.CorruptedFrame inner
+        | false, FaultOrigin.Daemon -> IpcFault.DaemonOutOfMemory inner
+        | false, FaultOrigin.Client -> IpcFault.ClientOutOfMemory oom
+    | :? OverflowException when origin = FaultOrigin.Daemon && not aroseInFrameReader ->
+        // Outside the frame reader, on the daemon, an overflow is System.Text.Json's
+        // UTF-8 transcoder refusing a single string token it cannot encode — the same
+        // "this reply is too large to exist" fact as the OOM above, and never a hint
+        // about this client's heap.
+        IpcFault.DaemonOutOfMemory inner
     | :? OverflowException ->
         // Overflow was observed in HeaderDelimitedMessageHandler's frame-length
         // arithmetic, but OverflowException is otherwise a generic client fault. The
@@ -470,9 +502,9 @@ let classifyIpcFault (inner: exn) : IpcFault =
     match inner with
     | :? StreamJsonRpc.RemoteInvocationException as remote ->
         match remoteFaultDetails remote with
-        | Some(reconstructed, remoteStackTrace) -> classifyIpcFaultAt remoteStackTrace reconstructed
+        | Some(reconstructed, remoteStackTrace) -> classifyIpcFaultAt FaultOrigin.Daemon remoteStackTrace reconstructed
         | None -> IpcFault.Other inner
-    | _ -> classifyIpcFaultAt (inner.StackTrace |> Option.ofObj) inner
+    | _ -> classifyIpcFaultAt FaultOrigin.Client (inner.StackTrace |> Option.ofObj) inner
 
 /// Map an unwrapped IPC exception to a user-actionable hint, or None if the
 /// exception type isn't one we have a known recovery story for. Pure so it can
@@ -493,6 +525,14 @@ let ipcErrorHint (inner: exn) : string option =
             "The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
              restarted because this failure carries no evidence of a corrupted frame; \
              inspect the client process memory limit and reduce concurrent work."
+    | IpcFault.DaemonOutOfMemory _ ->
+        Some
+            "The DAEMON ran out of memory building this reply — the failure is on that side, so \
+             the client's memory limit and the box's free memory are not the lever. The usual \
+             cause is a reply whose size is a PRODUCT rather than a sum: a broadly red suite \
+             whose per-failure diagnostics each carry the whole run's output. Check the ledger \
+             size in `logs/daemon.log`, and see `.fshw/test-runs/` — the run's own evidence is \
+             written by the daemon and survives this."
     | IpcFault.TimedOut _ -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
     | IpcFault.Other _ -> None
 
@@ -503,6 +543,7 @@ let ipcErrorHint (inner: exn) : string option =
 let ipcErrorHeadline (inner: exn) : string =
     match classifyIpcFault inner with
     | IpcFault.ClientOutOfMemory _ -> $"The fshw CLI ran out of memory while handling daemon IPC: %s{inner.Message}"
+    | IpcFault.DaemonOutOfMemory _ -> $"The fshw DAEMON ran out of memory serving this IPC call: %s{inner.Message}"
     | IpcFault.CorruptedFrame _
     | IpcFault.TimedOut _
     | IpcFault.Other _ -> $"Could not connect to daemon: %s{inner.Message}"
@@ -550,6 +591,10 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
             else
                 onFailure ex
         | IpcFault.ClientOutOfMemory _
+        // No restart, for the same reason as a client OOM and one more: restarting a
+        // daemon that has just FINISHED a twenty-minute run is how the run's warm state
+        // gets thrown away along with its result (AUTOMATION-747).
+        | IpcFault.DaemonOutOfMemory _
         | IpcFault.TimedOut _
         | IpcFault.Other _ -> onFailure ex
 
@@ -1346,6 +1391,31 @@ let internal withRunHooksCommandUsingSignals
     (action: Verdict.Invocation -> int)
     : int =
     let invocation = Verdict.Invocation.start ()
+
+    // AUTOMATION-573. Claim the repo BEFORE anything runs, and hold it until the
+    // verdict for this invocation is on disk. This bracket is the right — and the only
+    // — place for it: both transports reach it (`queryPluginIn` and
+    // `RunOnceCheck.runOnceAndVerdict` are the same `action invocation` from here), and
+    // it already owns the one finalizer that every way out passes through, so the claim
+    // cannot outlive the run it describes.
+    //
+    // Best-effort, like publishing the verdict: `acquire` returns `None` when `.fshw/`
+    // cannot be written, and the run proceeds. A marker is an additional surface, never
+    // a new way to fail.
+    let claim = RunClaim.acquire repoRoot (Verdict.Command.token command) invocation.Id
+
+    // Latched, because the ordinary finalizer, a late signal and the scope exit below
+    // all reach it and a released claim must not warn about being released twice.
+    let releaseClaim = makeRunOnce (fun () -> RunClaim.release repoRoot claim)
+
+    // The backstop for the paths `finalize` does not run through — the beforeRun
+    // refusal, and any escape this function grows later. `Environment.Exit` does not
+    // unwind, so the signal path releases explicitly inside `finalize` rather than
+    // relying on this.
+    use _claimHeld =
+        { new IDisposable with
+            member _.Dispose() = releaseClaim () }
+
     let timeoutSec = Some(resolveRunHookTimeoutSec config)
     let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
 
@@ -1433,6 +1503,13 @@ let internal withRunHooksCommandUsingSignals
             FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
         | :? UnauthorizedAccessException as ex ->
             FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
+
+        // AUTOMATION-573. LAST, and outside the try: the claim is released only once
+        // this invocation's verdict is on disk, so there is no instant in which the file
+        // is both unclaimed and describing an earlier run. A publish that threw still
+        // releases — a run that has ended is not in flight, whatever it managed to
+        // write.
+        releaseClaim ()
 
     // Installed for EVERY invocation, not only those with an afterRun: a signalled run
     // has no verdict of its own unless this writes one, and a prior green left on disk
@@ -2084,7 +2161,16 @@ let executeCommand
                 // like the `NoVerdict` arm below.
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
-                say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."
+                say "  Re-run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence). Never reuse it."
+            | Verdict.Report.InFlight(v, reason) ->
+                // AUTOMATION-573. Deliberately NOT the stale wording: the fix here is to
+                // WAIT, not to run again. Telling a reader to re-run a tree that is
+                // already being verified is how a box ends up with two checks racing for
+                // the same answer.
+                say $"%s{Color.yellow}…%s{Color.reset} %s{reason}"
+                say $"    verdict tree  %s{v.TreeHash}   (the tree on disk — the SUBJECT matches; the RUN does not)"
+                say $"    claims        %s{RunClaim.RelativeDir}"
+                say "  Wait for the run to publish, then read again. Do NOT start a second check."
             | Verdict.Report.NoVerdict reason -> say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
 
             Verdict.reportExitCode report

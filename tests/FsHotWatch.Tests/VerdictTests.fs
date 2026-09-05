@@ -79,7 +79,12 @@ type private Spec =
         Outcome: Verdict.Outcome
         ExitCode: int
         Plugins: Verdict.PluginVerdict list
+        /// The reports of the ONE batch `RunId` names — the ordinary case.
         Suites: Verdict.SuiteVerdict list
+        /// AUTOMATION-533. The batches, when a test is about a check that ran the tests
+        /// more than once. Set `Suites` OR `Runs`, never both: two spellings of the same
+        /// evidence in one spec is the drift this field exists to test for.
+        Runs: Verdict.RunSuites list
         Comparison: Verdict.CheckComparison
         /// AUTOMATION-303. The failing ledger diagnostics behind a red. Defaults empty.
         RedCauses: Verdict.RedCause list
@@ -101,6 +106,8 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Command
         { Scope = s.Scope
           RunId = s.RunId
+          SessionRuns = []
+          CheckRuns = s.Runs |> List.choose (fun r -> r.RunId)
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds) }
         s.Tree
@@ -108,7 +115,10 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Outcome
         s.ExitCode
         s.Plugins
-        s.Suites
+        (match s.Suites, s.Runs with
+         | [], runs -> runs
+         | suites, [] -> [ { RunId = s.RunId; Suites = suites } ]
+         | _ -> failwith "a spec declares Suites or Runs, never both")
         s.Comparison
         s.RedCauses
 
@@ -124,6 +134,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
+      Runs = []
       Comparison = Verdict.CheckComparison.notRecorded
       RedCauses = []
       Seeds = []
@@ -913,6 +924,171 @@ let ``failing counts survive into the suites — the verdict answers "how many f
         | Verdict.Reading.Found back -> test <@ back.Suites.Head.Failed = 3 @>
         | other -> failwith $"expected a readable verdict, got %A{other}")
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-533 — one check, SEVERAL run directories
+// ---------------------------------------------------------------------------
+//
+// The evidence these are written from, from one session on 2026-08-25: a check whose
+// two run directories were written thirty seconds apart. The first held five reports
+// and 10,979 tests, including all 23 of the change's own; the second held one report
+// and 566 tests, none of them the change's. The verdict named the second. Three
+// readers in that session concluded from a verdict like this one that their tests had
+// never run; in every case that could be checked afterwards, the tests had run and
+// passed.
+
+/// The ticket's own shape, as a fixture: a big impact-selected batch, then a small
+/// build-tooling batch, then the graded one. Returns them oldest-first.
+let private threeBatches (root: string) =
+    let first = Guid.NewGuid()
+    let second = Guid.NewGuid()
+    let graded = Guid.NewGuid()
+
+    writeReport root first "Lib.Tests" 10979 0 |> ignore
+    writeReport root first "Acceptance.Tests" 23 0 |> ignore
+    writeReport root second "Build.Tests" 566 0 |> ignore
+    writeReport root graded "Lib.Tests" 4 0 |> ignore
+
+    first, second, graded
+
+[<Fact>]
+let ``the verdict accounts for EVERY run the check produced, not just the graded one`` () =
+    withTempDir "runs-all-batches" (fun root ->
+        makeRepo root
+        let first, second, graded = threeBatches root
+
+        let runs =
+            Verdict.runSuites
+                root
+                { Scope = FullSuite 3
+                  RunId = Some graded
+                  SessionRuns = []
+                  CheckRuns = [ first; second; graded ]
+                  Seeds = []
+                  SeedCount = 0 }
+
+        // The graded run leads — it is what the outcome was computed from — and every
+        // other batch is there behind it.
+        test <@ runs |> List.map (fun r -> r.RunId) = [ Some graded; Some first; Some second ] @>
+
+        // And the flat view covers all three. `Acceptance.Tests` ran ONLY in the first
+        // batch: it is the test whose absence sent a reader off to redo work that was
+        // already green.
+        let projects =
+            runs |> List.collect (fun r -> r.Suites) |> List.map (fun s -> s.Project)
+
+        test <@ projects |> List.contains "Acceptance.Tests" @>
+        test <@ projects |> List.contains "Build.Tests" @>
+        test <@ List.length projects = 4 @>)
+
+[<Fact>]
+let ``a report that ran ONLY in an early batch is reported as having run — and its absence as absent`` () =
+    // The ticket's acceptance control, in both directions. The SAME check, the same
+    // batches, the same graded run: the only thing that moves is whether the early
+    // batch actually contains the report. A verdict that answered "ran" either way
+    // would be worthless, which is why the negative half is here.
+    let ran (writeEarly: bool) =
+        withTempDir "runs-control" (fun root ->
+            makeRepo root
+            let early = Guid.NewGuid()
+            let graded = Guid.NewGuid()
+
+            if writeEarly then
+                writeReport root early "Acceptance.Tests" 23 0 |> ignore
+            else
+                emptyRun root early
+
+            writeReport root graded "Build.Tests" 566 0 |> ignore
+
+            let v =
+                build
+                    { greenVerdict "sha256:abc" 1 with
+                        RunId = Some graded
+                        Runs =
+                            Verdict.runSuites
+                                root
+                                { Scope = FullSuite 2
+                                  RunId = Some graded
+                                  SessionRuns = []
+                                  CheckRuns = [ early; graded ]
+                                  Seeds = []
+                                  SeedCount = 0 } }
+
+            v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
+
+    test <@ ran true @>
+    test <@ not (ran false) @>
+
+[<Fact>]
+let ``the verdict names every CTRF report on disk for the check — the omission guard`` () =
+    // The failure mode here is OMISSION, so the expectation is built from the DISK
+    // rather than from a list written beside the assertion: every report the check's
+    // run directories hold must appear in the verdict, and a future change that drops
+    // a batch fails here even though nothing errors and every count it does report is
+    // correct.
+    withTempDir "runs-omission-guard" (fun root ->
+        makeRepo root
+        let first, second, graded = threeBatches root
+
+        let v =
+            build
+                { greenVerdict "sha256:abc" 1 with
+                    RunId = Some graded
+                    Runs =
+                        Verdict.runSuites
+                            root
+                            { Scope = FullSuite 3
+                              RunId = Some graded
+                              SessionRuns = []
+                              CheckRuns = [ first; second; graded ]
+                              Seeds = []
+                              SeedCount = 0 } }
+
+        let onDisk =
+            [ first; second; graded ]
+            |> List.collect (fun id ->
+                Directory.GetFiles(Ctrf.runDir root id, "*" + Ctrf.ReportSuffix) |> List.ofArray)
+            |> List.map (fun p -> Path.GetRelativePath(root, p).Replace('\\', '/'))
+            |> List.sort
+
+        test <@ (v.Suites |> List.map (fun s -> s.Ctrf) |> List.sort) = onDisk @>
+
+        // Survives the round trip, because a verdict is read far more often than it is
+        // built and the reader is the one this is for.
+        Verdict.write root v
+
+        match Verdict.read root with
+        | Verdict.Reading.Found back ->
+            test <@ (back.Suites |> List.map (fun s -> s.Ctrf) |> List.sort) = onDisk @>
+            test <@ (back.Runs |> List.map (fun r -> r.RunId)) = (v.Runs |> List.map (fun r -> r.RunId)) @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``a verdict written before runs[] existed rehydrates as ONE batch, named by the run it was graded from`` () =
+    // The reports in such a file DID come from its `runId`, so that is what they
+    // rehydrate as. What must not happen is them being dropped for want of the newer
+    // field: in this record a batch that is absent is indistinguishable from a batch
+    // that never ran, which is the whole defect.
+    withTempDir "runs-legacy" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = runId.ToString("N")
+
+        let legacy =
+            $$"""{ "schema": "fshw-verdict-v1", "command": "check", "runId": "{{dir}}",
+                   "treeHash": "sha256:abc", "treeHashAlgorithm": "{{TreeHash.Algorithm}}",
+                   "outcome": { "kind": "green" }, "exitCode": 0, "plugins": [],
+                   "suites": [ { "project": "Lib.Tests", "ctrf": ".fshw/test-runs/{{dir}}/Lib.Tests.ctrf.json",
+                                 "total": 63, "passed": 63, "failed": 0, "skipped": 0 } ] }"""
+
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+        File.WriteAllText(Verdict.path root, legacy)
+
+        match Verdict.read root with
+        | Verdict.Reading.Found back ->
+            test <@ back.Runs |> List.map (fun r -> r.RunId) = [ Some runId ] @>
+            test <@ back.Suites |> List.map (fun s -> s.Project) = [ "Lib.Tests" ] @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
 [<Fact>]
 let ``tidyRunsDir rotates old RUNS and purges the pre-AUTOMATION-129 flat layout`` () =
     withTempDir "ctrf-tidy" (fun root ->
@@ -1068,8 +1244,17 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
 
     test <@ text.Contains ".fshw/test-runs/Intelligence.Tests.Integration-7134d9cfbee943df9cdf24d622dc31ca.ctrf.json" @>
 
+/// AUTOMATION-394, finishing the workflow-neutral pass the no-verdict hints already got.
+/// This is the hint a green inner-loop check prints, so it is the one an operator reads
+/// most often — and it used to read "for a MERGE verdict use `fshw confirm`", which is a
+/// workflow order rather than a report. A project whose written rule gates merges on
+/// `check` had its own rule contradicted by its own tooling, at the one moment (a scoped
+/// green, about to land) when re-reading the runbook is least likely.
+///
+/// It still names `confirm`, and must: the reader needs to know what buys the stronger
+/// claim. What it no longer does is say when to spend it.
 [<Fact>]
-let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm`` () =
+let ``an impact-scoped check is told what its green covers, not which verb to merge with`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -1078,7 +1263,12 @@ let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm
     let text = hintsFor v |> String.concat "\n"
 
     test <@ text.Contains "impact-scoped (2/6 test projects)" @>
-    test <@ text.Contains "fshw confirm" @>
+    test <@ text.Contains "a green here is not full-suite evidence" @>
+    // Phrased as the sibling NoTestsRun hint phrases it, so the two paths read as one
+    // voice: what the run covered, then the verb that buys more, and no instruction.
+    test <@ text.Contains "use `confirm` only when you explicitly need that" @>
+
+    test <@ not (text.Contains "MERGE verdict") @>
 
 [<Fact>]
 let ``a check that ran no tests is told to converge check rather than redirect its workflow`` () =
@@ -4850,3 +5040,294 @@ let ``globWalkPrefix names the shallowest directory a glob must be walked from``
     test <@ VerdictInputs.globWalkPrefix "a/b/*.fs" = "a/b" @>
     test <@ VerdictInputs.globWalkPrefix "a/*/c.fs" = "a" @>
     test <@ VerdictInputs.globWalkPrefix "*.json" = "" @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-573. A verdict read MID-RUN must never return the previous run's green.
+//
+// Everything above this line is about the verdict's SUBJECT — which tree, which
+// binary. This section is about its CURRENCY: the file is stamped only at completion,
+// so between a run's start and its publish the previous run's result sits there
+// parsing cleanly, matching on treeHash and producer, and reading green.
+// ---------------------------------------------------------------------------
+
+/// A claim held by THIS test process — so its pid is genuinely alive and the
+/// liveness probe is the real one, not a stub.
+let private claimHeldHere (root: string) (invocationId: string) =
+    match RunClaim.acquire root "check" invocationId with
+    | Some c -> c
+    | None -> failwith "could not write a run claim"
+
+/// The green verdict a COMPLETED earlier run left behind, stamped with that run's
+/// invocation id — which is what makes it attributable, and therefore refusable.
+let private greenFromRun (root: string) (tree: TreeHash.Tree) (invocationId: string) =
+    writeSpec root (greenVerdict tree.Hash tree.FileCount)
+
+    match Verdict.read root with
+    | Verdict.Reading.Found v ->
+        Verdict.write
+            root
+            (Verdict.withAttribution
+                { Verdict.Attribution.none with
+                    InvocationId = Some invocationId }
+                v)
+    | other -> failwith $"could not read back the verdict we just wrote: %A{other}"
+
+[<Fact>]
+let ``THE omission guard — a mid-run read is NEVER reported as green-and-applicable`` () =
+    // The one assertion this whole feature exists for. It is written as a REFUSAL of
+    // the bad answer rather than an expectation of the good one, so a future case
+    // added to `Report` cannot pass it by accident: anything that is `Applies`, or
+    // carries exit 0, or serializes `"applies": true`, fails here.
+    withTempDir "verdict-inflight-guard" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        // CONTROL. Without this, a test proving only "not green mid-run" would also
+        // pass if the verdict never applied at all.
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v ->
+            test <@ v.Outcome = Verdict.Green @>
+            test <@ Verdict.reportExitCode (Verdict.Report.Applies v) = 0 @>
+        | other -> failwith $"expected the earned green to apply before any run starts, got %A{other}"
+
+        // A DIFFERENT run starts. Nothing else on disk changes — the tree has not
+        // moved, the binary has not changed, the verdict file is byte-identical.
+        let _held = claimHeldHere root "the-run-that-is-happening"
+
+        let report = Verdict.report root []
+
+        match report with
+        | Verdict.Report.Applies v ->
+            failwith $"a mid-run read returned the PREVIOUS run's verdict as APPLICABLE (outcome %A{v.Outcome})"
+        | Verdict.Report.InFlight(v, reason) ->
+            // The verdict is still carried — a reader may want to see what the last
+            // run said — but it is not the answer, and the reason says why in words a
+            // machine did not have to compare timestamps to reach.
+            test <@ v.Outcome = Verdict.Green @>
+            test <@ reason.Contains "in flight" @>
+        | Verdict.Report.Stale _
+        | Verdict.Report.NoVerdict _ -> ()
+
+        test <@ Verdict.reportExitCode report <> 0 @>
+        test <@ Verdict.reportExitCode report = 6 @>
+
+        let envelope = Verdict.serializeReport report
+        test <@ envelope.Contains "\"applies\": false" @>
+        test <@ envelope.Contains "\"inFlight\": true" @>)
+
+[<Fact>]
+let ``the benchmark — polling for the whole of an in-flight run observes no green`` () =
+    // AUTOMATION-573's acceptance criterion, as the ticket words it: "a poll loop
+    // running for the duration of a check never observes a green verdict attributable
+    // to the previous run".
+    //
+    // The run is driven through the REAL bracket — `withRunHooksForInvocation` is what
+    // both `check` arms and `confirm`'s earning arm wrap their action in — so this
+    // exercises the claim being taken and released by the production path, not by the
+    // test.
+    withTempDir "verdict-inflight-poll" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        let observed = ResizeArray<int>()
+
+        let code =
+            Program.withRunHooksForInvocation
+                DaemonConfig.RunHookCommand.Check
+                root
+                (defaultTestConfig ())
+                (fun invocation ->
+                    // Poll throughout. Every read here is a read against a run that is
+                    // in flight and has not published.
+                    for _ in 1..20 do
+                        observed.Add(Verdict.reportExitCode (Verdict.report root []))
+
+                    // The run finishes and publishes ITS verdict — green again, and
+                    // stamped with THIS invocation.
+                    greenFromRun root (TreeHash.compute root []) invocation.Id
+                    0)
+
+        test <@ code = 0 @>
+        test <@ observed.Count = 20 @>
+
+        // NOT ONE of them was a green. `distinct` so the failure message names what was
+        // seen rather than twenty copies of it.
+        test <@ observed |> Seq.distinct |> Seq.toList = [ 6 ] @>
+
+        // And the moment the run is over, the green it earned is readable again — the
+        // guard withholds an answer, it does not destroy one.
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ v.Outcome = Verdict.Green @>
+        | other -> failwith $"after the run ended its own green must apply, got %A{other}")
+
+[<Fact>]
+let ``a run reads back its OWN published verdict as applicable, not as in flight`` () =
+    // The claim is released after the publish, so there is a real window in which a run
+    // holds a claim over a verdict it has already written. Refusing that would make
+    // every run unable to read its own answer.
+    withTempDir "verdict-inflight-own" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        let mine = "this-very-run"
+        greenFromRun root tree mine
+        let _held = claimHeldHere root mine
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ v.Outcome = Verdict.Green @>
+        | other -> failwith $"a run must be able to read the verdict it just published, got %A{other}")
+
+[<Fact>]
+let ``a verdict that cannot say which run made it is refused while any run is in flight`` () =
+    // Written before attribution existed (AUTOMATION-555), or by a path that could not
+    // record an invocation. Silence about provenance is not the claim "I am this run".
+    withTempDir "verdict-inflight-anon" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        writeSpec root (greenVerdict tree.Hash tree.FileCount)
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v -> test <@ v.InvocationId = None @>
+        | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        let _held = claimHeldHere root "some-run"
+
+        match Verdict.report root [] with
+        | Verdict.Report.InFlight _ -> ()
+        | other -> failwith $"an unattributable verdict must not survive a run in flight, got %A{other}")
+
+[<Fact>]
+let ``a run in flight does not disturb the STALE answer — 4 is still 4`` () =
+    // AUTOMATION-573's third acceptance criterion. The in-flight question is asked only
+    // where the verdict would otherwise APPLY, so every pre-existing staleness answer
+    // and its exit code are reached exactly as before.
+    withTempDir "verdict-inflight-stale" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+        let _held = claimHeldHere root "the-run-that-is-happening"
+
+        // The tree moves WHILE the run is in flight — both faults at once.
+        File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet answer = 43\n")
+
+        let report = Verdict.report root []
+
+        match report with
+        | Verdict.Report.Stale(v, reason) ->
+            test <@ v.Outcome = Verdict.Green @>
+            test <@ reason.StartsWith "stale:" @>
+        | other -> failwith $"a moved tree must still be STALE, got %A{other}"
+
+        test <@ Verdict.reportExitCode report = 4 @>)
+
+[<Fact>]
+let ``an abandoned claim from a dead process does not poison the verdict — and is reaped`` () =
+    // A crashed run must not wedge a workspace forever.
+    //
+    // The pid is above every platform's `pid_max` (macOS caps at 99998, Linux defaults
+    // to 4194304), so `Process.GetProcessById` answers "not running" rather than
+    // resolving something. Pid 0 would NOT do: on macOS it finds the kernel task and
+    // reads as alive.
+    withTempDir "verdict-inflight-abandoned" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        let abandoned =
+            { RunClaim.InvocationId = "a-run-that-crashed"
+              RunClaim.Pid = 99_999_999
+              RunClaim.Host = Environment.MachineName
+              RunClaim.Command = "check"
+              RunClaim.StartedAtUtc = DateTime.UtcNow }
+
+        Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
+
+        let path = Path.Combine(RunClaim.dirPath root, abandoned.InvocationId + ".json")
+
+        File.WriteAllText(path, RunClaim.serialize abandoned)
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ v.Outcome = Verdict.Green @>
+        | other -> failwith $"a dead process's claim must not withhold the verdict, got %A{other}"
+
+        // Hygiene, on the next command — the same contract `daemon.pid` has.
+        test <@ not (File.Exists path) @>)
+
+[<Fact>]
+let ``a claim file this build cannot parse still reports in flight — unparseable is not absent`` () =
+    // The fail-open shape to avoid: a corrupt claim silently dropped, and the previous
+    // run's green handed back as current. What is unknown is WHO is running, never
+    // WHETHER anyone is.
+    withTempDir "verdict-inflight-corrupt" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
+        File.WriteAllText(Path.Combine(RunClaim.dirPath root, "torn.json"), """{"schema":"fshw-run-cl""")
+
+        match Verdict.report root [] with
+        | Verdict.Report.InFlight(_, reason) ->
+            test <@ reason.Contains "unreadable claim" @>
+            test <@ reason.Contains "torn.json" @>
+        | other -> failwith $"a claim we cannot read must still withhold the green, got %A{other}")
+
+[<Fact>]
+let ``confirm still reuses a full-suite green earned over this tree while a run is in flight`` () =
+    // The deliberate carve-out, pinned so it cannot be "fixed" by accident.
+    //
+    // `confirm`'s question is not "what is the current state?" but "has this evidence
+    // already been EARNED?". A full-suite green over this exact tree from this exact
+    // binary was earned when it was earned; a later run cannot un-earn it. Refusing here
+    // would disable confirm's only fast path whenever anything else in the workspace was
+    // running — which, under continuous verification, is most of the time — and would buy
+    // nothing, since the re-run would have to produce the very same evidence.
+    withTempDir "verdict-inflight-confirm" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+        let _held = claimHeldHere root "the-run-that-is-happening"
+
+        // The WIRE still refuses: `fshw verdict` reports in flight.
+        test <@ Verdict.reportExitCode (Verdict.report root []) = 6 @>
+
+        // The EVIDENCE question is answered on its own terms.
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies v -> test <@ v.Outcome = Verdict.Green @>
+        | Verdict.PriorConfirmation.MustEarn ->
+            failwith "an earned full-suite green over this tree must survive a concurrent run")
+
+[<Fact>]
+let ``a NON-full-suite green in flight is still MustEarn — the carve-out is not a hole`` () =
+    withTempDir "verdict-inflight-confirm-filtered" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        // `Command = Check`: `Verdict.create` REFUSES a confirm verdict carrying a
+        // filtered scope, and rightly — confirm escalates rather than settling for one.
+        // An impact-filtered green can only ever be a `check`'s.
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Command = Verdict.Check
+                Scope = ImpactFiltered(1, 6) }
+
+        let _held = claimHeldHere root "the-run-that-is-happening"
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``exit 6 is in-flight, and no other report reaches it`` () =
+    let tree: TreeHash.Tree =
+        { Hash = "sha256:abc"
+          FileCount = 1
+          SkippedCount = 0
+          DeclaredCount = 0
+          AbsentDeclarationCount = 0 }
+
+    let v = build (greenVerdict tree.Hash tree.FileCount)
+
+    test <@ Verdict.reportExitCode (Verdict.Report.Applies v) = 0 @>
+    test <@ Verdict.reportExitCode (Verdict.Report.Stale(v, "because")) = 4 @>
+    test <@ Verdict.reportExitCode (Verdict.Report.NoVerdict "because") = 5 @>
+    test <@ Verdict.reportExitCode (Verdict.Report.InFlight(v, "because")) = 6 @>
