@@ -898,3 +898,41 @@ let ``AUTOMATION-294: converge does NOT retry an abort — no automatic retry to
 
     test <@ outcome = CheckOutcome.RunnerAborted abortMessages @>
     test <@ scans = 0 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — "the run finished and its result was lost" has its own code.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``exitCode: ResultUnreceived -> 7, and never a code that claims something about the code`` () =
+    test <@ exitCode (CheckOutcome.ResultUnreceived "the daemon ran out of memory") = 7 @>
+
+    // The point of the case is that a caller can ACT on it differently. 2 says "nothing
+    // was verified, spend the time"; 7 says "the time was already spent". A retry loop
+    // reading 2 for both re-runs a twenty-minute suite to re-derive an answer that
+    // already exists on disk — which is what happened seven times before this existed.
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.Incomplete -1)
+        @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.RunnerAborted [ "y" ])
+        @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.UnearnedScope anyScope)
+        @>
+
+    test <@ exitCode (CheckOutcome.ResultUnreceived "x") <> exitCode CheckOutcome.Clean @>
+
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode CheckOutcome.FailuresFound
+        @>

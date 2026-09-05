@@ -4,6 +4,34 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- AUTOMATION-747: **a broadly red suite no longer kills the check that ran it.** The
+  daemon's diagnostics reply was `failing tests × captured project output` characters,
+  because the test-prune plugin attached the whole run's output to every parsed
+  per-test failure. On a measured incident — 2,416 failing tests, a 48 MB capture — that
+  reply was ~45 GB, which no serializer can build; seven merge gates that had already
+  BUILT, RUN and COMMITTED their evidence died on that last call and published nothing,
+  leaving an earlier run's verdict standing as if it were current.
+  - A per-test failure carries its failing line and no detail. The project-wide capture
+    was one string repeated per test, is rendered by nothing, and is on disk in full at
+    `.fshw/test-runs/<runId>/<project>.output.log`.
+  - `ErrorLedger.Transport` bounds every mirror of the ledger — the IPC reply and the
+    on-disk `.fshw/errors` files — with one per-field cap and one response-wide `detail`
+    budget. Entries are trimmed, never dropped: the count and the severities are what
+    the exit code and `reddenedBy` are computed from. An entry whose detail did not fit
+    says so rather than reading as having none.
+  - An out-of-memory fault now names the process that HAD it. A daemon-side OOM (or the
+    JSON transcoder's overflow on an over-large string) was previously reported as "the
+    fshw CLI ran out of memory", which sent two hours of investigation at a healthy
+    client; it is `IpcFault.DaemonOutOfMemory` with its own headline and hint, and
+    neither restarts the daemon.
+  - **New exit code 7** for `check`/`confirm`: the daemon SETTLED and the CLI then
+    failed before it could receive the result. Distinct from 2 because the remedy is
+    opposite — 2 says "nothing was verified, spend the time", 7 says "the time was
+    already spent, the run's output is under `.fshw/test-runs/`". It publishes a verdict
+    like every other terminal, so a finished run never leaves the previous one's
+    standing. See [ADR-020](docs/adr-020-a-reply-is-a-sum-not-a-product.md).
+
+
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
   between the workspaces of one repository — so a freshly created workspace starts
   warm.** Nothing about WHICH checkout a file was read from reaches a cache key any

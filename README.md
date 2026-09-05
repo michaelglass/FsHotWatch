@@ -138,6 +138,7 @@ it will change. Every `check` and `confirm` publishes its result as a file:
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
 # 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+#   (`check` adds 7 — the run finished and its result never reached the CLI)
 ```
 
 `.fshw/verdict.json` is written atomically at the end of every run — **including**

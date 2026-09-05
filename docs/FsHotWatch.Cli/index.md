@@ -131,6 +131,26 @@ executed`. Agent mode tokens it `warn` (so `next:` points at `status`, never `do
 **status** stays `Completed` on purpose — nothing failed, and reporting a failure would
 turn an honest exit 3 (no verdict) into an exit 1 (failures found).
 
+### The run finished and its answer was lost — exit 7
+
+`check` and `confirm` exit **7** when the daemon **settled** — it built, ran the suite and
+committed its evidence — and the CLI then failed before it could receive that result and
+publish a verdict. It is the only non-zero code that says nothing about your code: the
+work was done, and the answer was dropped carrying it back.
+
+It is separate from **2** because the remedy is opposite. Exit 2 means *nothing was
+verified — spend the time*. Exit 7 means *the time was already spent*: the run's own
+output is on disk under `.fshw/test-runs/`, and re-running pays for a twenty-minute suite
+to re-derive an answer that already exists. A retry loop that reads both as 2 does
+exactly that. The verdict file is still written, so a finished run never leaves the
+previous run's verdict standing as if it were current.
+
+The cause this code was introduced for was a reply the daemon could not build: a broadly
+red suite where every per-test diagnostic carried the whole project's captured output, so
+the ledger's size was `failing tests × output` rather than their sum. That reply is now
+bounded (`ErrorLedger.Transport`) and a memory fault is attributed to the process that
+actually had it — the message says **DAEMON** or **CLI**, and never guesses.
+
 ### `waiting on build` — and why `fshw stop` is not the answer
 
 `check` can report **`waiting on build`** and exit **2**: a test project's tests did not
@@ -371,6 +391,7 @@ you, reads no socket and starts nothing:
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
 # 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+#   (`check` adds 7 — the run finished and its result never reached the CLI)
 ```
 
 Its stdout is *only* the envelope, which always states `applies` — a stale green

@@ -204,6 +204,22 @@ type CheckOutcome =
     /// Never reached while any plugin failed or any diagnostic IS attributable: a
     /// single real red outranks any amount of stale noise beside it.
     | StaleDaemonState of unattributable: int
+    /// AUTOMATION-747. The daemon SETTLED — it built, it ran the suite, it committed
+    /// its evidence — and this client then failed before it could receive that run's
+    /// result and publish a verdict from it.
+    ///
+    /// Its own outcome, and its own exit code, because it is the opposite of every
+    /// other non-green here in the one respect a caller acts on: the work was DONE.
+    /// A refusal, a wedge and a defer all say "nothing was verified, spend the time";
+    /// this says "the time was already spent, and the answer was dropped on the floor
+    /// on the way back". A retry loop that cannot tell them apart re-runs a
+    /// twenty-minute suite to re-derive an answer that already exists on disk, which
+    /// is exactly what happened seven times over before this case existed.
+    ///
+    /// It is NOT a verdict about the code: nothing here says the run was green or red,
+    /// only that it finished and its result did not arrive. `reason` names the fault
+    /// that ate it.
+    | ResultUnreceived of reason: string
 
 /// Total exit-code mapping. Exhaustive over every CheckOutcome case — adding a
 /// new case is a compile error here, so a new state can never silently fall
@@ -223,6 +239,13 @@ let exitCode (outcome: CheckOutcome) : int =
     // Same exit code as an unearned scope, and for the same reason: the run produced
     // no verdict. "I cannot tell" is not a pass and it is not a failure.
     | CheckOutcome.StaleDaemonState _ -> 3
+    // 7, and deliberately outside the 0-3 band `fshw verdict` re-uses: a caller reading
+    // 0/1/2/3 is reading a claim ABOUT THE CODE, and this makes none. It continues the
+    // codes that describe the ANSWER's availability rather than its content — 4 stale,
+    // 5 absent, 6 in flight — with the case those three have no room for: the run
+    // finished and its result never reached the process that publishes verdicts.
+    // AUTOMATION-747.
+    | CheckOutcome.ResultUnreceived _ -> 7
 
 /// EVERYTHING a verdict is computed from. ONE record, both transports.
 ///
@@ -481,7 +504,12 @@ let converge
     // is the whole finding — `fshw scan` was the DOCUMENTED remedy for the FCS-fault
     // class and never cleared it once; only `fshw stop` did. Re-scanning here would
     // spend three more full passes to arrive at the same answer.
-    | CheckOutcome.StaleDaemonState _ -> initOutcome
+    | CheckOutcome.StaleDaemonState _
+    // Unreachable from `verdict`, which decides from a read this loop already HAS —
+    // this outcome exists precisely for the case where no read came back. Listed as
+    // terminal rather than left to a wildcard so that if a future `verdict` can produce
+    // it, convergence does not respond to "the last answer was lost" by asking again.
+    | CheckOutcome.ResultUnreceived _ -> initOutcome
     | CheckOutcome.Incomplete _ ->
         // Enter convergence. `prevMagnitude` is the unchecked magnitude we're
         // trying to improve on; it starts at the initial read.

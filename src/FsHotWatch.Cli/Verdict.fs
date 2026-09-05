@@ -576,6 +576,19 @@ module CheckProse =
            reported sound either. This is stale daemon state: run `fshw stop`, then re-run. `fshw scan` does NOT \
            clear it. See `reddenedBy[].kind` in the verdict for which cause was which."
 
+    /// AUTOMATION-747. The run FINISHED and its result never made it back.
+    ///
+    /// Every other refusal in this module is a variation on "spend the time again".
+    /// This one must not read like them, because the time was already spent: the words
+    /// point at the evidence the daemon wrote before the fault, so a reader's first
+    /// move is to look at a finished run rather than to start another one.
+    let resultUnreceived (reason: string) =
+        $"NO VERDICT — the daemon FINISHED this run (it built, it ran the suite, it committed its evidence) and \
+           this CLI then failed before it could receive the result: %s{reason}\nNothing is reported broken and \
+           nothing is reported sound — but unlike every other no-verdict here, the work is DONE. The run's own \
+           output is already on disk under `.fshw/test-runs/`; read that before spending another full cycle. If \
+           this recurs, it is the size of what the daemon is being asked to hand back, not the size of the box."
+
     /// A scope that could not be READ. Its own words, never `confirm`'s: this is not
     /// "the run was too narrow", it is "we could not see what the run was" — and a
     /// consumer told the former would retry a broken check forever.
@@ -649,6 +662,10 @@ module CheckProse =
         // so the run has no verdict — and the remedy is named HERE, where the person who
         // needs it is looking, rather than left in a ticket they have not read.
         | CheckVerdict.CheckOutcome.StaleDaemonState n -> Some(staleDaemonState n)
+        // AUTOMATION-747. Its own words for the same reason `RunnerAborted` has its own:
+        // the reader is about to draw the usual conclusion from a non-zero exit, and the
+        // usual conclusion — "re-run it" — is the expensive wrong move here.
+        | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Some(resultUnreceived reason)
         | CheckVerdict.CheckOutcome.Clean
         | CheckVerdict.CheckOutcome.FailuresFound -> None
 
@@ -702,6 +719,13 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     // "tests failed". The prose is `CheckProse`'s single copy — the same words the two
     // terminals print.
     | CheckVerdict.CheckOutcome.StaleDaemonState n -> Incomplete(CheckProse.staleDaemonState n)
+    // AUTOMATION-747. `incomplete` in the FILE, and exit 7 beside it — the two are not
+    // in tension. The file's `outcome` says what is known about the CODE, and nothing is:
+    // the result never arrived. The exit code says what is known about the ANSWER, and
+    // that is the fact this case exists to carry. Folding it into the file as a fourth
+    // `outcome.kind` would break every consumer that switches on three; giving it no
+    // exit code of its own would leave the caller unable to act on it at all.
+    | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Incomplete(CheckProse.resultUnreceived reason)
 
 // ---------------------------------------------------------------------------
 // AUTOMATION-259 — the check-vs-confirm sample every `confirm` already had

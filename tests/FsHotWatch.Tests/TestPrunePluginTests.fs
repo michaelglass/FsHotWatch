@@ -11622,3 +11622,57 @@ let ``AUTOMATION-67 failure recall requires every observed failure to be decidab
     match CheckReach.measure (Some inFull) [ a259Failure "Alpha.Tests" None ] with
     | RecallNotMeasurable reason -> test <@ reason.Contains("exact failing-test denominator") @>
     | measured -> Assert.Fail($"an undecidable failure cannot enter a recall denominator, got %A{measured}")
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — a red project's ledger slice is a SUM, not a PRODUCT.
+//
+// `failuresOf` used to attach `output` — the whole captured project run — to every
+// parsed per-test failure. In the incident this ticket records that made one project's
+// ledger slice 753 × 48 MB: ~36 GB, from a plugin holding a single string. It is
+// invisible in the daemon's own heap (every entry is the same reference) and fatal the
+// moment any mirror of the ledger writes each entry's copy out — which is exactly where
+// seven finished merge gates died.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``failuresOf does not attach the whole project output to every parsed failure`` () =
+    let failures = 200
+    let noise = String.replicate 40_000 "n"
+
+    let output =
+        [ yield noise
+          for i in 1..failures do
+              yield $"  failed Some.Suite%d{i}.the test (0ms)" ]
+        |> String.concat "\n"
+
+    let results: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entries = failuresOf Map.empty results
+
+    // Every failure is still FILED — this bound may not be bought by losing reds.
+    test <@ entries.Length = failures @>
+
+    let totalChars =
+        entries
+        |> List.sumBy (fun f ->
+            f.Entry.Message.Length
+            + (f.Entry.Detail |> Option.map String.length |> Option.defaultValue 0))
+
+    // The law: the slice is bounded by the failures PLUS the output, never their
+    // product. Before this fix the same input produced 200 × 40,000 = 8,000,000 chars.
+    test <@ totalChars < output.Length @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf still carries the whole output when NO test could be named`` () =
+    // The one arm where that text is the entry's own subject: nothing named a test, so
+    // the run itself is all the reader has. ONE entry, so it is carried once.
+    let output = "the host said something unparseable\n" + String.replicate 5_000 "z"
+
+    let results: TestResults =
+        { Results = Map.ofList [ "ProjA", TestsFailed(output, false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let entry = (failuresOf Map.empty results |> List.exactlyOne).Entry
+    test <@ entry.Detail = Some output @>
