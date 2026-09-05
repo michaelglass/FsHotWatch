@@ -278,10 +278,25 @@ sufficient.
   "timingIncompleteReasons": [],
   "observedElapsedMs": 102381,
   "invocationId": "8cc0715e5df6420dbe2157066dc0ac5c",
+  "runs": [
+    { "runId": "24bf66063d004decb0447e3cc3ece719",
+      "suites": [
+        { "project": "Intelligence.Tests.Unit",
+          "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
+          "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 } ] },
+    { "runId": "9f21ba0c7f7e4a0e8a6b2d1c4e5f6071",
+      "suites": [
+        { "project": "Intelligence.Build.Tests",
+          "ctrf": ".fshw/test-runs/9f21ba0c…/Intelligence.Build.Tests.ctrf.json",
+          "total": 566, "passed": 566, "failed": 0, "skipped": 0 } ] }
+  ],
   "suites": [
     { "project": "Intelligence.Tests.Unit",
       "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
-      "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 }
+      "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 },
+    { "project": "Intelligence.Build.Tests",
+      "ctrf": ".fshw/test-runs/9f21ba0c…/Intelligence.Build.Tests.ctrf.json",
+      "total": 566, "passed": 566, "failed": 0, "skipped": 0 }
   ],
   "reddenedBy": [],
   "reddenedByCount": 0
@@ -456,6 +471,25 @@ harness because of it. Absence must never be something the reader has to decode.
 
 The newest 10 run directories are retained; history is evidence, so old runs are
 **rotated, never wiped on start**.
+
+**One check writes SEVERAL of these directories, and the verdict names them all.**
+A check runs the tests in batches — the impact-selected run, the rerun a mid-run
+change queues behind it, `confirm`'s forced full suite, the drain of a queued
+`run-tests` — and each batch gets its own run directory. `runId` names the batch the
+verdict was **graded** from, which is only one of them; `runs[]` names **every** batch
+the check ran, and `suites[]` is the flattening of `runs[]`, so it covers all of them
+too.
+
+So the question "did *my* test run in this check?" is answered by `runs[]` or
+`suites[]`, never by opening the single directory `runId` points at. Reading `runId`
+as the whole of the check is how three sessions concluded their tests had never run —
+one landed on 566 tests out of the 10,979 that had actually executed — and two of them
+nearly redid work that was already green. One project can appear **twice** in
+`suites[]`, from two batches, with different counts; that is what happened, and the
+totals then count test *executions*, not distinct tests.
+
+And check the **full** class name when you search the reports: `Persona` matches
+`Impersonation`, which hands you five confident hits from unrelated tests.
 
 ### `.fshw/heartbeat` — is the daemon still *working*?
 

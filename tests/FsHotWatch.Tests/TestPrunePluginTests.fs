@@ -10527,6 +10527,59 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
     | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}")
 
 [<Fact(Timeout = 20000)>]
+let ``test-scope declares EVERY run the session completed, not only the one the receipt names`` () =
+    // AUTOMATION-533. The receipt deliberately holds ONE run — the full-suite one, which
+    // a later narrow drain may not downgrade (the test above). That is right for grading
+    // and wrong for reporting: both runs wrote a directory, both hold reports, and a
+    // reader looking for their own tests in the receipt's directory alone finds only
+    // what the last batch happened to cover.
+    //
+    // So the reply carries both questions. `runId` is what this verdict was graded from;
+    // `runIds` is everything this session ran, and it is what lets a check name every
+    // batch it produced instead of only the last.
+    let handler =
+        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+    let fullRun =
+        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+    let narrowRun =
+        testsFinishedEvent
+            [ "ProjA", impactSkipped; "ProjB", passed true ]
+            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+
+    let runIdOf event =
+        match event with
+        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+        | _ -> failwith "expected TestsFinished"
+
+    let fullRunId = runIdOf fullRun
+    let narrowRunId = runIdOf narrowRun
+
+    let _ctx, _statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
+
+    let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    let report =
+        scopeCommand commandCtx final [||]
+        |> Async.RunSynchronously
+        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+    // Graded from the full-suite run, as before — this must not have moved.
+    test <@ report.RunId = Some fullRunId @>
+
+    // ...and the narrow drain, whose directory holds the only reports that batch wrote,
+    // is no longer invisible. Newest first.
+    test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>
+
+[<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
     let handler =
         create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []

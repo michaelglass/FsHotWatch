@@ -333,6 +333,40 @@ type SuiteVerdict =
         Skipped: int
     }
 
+/// ONE test run — one `.fshw/test-runs/<runId>/` directory — and the reports it
+/// produced.
+///
+/// AUTOMATION-533. A single check runs the tests SEVERAL times: the impact-selected
+/// batch, the rerun a mid-run change queues behind it, `confirm`'s forced full suite,
+/// the drain of a queued `run-tests`. Each writes its OWN directory, and the verdict
+/// used to name only the last of them. A reader who did the documented thing — open the
+/// run directory the verdict names and look for their own tests — landed on 566 tests
+/// out of the 10,979 that had actually run, found none of their own, and concluded the
+/// gate never executed their work. Three such conclusions in one session; two of them
+/// nearly caused the work to be redone.
+///
+/// So the batches are not a scheduling detail. They are the difference between "your
+/// test did not run" and "your test ran in the batch before this one", and a verdict
+/// that cannot tell those apart is answering a question it was never asked.
+type RunSuites =
+    {
+        /// The run directory these reports live in.
+        ///
+        /// `None` ONLY when READING a verdict that recorded suites without naming their
+        /// run — a file written before this field existed, or a hand-written one. Every
+        /// verdict this build produces names the run of every batch it records.
+        RunId: Guid option
+        /// The reports in that directory. EMPTY is a fact, not an absence: the run
+        /// happened and executed nothing (`Ctrf.runDir` is created before anything
+        /// runs), or its reports have since been rotated away.
+        Suites: SuiteVerdict list
+    }
+
+module RunSuites =
+    /// The batch a verdict records when it knows the reports but not which run wrote
+    /// them — the shape an older verdict rehydrates into.
+    let unattributed (suites: SuiteVerdict list) : RunSuites = { RunId = None; Suites = suites }
+
 /// One diagnostic that CONTRIBUTED to a red, as the verdict records it.
 ///
 /// AUTOMATION-303 case 3. A `confirm` returned exit 1 with all four plugins `ok` and
@@ -1064,7 +1098,10 @@ type Verdict =
             outcome: Outcome
             exitCode: int
             plugins: PluginVerdict list
-            suites: SuiteVerdict list
+            /// AUTOMATION-533. EVERY test run this check produced, and the reports each
+            /// one wrote — the graded run FIRST, then the rest in the order they ran.
+            /// `suites` is the flattening of this and holds no separate truth.
+            runs: RunSuites list
             comparison: CheckComparison
             /// AUTOMATION-303. The failing ledger diagnostics this verdict's exit code
             /// was computed from, truncated to `MaxRedCauses`. Empty on a green — and
@@ -1101,10 +1138,16 @@ type Verdict =
     /// binary does not apply, however well its `treeHash` matches.
     member this.Producer = this.producer
 
-    /// The test run this verdict's suites came from — i.e. the directory they
-    /// live in (`.fshw/test-runs/<runId>/`). `None` when NO test run happened,
-    /// which is a fact the verdict states rather than a silence for the reader
-    /// to decode.
+    /// The run this verdict was GRADED from — the one whose scope and counts the
+    /// outcome was computed against, i.e. the directory at `.fshw/test-runs/<runId>/`.
+    /// `None` when NO test run happened, which is a fact the verdict states rather than
+    /// a silence for the reader to decode.
+    ///
+    /// AUTOMATION-533. It is the graded run, NOT the whole of what this check executed:
+    /// a check runs the tests in several batches and this names one of them. `Runs`
+    /// names them all, and `Suites` covers all of them. A reader asking "did my test run
+    /// in this check" must read those, never this one — reading this one is exactly how
+    /// three sessions concluded their tests had never run.
     member this.RunId = this.runId
     member this.TreeHash = this.treeHash
     member this.TreeHashAlgorithm = this.treeHashAlgorithm
@@ -1130,7 +1173,20 @@ type Verdict =
     /// the process agree in the record, not just by convention.
     member this.ExitCode = this.exitCode
     member this.Plugins = this.plugins
-    member this.Suites = this.suites
+
+    /// AUTOMATION-533. Every batch this check ran, graded run first. A check that ran
+    /// no tests records none.
+    member this.Runs = this.runs
+
+    /// Every report this check produced, across ALL of its batches — DERIVED from
+    /// `Runs`, so the flat view and the per-batch view cannot disagree.
+    ///
+    /// One project can legitimately appear TWICE, from two batches, with different
+    /// counts: an impact-selected run of three of its tests, then a full run of all of
+    /// them. That is what happened, and summing the totals counts test EXECUTIONS
+    /// rather than distinct tests. Every consumer that matters reads the reports these
+    /// entries point at, which is the question they were asking anyway.
+    member this.Suites = this.runs |> List.collect (fun r -> r.Suites)
 
     /// AUTOMATION-259. How the impact-scoped reading `confirm` escalated away from compared
     /// with the verdict it then earned. ALWAYS a named case — a verdict that made no
@@ -1303,7 +1359,11 @@ let create
     (outcome: Outcome)
     (exitCode: int)
     (plugins: PluginVerdict list)
-    (suites: SuiteVerdict list)
+    // AUTOMATION-533. EVERY batch this check ran, graded run first — see `RunSuites`
+    // and `runSuites`, which builds the list so no caller has to decide what belongs in
+    // it. A `suites` parameter would let a caller hand in one batch's reports and call
+    // it the check's evidence, which is the defect.
+    (runs: RunSuites list)
     (comparison: CheckComparison)
     // AUTOMATION-303. EVERY failing ledger diagnostic the exit code was computed from,
     // untruncated — `create` does the truncating, so a caller cannot quietly report a
@@ -1326,7 +1386,7 @@ let create
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
-          suites = suites
+          runs = runs
           comparison = comparison
           redCauses = redCauses |> List.truncate MaxRedCauses
           redCauseCount = List.length redCauses
@@ -1510,6 +1570,17 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
 
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
+/// One suite entry on the wire. ONE renderer, used by both `runs[].suites` and the
+/// flattened `suites`, so the two spellings of the same report cannot differ.
+let private suiteJson (s: SuiteVerdict) : obj =
+    {| project = s.Project
+       ctrf = s.Ctrf
+       total = s.Total
+       passed = s.Passed
+       failed = s.Failed
+       skipped = s.Skipped |}
+    :> obj
+
 /// Render the verdict as JSON. Pure, so the contract is testable without a disk.
 let serialize (v: Verdict) : string =
     let payload =
@@ -1544,14 +1615,21 @@ let serialize (v: Verdict) : string =
                       (match p.Summary with
                        | Some s -> box s
                        | None -> null) |} ]
-           suites =
-            [ for s in v.Suites ->
-                  {| project = s.Project
-                     ctrf = s.Ctrf
-                     total = s.Total
-                     passed = s.Passed
-                     failed = s.Failed
-                     skipped = s.Skipped |} ]
+           // AUTOMATION-533. EVERY batch this check ran, with the reports each wrote.
+           // A reader answering "did my tests run in this check" reads THIS, or the
+           // flattened `suites` below it — never `runId`, which names one batch of
+           // several.
+           runs =
+            [ for r in v.Runs ->
+                  {| runId =
+                      (match r.RunId with
+                       | Some id -> box (id.ToString("N"))
+                       | None -> null)
+                     suites = [ for s in r.Suites -> suiteJson s ] |} ]
+           // The flattening of `runs`, kept because it is what every existing consumer
+           // reads and because "which reports does this check point at" is a question in
+           // its own right. Derived, never assembled separately: the two cannot drift.
+           suites = [ for s in v.Suites -> suiteJson s ]
            // AUTOMATION-303. What reddened this verdict, when the answer is not in
            // `plugins[]`. Always present — an empty array on a green is a statement, and
            // a reader that has to distinguish "no causes" from "this build did not
@@ -2246,6 +2324,47 @@ let private parseSuites (root: JsonElement) : Result<SuiteVerdict list, string> 
         |> Result.map List.rev
     | _ -> Ok []
 
+/// AUTOMATION-533. The BATCHES, from `runs[]`.
+///
+/// A verdict written before `runs` existed carries only the flat `suites` and the one
+/// `runId` it was graded from. Those reports DID come from that run, so they rehydrate
+/// as a single batch named by it — and when even the run id is absent (a hand-written
+/// file), as one `unattributed` batch. What must never happen is the reports being
+/// dropped because the newer field is missing: the whole point of this record is that
+/// a batch which is absent from it is indistinguishable from a batch that never ran.
+///
+/// A `runs[]` entry whose suites are unreadable makes the whole verdict unreadable, by
+/// the same rule as a top-level one: a batch we cannot read is not a batch we can
+/// report as empty.
+let private parseRuns (root: JsonElement) (gradedRunId: Guid option) : Result<RunSuites list, string> =
+    let runIdOf (el: JsonElement) =
+        tryString el "runId"
+        |> Option.bind (fun s ->
+            match Guid.TryParse s with
+            | true, g -> Some g
+            | _ -> None)
+
+    match tryProp root "runs" with
+    | Some arr when arr.ValueKind = JsonValueKind.Array ->
+        arr.EnumerateArray()
+        |> Seq.fold
+            (fun acc el ->
+                match acc with
+                | Error e -> Error e
+                | Ok xs ->
+                    match parseSuites el with
+                    | Error e -> Error e
+                    | Ok suites -> Ok({ RunId = runIdOf el; Suites = suites } :: xs))
+            (Ok [])
+        |> Result.map List.rev
+    | _ ->
+        parseSuites root
+        |> Result.map (fun suites ->
+            match suites, gradedRunId with
+            | [], _ -> []
+            | suites, Some id -> [ { RunId = Some id; Suites = suites } ]
+            | suites, None -> [ RunSuites.unattributed suites ])
+
 /// What was found at `.fshw/verdict.json`. Total — every way of not having a
 /// usable verdict is a NAMED case, so none of them can be quietly rounded to
 /// "green".
@@ -2283,10 +2402,17 @@ let read (repoRoot: string) : Reading =
 
                 let excluded = scopeEl |> Option.bind parseExcluded
 
-                match tryString root "treeHash", outcome, parsePlugins root, parseSuites root with
+                let gradedRunId =
+                    tryString root "runId"
+                    |> Option.bind (fun s ->
+                        match Guid.TryParse s with
+                        | true, g -> Some g
+                        | _ -> None)
+
+                match tryString root "treeHash", outcome, parsePlugins root, parseRuns root gradedRunId with
                 | _, _, Error e, _ -> Reading.Unreadable e
                 | _, _, _, Error e -> Reading.Unreadable e
-                | Some treeHash, Some outcome, Ok plugins, Ok suites ->
+                | Some treeHash, Some outcome, Ok plugins, Ok runs ->
                     // Rehydrated through the SAME invariant `create` enforces (see
                     // `validate`), so a hand-edited green over a failing plugin is
                     // refused on the way in.
@@ -2322,12 +2448,7 @@ let read (repoRoot: string) : Reading =
                              | None ->
                                  { DaemonIdentity.Version = "unknown-version"
                                    DaemonIdentity.ContentHash = ContentHash.UnhashableContent })
-                          runId =
-                            tryString root "runId"
-                            |> Option.bind (fun s ->
-                                match Guid.TryParse s with
-                                | true, g -> Some g
-                                | _ -> None)
+                          runId = gradedRunId
                           treeHash = treeHash
                           treeHashAlgorithm = tryString root "treeHashAlgorithm" |> Option.defaultValue "(none)"
                           treeFileCount = tryInt root "treeFileCount" |> Option.defaultValue 0
@@ -2341,7 +2462,7 @@ let read (repoRoot: string) : Reading =
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins
-                          suites = suites
+                          runs = runs
                           comparison = parseCheckComparison root
                           // AUTOMATION-303. Absent in verdicts written before the field
                           // existed, which is silence, not a claim that nothing reddened
@@ -2589,7 +2710,14 @@ let describeStillApplies (v: Verdict) : string =
         | [] -> suite
         | suites ->
             let passed = suites |> List.sumBy (fun s -> s.Passed)
-            $"%s{suite}, %d{passed} passed"
+
+            // AUTOMATION-533. Said out loud when the check ran the tests more than once,
+            // because then the total counts test EXECUTIONS — a project that ran in two
+            // batches is counted in both — and an unexplained number larger than the
+            // suite's own report is a number a reader stops trusting.
+            match List.length v.Runs with
+            | n when n > 1 -> $"%s{suite}, %d{passed} passed across %d{n} runs"
+            | _ -> $"%s{suite}, %d{passed} passed"
 
     $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence})"
 
@@ -2685,6 +2813,27 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
               Passed = r.Summary.Passed
               Failed = r.Summary.Failed
               Skipped = r.Summary.Skipped })
+
+/// AUTOMATION-533. EVERY batch this check has evidence from, each with the reports it
+/// wrote — the record `create` is handed, and the ONLY way one is built.
+///
+/// The list is the graded run FIRST, then the runs the check produced in the order they
+/// ran. The graded run leads because it is the one the outcome was computed from, and
+/// because it is not always one of the check's own: a check that reuses an applicable
+/// full-suite green from an earlier run on the same tree (`TestRunEvidence.reconcile`)
+/// is graded from a run that predates it, and that run's reports are still its evidence.
+/// Including it here is what makes "the reports this verdict rests on" and "the reports
+/// this check produced" ONE list instead of two that a reader has to union by hand.
+///
+/// A run with NO reports still gets an entry. The run directory is created before
+/// anything executes, so "this batch ran nothing" is a fact worth stating, and stating
+/// it is how a reader tells it apart from a batch this verdict simply forgot.
+let runSuites (repoRoot: string) (runReport: TestRunReport) : RunSuites list =
+    (Option.toList runReport.RunId) @ runReport.CheckRuns
+    |> List.distinct
+    |> List.map (fun id ->
+        { RunId = Some id
+          Suites = suiteVerdicts repoRoot (Some id) })
 
 /// AUTOMATION-259. Turn what a transport observed just BEFORE `confirm` escalated into the
 /// sub-record the verdict carries.

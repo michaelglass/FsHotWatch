@@ -751,6 +751,38 @@ module internal TestRunEvidence =
         | Some _, ScopeUnknown
         | Some _, ScopeUnreadable _ -> false
 
+    /// AUTOMATION-533. The runs THIS CHECK is accountable for, folded from one reading
+    /// of the daemon.
+    ///
+    /// Both ends are DECLARED. `baseline` is the session ledger the driver read from the
+    /// daemon BEFORE its scan, so a run belonging to an earlier check cannot be adopted
+    /// by this one; `report.SessionRuns` is the same ledger as it stands now. Everything
+    /// the daemon has completed since the baseline was taken belongs to this check —
+    /// including the batches nobody watched go by, which is the whole difficulty: a run
+    /// the CLI never happened to observe is exactly the one a reader later fails to find
+    /// their tests in.
+    ///
+    /// Oldest first, so the list reads in the order the batches ran, and `distinct`, so
+    /// re-reading the daemon cannot double-count. A daemon that predates the ledger
+    /// sends nothing, and then the only run this can name is the one it observed — which
+    /// is today's behaviour exactly, never worse.
+    ///
+    /// `None` is NO BASELINE — the driver could not take one — and is NOT an empty
+    /// baseline. An empty one is the positive claim "the daemon had run nothing", which a
+    /// fresh in-process host can make; treating a failed read as that claim would hand
+    /// this check every run an earlier one left in the ledger. Unknown therefore falls
+    /// back to attributing only what this check OBSERVED, which under-reports rather
+    /// than over-claims.
+    let attribute (baseline: Set<Guid> option) (soFar: Guid list) (report: TestRunReport) : Guid list =
+        let newlyRun =
+            match baseline with
+            | None -> Option.toList report.RunId
+            | Some known ->
+                (List.rev report.SessionRuns) @ Option.toList report.RunId
+                |> List.filter (fun id -> not (known.Contains id))
+
+        soFar @ newlyRun |> List.distinct
+
     let reconcile
         (settledTree: SettledTree)
         (current: TestRunReport)
@@ -830,7 +862,9 @@ let private publishVerdictWithReason
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
     try
-        let suites = Verdict.suiteVerdicts repoRoot runReport.RunId
+        // AUTOMATION-533. EVERY batch this check has evidence from, not just the one the
+        // daemon's receipt names — see `Verdict.runSuites`.
+        let runs = Verdict.runSuites repoRoot runReport
         let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
@@ -967,17 +1001,7 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create
-                command
-                runReport
-                atWrite
-                excluded
-                verdictOutcome
-                exitCode
-                plugins
-                suites
-                comparison
-                redCauses
+            Verdict.create command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1219,11 +1243,38 @@ let pollAndRenderForInvocation
 
     let retainedTestRun: RetainedTestRun option ref = ref None
 
+    // AUTOMATION-533. What the daemon had ALREADY completed before this check began.
+    // Read HERE, before the scan provokes anything, because it is the only moment at
+    // which "not this check's" is knowable: afterwards the ledger holds both. One
+    // read-only round trip, on a transport that answers even mid-run.
+    let baselineRuns =
+        try
+            Some(getTestRun().SessionRuns |> Set.ofList)
+        with _ ->
+            // A baseline that could not be taken must not read as an empty one — see
+            // `attribute`. And it may not fail the check: this is a reporting input, and
+            // the whole point of the verdict file is that it exists on the bad paths too.
+            None
+
+    // Every run this check has provoked so far, oldest first. Folded at every reading
+    // rather than derived at the end: a check that aborts still publishes a verdict, and
+    // it must name the batches it had already run by then.
+    let checkRuns: Guid list ref = ref []
+
     let observeTestRun (run: TestRunReport) : TestRunReport =
+        checkRuns.Value <- TestRunEvidence.attribute baselineRuns checkRuns.Value run
+
         let effective, retained =
             TestRunEvidence.reconcile settledTree.Value run retainedTestRun.Value
 
         retainedTestRun.Value <- retained
+        // Attribution is a fact about the CHECK, so it rides on whichever report the
+        // reconciliation kept — including a retained earlier full-suite run, whose own
+        // batch the verdict names through `runId`.
+        let effective =
+            { effective with
+                CheckRuns = checkRuns.Value }
+
         finalRun.Value <- effective
         effective
 

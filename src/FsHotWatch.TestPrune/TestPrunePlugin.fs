@@ -95,6 +95,16 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
+/// AUTOMATION-533. How many completed runs the session ledger keeps, and therefore how
+/// many `test-scope` declares.
+///
+/// Generous against the worst check anyone has recorded (four batches) so the bound
+/// never truncates a real one, and small enough that the reply stays a reply: 64 ids is
+/// ~2 KB on a path that earns verdicts, and a growing-without-bound diagnostic in that
+/// path is a new failure mode.
+[<Literal>]
+let SessionRunLedger = 64
+
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
 /// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
@@ -4675,6 +4685,28 @@ let internal createWithLaunchDeadline
     let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option =
         None
 
+    /// AUTOMATION-533. Every run this daemon session has COMPLETED, newest first — the
+    /// ledger `test-scope` reports so a check can name every batch it ran instead of
+    /// only the last.
+    ///
+    /// One check provokes several runs: the impact-selected batch, the rerun a mid-run
+    /// change queues behind it, `confirm`'s forced full suite, the drain of a queued
+    /// `run-tests`. Each writes its own `.fshw/test-runs/<runId>/`. The CLI cannot
+    /// enumerate them from the filesystem without inferring membership from mtimes —
+    /// which is precisely what the run directory exists to avoid — so the daemon that
+    /// ran them DECLARES them.
+    ///
+    /// A ref rather than a `TestPruneState` field for the same reason `checkReachRef` is
+    /// one: the completion handler returns state through five branches, and a record
+    /// copy one of them forgot would drop a batch — which is the exact failure this
+    /// ledger exists to end, reintroduced one layer down. Written ONCE, before the
+    /// branches.
+    ///
+    /// Bounded at `SessionRunLedger`. A check that runs more batches than that would be
+    /// under-reported by the oldest ones, which is worse than the truth and much better
+    /// than naming one.
+    let mutable completedRunsRef: Guid list = []
+
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
     ///
@@ -5777,8 +5809,23 @@ let internal createWithLaunchDeadline
                         let seeds = evidenceSeeds |> List.truncate 8 |> List.toArray
                         let seedCount = List.length evidenceSeeds
 
+                        // AUTOMATION-533. Every run this session has completed, newest
+                        // first. Sent on EVERY branch — including `running`, which is
+                        // what a check reads when it takes its baseline against a busy
+                        // daemon, and a baseline that came back silent would hand the
+                        // check its predecessor's runs.
+                        let runIds =
+                            Volatile.Read(&completedRunsRef)
+                            |> List.map (fun id -> id.ToString("N"))
+                            |> List.toArray
+
                         if ctx.IsRunning "tests" then
-                            return JsonSerializer.Serialize({| scope = "running"; runId = runId |})
+                            return
+                                JsonSerializer.Serialize(
+                                    {| scope = "running"
+                                       runId = runId
+                                       runIds = runIds |}
+                                )
                         else
                             let evidenceCoverage =
                                 state.EvidenceReceipt
@@ -5790,6 +5837,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "full"
+                                           runIds = runIds
                                            ranProjects = n
                                            totalProjects = n
                                            runId = runId
@@ -5800,6 +5848,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "filtered"
+                                           runIds = runIds
                                            ranProjects = ran
                                            totalProjects = total
                                            runId = runId
@@ -5815,6 +5864,7 @@ let internal createWithLaunchDeadline
                                 return
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
+                                           runIds = runIds
                                            ranProjects = 0
                                            totalProjects = total
                                            runId = runId
@@ -6668,6 +6718,18 @@ let internal createWithLaunchDeadline
                     // and re-fire on cache replay — subscribers that key off
                     // TestRunCompleted (FileCommandPlugin) must see it on a hit.
                     ctx.EmitTestRunCompleted completed
+
+                    // AUTOMATION-533. This run joins the session ledger HERE, before the
+                    // branch explosion below, so no return path can drop it. A run that
+                    // completed is a run whose directory a reader may need, whatever the
+                    // handler goes on to decide about its results.
+                    Volatile.Write(
+                        &completedRunsRef,
+                        completed.RunId
+                        :: (Volatile.Read(&completedRunsRef)
+                            |> List.filter (fun id -> id <> completed.RunId)
+                            |> List.truncate (SessionRunLedger - 1))
+                    )
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
