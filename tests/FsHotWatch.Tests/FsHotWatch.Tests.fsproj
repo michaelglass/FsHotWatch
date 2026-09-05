@@ -50,7 +50,15 @@
     <Compile Include="ProcessReapingTests.fs" />
     <Compile Include="IpcTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
+    <!-- The TestPrune plugin suite, split across four files so no single one exceeds
+         TestPrune's 32,768-node symbol-traversal budget (past it a file gets no symbol
+         analysis at all). The support module holds the harness helpers the parts share
+         and MUST stay first: F# is order-dependent. -->
+    <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="TestPruneFreshnessGateTests.fs" />
+    <Compile Include="TestPrunePendingVerificationTests.fs" />
+    <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />

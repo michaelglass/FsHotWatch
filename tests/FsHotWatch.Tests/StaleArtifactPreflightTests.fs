@@ -4,7 +4,7 @@
 ///
 /// The end-to-end ORDER tests (a stale project refuses before any suite launches, and
 /// the positive control proving the same path does launch them when fresh) live in
-/// `TestPrunePluginTests`, next to the plugin harness that can start real processes.
+/// `TestPruneRunScopeTests`, next to the plugin harness that can start real processes.
 module FsHotWatch.Tests.StaleArtifactPreflightTests
 
 open System
