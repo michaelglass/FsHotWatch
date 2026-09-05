@@ -320,32 +320,53 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         | None -> scan
 
     /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
+    ///
+    /// The reply is SIZE-BOUNDED (`ErrorLedger.Transport`, AUTOMATION-747). Every entry
+    /// still travels — the count and the severities are what the CLI's exit code and
+    /// the verdict's `reddenedBy` are computed from — but each entry's text is capped
+    /// and the response as a whole has a `detail` budget. Without it this reply is
+    /// `failing tests × captured project output` characters, which on a broadly red
+    /// full suite is tens of gigabytes: the serializer cannot build a string that long,
+    /// so an admitted run that the daemon had already FINISHED died here, at the very
+    /// last call, and reported as an out-of-memory fault that named the wrong process.
     member _.GetDiagnostics(pluginFilter: string) : string =
-        let allErrors =
+        let ledger: (string * (string * ErrorLedger.ErrorEntry) list) list =
             if System.String.IsNullOrEmpty(pluginFilter) then
-                config.Host.GetErrors()
-                |> Map.map (fun _file entries ->
-                    entries
-                    |> List.map (fun (plugin, e) ->
-                        {| plugin = plugin
-                           message = e.Message
-                           severity = severityToString e.Severity
-                           line = e.Line
-                           column = e.Column
-                           detail = e.Detail |}))
+                config.Host.GetErrors() |> Map.toList
             else
                 config.Host.GetErrorsByPlugin(pluginFilter)
-                |> Map.map (fun _file entries ->
-                    entries
-                    |> List.map (fun e ->
-                        {| plugin = pluginFilter
-                           message = e.Message
-                           severity = severityToString e.Severity
-                           line = e.Line
-                           column = e.Column
-                           detail = e.Detail |}))
+                |> Map.toList
+                |> List.map (fun (file, entries) -> file, entries |> List.map (fun e -> pluginFilter, e))
 
-        let count = allErrors |> Map.fold (fun acc _ entries -> acc + entries.Length) 0
+        // `Map.toList` order, then one fold across the whole response: the budget is
+        // spent in a deterministic order, so the same ledger always produces the same
+        // reply. A per-file budget would not bound the response at all — it is the
+        // number of FILES that grows on a broadly red run.
+        let files, _spent =
+            ledger
+            |> List.mapFold
+                (fun spent (file, entries) ->
+                    let projected, spent' =
+                        entries
+                        |> List.mapFold
+                            (fun spent (plugin, e: ErrorLedger.ErrorEntry) ->
+                                let detail, spent' = ErrorLedger.Transport.takeDetail spent e.Detail
+
+                                {| plugin = plugin
+                                   message = ErrorLedger.Transport.truncateField e.Message
+                                   severity = severityToString e.Severity
+                                   line = e.Line
+                                   column = e.Column
+                                   detail = detail |},
+                                spent')
+                            spent
+
+                    (file, projected), spent')
+                0
+
+        let allErrors = Map.ofList files
+
+        let count = allErrors |> Map.fold (fun acc _ entries -> acc + List.length entries) 0
 
         let counts = config.Host.GetDiagnosticCountsByPlugin()
 

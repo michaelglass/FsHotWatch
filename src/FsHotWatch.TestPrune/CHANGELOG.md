@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- AUTOMATION-747: `failuresOf` no longer attaches the whole captured project output to
+  every parsed per-test failure — it was one string repeated per test, so a project with
+  753 failures and a 48 MB capture contributed 36 GB to any mirror of the ledger. Each
+  per-test entry carries its failing line; the untruncated output remains on disk at
+  `.fshw/test-runs/<runId>/<project>.output.log`. The project-level entry for a run
+  where NO test could be named still carries it — there, it is the entry's own subject.
+
+
 ## 0.13.0-alpha.30 - 2026-09-03
 
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under

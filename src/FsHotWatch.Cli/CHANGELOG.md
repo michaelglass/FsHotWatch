@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- AUTOMATION-747: `check`/`confirm` gained **exit 7** — the daemon settled (it built,
+  ran the suite and committed its evidence) and this CLI then failed before it could
+  receive that result. Its own `CheckOutcome.ResultUnreceived`, its own verdict-file
+  reason pointing at `.fshw/test-runs/`, and a publish on that path so a finished run
+  stops leaving the previous run's verdict standing as current. Exit 2 is unchanged for
+  a fault BEFORE the settle: nothing had completed there.
+- AUTOMATION-747: an out-of-memory fault reported by the DAEMON is no longer printed as
+  "the fshw CLI ran out of memory". `IpcFault.DaemonOutOfMemory` is chosen from the
+  fault's origin rather than guessed from its stack trace, carries a headline and hint
+  naming the daemon and `.fshw/test-runs/`, and — like a client OOM — never restarts the
+  daemon.
+  - **BREAKING (internal):** `classifyIpcFaultAt` takes a `FaultOrigin` first.
+
+
 ## 0.14.0-alpha.41 - 2026-09-04
 
 - AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`

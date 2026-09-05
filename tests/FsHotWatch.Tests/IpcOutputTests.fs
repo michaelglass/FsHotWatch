@@ -1776,3 +1776,120 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             | Verdict.Incomplete persisted -> test <@ persisted.Contains("PROJECT LOADING FAILED") @>
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected a published discovery verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-747 — a run that FINISHED and could not be received is its own answer.
+//
+// The shape of the incident, exactly: `WaitForComplete` returns (the daemon has built,
+// run the suite and committed its evidence), and the very next call — the diagnostics
+// read — dies for want of memory. That used to reach the caller as a bare exit 2 with
+// no verdict written, so the file on disk stayed whatever the previous run left; seven
+// completed runs in a row read back as an earlier refusal stub for a different tree.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``isMemoryExhaustion recognises memory exhaustion on EITHER side of the wire`` () =
+    test <@ isMemoryExhaustion (System.OutOfMemoryException("Insufficient memory")) @>
+    // The transcoder's refusal of an over-large string token is the same fact.
+    test <@ isMemoryExhaustion (System.OverflowException("too large")) @>
+    // Through the inner chain, which is how it arrives once a Task has wrapped it.
+    test <@ isMemoryExhaustion (exn ("outer", System.OutOfMemoryException("inner"))) @>
+
+    // A daemon-side fault crosses as RemoteInvocationException and is recognised by the
+    // remote payload's TYPE — never by its message, which is a localized framework
+    // resource string.
+    let remote =
+        StreamJsonRpc.RemoteInvocationException(
+            "Insufficient memory to continue the execution of the program.",
+            0,
+            null,
+            StreamJsonRpc.Protocol.CommonErrorData(
+                TypeName = "System.OutOfMemoryException",
+                Message = "Insufficient memory to continue the execution of the program."
+            )
+        )
+
+    test <@ isMemoryExhaustion remote @>
+
+[<Fact(Timeout = 15000)>]
+let ``isMemoryExhaustion ignores unrelated faults`` () =
+    test <@ not (isMemoryExhaustion (exn "boom")) @>
+    test <@ not (isMemoryExhaustion (System.IO.IOException("pipe is broken"))) @>
+    test <@ not (isMemoryExhaustion (System.TimeoutException("WaitForComplete timed out"))) @>
+
+[<Fact(Timeout = 20000)>]
+let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after the run settled`` () =
+    // Settle succeeds — the daemon finished the run — and the diagnostics read then dies.
+    let getErrors () : string =
+        raise (System.OutOfMemoryException("Insufficient memory to continue the execution of the program."))
+
+    let exitCode, published =
+        TestHelpers.withTempDir "ipcoutput-a747" (fun repoRoot ->
+            let code =
+                pollAndRender
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    (fun () -> "{}") // waitForComplete SUCCEEDS: the run is done
+                    (fun () -> "{}")
+                    getErrors
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+
+            code, Verdict.read repoRoot)
+
+    // NOT 2. The work was done; a caller that re-runs on this is paying twice.
+    test <@ exitCode = 7 @>
+
+    // And the finished run leaves a verdict behind rather than the previous run's.
+    match published with
+    | Verdict.Reading.Found verdict ->
+        test <@ verdict.ExitCode = 7 @>
+
+        match verdict.Outcome with
+        | Verdict.Incomplete reason ->
+            // The words point at the evidence, not at another twenty minutes.
+            test <@ reason.Contains ".fshw/test-runs/" @>
+            test <@ reason.Contains "FINISHED" @>
+        | other -> failwithf "expected an incomplete outcome, got %A" other
+    | other -> failwithf "expected a published verdict, got %A" other
+
+[<Fact(Timeout = 20000)>]
+let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` () =
+    // The distinction the new exit code exists to carry, in the other direction. Dying
+    // on the way IN is a run that never happened, and calling that "the result was lost"
+    // would be the same lie pointed the other way. So this arm does not fire: the fault
+    // propagates to the caller's un-completable exit-2 path exactly as it always did.
+    let waitForComplete () : string =
+        raise (System.OutOfMemoryException("Insufficient memory to continue the execution of the program."))
+
+    TestHelpers.withTempDir "ipcoutput-a747-early" (fun repoRoot ->
+        raises<System.OutOfMemoryException>
+            <@
+                pollAndRender
+                    ProgressRenderer.Agent
+                    CheckVerdict.InnerLoop
+                    repoRoot
+                    []
+                    (fun _ -> [])
+                    false
+                    (fun () -> "idle")
+                    waitForComplete
+                    (fun () -> "{}")
+                    (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""")
+                    (fun () -> IpcParsing.TestRunReport.ofScopeOnly (IpcParsing.FullSuite 1))
+                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    ignore
+                    (fun () -> "idle")
+            @>
+
+        // And nothing was published: there is no finished run to record.
+        match Verdict.read repoRoot with
+        | Verdict.Reading.Found v -> failwithf "expected no verdict, got %A" v.Outcome
+        | _ -> ())

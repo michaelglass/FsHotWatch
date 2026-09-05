@@ -691,6 +691,37 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
          && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
 
+/// True when `ex` (walking its inner-exception chain) is memory exhaustion — in THIS
+/// process or in the daemon. AUTOMATION-747.
+///
+/// Matched by TYPE, never by message text: `OutOfMemoryException`'s message is a
+/// localized framework resource string, and a predicate that decides a merge gate's
+/// exit code on a substring of it answers differently in another locale. A fault raised
+/// on the daemon crosses the wire as `RemoteInvocationException` — never as the
+/// daemon's own exception type — so the remote error payload's `TypeName` is the
+/// evidence on that side, exactly as `Program.remoteFaultDetails` reads it.
+///
+/// `OverflowException` counts: System.Text.Json's UTF-8 transcoder raises it, not an
+/// OOM, when one string token is too large to encode. Both are the same fact — a
+/// payload nobody can build — and both used to reach a caller as a bare exit 2.
+let rec isMemoryExhaustion (ex: exn) : bool =
+    match ex with
+    | null -> false
+    | :? OutOfMemoryException
+    | :? OverflowException -> true
+    | :? StreamJsonRpc.RemoteInvocationException as remote ->
+        let rec namesMemoryFault (data: StreamJsonRpc.Protocol.CommonErrorData) =
+            not (isNull data)
+            && (data.TypeName = "System.OutOfMemoryException"
+                || data.TypeName = "System.OverflowException"
+                || namesMemoryFault data.Inner)
+
+        (match remote.DeserializedErrorData with
+         | :? StreamJsonRpc.Protocol.CommonErrorData as data -> namesMemoryFault data
+         | _ -> false)
+        || (not (isNull ex.InnerException) && isMemoryExhaustion ex.InnerException)
+    | _ -> not (isNull ex.InnerException) && isMemoryExhaustion ex.InnerException
+
 /// The tree a check had just finished verifying, captured by the TRANSPORT at the
 /// instant it settled.
 ///
@@ -1369,6 +1400,53 @@ let pollAndRenderForInvocation
 
         UI.fail reason
         exitCode
+    // AUTOMATION-747. Memory exhaustion — here or in the daemon — AFTER the run
+    // settled.
+    //
+    // The guard is the settle, not the fault: `settledTree` is `VerifiedTree` only once
+    // `WaitForComplete` has returned, which is the daemon saying it built, ran and
+    // committed. So this arm is reachable only when the work is DONE and the answer was
+    // lost carrying it back, which is the one thing that distinguishes this from a
+    // refusal. The same fault BEFORE the settle keeps its old exit 2: nothing had
+    // completed, and claiming otherwise would be the same lie in the other direction.
+    //
+    // It publishes, like every other terminal here. Without a publish the verdict on
+    // disk stays whatever the LAST run left — in the incident that produced this ticket,
+    // a refusal stub for a different tree — and seven finished runs in a row read back
+    // as that stub.
+    | ex when
+        isMemoryExhaustion ex
+        && (match settledTree.Value with
+            | VerifiedTree _ -> true
+            | NeverSettled -> false)
+        ->
+        let reason = ex.Message
+
+        let abortExitCode =
+            publishVerdictForInvocation
+                invocation
+                repoRoot
+                excludePatterns
+                checkMode
+                noWarnFail
+                finalRun.Value
+                // Same reasoning as the two aborts below: an escalation's EXECUTED
+                // reading is already in hand; asking the daemon for a fresh projection
+                // on a path that just failed for want of memory is the last thing to do.
+                (match impactScoped.Value with
+                 | Some reading ->
+                     Verdict.ExecutedReading(
+                         reading,
+                         IpcParsing.ReachUnavailable "the check ran out of memory before recall could be read"
+                     )
+                 | None -> Verdict.NoReading)
+                finalStatuses.Value
+                finalCauses.Value
+                settledTree.Value
+                (CheckVerdict.CheckOutcome.ResultUnreceived reason)
+
+        UI.fail (Verdict.CheckProse.resultUnreceived reason)
+        abortExitCode
     | ex when isVerdictWaitTimeout ex ->
         // The daemon's hard verdict deadline fired: a plugin overran the bound and is
         // most likely wedged. The remote message names the plugin and its elapsed time

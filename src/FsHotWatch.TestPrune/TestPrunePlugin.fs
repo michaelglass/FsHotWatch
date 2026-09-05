@@ -3189,6 +3189,10 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
             let parsed = parseFailedTests output
 
             if parsed.IsEmpty then
+                // ONE entry for the project, so the whole captured output is carried
+                // ONCE. This is the only arm where that text is the entry's own
+                // subject: no test was named, so the run itself is what the reader has
+                // to go on.
                 [ projectLevel (ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output) ]
             else
                 parsed
@@ -3200,7 +3204,25 @@ let internal failuresOf (classFiles: Map<string, string>) (results: TestResults)
                       Class = (if isTimeout then None else Some className)
                       Method = (if isTimeout then None else Some methodName)
                       File = file
-                      Entry = ErrorLedger.ErrorEntry.errorWithDetail line output })
+                      // The failing LINE, and no detail. AUTOMATION-747.
+                      //
+                      // This used to attach `output` — the whole captured project run —
+                      // to every parsed failure, which made the ledger's size the
+                      // PRODUCT of two unbounded numbers rather than their sum. 753
+                      // failing tests against a 48 MB capture is 36 GB once a mirror of
+                      // the ledger writes each entry's copy out, and the merge gate died
+                      // building exactly that reply after the daemon had already
+                      // finished the run.
+                      //
+                      // Nothing is lost by dropping it, because it was never this
+                      // entry's fact: it was the same project-wide string repeated per
+                      // test, no renderer has ever printed a ledger `Detail`, and the
+                      // untruncated capture is on disk at
+                      // `.fshw/test-runs/<runId>/<project>.output.log`. The transport
+                      // bound in `ErrorLedger.Transport` still stands behind this — a
+                      // plugin must not be able to do it again — but the bound is a
+                      // backstop, and this is the defect.
+                      Entry = ErrorLedger.ErrorEntry.error line })
         | TestsDeferred reason ->
             // NOT a test failure — surface an honest "waiting on build / did not
             // run" diagnostic at `Deferred` severity so the verdict is NON-green
