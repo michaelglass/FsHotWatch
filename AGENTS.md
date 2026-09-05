@@ -19,11 +19,17 @@ Placement-independent (`fshw -a check` ≡ `fshw check -a`).
 The verbs that matter:
 
 - **`check`** — the fast inner loop. Triggers a full run and blocks until done;
-  exit 0 = green. The tests are **impact-filtered**: a latency optimization, not a
-  merge decision.
+  exit 0 = green. The tests are **impact-filtered**: a green says nothing you
+  changed broke anything the selector chose to look at, not that the whole suite
+  is green.
 - **`confirm`** — run the FULL suite and confirm `check` told the truth. Same
   checks, but the tests run unfiltered, and a green is refused (exit 3) unless they
   actually did. This is what CI runs.
+
+**Which verb gates a merge is YOUR project's policy, not fshw's.** The two verbs
+report different strengths of evidence and say honestly which one they produced;
+neither of them decides your workflow. If your repo has a `CLAUDE.md`, that is
+where the rule lives, and fshw will not contradict it.
 - **`status`** — the observer. Reports current state without triggering anything.
 - **`verdict`** — read the last verdict from `.fshw/verdict.json`. No socket, no
   run: reading cannot perturb.

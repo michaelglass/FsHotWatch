@@ -859,8 +859,9 @@ module AgentHints =
         let scopeAdvice =
             match v.Command, v.Scope with
             | Verdict.Check, ImpactFiltered(ran, total) ->
-                [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — for a MERGE verdict use \
-                     `fshw confirm` (unfiltered; exit 3 if the scope was not earned)" ]
+                [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — a green here is not \
+                     full-suite evidence; use `confirm` only when you explicitly need that (unfiltered; exit 3 \
+                     if the scope was not earned)" ]
             | Verdict.Check, (NoTestsRun _ | ScopeUnreadable _) ->
                 [ $"  this check did not establish a full-suite scope (%s{TestScope.describe v.Scope}) — NO VERDICT. \
                      Re-run `fshw check` so its convergence loop can earn a verdict; use `confirm` only when \

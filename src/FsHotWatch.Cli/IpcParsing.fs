@@ -210,7 +210,7 @@ let FullSuiteScopeArgs = """{"scope":"full"}"""
 /// output and defers every affected project as "waiting on build", and neither side ever
 /// moves. That deadlock blocked a production deploy three times.
 ///
-/// `confirm` is the unfiltered merge verb, so it forces the build the same way it
+/// `confirm` is the unfiltered verb, so it forces the build the same way it
 /// already forces a from-disk scan and a full-suite run. Plain `check` keeps the cache
 /// (and reports the residual honestly as incomplete/exit 2).
 [<Literal>]

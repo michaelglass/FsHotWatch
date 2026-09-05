@@ -125,7 +125,7 @@ type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
     | [<CmdExample("", "--run-once");
-        Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, which is a latency optimization and not the basis for a merge decision (use `confirm` for that)")>] Check of
+        Cmd("Run all checks. The fast inner loop — the tests are IMPACT-FILTERED, so a green says nothing you changed broke anything the selector chose to look at, NOT that the whole suite is green. `confirm` runs the same checks unfiltered when you need that stronger claim")>] Check of
         RunFlag list
     /// Run the full suite and CONFIRM THAT `check` TOLD THE TRUTH. Same checks as
     /// `check`, but the tests run UNFILTERED — and the verdict is refused unless they
@@ -2084,7 +2084,7 @@ let executeCommand
                 // like the `NoVerdict` arm below.
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
-                say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."
+                say "  Re-run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence). Never reuse it."
             | Verdict.Report.NoVerdict reason -> say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
 
             Verdict.reportExitCode report

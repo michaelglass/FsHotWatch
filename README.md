@@ -46,7 +46,7 @@ fshw check
 # Prefer one line per plugin?
 fshw check --compact   # or -q
 
-# Before you merge: run the full suite and confirm `check` told the truth.
+# Need the full suite, unfiltered? Confirm `check` told the truth.
 fshw confirm
 ```
 
@@ -57,13 +57,14 @@ fshw confirm
 Three verbs, and the difference between them is the difference between a fast
 answer and a trustworthy one.
 
-**`fshw check` is the inner loop, and it is *not* a merge decision.** It runs
+**`fshw check` is the inner loop, and its green is a narrower claim.** It runs
 every plugin (build, lint, analyze, test, format-check), but the *tests* are
 **impact-filtered** — it runs the tests a heuristic selector *thinks* your change
-can affect. That is a latency optimization, and it is the right trade for the
-loop you run on every save.
+can affect. A green means *"nothing you changed broke anything the selector chose
+to look at"*, not *"the suite is green"*. That is a latency optimization, and it is
+the right trade for the loop you run on every save.
 
-**`fshw confirm` is the merge verb.** It runs the same checks with the tests
+**`fshw confirm` is the unfiltered verb.** It runs the same checks with the tests
 **unfiltered**, and it *refuses to go green* unless they actually ran that way —
 "nothing failed" is not a verdict if the run never produced the evidence
 (exit `3`). Running it beside `check` is a **comparison**, and every disagreement
@@ -76,6 +77,12 @@ is a bug in one of them:
 
 **`fshw verdict` reads the answer back**, from a file, without contacting the
 daemon — see [Machine-readable state](#machine-readable-state-for-agents-and-ci).
+
+**Which verb gates a merge is your project's policy, not fshw's.** These two verbs
+produce different strengths of evidence and each says honestly which one it produced;
+neither decides your workflow, and neither will tell you to switch verbs mid-gate.
+Write the rule down where your team and your agents read it — a `CLAUDE.md`, a
+`CONTRIBUTING.md`, a CI job — and fshw will not contradict it.
 
 ### What these verbs do *not* claim
 
@@ -106,7 +113,7 @@ This matters more than the feature list, so it is stated up front:
 | Command | What it does |
 |---------|--------------|
 | `fshw check` | **The inner loop.** Run every plugin and report findings; tests are impact-filtered. Auto-starts the daemon. Exits 0 (clean), 1 (failures), 2 (completeness unconfirmed). `--run-once` runs without a daemon; `-q`/`--compact` for one line per plugin. |
-| `fshw confirm` | **The merge verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. |
+| `fshw confirm` | **The unfiltered verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. |
 | `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
 | `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |
@@ -126,7 +133,7 @@ Add `-v` for debug logging or `-a` for agent-friendly, parseable output. Run
 > cache is on disk under `.fshw/` and survives a stop, a crash and a reboot, so a
 > restart throws away the warm compiler and then serves you the same cached answer. The
 > cache-reset primitive is **`fshw invalidate`**, which clears this workspace's task
-> results and preserves the compiler process. The merge gate is **`fshw confirm`**, which forces a real build and refuses to replay a cached
+> results and preserves the compiler process. The verb that cannot be served from cache is **`fshw confirm`**, which forces a real build and refuses to replay a cached
 > verdict. If the cause is stale build *output*, `dotnet build` is the fix — and a copy
 > MSBuild skipped on equal timestamps needs `dotnet build --no-incremental`.
 

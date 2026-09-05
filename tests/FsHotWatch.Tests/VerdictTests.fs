@@ -1068,8 +1068,17 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
 
     test <@ text.Contains ".fshw/test-runs/Intelligence.Tests.Integration-7134d9cfbee943df9cdf24d622dc31ca.ctrf.json" @>
 
+/// AUTOMATION-394, finishing the workflow-neutral pass the no-verdict hints already got.
+/// This is the hint a green inner-loop check prints, so it is the one an operator reads
+/// most often — and it used to read "for a MERGE verdict use `fshw confirm`", which is a
+/// workflow order rather than a report. A project whose written rule gates merges on
+/// `check` had its own rule contradicted by its own tooling, at the one moment (a scoped
+/// green, about to land) when re-reading the runbook is least likely.
+///
+/// It still names `confirm`, and must: the reader needs to know what buys the stronger
+/// claim. What it no longer does is say when to spend it.
 [<Fact>]
-let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm`` () =
+let ``an impact-scoped check is told what its green covers, not which verb to merge with`` () =
     let v =
         { greenVerdict "sha256:abc" 12 with
             Command = Verdict.Check
@@ -1078,7 +1087,12 @@ let ``an impact-scoped check is TOLD it is impact-scoped, and pointed at confirm
     let text = hintsFor v |> String.concat "\n"
 
     test <@ text.Contains "impact-scoped (2/6 test projects)" @>
-    test <@ text.Contains "fshw confirm" @>
+    test <@ text.Contains "a green here is not full-suite evidence" @>
+    // Phrased as the sibling NoTestsRun hint phrases it, so the two paths read as one
+    // voice: what the run covered, then the verb that buys more, and no instruction.
+    test <@ text.Contains "use `confirm` only when you explicitly need that" @>
+
+    test <@ not (text.Contains "MERGE verdict") @>
 
 [<Fact>]
 let ``a check that ran no tests is told to converge check rather than redirect its workflow`` () =
