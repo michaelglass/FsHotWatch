@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- AUTOMATION-555 (rework): **the daemon records every phase it spends wall time in.**
+  New `DaemonPhases` module: a bounded, thread-safe `Ledger` of `PhaseRecord`s
+  (`Scope`, `StartedAt`, `Elapsed`, `Detail`), reachable as `PluginHost.Phases`.
+  - `Phase.Startup` (process start → IPC pipe listening), `Phase.Discover` (MSBuild
+    evaluation, every call), `Phase.Scan kind` (the whole `performScan`: discovery
+    admission, build settlement, the FCS tiers), `Phase.Check` (each incremental change
+    batch) and `Phase.PluginRun name` — the plugin's WHOLE `Running` → terminal
+    interval, recorded by the status agent on every terminal transition, so a run a
+    later re-run supersedes stays on the ledger and test-prune's pre-run symbol
+    analysis counts.
+  - A phase is recorded on EVERY exit (completion, exception, cancellation) through a
+    `use`-bound `PhaseHandle`; a snapshot taken mid-phase reports the in-flight phase
+    clipped at now and marked `in flight`. Same-scope records at most 250 ms apart
+    coalesce into one (the analyzers plugin reports a terminal status per file — ~130
+    transitions in seconds — which on the first dogfood run evicted the startup and
+    discovery records and left a 33 s hole); the ledger retains 256 records.
+  - `GetDiagnostics` serves the ledger as `daemonPhases[]` (`scope`, `startedAt` in
+    round-trip UTC, `elapsedMs`, `detail`) beside `statuses`.
+
 - AUTOMATION-434 (rework): **a native FSEvents stream macOS refuses on EVERY attempt of
   the retry budget fails the watcher closed instead of demoting it to polling.** The
   first landing retried transient refusals (100/300/900 ms) but let a refusal past the

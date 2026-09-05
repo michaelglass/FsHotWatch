@@ -1907,3 +1907,53 @@ let ``five scan generations emit five parseable, fittable measurement records`` 
         | FsHotWatch.ScanMetrics.RetentionVerdict.ExceedsBound(slope, bound) ->
             test <@ bound = FsHotWatch.ScanMetrics.DefaultRetentionBound @>
             test <@ Double.IsFinite slope @>)
+
+// --- AUTOMATION-555 (rework): the scan and discovery are named phases ---
+
+/// The cold scan is the largest phase a `check` waits on and no plugin owns it. After
+/// a forced scan the daemon's ledger must carry it — and the startup before it — with
+/// a scope the verdict can name and a non-zero elapsed. (Discovery is not provoked
+/// here: the fixture has no `.fsproj`, so the fingerprint never changes; its bracket
+/// is the same handle `DaemonPhasesTests` covers.)
+[<Fact(Timeout = 60000)>]
+let ``a forced scan records daemon.scan and daemon.startup phases on the ledger`` () =
+    withTempDir "scan-phase" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+
+        try
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            |> ignore
+
+            waitUntil (fun () -> daemon.GetScanGeneration() >= 1L) 20000
+
+            let completedScans () =
+                daemon.Host.Phases.Snapshot(DateTime.UtcNow)
+                |> List.filter (fun r -> r.Scope = "daemon.scan" && r.Detail <> Some "in flight")
+
+            waitUntil (fun () -> not (List.isEmpty (completedScans ()))) 20000
+
+            match completedScans () with
+            | scan :: _ ->
+                test <@ scan.Elapsed > TimeSpan.Zero @>
+                test <@ scan.Detail |> Option.exists (fun d -> d.Contains "scan: checked") @>
+            | [] -> failwith "the forced scan left no daemon.scan phase on the ledger"
+
+            let phases = daemon.Host.Phases.Snapshot(DateTime.UtcNow)
+
+            test
+                <@
+                    phases
+                    |> List.exists (fun r -> r.Scope = "daemon.startup" && r.Elapsed > TimeSpan.Zero)
+                @>
+        finally
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ())

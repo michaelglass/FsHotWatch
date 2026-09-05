@@ -77,6 +77,7 @@
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginFramework.fs" />
+    <Compile Include="DaemonPhases.fs" />
     <Compile Include="PluginActivity.fs" />
     <Compile Include="MacFsEvents.fs" />
     <Compile Include="ContentDedup.fs" />

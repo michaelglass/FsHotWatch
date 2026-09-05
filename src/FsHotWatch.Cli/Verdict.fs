@@ -248,24 +248,62 @@ module TimingSpan =
         else
             Error $"%s{scope} timing is outside this invocation and was not attributed"
 
-    /// A plugin's last run, placed on the timeline. `Ok None` for a cache replay: it
-    /// did no work in this invocation, so there is nothing to attribute and nothing
-    /// to complain about.
+    /// AUTOMATION-555 (rework). Place a wall-clock interval the daemon measured on
+    /// the invocation's timeline, CLIPPED to `[0, observed)`: the part that fell
+    /// inside the invocation is wall time the invocation spent waiting on it, whether
+    /// or not the interval began before the origin (a plugin run already in flight
+    /// when the check arrived) or was still running when the wrapper stopped
+    /// observing. `None` when nothing of it fell inside — history, not evidence.
+    let clipped
+        (invocation: Invocation)
+        (observedElapsedMs: int64)
+        (scope: string)
+        (startedAtUtc: DateTime)
+        (elapsed: TimeSpan)
+        (detail: string option)
+        : TimingSpan option =
+        let observed = max 0L observedElapsedMs
+        let startOffsetMs = int64 (startedAtUtc - invocation.OriginUtc).TotalMilliseconds
+        let endOffsetMs = startOffsetMs + max 0L (int64 elapsed.TotalMilliseconds)
+        let startAt = max 0L (min observed startOffsetMs)
+        let endAt = max startAt (min observed endOffsetMs)
+
+        if endAt > startAt then
+            Some
+                { Scope = scope
+                  StartOffsetMs = startAt
+                  ElapsedMs = endAt - startAt
+                  Detail = detail }
+        else
+            None
+
+    /// A plugin's last run, placed on the timeline and clipped to the invocation.
+    /// `None` for a cache replay (it did no work) and for a run that fell wholly
+    /// outside the invocation (not this invocation's work). The fallback for a
+    /// daemon that serves no phase ledger; a served ledger already carries every
+    /// plugin run, superseded ones included.
     let ofPluginRun
         (invocation: Invocation)
         (observedElapsedMs: int64)
         (name: string)
         (run: RunRecord)
-        : Result<TimingSpan option, string> =
+        : TimingSpan option =
         let cached =
             run.Summary
             |> Option.exists (fun summary -> summary.EndsWith(" (cached)", StringComparison.Ordinal))
 
         if cached then
-            Ok None
+            None
         else
-            ofWallClock invocation observedElapsedMs ("plugin." + name) run.StartedAt run.Elapsed run.Summary
-            |> Result.map Some
+            clipped invocation observedElapsedMs ("plugin." + name) run.StartedAt run.Elapsed run.Summary
+
+    /// A daemon phase (`DaemonPhases.PhaseRecord`), placed and clipped like a run.
+    let ofDaemonPhase
+        (invocation: Invocation)
+        (observedElapsedMs: int64)
+        (phase: DaemonPhases.PhaseRecord)
+        : TimingSpan option =
+        clipped invocation observedElapsedMs phase.Scope phase.StartedAt phase.Elapsed phase.Detail
 
     /// How much of `observedElapsedMs` the spans explain, counting each instant AT
     /// MOST ONCE: overlapping intervals are unioned, and every span is clipped to
@@ -293,17 +331,62 @@ module TimingSpan =
                |> Option.map (fun (startAt, endAt) -> endAt - startAt)
                |> Option.defaultValue 0L)
 
+    /// The intervals of `[0, observed)` NO span explains, in timeline order — the
+    /// complement of the union `coveredDuration` measures. What a reader walks to
+    /// find where the wall clock went that nothing named.
+    let gaps (observedElapsedMs: int64) (spans: TimingSpan list) : (int64 * int64) list =
+        let observed = max 0L observedElapsedMs
+
+        let merged =
+            spans
+            |> List.choose (fun span ->
+                let startAt = max 0L (min observed span.StartOffsetMs)
+                let endAt = max startAt (min observed (span.StartOffsetMs + max 0L span.ElapsedMs))
+                if endAt > startAt then Some(startAt, endAt) else None)
+            |> List.sortBy fst
+            |> List.fold
+                (fun merged (startAt, endAt) ->
+                    match merged with
+                    | (currentStart, currentEnd) :: rest when startAt <= currentEnd ->
+                        (currentStart, max currentEnd endAt) :: rest
+                    | _ -> (startAt, endAt) :: merged)
+                []
+            |> List.rev
+
+        let uncovered, cursor =
+            merged
+            |> List.fold
+                (fun (uncovered, cursor) (startAt, endAt) ->
+                    (if startAt > cursor then
+                         (cursor, startAt) :: uncovered
+                     else
+                         uncovered),
+                    endAt)
+                ([], 0L)
+
+        (if observed > cursor then
+             (cursor, observed) :: uncovered
+         else
+             uncovered)
+        |> List.rev
+
 /// AUTOMATION-555. Everything a verdict says about WHERE its wall time went, over and
 /// above the per-plugin `elapsedMs`. Grouped so a producer attaches it in one move and
 /// cannot stamp an invocation id without the evidence that goes with it.
+///
+/// (rework) There is NO field a producer sets to say "my timing is complete". The
+/// first landing had one (`TimingIncompleteReasons`), producers filled it only with
+/// the evidence they had REFUSED, and a verdict whose spans explained 10% of its wall
+/// time went out reading `timing evidence complete`. Completeness is now derived by
+/// `Attribution.incompleteReasons` from the spans against the observed wall time —
+/// the same union the printed percentage comes from — so the two cannot disagree.
 type Attribution =
     {
         Hooks: HookVerdict list
         TimingSpans: TimingSpan list
-        /// Evidence that was missing, stale, malformed or out of range — reported
-        /// SEPARATELY from the attribution percentage. An empty span list alone never
-        /// claims complete attribution; only an empty reason list does.
-        TimingIncompleteReasons: string list
+        /// Evidence that was missing, stale, malformed or out of range, by name.
+        /// Facts about what could not be placed — NOT a claim about completeness.
+        RefusedEvidence: string list
         /// Wall time observed by the wrapping CLI, when there was one.
         ObservedElapsedMs: int64 option
         /// The invocation this verdict belongs to. `None` on a verdict produced
@@ -315,9 +398,50 @@ module Attribution =
     let none: Attribution =
         { Hooks = []
           TimingSpans = []
-          TimingIncompleteReasons = []
+          RefusedEvidence = []
           ObservedElapsedMs = None
           InvocationId = None }
+
+    /// The floor below which timing evidence is INCOMPLETE: the spans must explain at
+    /// least this much of the observed wall time. The figure the verdict's own
+    /// acceptance criterion names.
+    [<Literal>]
+    let CompleteThresholdPercent = 95L
+
+    /// How many of the uncovered intervals a derived reason names, largest first.
+    [<Literal>]
+    let private NamedGaps = 3
+
+    /// The reasons the SPANS THEMSELVES give for incompleteness: empty when they
+    /// explain at least `CompleteThresholdPercent` of the observed wall time, else one
+    /// reason naming the coverage and the largest uncovered intervals. A pure function
+    /// of (observed, spans) — integer arithmetic only — so the SAME inputs always
+    /// yield the SAME text, which is what lets a reader strip and re-derive it.
+    let derivedReasons (observedElapsedMs: int64 option) (spans: TimingSpan list) : string list =
+        match observedElapsedMs with
+        | Some observed when observed > 0L ->
+            let covered = TimingSpan.coveredDuration observed spans
+            let permille = covered * 1000L / observed
+
+            if permille >= CompleteThresholdPercent * 10L then
+                []
+            else
+                let named =
+                    TimingSpan.gaps observed spans
+                    |> List.sortByDescending (fun (startAt, endAt) -> endAt - startAt)
+                    |> List.truncate NamedGaps
+                    |> List.map (fun (startAt, endAt) -> $"%d{startAt}ms→%d{endAt}ms (%d{endAt - startAt}ms)")
+                    |> String.concat ", "
+
+                [ $"timing spans cover %d{permille / 10L}.%d{permille % 10L}%% of the %d{observed}ms observed — below the %d{CompleteThresholdPercent}%% completeness floor; largest unattributed interval(s): %s{named}" ]
+        | _ -> []
+
+    /// Everything that makes this attribution incomplete: the evidence it refused,
+    /// then what the spans fail to explain. Empty means COMPLETE, and nothing but this
+    /// function can say so.
+    let incompleteReasons (attribution: Attribution) : string list =
+        attribution.RefusedEvidence
+        @ derivedReasons attribution.ObservedElapsedMs attribution.TimingSpans
 
 /// A pointer to one test project's CTRF report, plus the counts it carries, so "how
 /// many ran? how many failed?" is answered without opening a second file while the
@@ -1242,7 +1366,8 @@ type Verdict =
     /// AUTOMATION-555. Configured hook steps that executed in this invocation.
     member this.Hooks = this.attribution.Hooks
     member this.TimingSpans = this.attribution.TimingSpans
-    member this.TimingIncompleteReasons = this.attribution.TimingIncompleteReasons
+    /// Derived — see `Attribution.incompleteReasons`. Empty iff the timing is complete.
+    member this.TimingIncompleteReasons = Attribution.incompleteReasons this.attribution
     member this.ObservedElapsedMs = this.attribution.ObservedElapsedMs
     member this.InvocationId = this.attribution.InvocationId
     member this.Attribution = this.attribution
@@ -1804,6 +1929,82 @@ let private addReason (root: JsonObject) (reason: string) : unit =
     if not alreadyRecorded then
         reasons.Add(JsonValue.Create reason :> JsonNode)
 
+/// The timing evidence a verdict node currently holds — observed wall time and the
+/// in-range spans — read the way `parseAttribution` reads it, so a derived reason
+/// computed here equals the one a later `read` derives.
+let private timingOfNode (root: JsonObject) : int64 option * TimingSpan list =
+    let int64Of (node: JsonNode) =
+        match node with
+        | null -> None
+        | n when n.GetValueKind() = JsonValueKind.Number ->
+            (try
+                Some(n.GetValue<int64>())
+             with _ ->
+                 None)
+        | _ -> None
+
+    let stringOf (node: JsonNode) =
+        match node with
+        | null -> None
+        | n when n.GetValueKind() = JsonValueKind.String -> Some(n.GetValue<string>())
+        | _ -> None
+
+    let observed = int64Of root["observedElapsedMs"]
+
+    let spans =
+        match root["timingSpans"] with
+        | :? JsonArray as spans ->
+            [ for item in spans do
+                  match item with
+                  | :? JsonObject as span ->
+                      match stringOf span["scope"], int64Of span["startOffsetMs"], int64Of span["elapsedMs"] with
+                      | Some scope, Some startOffsetMs, Some elapsedMs when
+                          observed
+                          |> Option.exists (fun observed -> TimingSpan.isWithin observed startOffsetMs elapsedMs)
+                          ->
+                          yield
+                              { Scope = scope
+                                StartOffsetMs = startOffsetMs
+                                ElapsedMs = elapsedMs
+                                Detail = stringOf span["detail"] }
+                      | _ -> ()
+                  | _ -> () ]
+        | _ -> []
+
+    observed, spans
+
+let private derivedReasonsOfNode (root: JsonObject) : string list =
+    let observed, spans = timingOfNode root
+    Attribution.derivedReasons observed spans
+
+/// Apply `mutate` to a verdict node and keep its stored `timingIncompleteReasons`
+/// equal to what `read` would derive afterwards: the reasons the OLD spans and wall
+/// time derived are removed first, the NEW ones appended after. Without this an
+/// augmentation that adds spans or raises the observed wall time would leave the
+/// file asserting a completeness the evidence no longer supports.
+let private withDerivedReasonsRefreshed (root: JsonObject) (mutate: unit -> unit) : unit =
+    let stale = derivedReasonsOfNode root |> Set.ofList
+
+    match root["timingIncompleteReasons"] with
+    | :? JsonArray as reasons when not stale.IsEmpty ->
+        let kept =
+            reasons
+            |> Seq.filter (fun item ->
+                isNull item
+                || item.GetValueKind() <> JsonValueKind.String
+                || not (stale.Contains(item.GetValue<string>())))
+            |> Seq.toList
+
+        reasons.Clear()
+
+        for item in kept do
+            // A node can only belong to one parent: detach before re-adding.
+            reasons.Add(item.DeepClone())
+    | _ -> ()
+
+    mutate ()
+    derivedReasonsOfNode root |> List.iter (addReason root)
+
 /// Append hook steps, interval evidence, incompleteness reasons and the observed wall
 /// time to the verdict owned by `invocationId`. `false` — and NOTHING written — when
 /// the file is missing, unreadable, unowned, or owned by a different invocation.
@@ -1823,15 +2024,16 @@ let tryAugment
         else
             match tryReadOwner verdictPath with
             | Ok(root, Some owner) when owner = invocationId ->
-                let hookArray = arrayAt root "hooks"
-                hooks |> List.iter (hookJson >> hookArray.Add)
-                let spanArray = arrayAt root "timingSpans"
-                spans |> List.iter (spanJson >> spanArray.Add)
-                incompleteReasons |> List.iter (addReason root)
+                withDerivedReasonsRefreshed root (fun () ->
+                    let hookArray = arrayAt root "hooks"
+                    hooks |> List.iter (hookJson >> hookArray.Add)
+                    let spanArray = arrayAt root "timingSpans"
+                    spans |> List.iter (spanJson >> spanArray.Add)
+                    incompleteReasons |> List.iter (addReason root)
 
-                match observedElapsedMs with
-                | Some observed -> root["observedElapsedMs"] <- JsonValue.Create observed
-                | None -> ()
+                    match observedElapsedMs with
+                    | Some observed -> root["observedElapsedMs"] <- JsonValue.Create observed
+                    | None -> ())
 
                 FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")
                 true
@@ -1872,7 +2074,7 @@ let writeHookFailure
     |> withAttribution
         { Hooks = hooks
           TimingSpans = spans
-          TimingIncompleteReasons = [ reason ]
+          RefusedEvidence = [ reason ]
           ObservedElapsedMs = Some(Invocation.elapsedMs invocation)
           InvocationId = Some invocation.Id }
     |> write repoRoot
@@ -1904,7 +2106,7 @@ let tryPublishTerminal
         terminalVerdict repoRoot excludePatterns command reason
         |> withAttribution
             { Attribution.none with
-                TimingIncompleteReasons = [ reason ]
+                RefusedEvidence = [ reason ]
                 ObservedElapsedMs = Some observed
                 InvocationId = Some invocation.Id }
         |> serialize
@@ -1923,13 +2125,18 @@ let tryPublishTerminal
                 FsHwPaths.atomicWriteAllText verdictPath (fallback ())
                 true
             | Ok(root, Some owner) when owner = invocation.Id && downgradeSameOwner ->
-                let outcome = JsonObject()
-                outcome["kind"] <- JsonValue.Create "incomplete"
-                outcome["reason"] <- JsonValue.Create reason
-                root["outcome"] <- outcome
-                root["exitCode"] <- JsonValue.Create(CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
-                addReason root reason
-                root["observedElapsedMs"] <- JsonValue.Create observed
+                withDerivedReasonsRefreshed root (fun () ->
+                    let outcome = JsonObject()
+                    outcome["kind"] <- JsonValue.Create "incomplete"
+                    outcome["reason"] <- JsonValue.Create reason
+                    root["outcome"] <- outcome
+
+                    root["exitCode"] <-
+                        JsonValue.Create(CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1))
+
+                    addReason root reason
+                    root["observedElapsedMs"] <- JsonValue.Create observed)
+
                 FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")
                 true
             | Ok _ -> false)
@@ -2050,9 +2257,16 @@ let private parseAttribution (root: JsonElement) : Attribution =
             List.ofSeq reasons
         | Some _ -> [ "timingIncompleteReasons is malformed: expected an array" ]
 
+    // The file carries the derived reasons too (a consumer reading the JSON must see
+    // them), and they are re-derived from the very spans just parsed — so strip the
+    // stored copies, or a round trip would state each gap twice.
+    let derived = Attribution.derivedReasons observedElapsedMs spans |> Set.ofList
+
     { Hooks = hooks
       TimingSpans = spans
-      TimingIncompleteReasons = spanReasons @ recordedReasons
+      RefusedEvidence =
+        spanReasons
+        @ (recordedReasons |> List.filter (fun r -> not (derived.Contains r)))
       ObservedElapsedMs = observedElapsedMs
       InvocationId = tryString root "invocationId" }
 

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- AUTOMATION-555 (rework): **timing completeness is derived from the spans, and the
+  spans cover the daemon's own phases.** The first landing attributed only each plugin's
+  `lastRun` and the hook steps, and its `timingIncompleteReasons` was a list producers
+  filled only with evidence they had refused — so a verdict whose spans explained 10% of
+  its wall time went out reading `timing evidence complete`.
+  - `timingSpans[]` now carries the daemon's `daemonPhases[]` — `daemon.startup`,
+    `daemon.discover`, `daemon.scan`, `daemon.check` and every `plugin.<name>` `Running`
+    interval, superseded runs included — each CLIPPED to the invocation window
+    (`TimingSpan.clipped` / `ofDaemonPhase`). A daemon that serves no ledger falls back
+    to `lastRun`, clipped the same way; a run wholly outside the window is history, not
+    a refusal.
+  - `timingIncompleteReasons` = `Attribution.incompleteReasons`: the refused evidence,
+    then — when the unioned spans cover less than `Attribution.CompleteThresholdPercent`
+    (95) of `observedElapsedMs` — one deterministic reason naming the coverage and the
+    largest gaps (`TimingSpan.gaps`). `timing evidence complete` prints only when that
+    list is empty. `Verdict.tryAugment` and the terminal downgrade re-derive it after
+    mutating the file; `read` strips the stored copy and re-derives, so a round trip
+    never states a gap twice.
+  - **BREAKING:** `Attribution.TimingIncompleteReasons` is renamed `RefusedEvidence`
+    and no longer means "incomplete" — a producer cannot assert completeness. Read
+    `Verdict.TimingIncompleteReasons` (derived) or `Attribution.incompleteReasons`.
+    `TimingSpan.ofPluginRun` returns `TimingSpan option` (clipped) instead of a
+    `Result`. `IpcOutput.publishVerdictForInvocation` takes an
+    `IpcParsing.DaemonEvidence` (`Served phases` / `NotServed`) after `statuses`.
+  - The agent summary gains a `phases` block listing the `daemon.*` spans in timeline
+    order with their offsets, durations and details.
+
 - AUTOMATION-434 (rework): **`fshw start` fails closed when macOS refuses the native
   FSEvents stream past the retry budget.** Exit 2 (the fail-closed code every other
   startup refusal uses), one diagnosis line on stderr naming the refusal, the attempts

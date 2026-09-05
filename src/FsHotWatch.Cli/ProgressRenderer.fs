@@ -945,6 +945,23 @@ module AgentHints =
 
                 $"    %s{label} %s{h.Scope} step %d{h.StepIndex}/%d{h.StepCount} — %d{h.ElapsedMs}ms (%s{h.Outcome}): %s{h.Command}")
 
+        // (rework) The daemon's own phases, in timeline order: the scan `WaitForScan`
+        // blocked on, discovery, startup, change batches. Named so a reader can see
+        // WHERE a 30-minute check went before it reads a single plugin line.
+        let phaseLines =
+            v.TimingSpans
+            |> List.filter (fun span -> span.Scope.StartsWith("daemon.", StringComparison.Ordinal))
+            |> List.sortBy (fun span -> span.StartOffsetMs, span.Scope)
+            |> List.mapi (fun i span ->
+                let label = if i = 0 then "phases  " else "        "
+
+                let detail =
+                    match span.Detail with
+                    | Some d -> $": %s{d}"
+                    | None -> ""
+
+                $"    %s{label} %s{span.Scope} at +%d{span.StartOffsetMs}ms — %d{span.ElapsedMs}ms%s{detail}")
+
         let attributionLines =
             match v.ObservedElapsedMs with
             | Some observed when observed > 0L ->
@@ -975,6 +992,7 @@ module AgentHints =
         @ noSuiteFactLines
         @ zeroSelectionLines
         @ hookLines
+        @ phaseLines
         @ attributionLines
         @ [ "  AGENTS: READ the above — just don't SCREEN-SCRAPE it. The same facts, machine-readable:"
             $"    verdict  %s{Verdict.RelativePath}   (treeHash-keyed — `dotnet fshw verdict` re-checks it against \

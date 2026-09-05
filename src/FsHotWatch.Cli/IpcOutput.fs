@@ -874,6 +874,9 @@ let private publishVerdictWithReason
     // all — which is a FACT the verdict states, not a silence.
     (checkScoped: Verdict.CheckScopedEvidence)
     (statuses: Map<string, ParsedPluginStatus>)
+    // AUTOMATION-555 (rework). The daemon's phase ledger — where ITS wall time went,
+    // including the plugin runs this check waited on and a later re-run superseded.
+    (daemonEvidence: IpcParsing.DaemonEvidence)
     // AUTOMATION-303. The failing ledger diagnostics the exit code was computed from —
     // including the ones no plugin owns (`fcs`), which is the whole point: a `confirm`
     // returned exit 1 with every plugin `ok` and 9,064 tests passed, and the file it
@@ -1008,26 +1011,33 @@ let private publishVerdictWithReason
                 ([], [], [])
             |> fun (hooks, spans, reasons) -> List.rev hooks, List.rev spans, List.rev reasons
 
-        let pluginSpans, pluginReasons =
-            statuses
-            |> Map.toList
-            |> List.choose (fun (name, parsed) -> parsed.LastRun |> Option.map (fun run -> name, run))
-            |> List.fold
-                (fun (spans, reasons) (name, run) ->
-                    match Verdict.TimingSpan.ofPluginRun invocation observedSoFar name run with
-                    | Result.Ok(Some span) -> span :: spans, reasons
-                    | Result.Ok None -> spans, reasons
-                    | Result.Error reason -> spans, reason :: reasons)
-                ([], [])
-            |> fun (spans, reasons) -> List.rev spans, List.rev reasons
+        // (rework) The daemon's own phases — startup, discovery, the scan `WaitForScan`
+        // blocked on, change batches — and EVERY plugin `Running` interval, clipped to
+        // this invocation. A served ledger already carries each plugin's runs, the
+        // superseded ones included, so the `lastRun` records are the fallback for a
+        // daemon that serves none. Nothing here is refused by name: an interval that
+        // fell outside the invocation is history, and what the placed intervals fail
+        // to explain surfaces as the derived coverage gap, not as a silence.
+        let daemonSpans =
+            match daemonEvidence with
+            | IpcParsing.DaemonEvidence.Served phases ->
+                phases
+                |> List.choose (Verdict.TimingSpan.ofDaemonPhase invocation observedSoFar)
+            | IpcParsing.DaemonEvidence.NotServed ->
+                statuses
+                |> Map.toList
+                |> List.choose (fun (name, parsed) ->
+                    parsed.LastRun
+                    |> Option.bind (Verdict.TimingSpan.ofPluginRun invocation observedSoFar name))
 
         let attribution: Verdict.Attribution =
             { Hooks = hooks
-              TimingSpans = hookSpans @ pluginSpans
+              TimingSpans = hookSpans @ daemonSpans
               // A terminal failure ended the run before its timing could be complete,
               // and says so here as well as in `outcome` — the two questions are read
-              // by different consumers.
-              TimingIncompleteReasons = hookReasons @ pluginReasons @ Option.toList terminalIncompleteReason
+              // by different consumers. Completeness itself is DERIVED from the spans
+              // (`Attribution.incompleteReasons`); this list holds only what was refused.
+              RefusedEvidence = hookReasons @ Option.toList terminalIncompleteReason
               ObservedElapsedMs = Some observedSoFar
               InvocationId = Some invocation.Id }
 
@@ -1096,6 +1106,7 @@ let internal publishVerdictForInvocation
     (runReport: TestRunReport)
     (checkScoped: Verdict.CheckScopedEvidence)
     (statuses: Map<string, ParsedPluginStatus>)
+    (daemonEvidence: IpcParsing.DaemonEvidence)
     (redCauses: Verdict.RedCause list)
     (settledTree: SettledTree)
     (outcome: CheckVerdict.CheckOutcome)
@@ -1109,6 +1120,7 @@ let internal publishVerdictForInvocation
         runReport
         checkScoped
         statuses
+        daemonEvidence
         redCauses
         settledTree
         outcome
@@ -1137,6 +1149,7 @@ let internal publishVerdict
         runReport
         checkScoped
         statuses
+        IpcParsing.DaemonEvidence.NotServed
         redCauses
         settledTree
         outcome
@@ -1161,6 +1174,7 @@ let internal publishTerminalIncompleteForInvocation
         (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
         Verdict.NoReading
         Map.empty
+        IpcParsing.DaemonEvidence.NotServed
         []
         settledTree
         (CheckVerdict.CheckOutcome.Incomplete -1)
@@ -1260,6 +1274,11 @@ let pollAndRenderForInvocation
     // see a different daemon.
     let finalStatuses = ref Map.empty
 
+    // AUTOMATION-555 (rework). The daemon's phase ledger, captured from the SAME
+    // response as the statuses at every read, so the verdict places the daemon's
+    // phases from the reading it was computed from.
+    let finalEvidence = ref IpcParsing.DaemonEvidence.NotServed
+
     // AUTOMATION-303. Captured with the statuses, at every read, from the SAME response
     // the failing count comes from — so the verdict names the entries its own exit code
     // was computed from rather than a second query's.
@@ -1321,10 +1340,12 @@ let pollAndRenderForInvocation
         settle ()
 
         // First read: diagnostics + coverage after the daemon has settled.
-        let firstResp = parseDiagnosticsResponse (getErrors ())
+        let firstRaw = getErrors ()
+        let firstResp = parseDiagnosticsResponse firstRaw
         let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
         eprintfn "%s" firstOutput
         finalStatuses.Value <- firstResp.Statuses
+        finalEvidence.Value <- IpcParsing.DaemonEvidence.parse firstRaw
         finalCauses.Value <- redCausesOf noWarnFail firstResp
 
         // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
@@ -1341,11 +1362,13 @@ let pollAndRenderForInvocation
         // diagnostics — never carried over from an earlier read — so the verdict is
         // always computed against what the latest run actually covered.
         let reread () : CheckVerdict.CheckInputs =
-            let resp = parseDiagnosticsResponse (getErrors ())
+            let raw = getErrors ()
+            let resp = parseDiagnosticsResponse raw
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
             let run = getTestRun () |> observeTestRun
             finalStatuses.Value <- resp.Statuses
+            finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
             finalCauses.Value <- redCausesOf noWarnFail resp
             checkInputs noWarnFail run.Scope resp
 
@@ -1417,6 +1440,7 @@ let pollAndRenderForInvocation
                 finalRun.Value
                 checkScoped
                 finalStatuses.Value
+                finalEvidence.Value
                 finalCauses.Value
                 settledTree.Value
                 outcome
@@ -1492,6 +1516,7 @@ let pollAndRenderForInvocation
                      )
                  | None -> Verdict.NoReading)
                 finalStatuses.Value
+                finalEvidence.Value
                 finalCauses.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.ResultUnreceived reason)
@@ -1524,6 +1549,7 @@ let pollAndRenderForInvocation
                      )
                  | None -> Verdict.NoReading)
                 finalStatuses.Value
+                finalEvidence.Value
                 finalCauses.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
@@ -1554,6 +1580,7 @@ let pollAndRenderForInvocation
                      )
                  | None -> Verdict.NoReading)
                 finalStatuses.Value
+                finalEvidence.Value
                 finalCauses.Value
                 settledTree.Value
                 (CheckVerdict.CheckOutcome.Incomplete -1)
