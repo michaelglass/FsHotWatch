@@ -2490,7 +2490,8 @@ let reportExitCode (r: Report) : int =
 let report (repoRoot: string) (excludePatterns: string list) : Report =
     match read repoRoot with
     | Reading.Missing ->
-        Report.NoVerdict $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for a merge)"
+        Report.NoVerdict
+            $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence)"
     | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}"
     | Reading.Found v ->
         let currentTree = TreeHash.compute repoRoot excludePatterns

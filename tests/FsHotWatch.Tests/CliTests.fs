@@ -292,6 +292,36 @@ let ``reportParseError returns 0 for HelpRequested`` () =
     let _, exitCode = captureStderr (fun () -> reportParseError err)
     test <@ exitCode = 0 @>
 
+/// AUTOMATION-394. The help text is what a reader has instead of the repo's own rules:
+/// an agent invoked on one task does not carry the project's `CLAUDE.md`, so a merge
+/// rule printed HERE silently outranks the rule the project actually wrote down. When
+/// the two disagree the reader follows the tool, and following it meant reaching for
+/// the unfiltered verb — minutes of a shared machine — on a workflow the project had
+/// deliberately made cheap.
+///
+/// So `check` describes the CLAIM its green makes and stops there. It names `confirm`
+/// as the verb that produces the stronger claim, which is a fact about evidence, and it
+/// prescribes no merge policy — the same line `ProgressRenderer.scopeAdvice` holds for
+/// the runtime hints, and the reason the word "merge" is asserted absent rather than
+/// rewritten to point at `check`: naming a different merge verb would only move the
+/// overreach, not end it.
+[<Fact(Timeout = 15000)>]
+let ``check's help states what its green claims and prescribes no merge policy`` () =
+    let err =
+        match spec.Parse [| "check"; "--help" |] with
+        | Error e -> e
+        | Ok _ -> failwith "expected HelpRequested for `check --help`"
+
+    let help = CommandTree.renderParseError commandTree err cliName
+
+    // Positive control: this really is `check`'s description and not an empty render or
+    // another command's, so the absence assertion below is about text that IS here.
+    test <@ help.Contains "IMPACT-FILTERED" @>
+    test <@ help.Contains "NOT that the whole suite is green" @>
+    test <@ help.Contains "confirm" @>
+
+    test <@ not (help.Contains "merge") @>
+
 // classifyParse encodes the strict-CLI ordering: every repo-independent decision
 // (help/version, genuine flag/arg errors, a nested unknown command) resolves BEFORE the
 // repo-root lookup, and only Ok and a root-level unknown command defer to the daemon path.
