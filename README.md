@@ -137,7 +137,7 @@ it will change. Every `check` and `confirm` publishes its result as a file:
 
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
-# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict · 6 IN FLIGHT
 ```
 
 `.fshw/verdict.json` is written atomically at the end of every run — **including**
@@ -147,10 +147,18 @@ it verified** *and* **the binary that verified it**, so a green from a different
 (or from an older, buggier `fshw`) can never be mistaken for a current one. Reading
 it opens no socket and starts nothing, so *asking cannot perturb the answer*.
 
+It is also content-addressed to **the run that is happening**. The file is stamped
+only at completion, so mid-run it still holds the PREVIOUS run's result — over an
+unchanged tree that parses, matches, and reads green. A read taken while a run is in
+flight over the tree it describes reports **exit 6** and `"inFlight": true`, never that
+green. 6 rather than 4 because the fix differs: 4 means "the code moved, re-run", 6
+means "the answer is being computed, wait".
+
 This — not the progress display — is the surface agents and CI should read. Full
 schema, exit codes, and the tree-hash recipe: [CLI
-README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci) and
-[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md).
+README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci),
+[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md) and
+[ADR-019](docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
 
 ### `.fshw/heartbeat` — is this daemon still *working*?
 
