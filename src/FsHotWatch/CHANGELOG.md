@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- AUTOMATION-434 (rework): **a native FSEvents stream macOS refuses on EVERY attempt of
+  the retry budget fails the watcher closed instead of demoting it to polling.** The
+  first landing retried transient refusals (100/300/900 ms) but let a refusal past the
+  budget fall into the same `with ex ->` catch-all as any other setup fault, and that
+  catch-all's answer is the 1-second content-snapshot poller — so a persistent refusal
+  silently produced a daemon watching the repository by polling for its whole lifetime.
+  - `FileWatcher.create` on macOS now raises `NativeStreamRefusedPastBudgetException`
+    (public; carries a `NativeStartRefusal` record: attempts made, backoff spent,
+    macOS's last refusal) when the budget is exhausted. Nothing is left behind: the
+    native start runs before any `FileSystemWatcher` is registered, and no polling
+    watcher is constructed.
+  - The split is structural, not a flag. Driving the native factory through the budget
+    yields a `NativeStartOutcome` — `Started` / `RefusedPastBudget` / `Faulted` — and
+    the polling fallback is the `Faulted` arm only. `WatcherMode.ContentPolling` now
+    means exactly "a non-refusal setup fault": a `FileSystemWatcher` that would not
+    start, a callback that would not pin.
+  - `NativeStartRetry.none` is a one-attempt budget, so a refusal under it is a refusal
+    past the budget.
+
 - AUTOMATION-747: `ErrorLedger.Transport` bounds every mirror of the ledger with one
   per-field cap and one response-wide `detail` budget. `DaemonRpcTarget.GetDiagnostics`
   had no cap at all, so a broadly red suite asked it for a reply of `failing entries ×

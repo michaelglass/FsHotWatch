@@ -74,6 +74,18 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- AUTOMATION-434 (rework): **a persistent FSEvents refusal now fails `fshw start`
+  closed instead of silently demoting the daemon to polling.** The first landing retried
+  a transiently refused `FSEventStreamStart`/`FSEventStreamCreate` (100/300/900 ms) and
+  typed `FileWatcher.Mode`, but a refusal past that budget fell into the pre-existing
+  catch-all whose answer is the 1-second content-snapshot poller. Now: transient →
+  retried; persistent → `NativeStreamRefusedPastBudgetException` out of watcher
+  construction, exit 2 with one actionable line (`fshw: daemon not started — macOS
+  refused the native FSEvents stream on all 4 attempts (1300 ms of backoff spent; last:
+  …)`), no live watcher, no pidfile, no held lock, and the next `start` is clean. The
+  polling fallback is reserved for non-refusal setup faults; the refusal is a DU arm
+  matched outside any exception handler, so the fallback cannot catch it.
+
 - AUTOMATION-495: **the stale-artifact preflight no longer prescribes a command a
   repository may refuse.** `StaleArtifactPreflight.remedyFor` said `dotnet build` in all
   three arms and escalated to `dotnet build --no-incremental` for a byte-differing copy.

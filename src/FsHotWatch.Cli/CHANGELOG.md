@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- AUTOMATION-434 (rework): **`fshw start` fails closed when macOS refuses the native
+  FSEvents stream past the retry budget.** Exit 2 (the fail-closed code every other
+  startup refusal uses), one diagnosis line on stderr naming the refusal, the attempts
+  and backoff spent, and what to do, and every partial resource released: the partial
+  daemon is disposed, no watcher of any kind exists, the singleton `daemon.lock` is
+  released and `daemon.pid` is deleted, so the next `fshw start` claims the lock and
+  starts cleanly. The pidfile is now reaped on every way out of `start` (a clean stop,
+  the refusal, an unexpected exception), not only after a clean stop.
+
 - AUTOMATION-533: **the verdict accounts for every test run the check produced, not
   only the last one.** A check runs the tests in batches — the impact-selected run,
   the rerun a mid-run change queues behind it, `confirm`'s forced full suite, the
