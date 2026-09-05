@@ -1872,33 +1872,49 @@ let executeCommand
                     // — and is restarted.
                     DaemonIdentity.recordCurrent repoRoot
 
-                    let daemon = createDaemon repoRoot
-                    registerPlugins daemon repoRoot config
-                    let cts = new CancellationTokenSource()
-
-                    Console.CancelKeyPress.Add(fun e ->
-                        e.Cancel <- true
-                        cts.Cancel())
-
-                    // Stop the daemon cleanly if `.fshw.json` is edited. The
-                    // user then runs the daemon again to pick up the new config (or
-                    // sees the error if the edit was invalid). No hot-reload.
-                    use _configWatcher =
-                        watchRepoConfigFile repoRoot (fun reason ->
-                            FsHotWatch.Logging.info "config" reason
-                            cts.Cancel())
-
+                    // The pidfile is released on EVERY way out of this block — a clean
+                    // stop, a refused watcher start, an unexpected exception — and the
+                    // singleton lock goes with `_lock` above. The next `fshw start`
+                    // therefore never finds a pidfile naming a process that never ran.
                     try
-                        Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
-                    with :? OperationCanceledException ->
-                        ()
+                        try
+                            let daemon = createDaemon repoRoot
+                            registerPlugins daemon repoRoot config
+                            let cts = new CancellationTokenSource()
 
-                    eprintfn "Daemon stopped."
+                            Console.CancelKeyPress.Add(fun e ->
+                                e.Cancel <- true
+                                cts.Cancel())
 
-                    if File.Exists pidFile then
-                        File.Delete pidFile
+                            // Stop the daemon cleanly if `.fshw.json` is edited. The
+                            // user then runs the daemon again to pick up the new config (or
+                            // sees the error if the edit was invalid). No hot-reload.
+                            use _configWatcher =
+                                watchRepoConfigFile repoRoot (fun reason ->
+                                    FsHotWatch.Logging.info "config" reason
+                                    cts.Cancel())
 
-                    0
+                            try
+                                Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
+                            with :? OperationCanceledException ->
+                                ()
+
+                            eprintfn "Daemon stopped."
+                            0
+                        with :? FsHotWatch.Watcher.NativeStreamRefusedPastBudgetException as ex ->
+                            // AUTOMATION-434 case 2: macOS refused the native FSEvents
+                            // stream on every attempt of the retry budget. Persistent, so
+                            // fail closed — `Daemon.create` already disposed the partial
+                            // daemon, no watcher exists, and the finally + `_lock` release
+                            // the pidfile and the singleton lock. Exit 2, the fail-closed
+                            // code every other startup refusal uses, never 1.
+                            eprintfn
+                                $"fshw: daemon not started — %s{ex.Message}. Nothing is left running (no watcher, no pidfile, no lock). Run `fshw start` again once fseventsd is healthy; if it keeps refusing, the repository is on a volume FSEvents cannot watch — move it to a local volume."
+
+                            2
+                    finally
+                        if File.Exists pidFile then
+                            File.Delete pidFile
         | Stop ->
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.

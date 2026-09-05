@@ -10,10 +10,38 @@ open FsHotWatch.Events
 type WatcherMode =
     /// Kernel-delivered events: FSEvents on macOS, `FileSystemWatcher` elsewhere.
     | NativeEvents
-    /// macOS refused native setup past the retry budget (or a non-native component
-    /// faulted); a 1-second content-snapshot poller carries the same observation
-    /// contract. `reason` is the last setup error, for startup diagnostics.
+    /// A non-refusal setup fault (a `FileSystemWatcher` that would not start, a
+    /// callback that would not pin); a 1-second content-snapshot poller carries the
+    /// same observation contract. `reason` is the setup error, for startup diagnostics.
+    /// A native stream macOS REFUSED past the retry budget never lands here — that is
+    /// `NativeStreamRefusedPastBudgetException`, and the daemon fails closed on it.
     | ContentPolling of reason: string
+
+/// How the native FSEvents stream was refused (AUTOMATION-434): macOS said no on every
+/// attempt of the retry budget. A persistent failure, not a transient one — nothing
+/// was built, and the daemon's startup diagnosis names these three facts.
+type NativeStartRefusal =
+    {
+        /// Attempts made: one per backoff entry, plus the first.
+        Attempts: int
+        /// Backoff actually waited, in milliseconds, across all retries.
+        BackoffSpentMs: int
+        /// The last refusal's message (`FSEventStreamStart returned false — ...`).
+        LastRefusal: string
+    }
+
+module NativeStartRefusal =
+    /// The one sentence the daemon prints for a refused start: what was refused,
+    /// how much of the budget was spent, and what macOS said last.
+    let describe (refusal: NativeStartRefusal) =
+        $"macOS refused the native FSEvents stream on all %d{refusal.Attempts} attempts (%d{refusal.BackoffSpentMs} ms of backoff spent; last: %s{refusal.LastRefusal})"
+
+/// Watcher construction did NOT produce a watcher: the native FSEvents stream was
+/// refused past the retry budget. Raised out of `FileWatcher.create` on macOS with no
+/// partial resource left behind; the polling fallback is never the answer to it.
+type NativeStreamRefusedPastBudgetException(refusal: NativeStartRefusal) =
+    inherit Exception(NativeStartRefusal.describe refusal)
+    member _.Refusal = refusal
 
 /// Holds disposable watchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
@@ -368,23 +396,45 @@ module FileWatcher =
         /// One attempt, no waiting.
         let none = { BackoffMs = []; Sleep = ignore }
 
-    /// Run the native factory, retrying a refused start through the budget.
-    let private startNativeWithRetry (retry: NativeStartRetry) (start: unit -> IDisposable) =
-        let rec attempt n backoff =
-            match backoff with
-            | [] -> start ()
-            | delay :: rest ->
+    /// What driving the native factory through the retry budget produced. A DU, not
+    /// an exception the caller has to remember to re-raise: the fallback that handles
+    /// `Faulted` cannot be reached by `RefusedPastBudget`.
+    [<NoComparison; NoEquality>]
+    type internal NativeStartOutcome =
+        /// The stream started (on the first attempt or after a transient refusal).
+        | Started of IDisposable
+        /// Every attempt was refused. Persistent: the daemon must fail closed.
+        | RefusedPastBudget of NativeStartRefusal
+        /// A non-refusal fault. The generic polling fallback's case, unchanged.
+        | Faulted of exn
+
+    /// Run the native factory, retrying a refused start through the budget. Only a
+    /// `MacFsEvents.NativeStreamRefusedException` is retried; any other exception is
+    /// `Faulted` at once, and a refusal on the last attempt is `RefusedPastBudget`.
+    let private startNativeWithRetry (retry: NativeStartRetry) (start: unit -> IDisposable) : NativeStartOutcome =
+        let rec attempt n spentMs backoff =
+            let started =
                 try
-                    start ()
-                with :? MacFsEvents.NativeStreamRefusedException as ex ->
-                    Logging.warn
-                        "watcher"
-                        $"native FSEvents setup refused (attempt %d{n}: %s{ex.Message}); retrying in %d{delay} ms"
+                    Started(start ())
+                with
+                | :? MacFsEvents.NativeStreamRefusedException as ex ->
+                    RefusedPastBudget
+                        { Attempts = n
+                          BackoffSpentMs = spentMs
+                          LastRefusal = ex.Message }
+                | ex -> Faulted ex
 
-                    retry.Sleep delay
-                    attempt (n + 1) rest
+            match started, backoff with
+            | RefusedPastBudget refusal, delay :: rest ->
+                Logging.warn
+                    "watcher"
+                    $"native FSEvents setup refused (attempt %d{n}: %s{refusal.LastRefusal}); retrying in %d{delay} ms"
 
-        attempt 1 retry.BackoffMs
+                retry.Sleep delay
+                attempt (n + 1) (spentMs + delay) rest
+            | outcome, _ -> outcome
+
+        attempt 1 0 retry.BackoffMs
 
     let private defaultSystemWatcherFactory handle spec =
         let watcher = new FileSystemWatcher(spec.Directory)
@@ -440,49 +490,16 @@ module FileWatcher =
             partial.Add(disposable)
             disposable
 
-        try
-            let dirs = Discovery.existingDiscoveryRoots repoRoot
-
-            if not dirs.IsEmpty then
-                // SafeWalk, not SearchOption.AllDirectories: a coalesced native
-                // event means Apple requires a recursive scan of that subtree.
-                let onCoalesced dirPath =
-                    if Directory.Exists(dirPath) then
-                        for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
-                            for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
-                                if isRelevantFile file then
-                                    onChange (classifyChange file)
-
-                startNativeWithRetry nativeStartRetry (fun () ->
-                    nativeStreamFactory dirs handle onCoalesced latencySeconds)
-                |> register
-                |> ignore
-
-            systemWatcherFactory
-                handle
-                { Directory = repoRoot
-                  IncludeSubdirectories = false
-                  Filters = [ "*.sln"; "*.slnx" ] }
-            |> register
-            |> ignore
-
-            for pattern in extraPatterns do
-                systemWatcherFactory
-                    handle
-                    { Directory = repoRoot
-                      IncludeSubdirectories = true
-                      Filters = [ FilePattern.toString pattern ] }
-                |> register
-                |> ignore
-
-            { Mode = WatcherMode.NativeEvents
-              Disposables = partial |> Seq.toList }
-        with ex ->
+        let rollBack () =
             for disposable in Seq.rev partial do
                 try
                     disposable.Dispose()
                 with disposeEx ->
                     Logging.warn "watcher" $"partial watcher disposal failed: %s{disposeEx.Message}"
+
+        /// The generic fallback: a non-refusal fault demotes this daemon to polling.
+        let fallBackToPolling (ex: exn) =
+            rollBack ()
 
             Logging.warn
                 "watcher"
@@ -492,6 +509,62 @@ module FileWatcher =
 
             { Mode = WatcherMode.ContentPolling ex.Message
               Disposables = [ polling ] }
+
+        /// Native first (it is the component that can be refused), then the
+        /// `FileSystemWatcher`s for solution files and extra patterns.
+        let completeNative (nativeStream: IDisposable option) =
+            try
+                nativeStream |> Option.iter (register >> ignore)
+
+                systemWatcherFactory
+                    handle
+                    { Directory = repoRoot
+                      IncludeSubdirectories = false
+                      Filters = [ "*.sln"; "*.slnx" ] }
+                |> register
+                |> ignore
+
+                for pattern in extraPatterns do
+                    systemWatcherFactory
+                        handle
+                        { Directory = repoRoot
+                          IncludeSubdirectories = true
+                          Filters = [ FilePattern.toString pattern ] }
+                    |> register
+                    |> ignore
+
+                { Mode = WatcherMode.NativeEvents
+                  Disposables = partial |> Seq.toList }
+            with ex ->
+                fallBackToPolling ex
+
+        let dirs = Discovery.existingDiscoveryRoots repoRoot
+
+        if dirs.IsEmpty then
+            completeNative None
+        else
+            // SafeWalk, not SearchOption.AllDirectories: a coalesced native
+            // event means Apple requires a recursive scan of that subtree.
+            let onCoalesced dirPath =
+                if Directory.Exists(dirPath) then
+                    for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
+                        for file in SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
+                            if isRelevantFile file then
+                                onChange (classifyChange file)
+
+            // Matched OUTSIDE any exception handler: the refusal is a value here, so
+            // the polling fallback below cannot catch it (AUTOMATION-434 case 2).
+            match
+                startNativeWithRetry nativeStartRetry (fun () ->
+                    nativeStreamFactory dirs handle onCoalesced latencySeconds)
+            with
+            | Started nativeStream -> completeNative (Some nativeStream)
+            | Faulted ex -> fallBackToPolling ex
+            | RefusedPastBudget refusal ->
+                // Nothing was registered before the native start, so there is nothing
+                // to roll back; the daemon owns the pidfile and lock and releases them.
+                Logging.error "watcher" (NativeStartRefusal.describe refusal)
+                raise (NativeStreamRefusedPastBudgetException refusal)
 
     /// macOS construction seam used by deterministic failure-path tests.
     let internal createWithNativeStream

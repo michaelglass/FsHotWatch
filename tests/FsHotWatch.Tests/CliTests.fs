@@ -1056,6 +1056,148 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
         test <@ createCalled @>
         test <@ threw @>)
 
+// --- AUTOMATION-434 case 2: a persistent FSEvents refusal fails the daemon closed ---
+
+/// A real `Daemon` (null checker — nothing compiles) whose watcher is built through
+/// `FileWatcher.createWithNativeStream` with the given native factory and a recorded
+/// (never slept) retry budget. `onWatcher` sees every watcher construction returned.
+let private daemonWithNativeStream
+    (onWatcher: FsHotWatch.Watcher.FileWatcher -> unit)
+    (native: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory)
+    : string -> Daemon =
+    fun root ->
+        let watcherFactory: Daemon.WatcherFactory =
+            fun repoRoot onChange _isMacOS extras latency ->
+                let retry: FsHotWatch.Watcher.FileWatcher.NativeStartRetry =
+                    { BackoffMs = [ 100; 300; 900 ]
+                      Sleep = ignore }
+
+                let watcher =
+                    FsHotWatch.Watcher.FileWatcher.createWithNativeStream repoRoot onChange extras latency retry native
+
+                onWatcher watcher
+                watcher
+
+        Daemon.createWithWatcherFactory
+            (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+            root
+            Daemon.DaemonOptions.defaults
+            watcherFactory
+
+/// True iff nobody holds the `daemon.lock` singleton: the same exclusive open `Start` uses.
+let private daemonLockIsFree (tmpDir: string) =
+    let lockFile = Path.Combine(tmpDir, ".fshw", "daemon.lock")
+
+    try
+        use _probe =
+            new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None)
+
+        true
+    with :? IOException ->
+        false
+
+[<Fact(Timeout = 30000)>]
+[<Trait("Issue", "AUTOMATION-434")>]
+let ``executeCommand Start fails closed when the native FSEvents stream is refused past the retry budget`` () =
+    // The reviewer's HOW-TO-VERIFY, literally: a native-stream factory that always
+    // throws `NativeStreamRefusedException`, past the retry budget. The daemon start
+    // must exit non-zero with a one-line diagnosis and leave NOTHING behind — no live
+    // watcher, no pidfile, no held lock — and the next `start` must reach daemon
+    // construction again instead of being refused as "already running".
+    withTempDir "cli-start-fsevents-refused" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let pidFile = Path.Combine(tmpDir, ".fshw", "daemon.pid")
+
+        let attempts = ref 0
+
+        let alwaysRefused: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory =
+            fun _dirs _onFile _onCoalesced _latency ->
+                Interlocked.Increment(&attempts.contents) |> ignore
+                raise (FsHotWatch.MacFsEvents.StartFailedException())
+
+        let produced = ref 0
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let stderr, exitCode =
+            captureStderr (fun () ->
+                executeCommand
+                    (daemonWithNativeStream
+                        (fun _ -> Interlocked.Increment(&produced.contents) |> ignore)
+                        alwaysRefused)
+                    ipc
+                    tmpDir
+                    "fshw-test-pipe-refused"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        // Non-zero, and the fail-closed code (2) rather than the generic 1.
+        test <@ exitCode = 2 @>
+        // The budget was spent in full (one attempt per backoff entry, plus the first).
+        test <@ attempts.Value = 4 @>
+        // No watcher of any kind came out of construction — the polling fallback did NOT run.
+        test <@ produced.Value = 0 @>
+        // Every partial resource is gone.
+        test <@ not (File.Exists pidFile) @>
+        test <@ daemonLockIsFree tmpDir @>
+
+        // One line, naming the refusal, the budget spent, and what the operator can do.
+        let diagnosis =
+            stderr.Split('\n')
+            |> Array.filter (fun line -> line.StartsWith("fshw: daemon not started"))
+
+        test <@ diagnosis.Length = 1 @>
+        test <@ diagnosis.[0].Contains("all 4 attempts") @>
+        test <@ diagnosis.[0].Contains("1300 ms") @>
+        test <@ diagnosis.[0].Contains("FSEventStreamStart returned false") @>
+        test <@ diagnosis.[0].Contains("fshw start") @>
+
+        // The next invocation starts cleanly: it claims the lock, writes a fresh pidfile
+        // and reaches construction, where a factory that now succeeds builds a NATIVE
+        // watcher. That daemon would then run forever, so the sentinel raised after the
+        // watcher is proven unwinds `Start` before `RunWithIpc`; the finally still reaps
+        // the pidfile it wrote.
+        let secondModes = ResizeArray<FsHotWatch.Watcher.WatcherMode>()
+        let mutable pidfileSeenDuringStart = false
+
+        let accepting: FsHotWatch.Watcher.FileWatcher.NativeStreamFactory =
+            fun _dirs _onFile _onCoalesced _latency ->
+                { new IDisposable with
+                    member _.Dispose() = () }
+
+        let secondCreateDaemon (root: string) : Daemon =
+            pidfileSeenDuringStart <- File.Exists pidFile
+            let daemon = daemonWithNativeStream (fun w -> secondModes.Add w.Mode) accepting root
+            (daemon :> IDisposable).Dispose()
+            failwith "sentinel: leave Start before RunWithIpc"
+
+        let secondRun =
+            try
+                executeCommand
+                    secondCreateDaemon
+                    ipc
+                    tmpDir
+                    "fshw-test-pipe-refused"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
+                |> string
+            with ex ->
+                ex.Message
+
+        test <@ secondRun = "sentinel: leave Start before RunWithIpc" @>
+        test <@ pidfileSeenDuringStart @>
+        test <@ secondModes |> Seq.toList = [ FsHotWatch.Watcher.WatcherMode.NativeEvents ] @>
+        test <@ not (File.Exists pidFile) @>
+        test <@ daemonLockIsFree tmpDir @>)
+
 [<Fact(Timeout = 15000)>]
 let ``executeCommand returns 1 when IPC fails`` () =
     let ipc =
