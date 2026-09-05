@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-572): a changed file that obligates no project no longer enters the
+  runtime-coverage obligation ledger. An entry naming no project made `nothingOwed`
+  report outstanding debt for the rest of the session while selecting nothing, so every
+  cycle with zero affected classes ran every configured project in full.
+- fix(AUTOMATION-572): a run that widens past the zero-affected skip names every debt
+  that refused it (no session baseline, queued symbols, runtime-coverage debt, an
+  unreadable ledger, outstanding failures) and says whether it is running the whole
+  suite or a few force-run projects. Zero affected classes with nothing owed is now a
+  warning naming the cost, not a silent full suite.
+
 ## 0.13.0-alpha.30 - 2026-09-03
 
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under

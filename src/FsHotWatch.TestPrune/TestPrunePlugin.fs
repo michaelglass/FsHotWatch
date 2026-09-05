@@ -1083,21 +1083,49 @@ let internal persistRuntimeCoverageTransitionWith
     with ex ->
         Error(current, ex)
 
+/// AUTOMATION-572. An obligation that names NO project is not a debt, and admitting one
+/// is the silent full-suite escalation this ticket closes.
+///
+/// `selectByRuntimeCoverage` maps EVERY changed file — `Set.union current
+/// widenedProjects` is empty whenever nothing attributes runtime coverage to that file
+/// and every configured project's baseline is current, which is the ordinary case for
+/// an edit to a file no runtime tracer ever reached. The caller merges the selection
+/// whenever the MAP is non-empty, so those files used to enter the ledger as
+/// `file -> map []`. The result satisfies neither of the two questions asked of it:
+///
+///   * `nothingOwed` asks `Map.isEmpty`, and reads a non-empty map — so for the rest of
+///     the session the zero-affected green skip and the stale-rerun guard are both
+///     refused, and every cycle that selects nothing runs tests anyway;
+///   * `runtimeForceProjects` asks for the projects the ledger NAMES, and gets none — so
+///     the run it forces has an EMPTY selection, and an empty selection means every
+///     configured project, in full.
+///
+/// A debt nothing can select and nothing can discharge, costing a whole suite. The
+/// observation that a file changed is not itself an obligation: only a file with at
+/// least one obligated project may enter the ledger, and only the run that covered it
+/// may take it out again.
 let internal mergeRuntimeCoverageObligations
     (existing: RuntimeCoverageObligations)
     (incoming: Map<string, Set<string>>)
     =
     (existing, incoming)
     ||> Map.fold (fun acc file projects ->
-        let prior = Map.tryFind file acc |> Option.defaultValue Map.empty
+        if Set.isEmpty projects then
+            // Nothing to owe for this file. Leave any PRIOR obligation for it exactly
+            // as it stands: a real debt is discharged by the run that covers it
+            // (`retireRuntimeCoverageObligations`), never by a later cycle observing
+            // the same file and finding nothing to add.
+            acc
+        else
+            let prior = Map.tryFind file acc |> Option.defaultValue Map.empty
 
-        let next =
-            (prior, projects)
-            ||> Set.fold (fun obligations project ->
-                let generation = Map.tryFind project obligations |> Option.defaultValue 0L
-                Map.add project (generation + 1L) obligations)
+            let next =
+                (prior, projects)
+                ||> Set.fold (fun obligations project ->
+                    let generation = Map.tryFind project obligations |> Option.defaultValue 0L
+                    Map.add project (generation + 1L) obligations)
 
-        Map.add file next acc)
+            Map.add file next acc)
 
 let internal retireRuntimeCoverageObligations
     (current: RuntimeCoverageObligations)
@@ -1175,6 +1203,82 @@ let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: R
         | StaleBaseline observedAt ->
             warn
                 $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
+
+/// AUTOMATION-572. Why a cycle that found ZERO symbol-affected classes is running tests
+/// anyway — one arm per debt that can refuse the zero-affected green skip.
+///
+/// The single sentence this replaces ("No affected classes (cold start / pending queue)
+/// — running all tests") named two causes for five, was printed for runs that were
+/// neither, and claimed "all tests" for runs that were a handful of force-run projects.
+/// A widening nobody can attribute is a widening nobody measures: 404 of 1,221 launches
+/// in the logs this ticket cites took that line, and the line is the only record any of
+/// them left.
+[<RequireQualifiedAccess>]
+type internal ZeroAffectedWidening =
+    /// No run has completed in this session, so there is nothing for this tree to be
+    /// test-equivalent TO. Expected exactly once per session — the baseline run.
+    | NoSessionBaseline
+    /// Symbols are still awaiting a green covering run.
+    | QueuedSymbols of count: int
+    /// Runtime-coverage obligations are outstanding over `files` file(s), naming
+    /// `projects` project(s) between them.
+    | RuntimeCoverageDebt of files: int * projects: int
+    /// The pending-verification ledger could not be read, so what is owed is unknown
+    /// (AUTOMATION-150) and only a full suite can prove it.
+    | UnreadableLedger
+    /// A prior red is outstanding and must be re-executed before anything goes green.
+    | OutstandingFailures of count: int
+
+module internal ZeroAffectedWidening =
+    let describe (cause: ZeroAffectedWidening) =
+        match cause with
+        | ZeroAffectedWidening.NoSessionBaseline ->
+            "no run has completed in this session yet (no baseline to be equivalent to)"
+        | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
+        | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
+            $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
+        | ZeroAffectedWidening.UnreadableLedger ->
+            "the pending-verification ledger could not be read, so what is owed is UNKNOWN"
+        | ZeroAffectedWidening.OutstandingFailures count -> $"%d{count} outstanding test failure(s) from a prior run"
+
+    let describeMany (causes: ZeroAffectedWidening list) =
+        causes |> List.map describe |> String.concat "; "
+
+/// Every reason this run is not taking the zero-affected skip, named and counted.
+///
+/// Returns EVERY applicable cause rather than the first: two debts outstanding at once
+/// is the case where a reader picks the wrong one and goes looking for a bug in the
+/// selector. An EMPTY list is the finding that matters most — nothing is owed and a
+/// baseline exists, so the skip should have fired and did not. The caller says that out
+/// loud instead of running a whole suite quietly, which is how AUTOMATION-572's phantom
+/// obligation survived 12 full-suite reruns without leaving a single attributable line.
+let internal zeroAffectedWidening
+    (hasSessionBaseline: bool)
+    (ledgerUnreadable: bool)
+    (queuedSymbols: int)
+    (runtimeObligations: RuntimeCoverageObligations)
+    (outstandingFailures: int)
+    : ZeroAffectedWidening list =
+    [ if not hasSessionBaseline then
+          ZeroAffectedWidening.NoSessionBaseline
+      if ledgerUnreadable then
+          ZeroAffectedWidening.UnreadableLedger
+      if queuedSymbols > 0 then
+          ZeroAffectedWidening.QueuedSymbols queuedSymbols
+      // Counted through the projects it NAMES, never through `Map.isEmpty`: a file
+      // entry naming no project selects nothing, so reporting it as debt would restate
+      // the very confusion this function exists to end.
+      let namedProjects =
+          runtimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
+
+      if not (Set.isEmpty namedProjects) then
+          let files =
+              runtimeObligations |> Map.filter (fun _ ps -> not (Map.isEmpty ps)) |> Map.count
+
+          ZeroAffectedWidening.RuntimeCoverageDebt(files, Set.count namedProjects)
+
+      if outstandingFailures > 0 then
+          ZeroAffectedWidening.OutstandingFailures outstandingFailures ]
 
 type AffectedTestsState =
     | NotYetAnalyzed
@@ -5438,7 +5542,48 @@ let internal createWithLaunchDeadline
                         )
                 else
                     if totalClasses = 0 then
-                        Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
+                        // AUTOMATION-572 — NAME the debt that refused the zero-affected
+                        // skip, and say what will actually run. Both halves were wrong
+                        // before: the cause was hard-coded to two of five possibilities,
+                        // and "running all tests" was printed over runs that were a
+                        // couple of force-run projects.
+                        let widenings =
+                            zeroAffectedWidening
+                                hasCachedResults
+                                ledgerUnreadable
+                                (Set.count pendingQueueRef)
+                                runtimeObligationsRef
+                                (List.length inputs.OutstandingFailures)
+
+                        // An EMPTY selection is not "a few projects": `selectionOf` reads
+                        // it as no selection at all and every configured project runs in
+                        // full. That is the expensive outcome, so it is the one named.
+                        let willRun =
+                            if Map.isEmpty affectedByProject then
+                                "EVERY configured project, in full"
+                            else
+                                $"%d{affectedByProject.Count} force-run project(s)"
+
+                        match widenings with
+                        | [] ->
+                            // Nothing is owed and a baseline exists, so the zero-affected
+                            // skip should have discharged this cycle for free — and did
+                            // not. That is a defect in whichever arm consumed the signal,
+                            // and it costs `willRun`. AUTOMATION-572's phantom
+                            // runtime-coverage obligation was exactly this shape and left
+                            // no attributable line at all; this one is the alarm that a
+                            // DIFFERENT arm has re-opened the same hole.
+                            Logging.warn
+                                "test-prune"
+                                $"No affected classes, and NOTHING is owed — the zero-affected skip should have discharged \
+                                  this cycle without running anything, yet it is running %s{willRun}. Some verification \
+                                  debt is being reported as outstanding while naming nothing that can select or discharge \
+                                  it (AUTOMATION-572)."
+                        | causes ->
+                            Logging.info
+                                "test-prune"
+                                $"No affected classes, but the zero-affected skip is refused — \
+                                  %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
                             // Never `%A` here: it caps the list at 100, so a

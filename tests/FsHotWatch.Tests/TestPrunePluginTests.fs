@@ -3666,6 +3666,148 @@ let ``AUTOMATION-315 a recovery marker failure does not accept an undurable obli
         test <@ ex.Message.Contains "recovery marker" @>
     | Ok _ -> Assert.Fail "an obligation transition cannot be accepted before its recovery marker is durable"
 
+// ── AUTOMATION-572 ────────────────────────────────────────────────────────────────────
+// A scan's OBSERVATION that a file changed is not an obligation. Recording one for a
+// file that obligates no project produces a debt `nothingOwed` reports as outstanding
+// forever and `runtimeForceProjects` can select nothing for — which is an empty
+// selection, which is every configured project in full.
+
+[<Fact>]
+let ``AUTOMATION-572 a changed file that obligates no project records no runtime debt`` () =
+    // The shape `selectByRuntimeCoverage` produces for an edit nothing has ever traced:
+    // the file is present (it changed) and its project set is empty.
+    let ledger =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/Untraced.fs", Set.empty ])
+
+    // `Map.isEmpty` is the exact question `nothingOwed` asks. Before this fix it
+    // answered "something is owed" for the rest of the daemon session.
+    test <@ Map.isEmpty ledger @>
+
+[<Fact>]
+let ``AUTOMATION-572 an untraced file in the same cycle as a traced one owes only the traced one`` () =
+    // The mixed cycle is the one that hid the defect: the ledger looked populated and
+    // correct, because one real obligation was in it.
+    let ledger =
+        mergeRuntimeCoverageObligations
+            Map.empty
+            (Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ]; "src/Untraced.fs", Set.empty ])
+
+    test <@ Map.toList ledger = [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ] @>
+
+[<Fact>]
+let ``AUTOMATION-572 a later cycle finding nothing to add leaves a real obligation standing`` () =
+    // Skipping the empty set must not become a way to DISCHARGE debt: only the run that
+    // covered the file may do that (`retireRuntimeCoverageObligations`).
+    let owed =
+        mergeRuntimeCoverageObligations Map.empty (Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ] ])
+
+    let afterUntracedCycle =
+        mergeRuntimeCoverageObligations owed (Map.ofList [ "src/Traced.fs", Set.empty ])
+
+    test <@ afterUntracedCycle = owed @>
+
+[<Fact>]
+let ``AUTOMATION-572 selectByRuntimeCoverage over an untraced file leaves the ledger empty`` () =
+    withTempDir "runtime-untraced" (fun dir ->
+        let db = Database.create (Path.Combine(dir, "test.db"))
+
+        // The project has a CURRENT runtime baseline, so nothing widens; the changed
+        // file simply has no attribution of its own. Both halves of
+        // `Set.union current widenedProjects` are therefore empty.
+        db.ReplaceRuntimeCoverage("IntegrationTests", "current", [ "src/Traced.fs" ])
+
+        let selection =
+            selectByRuntimeCoverage
+                db
+                [ "IntegrationTests" ]
+                [ "src/Untraced.fs" ]
+                (DateTimeOffset.UtcNow.Subtract RuntimeCoverageMaxAge)
+
+        // The selection reports the file — this is not the bug, and callers rely on the
+        // map being keyed by every changed file.
+        test <@ selection.ProjectsByFile = Map.ofList [ "src/Untraced.fs", Set.empty ] @>
+        test <@ selection.Widenings.IsEmpty @>
+
+        // The ledger is what must stay clean.
+        test <@ Map.isEmpty (mergeRuntimeCoverageObligations Map.empty selection.ProjectsByFile) @>)
+
+[<Fact>]
+let ``AUTOMATION-572 no runtime obligation ledger transition may name zero projects`` () =
+    // The re-consumption guard. The failure mode is SILENT — an entry naming nothing
+    // costs a full suite and logs nothing — so the invariant is asserted over every
+    // transition that can produce a ledger, not just the one that broke it. A new arm
+    // that admits an empty entry fails here rather than in a gate run three days later.
+    let namesAProject (label: string) (ledger: RuntimeCoverageObligations) =
+        let offenders =
+            ledger |> Map.filter (fun _ projects -> Map.isEmpty projects) |> Map.keys
+
+        Assert.True(
+            Seq.isEmpty offenders,
+            $"%s{label} left an obligation naming no project: %A{List.ofSeq offenders}. \
+              Nothing can select it and nothing can discharge it, but `nothingOwed` reports \
+              it as debt — so every cycle that selects nothing runs the whole suite."
+        )
+
+    let real = Map.ofList [ "src/Traced.fs", set [ "IntegrationTests" ] ]
+    let untraced = Map.ofList [ "src/Untraced.fs", Set.empty ]
+
+    let merged = mergeRuntimeCoverageObligations Map.empty real
+    namesAProject "merge of a real obligation" merged
+    namesAProject "merge of an untraced file" (mergeRuntimeCoverageObligations Map.empty untraced)
+    namesAProject "merge of an untraced file onto real debt" (mergeRuntimeCoverageObligations merged untraced)
+
+    namesAProject
+        "retire of the only obligated project"
+        (retireRuntimeCoverageObligations merged merged (fun _ -> true))
+
+    namesAProject "prune of the only allowed project" (pruneRuntimeCoverageObligations Set.empty merged)
+
+    withTempDir "runtime-invariant-roundtrip" (fun dir ->
+        saveRuntimeCoverageObligations dir merged
+
+        match loadRuntimeCoverageObligations dir with
+        | Ok loaded -> namesAProject "save/load round trip" loaded
+        | Error reason -> Assert.Fail $"the ledger could not be read back: %s{reason}")
+
+[<Fact>]
+let ``AUTOMATION-572 a zero-affected widening names every outstanding debt`` () =
+    let causes =
+        zeroAffectedWidening false true 3 (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ]) 2
+
+    test
+        <@
+            causes = [ ZeroAffectedWidening.NoSessionBaseline
+                       ZeroAffectedWidening.UnreadableLedger
+                       ZeroAffectedWidening.QueuedSymbols 3
+                       ZeroAffectedWidening.RuntimeCoverageDebt(1, 1)
+                       ZeroAffectedWidening.OutstandingFailures 2 ]
+        @>
+
+    let rendered = ZeroAffectedWidening.describeMany causes
+    test <@ rendered.Contains "3 symbol(s)" @>
+    test <@ rendered.Contains "1 file(s) naming 1 project(s)" @>
+    test <@ rendered.Contains "2 outstanding test failure(s)" @>
+
+[<Fact>]
+let ``AUTOMATION-572 an obligation naming no project is not counted as a reason to widen`` () =
+    // The alarm, stated as a test. If some future arm re-admits an entry naming nothing,
+    // this function must NOT dress it up as runtime-coverage debt — it must return the
+    // empty list, which is what makes the daemon warn instead of quietly running a whole
+    // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
+    let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
+
+    test <@ zeroAffectedWidening true false 0 phantom 0 = [] @>
+
+    // And a real obligation beside the phantom is still counted — once, for the file
+    // that actually owes something.
+    let mixed = Map.add "src/Traced.fs" (Map.ofList [ "IntegrationTests", 1L ]) phantom
+
+    test <@ zeroAffectedWidening true false 0 mixed 0 = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
+
+[<Fact>]
+let ``AUTOMATION-572 nothing owed and a baseline in hand is no reason to widen at all`` () =
+    test <@ zeroAffectedWidening true false 0 Map.empty 0 = [] @>
+
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared
 // cobertura file.
