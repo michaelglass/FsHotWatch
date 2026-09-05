@@ -520,7 +520,7 @@ let ``baselineRows is what makes AgainstNothing mean nothing`` () =
     // "unchanged".
     let rows = [ guardTest "alarmWiringA" "h1" ]
 
-    test <@ baselineRows AgainstNothing rows = [] @>
+    test <@ List.isEmpty (baselineRows AgainstNothing rows) @>
 
     // PositiveControl: it is not "always empty". The narrow arm must still hand the real
     // baseline over, or impact filtering is deleted rather than corrected.

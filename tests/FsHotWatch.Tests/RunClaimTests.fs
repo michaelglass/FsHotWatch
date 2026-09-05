@@ -125,12 +125,12 @@ let ``acquire then release leaves no claim behind`` () =
         test <@ (RunClaim.live root |> List.map (fun c -> c.InvocationId)) = [ "inv-lifecycle" ] @>
 
         RunClaim.release root claim
-        test <@ RunClaim.live root = [] @>
+        test <@ List.isEmpty (RunClaim.live root) @>
 
         // Releasing twice is silent — the bracket latches this, and a signal can reach it
         // after the ordinary path already did.
         RunClaim.release root claim
-        test <@ RunClaim.live root = [] @>)
+        test <@ List.isEmpty (RunClaim.live root) @>)
 
 [<Fact>]
 let ``a release touches only its OWN claim — two concurrent runs cannot clear each other`` () =
@@ -146,13 +146,13 @@ let ``a release touches only its OWN claim — two concurrent runs cannot clear 
         test <@ (RunClaim.live root |> List.map (fun c -> c.InvocationId)) = [ "inv-first" ] @>
 
         RunClaim.release root first
-        test <@ RunClaim.live root = [] @>)
+        test <@ List.isEmpty (RunClaim.live root) @>)
 
 [<Fact>]
 let ``no claims directory is no claims — and does not throw`` () =
     withTempDir "run-claim-absent" (fun root ->
         test <@ not (Directory.Exists(RunClaim.dirPath root)) @>
-        test <@ RunClaim.live root = [] @>)
+        test <@ List.isEmpty (RunClaim.live root) @>)
 
 [<Fact>]
 let ``describe names the run without making a reader open the file`` () =

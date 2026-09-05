@@ -3792,7 +3792,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ zeroAffectedWidening true false 0 phantom 0 = [] @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
@@ -3802,7 +3802,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
 
 [<Fact>]
 let ``nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ zeroAffectedWidening true false 0 Map.empty 0 = [] @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0) @>
 
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared

@@ -161,7 +161,12 @@ let ``a superseded restore refuses, names both files, and rules out the wrong fi
         test <@ StaleArtifactPreflight.isStaleOutputDeferral reason @>
         test <@ reason.Contains "Tests.deps.json" @>
         test <@ reason.Contains "project.assets.json" @>
-        test <@ reason.Contains "dotnet build" @>
+        // The tracked issue landed alongside this one: no remedy in this module may name a
+        // raw `dotnet build`, because a consuming repository can refuse that command
+        // outright. The manifest arm names the same `fshw` verb as the other three, and
+        // the sibling test above holds that rule for every arm at once.
+        test <@ reason.Contains "dotnet fshw rerun build" @>
+        test <@ not (reason.Contains "Remedy: run `dotnet build`") @>
         test <@ reason.Contains "ProjectReference" @>
 
         // Nothing was repaired, so nothing is on the ledger — a refusal must not spend
