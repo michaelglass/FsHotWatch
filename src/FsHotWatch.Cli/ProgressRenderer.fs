@@ -638,7 +638,16 @@ module AgentHints =
 
             [ $"             tree unchanged since the verdict at %s{at} — %s{TestScope.describe p.Scope}" ]
             @ triggerLines
-            @ [ $"             which ran %d{total} test(s) across %s{projects} (%d{failed} failed)" ]
+            // AUTOMATION-533. "across N batches" when the check ran the tests more than
+            // once, because then the total counts test EXECUTIONS — a project run twice
+            // is counted twice — and a reader comparing this number with a suite's own
+            // report would otherwise find it too large and distrust both.
+            @ [ let batches =
+                    match List.length p.Runs with
+                    | n when n > 1 -> $" in %d{n} batches"
+                    | _ -> ""
+
+                $"             which ran %d{total} test(s) across %s{projects}%s{batches} (%d{failed} failed)" ]
         | _ -> []
 
     /// The steering block for a completed check/confirm, naming this run's files.
@@ -679,24 +688,49 @@ module AgentHints =
                 [ $"             the daemon called this zero '%s{token}', which this build does not understand" ]
             | _ -> []
 
+        // AUTOMATION-533. A check runs the tests in SEVERAL batches, each with its own
+        // run directory, and this block used to point at one of them. A reader who
+        // opened it, failed to find their own tests and concluded the gate had never run
+        // their work was reading the output correctly — the output was wrong. So when
+        // there was more than one batch, say so, before the paths.
+        let batchFactLines =
+            match List.length v.Runs with
+            | n when n > 1 ->
+                [ $"    batches  the tests ran %d{n} times in this check — ALL %d{n} run directories are below" ]
+            | _ -> []
+
+        let runDirs =
+            v.Runs
+            |> List.choose (fun r -> r.RunId)
+            |> List.map (fun id ->
+                let dir = id.ToString("N")
+                $".fshw/test-runs/%s{dir}/")
+
         let suitePathLines, noSuiteFactLines =
             match v.Suites, v.RunId with
             | [], None ->
                 [],
                 "    suites   NO TEST RUN — nothing was verified by tests in this check (there is no run directory)"
                 :: priorEvidenceLines prior v
-            | [], Some id ->
-                let dir = id.ToString("N")
+            | [], Some _ ->
+                let fact =
+                    match runDirs with
+                    | [ one ] -> $"    suites   NONE — the run executed no tests (its directory %s{one} is empty)"
+                    | dirs ->
+                        let listed = String.concat ", " dirs
 
-                [],
-                $"    suites   NONE — the run executed no tests (its directory .fshw/test-runs/%s{dir}/ is empty)"
-                :: priorEvidenceLines prior v
+                        $"    suites   NONE — this check ran the tests %d{List.length dirs} times and every one of \
+                           its run directories is empty (%s{listed})"
+
+                [], fact :: priorEvidenceLines prior v
             | suites, _ ->
                 suites
                 |> List.mapi (fun i s ->
                     let label = if i = 0 then "suites  " else "        "
                     $"    %s{label} %s{s.Ctrf}"),
                 []
+
+        let suitePathLines = batchFactLines @ suitePathLines
 
         // AUTOMATION-111 — a RECALL MISS must SHOUT, in the output already being read.
         //

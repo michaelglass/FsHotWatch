@@ -4,6 +4,19 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- AUTOMATION-533: **a check's verdict accounts for every test run it produced, not
+  only the last.** A check runs the tests in several batches, each writing its own
+  `.fshw/test-runs/<runId>/`, and `verdict.json` named one of them — so a reader
+  following the documented procedure could land on 566 tests out of the 10,979 that
+  had actually run and conclude the gate never executed their work. Three readers did
+  in one session; in every case that could be checked afterwards the tests had run and
+  passed. `verdict.json` now carries `runs[]` (every batch, graded run first) and
+  `suites[]` covers all of them; the daemon's `test-scope` declares its session run
+  ledger as `runIds`; the check attributes runs by difference against a baseline read
+  before its scan. `runId` is unchanged and still names the run the verdict was GRADED
+  from. See
+  [ADR-018](docs/adr-018-a-checks-evidence-is-every-run-it-produced.md).
+
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
   between the workspaces of one repository — so a freshly created workspace starts
   warm.** Nothing about WHICH checkout a file was read from reaches a cache key any

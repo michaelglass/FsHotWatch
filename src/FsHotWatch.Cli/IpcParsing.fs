@@ -458,7 +458,27 @@ type TestRunReport =
         Scope: TestScope
         /// `None` when no run has completed in this daemon session — in which case
         /// there is no run directory, and that ABSENCE is itself the fact.
+        ///
+        /// AUTOMATION-533. It is ONE run of the several a check provokes — the one the
+        /// daemon's evidence receipt names, which is what a verdict is graded from. It
+        /// is NOT the answer to "what did this check execute": see `CheckRuns`.
         RunId: Guid option
+        /// AUTOMATION-533. Every run the daemon has COMPLETED in this session, newest
+        /// first, exactly as the daemon declared them — never inferred from mtimes.
+        /// Truncated on the wire (`SessionRunsOnTheWire`).
+        ///
+        /// EMPTY from a daemon that predates the field, which must read as "this daemon
+        /// does not say", never as "there were no other runs".
+        SessionRuns: Guid list
+        /// AUTOMATION-533. The runs THIS CHECK is accountable for: the session runs the
+        /// daemon had not yet completed when the check began. Computed by the check
+        /// driver (`TestRunEvidence.attribute`) by diffing `SessionRuns` against the
+        /// baseline it read before its scan — so membership is DECLARED at both ends,
+        /// and a run belonging to an earlier check cannot be adopted by this one.
+        ///
+        /// EMPTY on a report nobody has attributed yet, and on the abort paths, where
+        /// the check never got far enough to ask.
+        CheckRuns: Guid list
         /// The change that SELECTED the last run's tests, truncated on the wire.
         /// Empty from a daemon older than this field, and empty when nothing has
         /// triggered a run yet — both mean "cannot say", and both must render as
@@ -482,6 +502,8 @@ module TestRunReport =
     let ofScopeOnly (scope: TestScope) : TestRunReport =
         { Scope = scope
           RunId = None
+          SessionRuns = []
+          CheckRuns = []
           Seeds = []
           SeedCount = 0 }
 
@@ -567,13 +589,37 @@ let parseTestRunReport (json: string) : TestRunReport =
             | Some n when n >= 0 -> n
             | _ -> List.length seeds
 
+        // AUTOMATION-533. Absent from a daemon that predates the field — silence, not
+        // "there was one run". An unparseable entry is DROPPED rather than allowed to
+        // fail the reply: a diagnostic list may not turn a check into a refusal.
+        let sessionRuns =
+            match root.TryGetProperty("runIds") with
+            | true, v when v.ValueKind = JsonValueKind.Array ->
+                v.EnumerateArray()
+                |> Seq.choose (fun el ->
+                    if el.ValueKind = JsonValueKind.String then
+                        match Guid.TryParse(el.GetString()) with
+                        | true, g -> Some g
+                        | _ -> None
+                    else
+                        None)
+                |> Seq.toList
+            | _ -> []
+
         { Scope = scope
           RunId = runId
+          SessionRuns = sessionRuns
+          // Attribution is the DRIVER's to make: it is the only party that knows what
+          // the daemon had already run before this check started. A parser that guessed
+          // would hand every check the whole session.
+          CheckRuns = []
           Seeds = seeds
           SeedCount = seedCount }
     with ex ->
         { Scope = ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
           RunId = None
+          SessionRuns = []
+          CheckRuns = []
           Seeds = []
           SeedCount = 0 }
 

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- AUTOMATION-533: **the verdict accounts for every test run the check produced, not
+  only the last one.** A check runs the tests in batches — the impact-selected run,
+  the rerun a mid-run change queues behind it, `confirm`'s forced full suite, the
+  drain of a queued `run-tests` — and each writes its own
+  `.fshw/test-runs/<runId>/`. `verdict.json` named ONE of them, and a reader who did
+  the documented thing (open the directory the verdict names, look for their tests)
+  landed in one recorded case on 566 tests out of the 10,979 that had run and
+  concluded the gate never executed their work. Three such conclusions in one
+  session; two nearly caused already-green work to be redone.
+  - `runs[]` is new: every batch the check ran, graded run FIRST, each with the
+    reports it wrote. A batch that executed nothing still gets an entry — its run
+    directory exists, and saying so is how a reader tells it apart from a batch the
+    verdict forgot.
+  - `suites[]` is now the flattening of `runs[]`, so it covers ALL of them. It is a
+    derived view of the same list rather than a second field, so the flat and
+    per-batch answers cannot disagree. One project can appear twice, from two
+    batches, with different counts; the surfaces that print a total say "across N
+    batches" when there was more than one.
+  - `runId` is unchanged and still means the run this verdict was GRADED from — one
+    batch of several, and never again the answer to "what did this check execute".
+  - The check attributes runs by DIFFERENCE against a baseline it reads from the
+    daemon before its scan (one extra read-only round trip), so a batch nobody
+    watched go by is still counted and an earlier check's runs are never adopted.
+  - The steering block names the batch count before it lists the report paths.
+  - A verdict written before `runs[]` rehydrates as ONE batch named by its `runId`;
+    a daemon too old to declare its run ledger degrades to today's behaviour, never
+    to a refusal. See
+    [ADR-018](../../docs/adr-018-a-checks-evidence-is-every-run-it-produced.md).
+
 ## 0.14.0-alpha.41 - 2026-09-04
 
 - AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`

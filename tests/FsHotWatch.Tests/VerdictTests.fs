@@ -79,7 +79,12 @@ type private Spec =
         Outcome: Verdict.Outcome
         ExitCode: int
         Plugins: Verdict.PluginVerdict list
+        /// The reports of the ONE batch `RunId` names — the ordinary case.
         Suites: Verdict.SuiteVerdict list
+        /// AUTOMATION-533. The batches, when a test is about a check that ran the tests
+        /// more than once. Set `Suites` OR `Runs`, never both: two spellings of the same
+        /// evidence in one spec is the drift this field exists to test for.
+        Runs: Verdict.RunSuites list
         Comparison: Verdict.CheckComparison
         /// AUTOMATION-303. The failing ledger diagnostics behind a red. Defaults empty.
         RedCauses: Verdict.RedCause list
@@ -101,6 +106,8 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Command
         { Scope = s.Scope
           RunId = s.RunId
+          SessionRuns = []
+          CheckRuns = s.Runs |> List.choose (fun r -> r.RunId)
           Seeds = s.Seeds
           SeedCount = max s.SeedTotal (List.length s.Seeds) }
         s.Tree
@@ -108,7 +115,10 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Outcome
         s.ExitCode
         s.Plugins
-        s.Suites
+        (match s.Suites, s.Runs with
+         | [], runs -> runs
+         | suites, [] -> [ { RunId = s.RunId; Suites = suites } ]
+         | _ -> failwith "a spec declares Suites or Runs, never both")
         s.Comparison
         s.RedCauses
 
@@ -124,6 +134,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
+      Runs = []
       Comparison = Verdict.CheckComparison.notRecorded
       RedCauses = []
       Seeds = []
@@ -911,6 +922,171 @@ let ``failing counts survive into the suites — the verdict answers "how many f
 
         match Verdict.read root with
         | Verdict.Reading.Found back -> test <@ back.Suites.Head.Failed = 3 @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-533 — one check, SEVERAL run directories
+// ---------------------------------------------------------------------------
+//
+// The evidence these are written from, from one session on 2026-08-25: a check whose
+// two run directories were written thirty seconds apart. The first held five reports
+// and 10,979 tests, including all 23 of the change's own; the second held one report
+// and 566 tests, none of them the change's. The verdict named the second. Three
+// readers in that session concluded from a verdict like this one that their tests had
+// never run; in every case that could be checked afterwards, the tests had run and
+// passed.
+
+/// The ticket's own shape, as a fixture: a big impact-selected batch, then a small
+/// build-tooling batch, then the graded one. Returns them oldest-first.
+let private threeBatches (root: string) =
+    let first = Guid.NewGuid()
+    let second = Guid.NewGuid()
+    let graded = Guid.NewGuid()
+
+    writeReport root first "Lib.Tests" 10979 0 |> ignore
+    writeReport root first "Acceptance.Tests" 23 0 |> ignore
+    writeReport root second "Build.Tests" 566 0 |> ignore
+    writeReport root graded "Lib.Tests" 4 0 |> ignore
+
+    first, second, graded
+
+[<Fact>]
+let ``the verdict accounts for EVERY run the check produced, not just the graded one`` () =
+    withTempDir "runs-all-batches" (fun root ->
+        makeRepo root
+        let first, second, graded = threeBatches root
+
+        let runs =
+            Verdict.runSuites
+                root
+                { Scope = FullSuite 3
+                  RunId = Some graded
+                  SessionRuns = []
+                  CheckRuns = [ first; second; graded ]
+                  Seeds = []
+                  SeedCount = 0 }
+
+        // The graded run leads — it is what the outcome was computed from — and every
+        // other batch is there behind it.
+        test <@ runs |> List.map (fun r -> r.RunId) = [ Some graded; Some first; Some second ] @>
+
+        // And the flat view covers all three. `Acceptance.Tests` ran ONLY in the first
+        // batch: it is the test whose absence sent a reader off to redo work that was
+        // already green.
+        let projects =
+            runs |> List.collect (fun r -> r.Suites) |> List.map (fun s -> s.Project)
+
+        test <@ projects |> List.contains "Acceptance.Tests" @>
+        test <@ projects |> List.contains "Build.Tests" @>
+        test <@ List.length projects = 4 @>)
+
+[<Fact>]
+let ``a report that ran ONLY in an early batch is reported as having run — and its absence as absent`` () =
+    // The ticket's acceptance control, in both directions. The SAME check, the same
+    // batches, the same graded run: the only thing that moves is whether the early
+    // batch actually contains the report. A verdict that answered "ran" either way
+    // would be worthless, which is why the negative half is here.
+    let ran (writeEarly: bool) =
+        withTempDir "runs-control" (fun root ->
+            makeRepo root
+            let early = Guid.NewGuid()
+            let graded = Guid.NewGuid()
+
+            if writeEarly then
+                writeReport root early "Acceptance.Tests" 23 0 |> ignore
+            else
+                emptyRun root early
+
+            writeReport root graded "Build.Tests" 566 0 |> ignore
+
+            let v =
+                build
+                    { greenVerdict "sha256:abc" 1 with
+                        RunId = Some graded
+                        Runs =
+                            Verdict.runSuites
+                                root
+                                { Scope = FullSuite 2
+                                  RunId = Some graded
+                                  SessionRuns = []
+                                  CheckRuns = [ early; graded ]
+                                  Seeds = []
+                                  SeedCount = 0 } }
+
+            v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
+
+    test <@ ran true @>
+    test <@ not (ran false) @>
+
+[<Fact>]
+let ``the verdict names every CTRF report on disk for the check — the omission guard`` () =
+    // The failure mode here is OMISSION, so the expectation is built from the DISK
+    // rather than from a list written beside the assertion: every report the check's
+    // run directories hold must appear in the verdict, and a future change that drops
+    // a batch fails here even though nothing errors and every count it does report is
+    // correct.
+    withTempDir "runs-omission-guard" (fun root ->
+        makeRepo root
+        let first, second, graded = threeBatches root
+
+        let v =
+            build
+                { greenVerdict "sha256:abc" 1 with
+                    RunId = Some graded
+                    Runs =
+                        Verdict.runSuites
+                            root
+                            { Scope = FullSuite 3
+                              RunId = Some graded
+                              SessionRuns = []
+                              CheckRuns = [ first; second; graded ]
+                              Seeds = []
+                              SeedCount = 0 } }
+
+        let onDisk =
+            [ first; second; graded ]
+            |> List.collect (fun id ->
+                Directory.GetFiles(Ctrf.runDir root id, "*" + Ctrf.ReportSuffix) |> List.ofArray)
+            |> List.map (fun p -> Path.GetRelativePath(root, p).Replace('\\', '/'))
+            |> List.sort
+
+        test <@ (v.Suites |> List.map (fun s -> s.Ctrf) |> List.sort) = onDisk @>
+
+        // Survives the round trip, because a verdict is read far more often than it is
+        // built and the reader is the one this is for.
+        Verdict.write root v
+
+        match Verdict.read root with
+        | Verdict.Reading.Found back ->
+            test <@ (back.Suites |> List.map (fun s -> s.Ctrf) |> List.sort) = onDisk @>
+            test <@ (back.Runs |> List.map (fun r -> r.RunId)) = (v.Runs |> List.map (fun r -> r.RunId)) @>
+        | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``a verdict written before runs[] existed rehydrates as ONE batch, named by the run it was graded from`` () =
+    // The reports in such a file DID come from its `runId`, so that is what they
+    // rehydrate as. What must not happen is them being dropped for want of the newer
+    // field: in this record a batch that is absent is indistinguishable from a batch
+    // that never ran, which is the whole defect.
+    withTempDir "runs-legacy" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        let dir = runId.ToString("N")
+
+        let legacy =
+            $$"""{ "schema": "fshw-verdict-v1", "command": "check", "runId": "{{dir}}",
+                   "treeHash": "sha256:abc", "treeHashAlgorithm": "{{TreeHash.Algorithm}}",
+                   "outcome": { "kind": "green" }, "exitCode": 0, "plugins": [],
+                   "suites": [ { "project": "Lib.Tests", "ctrf": ".fshw/test-runs/{{dir}}/Lib.Tests.ctrf.json",
+                                 "total": 63, "passed": 63, "failed": 0, "skipped": 0 } ] }"""
+
+        Directory.CreateDirectory(FsHwPaths.root root) |> ignore
+        File.WriteAllText(Verdict.path root, legacy)
+
+        match Verdict.read root with
+        | Verdict.Reading.Found back ->
+            test <@ back.Runs |> List.map (fun r -> r.RunId) = [ Some runId ] @>
+            test <@ back.Suites |> List.map (fun s -> s.Project) = [ "Lib.Tests" ] @>
         | other -> failwith $"expected a readable verdict, got %A{other}")
 
 [<Fact>]

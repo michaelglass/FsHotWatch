@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- AUTOMATION-533: `test-scope` declares `runIds` — every run this daemon session has
+  completed, newest first (bounded at 64) — beside the unchanged `runId`, which still
+  names the run the evidence receipt points at. One check provokes several runs, and
+  the CLI cannot enumerate them without inferring membership from mtimes; now it does
+  not have to. The ledger is written at the top of the completion handler, before the
+  branches it returns through, so no drain path can drop a batch. See
+  [ADR-018](../../docs/adr-018-a-checks-evidence-is-every-run-it-produced.md).
+
 ## 0.13.0-alpha.30 - 2026-09-03
 
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under
