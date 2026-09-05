@@ -5331,3 +5331,198 @@ let ``exit 6 is in-flight, and no other report reaches it`` () =
     test <@ Verdict.reportExitCode (Verdict.Report.Stale(v, "because")) = 4 @>
     test <@ Verdict.reportExitCode (Verdict.Report.NoVerdict "because") = 5 @>
     test <@ Verdict.reportExitCode (Verdict.Report.InFlight(v, "because")) = 6 @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-555 (rework). Completeness is DERIVED from the spans against the
+// observed wall time — never asserted by a producer. QA failed the first landing on
+// exactly this: eight real verdicts attributed 6–48% of their wall time and six of
+// them carried an EMPTY `timingIncompleteReasons`, printing `timing evidence complete`
+// over a 90% hole.
+// ---------------------------------------------------------------------------
+
+let private spanAt scope (startOffsetMs: int64) (elapsedMs: int64) : Verdict.TimingSpan =
+    { Scope = scope
+      StartOffsetMs = startOffsetMs
+      ElapsedMs = elapsedMs
+      Detail = None }
+
+let private withSpans (invocationId: string) (observed: int64) (spans: Verdict.TimingSpan list) =
+    { Verdict.Attribution.none with
+        TimingSpans = spans
+        ObservedElapsedMs = Some observed
+        InvocationId = Some invocationId }
+
+/// The octopus-k shape in miniature: spans cover 10% of the observed window. The
+/// derived reason must exist, must name the coverage the summary prints, and must
+/// name the gap — the interval a reader would otherwise have to find by walking spans.
+[<Fact>]
+let ``spans covering 10 percent of the observed window derive an incompleteness reason naming the gap`` () =
+    withTempDir "verdict-derived-gap" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution (
+            withSpans "gap-invocation" 1000L [ spanAt "run.beforeRun" 0L 40L; spanAt "plugin.test-prune" 940L 60L ]
+        )
+        |> Verdict.write root
+
+        let readBack =
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v
+            | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        // Derived, not stored: the attribution carries no refused evidence at all.
+        test <@ List.isEmpty (readBack.Attribution.RefusedEvidence) @>
+
+        match readBack.TimingIncompleteReasons with
+        | [ reason ] ->
+            test <@ reason.Contains "cover 10.0%" @>
+            test <@ reason.Contains "below the 95% completeness floor" @>
+            test <@ reason.Contains "40ms→940ms (900ms)" @>
+        | other -> failwith $"expected exactly one derived reason, got %A{other}"
+
+        // The file says the same thing a JSON consumer reads it for.
+        use json = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+
+        let stored =
+            [ for r in json.RootElement.GetProperty("timingIncompleteReasons").EnumerateArray() -> r.GetString() ]
+
+        test <@ stored = readBack.TimingIncompleteReasons @>
+
+        // And the printed percentage matches the reason's percentage.
+        let summary =
+            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+
+        test <@ summary.Contains "100ms attributed / 1000ms observed (10.0%, 900ms unattributed)" @>
+        test <@ summary.Contains "timing evidence incomplete: timing spans cover 10.0%" @>
+        test <@ not (summary.Contains "timing evidence complete") @>)
+
+/// Positive control: spans covering at least the floor derive NO reason, and only
+/// then may the summary say `timing evidence complete`.
+[<Fact>]
+let ``spans covering at least 95 percent of the observed window report complete timing evidence`` () =
+    withTempDir "verdict-derived-complete" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution (
+            withSpans
+                "complete-invocation"
+                1000L
+                [ spanAt "daemon.scan" 0L 700L
+                  spanAt "plugin.build" 650L 200L
+                  spanAt "plugin.test-prune" 850L 100L ]
+        )
+        |> Verdict.write root
+
+        let readBack =
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v
+            | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        test <@ List.isEmpty (readBack.TimingIncompleteReasons) @>
+
+        let summary =
+            ProgressRenderer.AgentHints.forVerdict None readBack |> String.concat "\n"
+
+        test <@ summary.Contains "950ms attributed / 1000ms observed (95.0%, 50ms unattributed)" @>
+        test <@ summary.Contains "timing evidence complete" @>
+        // The daemon's own phase is named on its own line, ahead of the percentage.
+        test <@ summary.Contains "phases   daemon.scan at +0ms — 700ms" @>)
+
+/// Exactly the floor, minus one permille, is incomplete: the threshold is a floor,
+/// not a rounding target.
+[<Fact>]
+let ``coverage one permille under the floor is incomplete`` () =
+    let reasons =
+        Verdict.Attribution.derivedReasons (Some 1000L) [ spanAt "daemon.scan" 0L 949L ]
+
+    test <@ reasons |> List.exists (fun r -> r.Contains "cover 94.9%") @>
+    test <@ List.isEmpty (Verdict.Attribution.derivedReasons (Some 1000L) [ spanAt "daemon.scan" 0L 950L ]) @>
+    // No observation, no claim either way.
+    test <@ List.isEmpty (Verdict.Attribution.derivedReasons None []) @>
+
+/// Augmentation changes the evidence (more spans, a larger observed window), so the
+/// stored derived reason must be recomputed — not left asserting the pre-augment
+/// coverage, and not duplicated.
+[<Fact>]
+let ``augmentation refreshes the derived reason against the new spans and wall time`` () =
+    withTempDir "verdict-derived-refresh" (fun root ->
+        build (greenVerdict "abc" 1)
+        |> Verdict.withAttribution (withSpans "refresh-invocation" 100L [ spanAt "plugin.build" 0L 10L ])
+        |> Verdict.write root
+
+        let before =
+            match Verdict.read root with
+            | Verdict.Reading.Found v -> v.TimingIncompleteReasons
+            | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        test <@ before |> List.exists (fun r -> r.Contains "cover 10.0%") @>
+
+        // The wrapper attaches an afterRun span and reports a longer window: the spans
+        // now cover 10 + 940 of 1000 — exactly the floor.
+        let attached =
+            Verdict.tryAugment root "refresh-invocation" [] [ spanAt "run.afterRun" 10L 940L ] [] (Some 1000L)
+
+        test <@ attached @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ List.isEmpty (v.TimingIncompleteReasons) @>
+            test <@ List.isEmpty (v.Attribution.RefusedEvidence) @>
+        | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        use json = JsonDocument.Parse(File.ReadAllText(Verdict.path root))
+
+        let storedCount =
+            json.RootElement.GetProperty("timingIncompleteReasons").GetArrayLength()
+
+        test <@ storedCount = 0 @>)
+
+/// The gaps a reason names are the complement of the union — overlapping and
+/// touching spans leave no phantom gap between them.
+[<Fact>]
+let ``timing gaps are the uncovered complement of the unioned spans`` () =
+    let gaps =
+        Verdict.TimingSpan.gaps
+            100L
+            [ spanAt "a" 10L 20L
+              spanAt "b" 25L 15L
+              spanAt "c" 40L 10L
+              spanAt "d" 70L 10L ]
+
+    test <@ gaps = [ (0L, 10L); (50L, 70L); (80L, 100L) ] @>
+    test <@ Verdict.TimingSpan.gaps 100L [] = [ (0L, 100L) ] @>
+    test <@ List.isEmpty (Verdict.TimingSpan.gaps 100L [ spanAt "all" 0L 100L ]) @>
+
+/// A daemon phase or plugin run that STRADDLES the invocation origin — already in
+/// flight when the check arrived — is attributed for the part inside the window,
+/// and one wholly before it is not evidence about this invocation at all.
+[<Fact>]
+let ``daemon phases are clipped to the invocation window`` () =
+    let invocation = Verdict.Invocation.startAs "clip"
+    let origin = invocation.OriginUtc
+
+    let phase (startedAt: DateTime) (seconds: float) : FsHotWatch.DaemonPhases.PhaseRecord =
+        { Scope = "plugin.test-prune"
+          StartedAt = startedAt
+          Elapsed = TimeSpan.FromSeconds seconds
+          Detail = Some "superseded" }
+
+    let straddling =
+        Verdict.TimingSpan.ofDaemonPhase invocation 10000L (phase (origin.AddSeconds -5.0) 8.0)
+
+    test
+        <@
+            straddling = Some
+                { Scope = "plugin.test-prune"
+                  StartOffsetMs = 0L
+                  ElapsedMs = 3000L
+                  Detail = Some "superseded" }
+        @>
+
+    let history =
+        Verdict.TimingSpan.ofDaemonPhase invocation 10000L (phase (origin.AddSeconds -20.0) 8.0)
+
+    test <@ history = None @>
+
+    let overrunning =
+        Verdict.TimingSpan.ofDaemonPhase invocation 10000L (phase (origin.AddSeconds 8.0) 60.0)
+
+    test <@ overrunning |> Option.map (fun s -> s.StartOffsetMs, s.ElapsedMs) = Some(8000L, 2000L) @>

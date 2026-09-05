@@ -1834,3 +1834,51 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
         test <@ not (remaining |> Map.containsKey insideRelative) @>
         test <@ remaining |> Map.containsKey outside @>
         test <@ remaining |> Map.containsKey pseudo @>)
+
+// --- AUTOMATION-555 (rework): every plugin run lands on the phase ledger ---
+
+/// The ledger records the plugin's WHOLE `Running` interval, not the elapsed the
+/// plugin measured for itself: test-prune is `Running` through minutes of symbol
+/// analysis before its own stopwatch starts, and a check waits for all of it.
+[<Fact(Timeout = 15000)>]
+let ``a plugin's Running to Completed interval is recorded on the host's phase ledger`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "ledger-test"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep 60
+                        // A self-measured elapsed far SHORTER than the Running interval.
+                        ctx.ReportStatus(PluginStatus.completedNow "7 passed" (TimeSpan.FromMilliseconds 1.0))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            host.Phases.Snapshot(DateTime.UtcNow)
+            |> List.exists (fun r -> r.Scope = "plugin.ledger-test" && r.Detail <> Some "in flight"))
+        12000
+
+    match
+        host.Phases.Snapshot(DateTime.UtcNow)
+        |> List.filter (fun r -> r.Scope = "plugin.ledger-test")
+    with
+    | [ record ] ->
+        test <@ record.Detail = Some "7 passed" @>
+        test <@ record.Elapsed >= TimeSpan.FromMilliseconds 50.0 @>
+    | other -> failwith $"expected one ledger record for the plugin run, got %A{other}"

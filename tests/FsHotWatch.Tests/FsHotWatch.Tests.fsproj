@@ -42,6 +42,7 @@
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
+    <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="HeartbeatTests.fs" />

@@ -74,6 +74,38 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- AUTOMATION-555 (rework): **a verdict's timing now covers the wall time the check spent
+  waiting on the DAEMON, and `timing evidence complete` is derived from the spans, never
+  asserted.** QA failed the first landing on the load-bearing criterion: on nine real
+  gates the spans attributed 6–48% of the observed wall time, and six of the seven
+  low-attribution verdicts carried an EMPTY `timingIncompleteReasons`. A 32-minute
+  `check` on the intelligence repository printed `195680ms attributed / 1943457ms
+  observed (10.1%)` and then `timing evidence complete`. Reconstructed from that run's
+  `daemon.log`, the 1,748 s hole was: the cold scan `WaitForScan` blocked on (MSBuild
+  discovery 8 s + FCS check tiers, 711 s), a re-discovery a project-file change provoked
+  mid-run (47 s), three test-prune runs the check waited on that a later re-run
+  superseded (988 s — only the fourth survived as `lastRun`), the 6m41s test-prune was
+  `Running` before its own stopwatch started, and daemon startup (11 s). None of it had a
+  span.
+  - The daemon keeps a phase ledger (`DaemonPhases`): `daemon.startup`,
+    `daemon.discover`, `daemon.scan`, `daemon.check` (an incremental change batch) and
+    every plugin's `Running` → terminal interval as `plugin.<name>` — superseded runs
+    included. It travels as `daemonPhases[]` on the diagnostics response; the CLI clips
+    each phase to the invocation window and places it in `timingSpans[]`. A run already
+    in flight when the check arrived is attributed for the part the check waited on.
+  - `timingIncompleteReasons` is COMPUTED: the refused evidence, then — whenever the
+    unioned spans explain less than 95% of `observedElapsedMs` — one reason naming the
+    coverage and the largest unattributed intervals (`timing spans cover 10.1% of the
+    1943457ms observed — below the 95% completeness floor; largest unattributed
+    interval(s): 796283ms→1649380ms (853097ms), …`). The printed percentage and the
+    reason come from the same union, so they cannot disagree, and augmentation
+    (`run.afterRun`, a larger observed window) re-derives it. A producer has no field
+    to set: the F# `Attribution` record's `TimingIncompleteReasons` is gone
+    (**BREAKING**, see `src/FsHotWatch.Cli/CHANGELOG.md`).
+  - The agent summary lists the daemon's phases (`phases   daemon.scan at +27851ms —
+    711000ms: cold scan: checked 1704 of 1704 registered file(s), unchecked 0`) ahead of
+    the percentage line.
+
 - AUTOMATION-434 (rework): **a persistent FSEvents refusal now fails `fshw start`
   closed instead of silently demoting the daemon to polling.** The first landing retried
   a transiently refused `FSEventStreamStart`/`FSEventStreamCreate` (100/300/900 ms) and

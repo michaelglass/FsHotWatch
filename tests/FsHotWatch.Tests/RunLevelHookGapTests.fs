@@ -117,7 +117,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
                 StartOffsetMs = 0L
                 ElapsedMs = 5L
                 Detail = Some "true" } ]
-          TimingIncompleteReasons = []
+          RefusedEvidence = []
           ObservedElapsedMs = Some 20L
           InvocationId = Some invocationId }
     |> FsHotWatch.Cli.Verdict.write root

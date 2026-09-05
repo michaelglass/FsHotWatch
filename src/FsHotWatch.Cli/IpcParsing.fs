@@ -843,3 +843,73 @@ let parseCheckReach (json: string) : CheckReachReading =
 let isAllTerminal (statuses: Map<string, StatusView>) : bool =
     not statuses.IsEmpty
     && statuses |> Map.forall (fun _ s -> StatusView.isQuiescent s)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-555 (rework). The daemon's OWN account of where its wall time went.
+// ---------------------------------------------------------------------------
+
+/// The phase ledger a daemon serves beside its plugin statuses (`daemonPhases` on the
+/// diagnostics response) — every phase it spent wall time in, its own and every
+/// plugin's `Running` interval, superseded runs included. `NotServed` is an older
+/// daemon (or an embedder) that carries no ledger: the verdict then falls back to
+/// each plugin's `lastRun`, and says so through its coverage rather than pretending.
+[<RequireQualifiedAccess>]
+type DaemonEvidence =
+    | NotServed
+    | Served of FsHotWatch.DaemonPhases.PhaseRecord list
+
+module DaemonEvidence =
+    /// The ledger of an in-process host (`--run-once`), read now.
+    let ofHost (host: FsHotWatch.PluginHost.PluginHost) : DaemonEvidence =
+        DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow))
+
+    /// The `daemonPhases` array of a diagnostics response. Entries that do not carry a
+    /// scope, a parseable start and an elapsed time are dropped: a phase that cannot be
+    /// placed is not evidence, and the coverage it fails to explain surfaces as a gap.
+    let parse (json: string) : DaemonEvidence =
+        try
+            use doc = JsonDocument.Parse(json)
+            let root = doc.RootElement
+
+            match root.ValueKind, root.TryGetProperty("daemonPhases") with
+            | JsonValueKind.Object, (true, phases) when phases.ValueKind = JsonValueKind.Array ->
+                [ for phase in phases.EnumerateArray() do
+                      if phase.ValueKind = JsonValueKind.Object then
+                          let scope = tryGetStringProp phase "scope"
+
+                          let startedAt =
+                              match tryGetStringProp phase "startedAt" with
+                              | Some s ->
+                                  match
+                                      DateTime.TryParse(
+                                          s,
+                                          Globalization.CultureInfo.InvariantCulture,
+                                          Globalization.DateTimeStyles.AdjustToUniversal
+                                          ||| Globalization.DateTimeStyles.AssumeUniversal
+                                      )
+                                  with
+                                  | true, parsed -> Some parsed
+                                  | _ -> None
+                              | None -> None
+
+                          let elapsedMs =
+                              match phase.TryGetProperty("elapsedMs") with
+                              | true, v when v.ValueKind = JsonValueKind.Number ->
+                                  match v.TryGetInt64() with
+                                  | true, n -> Some n
+                                  | _ -> None
+                              | _ -> None
+
+                          match scope, startedAt, elapsedMs with
+                          | Some scope, Some startedAt, Some elapsedMs ->
+                              yield
+                                  ({ Scope = scope
+                                     StartedAt = startedAt
+                                     Elapsed = TimeSpan.FromMilliseconds(float elapsedMs)
+                                     Detail = tryGetStringProp phase "detail" }
+                                  : FsHotWatch.DaemonPhases.PhaseRecord)
+                          | _ -> () ]
+                |> DaemonEvidence.Served
+            | _ -> DaemonEvidence.NotServed
+        with :? JsonException ->
+            DaemonEvidence.NotServed

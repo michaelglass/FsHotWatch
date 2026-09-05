@@ -486,3 +486,33 @@ let ``a reply that names no scope for the selection reads as UNREADABLE, never f
     with
     | ReachRecorded r -> test <@ TestScope.isUnreadable r.Scope @>
     | other -> failwithf "expected a recorded projection, got %A" other
+
+// --- AUTOMATION-555 (rework): the daemon's phase ledger on the diagnostics response ---
+
+[<Fact(Timeout = 15000)>]
+let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it cannot place`` () =
+    let json =
+        """{"count":0,"files":{},"statuses":{},"unchecked":0,
+            "daemonPhases":[
+              {"scope":"daemon.scan","startedAt":"2026-09-05T20:35:27.851Z","elapsedMs":711000,"detail":"cold scan: checked 1704 of 1704 registered file(s), unchecked 0"},
+              {"scope":"plugin.test-prune","startedAt":"2026-09-05T20:40:00.000Z","elapsedMs":975000,"detail":null},
+              {"scope":"daemon.check","startedAt":"not a date","elapsedMs":5},
+              {"startedAt":"2026-09-05T20:35:27.851Z","elapsedMs":5},
+              "garbage"
+            ]}"""
+
+    match DaemonEvidence.parse json with
+    | DaemonEvidence.Served phases ->
+        test <@ phases |> List.map (fun p -> p.Scope) = [ "daemon.scan"; "plugin.test-prune" ] @>
+        test <@ phases.Head.StartedAt = DateTime(2026, 9, 5, 20, 35, 27, 851, DateTimeKind.Utc) @>
+        test <@ phases.Head.StartedAt.Kind = DateTimeKind.Utc @>
+        test <@ phases.Head.Elapsed = TimeSpan.FromMilliseconds 711000.0 @>
+        test <@ phases.Head.Detail = Some "cold scan: checked 1704 of 1704 registered file(s), unchecked 0" @>
+        test <@ phases.[1].Detail = None @>
+    | DaemonEvidence.NotServed -> failwith "a served daemonPhases array must parse as Served"
+
+[<Fact(Timeout = 15000)>]
+let ``DaemonEvidence.parse is NotServed for a daemon that sends no ledger`` () =
+    test <@ DaemonEvidence.parse """{"count":0,"files":{},"statuses":{},"unchecked":0}""" = DaemonEvidence.NotServed @>
+    test <@ DaemonEvidence.parse """{"daemonPhases":"nope"}""" = DaemonEvidence.NotServed @>
+    test <@ DaemonEvidence.parse "not json" = DaemonEvidence.NotServed @>

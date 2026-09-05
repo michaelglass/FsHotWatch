@@ -374,6 +374,21 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             config.Host.GetAllStatuses()
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
+        // AUTOMATION-555 (rework). Every phase the daemon spent wall time in — its own
+        // and every plugin's `Running` interval, superseded runs included — so the
+        // verdict can cover the time the check waited on, by name. Wall-clock stamped:
+        // the CLI places each one against its own invocation origin.
+        let daemonPhases =
+            config.Host.Phases.Snapshot(DateTime.UtcNow)
+            |> List.map (fun phase ->
+                {| scope = phase.Scope
+                   startedAt = phase.StartedAt.ToString("O")
+                   elapsedMs = int64 phase.Elapsed.TotalMilliseconds
+                   detail =
+                    (match phase.Detail with
+                     | Some d -> box d
+                     | None -> null) |})
+
         // `unchecked` is the request-time completeness signal: registered files that
         // currently lack a valid full-check result. The CLI parses it into a `Coverage`
         // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
@@ -382,6 +397,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             {| count = count
                files = allErrors
                statuses = statuses
+               daemonPhases = daemonPhases
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)

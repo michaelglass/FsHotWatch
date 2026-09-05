@@ -47,6 +47,11 @@ type PluginHost
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
+    // AUTOMATION-555 (rework). Every phase the daemon spends wall time in — its own
+    // (startup, discovery, scans, change batches) and every plugin's `Running` →
+    // terminal interval, superseded runs included — so a verdict can cover what the
+    // check observed instead of only each plugin's surviving `lastRun`.
+    let phases = DaemonPhases.Ledger()
     let sharedRunScheduler = PluginFramework.SharedRunScheduler()
 
     // Read-only project-graph accessor threaded into every plugin's
@@ -148,6 +153,27 @@ type PluginHost
                             activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
                         | Idle
                         | Running _ -> ()
+
+                        // AUTOMATION-555 (rework). The plugin's WHOLE `Running` interval, not
+                        // the run it measured itself: test-prune is `Running` through symbol
+                        // analysis and selection long before `executeTests` starts its
+                        // stopwatch, and a check blocked on `WaitForComplete` waits for all
+                        // of it. Recorded for EVERY terminal transition, so a run a later
+                        // re-run supersedes is still on the ledger when the verdict asks.
+                        match prev, status with
+                        | Some(Running since), Completed(at, verdict)
+                        | Some(Running since), Failed(_, at, verdict) ->
+                            phases.Record(DaemonPhases.Phase.PluginRun name, since, at - since, Some verdict.Summary)
+                        | _, Completed(at, verdict)
+                        | _, Failed(_, at, verdict) ->
+                            phases.Record(
+                                DaemonPhases.Phase.PluginRun name,
+                                at - verdict.Elapsed,
+                                verdict.Elapsed,
+                                Some verdict.Summary
+                            )
+                        | _, Idle
+                        | _, Running _ -> ()
 
                         // Mutation applied — hand the notification to the
                         // trigger agent (fires outside this loop, in order).
@@ -600,6 +626,9 @@ type PluginHost
     member _.GetActivityTail(pluginName: string) : string list = activity.GetActivityTail(pluginName)
 
     member _.GetHistory(pluginName: string) : RunRecord list = activity.GetHistory(pluginName)
+
+    /// AUTOMATION-555 (rework). The daemon's phase ledger — see `DaemonPhases`.
+    member _.Phases: DaemonPhases.Ledger = phases
 
     /// Get all errors grouped by file path.
     member _.GetErrors() = ledger.GetAll()

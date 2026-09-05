@@ -370,10 +370,15 @@ let private discoverAndRegisterProjects
     (mapOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
+    (phases: DaemonPhases.Ledger)
     (excludePatterns: string list)
     (clearCheckCache: bool)
     : Async<DiscoverySnapshot> =
     async {
+        // AUTOMATION-555 (rework). Discovery is wall time a `check` blocks on — 8 s
+        // cold, 47 s when a project-file change provokes it mid-run — and no plugin
+        // owns it. Recorded on every exit, with the evaluation's own summary line.
+        use phase = phases.Begin DaemonPhases.Phase.Discover
         let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
         let fsprojFiles =
@@ -470,6 +475,8 @@ let private discoverAndRegisterProjects
                 "discover"
                 $"MSBuild evaluation complete: %d{loadedCount} loaded, %d{optionsMappedCount} options mapped in %.1f{sw.Elapsed.TotalSeconds}s"
 
+            phase.Complete(Some $"MSBuild evaluation: %d{loadedCount} loaded, %d{optionsMappedCount} options mapped")
+
             // AUTOMATION-290. The line above reports the LOADED count and then the
             // loop below iterates it — and an empty list iterates zero times, which
             // is why total discovery failure used to read exactly like a repository
@@ -499,6 +506,7 @@ let private discoverAndRegisterProjects
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
+            phase.Complete(Some $"MSBuild evaluation failed: %s{ex.Message}")
 
         return
             { Discovered = fsprojFiles.Length
@@ -593,7 +601,15 @@ let private rediscoverAndClearRemoved
             let oldFiles = graph.GetAllFiles() |> Set.ofList
 
             let! completed =
-                discoverAndRegisterProjects repoRoot loader mapOptions graph pipeline excludePatterns clearCheckCache
+                discoverAndRegisterProjects
+                    repoRoot
+                    loader
+                    mapOptions
+                    graph
+                    pipeline
+                    host.Phases
+                    excludePatterns
+                    clearCheckCache
 
             let newFiles = graph.GetAllFiles() |> Set.ofList
             let removedFiles = Set.difference oldFiles newFiles
@@ -846,6 +862,10 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
 /// run preprocessors, emit events, and check files.
 let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
     async {
+        // AUTOMATION-555 (rework). An incremental batch — the FCS re-check a file
+        // change provokes while a check is already waiting — is daemon wall time no
+        // plugin owns. One record per batch, on every exit.
+        use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
         let mutable sourceFiles = []
         let mutable projFiles = []
         let mutable hasSolution = false
@@ -1117,6 +1137,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                       StartedAt = batchStartedAt
                       CompletedAt = System.DateTime.UtcNow }
 
+            batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
         else
             return remainingSuppressed
@@ -1819,6 +1840,7 @@ type Daemon
                         mapProjectOptions
                         graph
                         pipeline
+                        host.Phases
                         excludePatterns
                         true
 
@@ -1938,6 +1960,23 @@ type Daemon
                         fun () ->
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount }
+
+                // AUTOMATION-555 (rework). Everything before the pipe listens — runtime
+                // boot, config and analyzer loading, the singleton lock — is wall time
+                // a cold `check` waits on. Measured from the process start, which is
+                // the earliest instant this process can vouch for.
+                let processStartedAt =
+                    try
+                        System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()
+                    with _ ->
+                        DateTime.UtcNow
+
+                host.Phases.Record(
+                    DaemonPhases.Phase.Startup,
+                    processStartedAt,
+                    DateTime.UtcNow - processStartedAt,
+                    Some "daemon process start to IPC pipe listening"
+                )
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
@@ -2216,6 +2255,14 @@ let private performScan
             let pipeline = ctx.Pipeline
             let graph = ctx.Graph
 
+            // AUTOMATION-555 (rework). The scan is the single largest phase a cold
+            // `check` waits on (12 min of FCS tiers on a 22-project repository) and
+            // the one `WaitForScan` blocks on without any plugin owning it. One
+            // record for the WHOLE scan — discovery admission, build settlement and
+            // the check tiers — so the verdict can cover that wait by name.
+            use scanPhase =
+                host.Phases.Begin(DaemonPhases.Phase.Scan(ScanActivity.ScanKind.describe (scanKindFor state)))
+
             // Re-discover projects before scanning so that removed files/projects
             // are cleared before results are returned to the client. Without this,
             // a concurrent processChanges re-discovery (triggered by the file watcher
@@ -2399,6 +2446,12 @@ let private performScan
 
             sw.Stop()
             let finalScanState = ScanComplete(sw.Elapsed)
+
+            scanPhase.Complete(
+                Some
+                    $"%s{ScanActivity.ScanKind.describe (scanKindFor state)} scan: checked %d{checkedTotal} of %d{total} registered file(s), unchecked %d{uncheckedCount}"
+            )
+
             let newGeneration = state.Generation + 1L
 
             // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
