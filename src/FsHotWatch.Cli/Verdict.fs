@@ -2432,6 +2432,21 @@ type Applicability =
     /// rules; it cannot be promoted to a v3 claim by a string comparison that happens
     /// to match.
     | StaleAlgorithm of verdictAlgorithm: string * currentAlgorithm: string
+    /// AUTOMATION-573. Everything above matched — this verdict describes the tree on
+    /// disk, from the binary that is running — and a DIFFERENT run is in flight over
+    /// that same tree right now. The verdict is the answer to the PREVIOUS question,
+    /// not to the one being computed.
+    ///
+    /// The question this case answers is deliberately the COMPOSITE one: "does the
+    /// verdict on disk describe the run that is happening now?", not the looser "is
+    /// any run in flight anywhere". It is reached only after the tree and producer
+    /// have already matched, so a run in flight over some OTHER tree — a check
+    /// started before an edit, a workspace whose files have since moved — never
+    /// clouds a verdict that genuinely applies to what is on disk. And it is refused
+    /// only for runs OTHER than the one that published the verdict, so a run reading
+    /// back its own freshly published result gets `Applies`, not a refusal to read
+    /// its own answer.
+    | RunInFlight of held: RunClaim.Claim list
 
 /// Total. Content equality on the SUBJECT and on the PRODUCER — no mtimes, no
 /// "close enough", no heuristic that can fail open.
@@ -2446,7 +2461,18 @@ type Applicability =
 /// verdict, a rebuild that reproduces the same binary hash — a v1 hash would be
 /// compared against a v3 hash as two opaque strings, and "they differ" would be
 /// reported as a stale TREE. That reading is a puzzle, not an answer.
-let applicability (currentProducer: Producer) (currentTreeHash: string) (v: Verdict) : Applicability =
+///
+/// The RUN CLAIMS are checked LAST, and only on the path that would otherwise return
+/// `Applies` (AUTOMATION-573). That ordering is load-bearing in both directions: every
+/// existing staleness answer — and its exit code — is reached exactly as before, so a
+/// stale tree is still a stale tree; and the ONE remaining road to a green now has a
+/// gate across it, which is the only road a stale green could ever have travelled.
+let applicability
+    (heldClaims: RunClaim.Claim list)
+    (currentProducer: Producer)
+    (currentTreeHash: string)
+    (v: Verdict)
+    : Applicability =
     if not (Producer.same v.Producer currentProducer) then
         Applicability.StaleProducer(
             DaemonIdentity.BinaryIdentity.render v.Producer,
@@ -2454,10 +2480,23 @@ let applicability (currentProducer: Producer) (currentTreeHash: string) (v: Verd
         )
     elif not (String.Equals(v.TreeHashAlgorithm, TreeHash.Algorithm, StringComparison.Ordinal)) then
         Applicability.StaleAlgorithm(v.TreeHashAlgorithm, TreeHash.Algorithm)
-    elif String.Equals(v.TreeHash, currentTreeHash, StringComparison.Ordinal) then
-        Applicability.Applies
-    else
+    elif not (String.Equals(v.TreeHash, currentTreeHash, StringComparison.Ordinal)) then
         Applicability.StaleTree(v.TreeHash, currentTreeHash)
+    else
+        // A claim carrying THIS verdict's invocation id is the run that PUBLISHED it:
+        // the publish happens inside the bracket, before the claim is released, so
+        // there is a real window in which a run holds a claim over a verdict it has
+        // already written. Its own answer is current, and refusing it would make every
+        // run unable to read what it just produced.
+        //
+        // A verdict with NO invocation id — written before attribution existed
+        // (AUTOMATION-555), or by a path that could not record one — matches no claim
+        // and is therefore refused while any run is in flight. That is the
+        // conservative reading and the right one: a verdict that cannot say which run
+        // made it has not established that it is this one.
+        match heldClaims |> List.filter (fun c -> v.InvocationId <> Some c.InvocationId) with
+        | [] -> Applicability.Applies
+        | others -> Applicability.RunInFlight others
 
 /// What `fshw verdict` found. Total, and in one-to-one correspondence with an
 /// exit code — the codes 0/1/2/3 are exactly `check`'s, so a verdict READ and a
@@ -2470,6 +2509,10 @@ type Report =
     /// identical — do not reuse it — while `reason` says which provenance link broke:
     /// a different tree, or a different binary.
     | Stale of Verdict * reason: string
+    /// AUTOMATION-573. A run is in flight over THIS tree, and this verdict is the
+    /// previous run's result. Its OWN exit code is deliberately withheld: a green here
+    /// is the exact thing that must never reach a reader as an answer.
+    | InFlight of Verdict * reason: string
     | NoVerdict of reason: string
 
 /// Exit code for `fshw verdict`. Exhaustive: a new case is a compile error here,
@@ -2478,11 +2521,16 @@ type Report =
 ///   0/1/2/3 — the verdict applies, and these are `check`'s own codes.
 ///   4       — STALE: a verdict exists but describes a different tree.
 ///   5       — no usable verdict on disk.
+///   6       — IN FLIGHT: a run is verifying this tree right now, and the verdict on
+///             disk is the previous run's. Distinct from 4 because the consequence is
+///             different: 4 says "the code moved, go and re-run"; 6 says "the answer
+///             is being computed — waiting is what closes this, not another run".
 let reportExitCode (r: Report) : int =
     match r with
     | Report.Applies v -> v.ExitCode
     | Report.Stale _ -> 4
     | Report.NoVerdict _ -> 5
+    | Report.InFlight _ -> 6
 
 /// Read the verdict and decide whether it applies to the tree on disk RIGHT NOW.
 ///
@@ -2496,8 +2544,16 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
         let currentTree = TreeHash.compute repoRoot excludePatterns
         let currentProducer = Producer.current ()
 
-        match applicability currentProducer currentTree.Hash v with
+        match applicability (RunClaim.live repoRoot) currentProducer currentTree.Hash v with
         | Applicability.Applies -> Report.Applies v
+        | Applicability.RunInFlight held ->
+            let who = held |> List.map RunClaim.describe |> String.concat ", "
+
+            Report.InFlight(
+                v,
+                $"in flight: a run is verifying THIS tree right now — %s{who}. The verdict on disk was earned by \
+                  an EARLIER run and is not that run's answer; wait for it to publish, then read again"
+            )
         | Applicability.StaleTree(verdictTree, current) ->
             Report.Stale(
                 v,
@@ -2557,10 +2613,23 @@ type PriorConfirmation =
 /// Everything that is not an exact match is `MustEarn` — a stale tree, a stale producer, a
 /// filtered green, a red, an incomplete, an unreadable file, no file. Total, and every
 /// one of those roads leads to the same place: run the suite.
+///
+/// AUTOMATION-573. A run being IN FLIGHT does not disqualify the prior verdict here,
+/// and this is the one place that carve-out is correct. `confirm`'s question is not
+/// "what is the current state?" — the question `fshw verdict` answers, where a
+/// concurrent run makes the file's currency unknowable — but "has this evidence already
+/// been EARNED?". A full-suite green, over this exact tree, by this exact binary, was
+/// earned when it was earned; another run starting afterwards cannot un-earn it. Making
+/// this arm refuse would disable `confirm`'s only fast path whenever anything else in
+/// the workspace happened to be running, which is most of the time under continuous
+/// verification — and it would buy nothing, because the evidence it discarded is the
+/// same evidence the re-run would have to produce.
 let priorConfirmation (repoRoot: string) (excludePatterns: string list) : PriorConfirmation =
     match report repoRoot excludePatterns with
     | Report.Applies v when isFullSuiteGreen v -> PriorConfirmation.StillApplies v
+    | Report.InFlight(v, _) when isFullSuiteGreen v -> PriorConfirmation.StillApplies v
     | Report.Applies _
+    | Report.InFlight _
     | Report.Stale _
     | Report.NoVerdict _ -> PriorConfirmation.MustEarn
 
@@ -2597,23 +2666,44 @@ let describeStillApplies (v: Verdict) : string =
 ///
 /// It carries `applies` — it never prints a bare verdict that a reader could
 /// mistake for a current one. A stale green must not LOOK like a green.
+///
+/// AUTOMATION-573 adds `inFlight` beside it, ADDITIVELY: the schema string is
+/// unchanged, `applies` keeps its exact meaning, and every existing consumer that reads
+/// only `applies` gets `false` mid-run — the safe answer — without being taught anything.
+/// `inFlight` is what tells the consumers that WANT to distinguish the two reasons for a
+/// `false` apart: "this describes another tree, re-run" against "the answer is being
+/// computed, wait".
+///
+/// It is emitted on EVERY case, never only the new one. A field that appears only when
+/// it is true is a field a reader must learn to treat as absent-means-false, and that is
+/// the shape that gets read as "this build does not know about in-flight runs".
 let serializeReport (r: Report) : string =
     let payload: obj =
         match r with
         | Report.Applies v ->
             {| schema = "fshw-verdict-report-v1"
                applies = true
+               inFlight = false
                verdict = JsonSerializer.Deserialize<JsonElement>(serialize v) |}
             :> obj
         | Report.Stale(v, reason) ->
             {| schema = "fshw-verdict-report-v1"
                applies = false
+               inFlight = false
+               reason = reason
+               verdict = JsonSerializer.Deserialize<JsonElement>(serialize v) |}
+            :> obj
+        | Report.InFlight(v, reason) ->
+            {| schema = "fshw-verdict-report-v1"
+               applies = false
+               inFlight = true
                reason = reason
                verdict = JsonSerializer.Deserialize<JsonElement>(serialize v) |}
             :> obj
         | Report.NoVerdict reason ->
             {| schema = "fshw-verdict-report-v1"
                applies = false
+               inFlight = false
                reason = reason |}
             :> obj
 

@@ -71,6 +71,7 @@
     <Compile Include="RunOnceOutputTests.fs" />
     <Compile Include="IpcParsingTests.fs" />
     <Compile Include="CheckVerdictTests.fs" />
+    <Compile Include="RunClaimTests.fs" />
     <Compile Include="VerdictTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
     <Compile Include="ProgressRendererTests.fs" />

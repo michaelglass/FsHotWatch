@@ -1346,6 +1346,31 @@ let internal withRunHooksCommandUsingSignals
     (action: Verdict.Invocation -> int)
     : int =
     let invocation = Verdict.Invocation.start ()
+
+    // AUTOMATION-573. Claim the repo BEFORE anything runs, and hold it until the
+    // verdict for this invocation is on disk. This bracket is the right — and the only
+    // — place for it: both transports reach it (`queryPluginIn` and
+    // `RunOnceCheck.runOnceAndVerdict` are the same `action invocation` from here), and
+    // it already owns the one finalizer that every way out passes through, so the claim
+    // cannot outlive the run it describes.
+    //
+    // Best-effort, like publishing the verdict: `acquire` returns `None` when `.fshw/`
+    // cannot be written, and the run proceeds. A marker is an additional surface, never
+    // a new way to fail.
+    let claim = RunClaim.acquire repoRoot (Verdict.Command.token command) invocation.Id
+
+    // Latched, because the ordinary finalizer, a late signal and the scope exit below
+    // all reach it and a released claim must not warn about being released twice.
+    let releaseClaim = makeRunOnce (fun () -> RunClaim.release repoRoot claim)
+
+    // The backstop for the paths `finalize` does not run through — the beforeRun
+    // refusal, and any escape this function grows later. `Environment.Exit` does not
+    // unwind, so the signal path releases explicitly inside `finalize` rather than
+    // relying on this.
+    use _claimHeld =
+        { new IDisposable with
+            member _.Dispose() = releaseClaim () }
+
     let timeoutSec = Some(resolveRunHookTimeoutSec config)
     let hookEvidence = ResizeArray<Verdict.HookVerdict * Verdict.TimingSpan>()
 
@@ -1433,6 +1458,13 @@ let internal withRunHooksCommandUsingSignals
             FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
         | :? UnauthorizedAccessException as ex ->
             FsHotWatch.Logging.warn "verdict" $"could not publish the terminal verdict: %s{ex.Message}"
+
+        // AUTOMATION-573. LAST, and outside the try: the claim is released only once
+        // this invocation's verdict is on disk, so there is no instant in which the file
+        // is both unclaimed and describing an earlier run. A publish that threw still
+        // releases — a run that has ended is not in flight, whatever it managed to
+        // write.
+        releaseClaim ()
 
     // Installed for EVERY invocation, not only those with an afterRun: a signalled run
     // has no verdict of its own unless this writes one, and a prior green left on disk
@@ -2085,6 +2117,15 @@ let executeCommand
                 say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
                 say $"    verdict tree  %s{v.TreeHash}"
                 say "  Re-run `fshw check` (or `fshw confirm` for a merge). Never reuse it."
+            | Verdict.Report.InFlight(v, reason) ->
+                // AUTOMATION-573. Deliberately NOT the stale wording: the fix here is to
+                // WAIT, not to run again. Telling a reader to re-run a tree that is
+                // already being verified is how a box ends up with two checks racing for
+                // the same answer.
+                say $"%s{Color.yellow}…%s{Color.reset} %s{reason}"
+                say $"    verdict tree  %s{v.TreeHash}   (the tree on disk — the SUBJECT matches; the RUN does not)"
+                say $"    claims        %s{RunClaim.RelativeDir}"
+                say "  Wait for the run to publish, then read again. Do NOT start a second check."
             | Verdict.Report.NoVerdict reason -> say $"%s{Color.red}✗%s{Color.reset} %s{reason}"
 
             Verdict.reportExitCode report

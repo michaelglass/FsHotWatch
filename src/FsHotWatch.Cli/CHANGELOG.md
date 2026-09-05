@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- AUTOMATION-573: `fshw verdict` gains **exit 6 — a run is in flight over this tree**.
+  The verdict file is stamped only at completion, so mid-run it holds the previous run's
+  result; over an unchanged tree that reads green. A run now writes a claim under
+  `.fshw/in-flight/<invocationId>.json` for its duration (both transports, released in
+  the run bracket's finalizer after the verdict is written), and `verdict` refuses a
+  verdict published by a run OTHER than one currently holding a claim. The envelope gains
+  an additive `inFlight` boolean beside `applies`, on every case; the schema string is
+  unchanged. Exits 0/1/2/3/4/5 are reached exactly as before — the in-flight question is
+  asked only where the verdict would otherwise apply. A claim whose process is provably
+  gone is reaped; every unknown leans in-flight. `confirm`'s prior-verdict fast path is
+  deliberately unchanged. See ADR-019.
+
 ## 0.14.0-alpha.41 - 2026-09-04
 
 - AUTOMATION-435: `check --run-once`, `confirm --run-once` and `format --run-once`

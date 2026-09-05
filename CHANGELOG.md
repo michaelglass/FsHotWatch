@@ -4,6 +4,35 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+- AUTOMATION-573: **a verdict read while a run is in flight can no longer return the
+  previous run's green.** The verdict file is stamped only at completion, so mid-run it
+  holds the PREVIOUS run's result — and over an unchanged tree that result parses, its
+  `treeHash` and producer match, and it reads green. Under continuous verification that
+  is most reads, not an edge case.
+  - A run now CLAIMS the repo for its duration: one file per invocation under
+    `.fshw/in-flight/`, written by the run bracket before anything starts and released
+    inside the one finalizer every exit passes through, AFTER the verdict is on disk.
+    Both transports (daemon-backed and `--run-once`) go through that bracket.
+  - `fshw verdict` reads those claims — still no socket, no daemon, no run triggered —
+    and reports **exit 6** with `"inFlight": true` when a claim is held by a run OTHER
+    than the one that published the verdict. The join is the invocation id the verdict
+    already records (`attribution.invocationId`), so it is exact and needs no clock.
+  - 6, not 4, because the consequence differs: 4 means "the code moved, re-run"; 6 means
+    "the answer is being computed, wait". Every existing staleness answer is untouched —
+    the in-flight question is asked ONLY where the verdict would otherwise APPLY, so a
+    moved tree is still 4 even during a run, and a missing verdict is still 5.
+  - `inFlight` is additive beside `applies` in the unchanged `fshw-verdict-report-v1`
+    envelope, and is emitted on every case: a consumer reading only `applies` gets
+    `false` mid-run without being taught anything.
+  - A crashed run does not wedge a workspace: a claim whose process is provably gone is
+    abandoned and reaped by the next command. Every unknown — a foreign host whose pids
+    cannot be probed, a claim file this build cannot parse — leans "in flight". What is
+    unknown is WHO is running, never WHETHER anyone is.
+  - `confirm`'s fast path (`priorConfirmation`) still reuses a full-suite green earned
+    over this tree by this binary while a run is in flight, deliberately: its question is
+    whether the evidence was EARNED, and a later run cannot un-earn it. The wire still
+    refuses. See ADR-019.
+
 - AUTOMATION-564: **the per-file caches are content-addressed, and a store is shared
   between the workspaces of one repository — so a freshly created workspace starts
   warm.** Nothing about WHICH checkout a file was read from reaches a cache key any
