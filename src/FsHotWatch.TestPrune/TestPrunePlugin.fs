@@ -6248,38 +6248,60 @@ let internal createWithLaunchDeadline
                             // when this run is the one that wrote them.
                             let storedTrust = FileFreshness.trustStoredRows storedFreshness storedRows
 
-                            let (changedNames, suppressedDiff) =
-                                // `EverySymbolIsNew` diffs against the empty stored set on
-                                // purpose rather than listing `normalizedSymbols` directly:
-                                // detectChanges filters externs internally, and an extern
-                                // has no body to have changed. Same call, named outcome.
-                                match currentClean, storedTrust with
-                                | true, (FileFreshness.DiffAgainstStored | FileFreshness.EverySymbolIsNew) ->
-                                    let (changes, _events) = detectChanges normalizedSymbols storedSymbols
+                            // AUTOMATION-526. `planLook` is the whole decision, and it
+                            // names the two ways of contributing nothing separately — so
+                            // the one that HIDES a file's changes cannot go out at the
+                            // same log level as the one that hides nothing. It replaced a
+                            // `(names, bool)` pair whose bool this call site computed and
+                            // then `ignore`d.
+                            let changedNames =
+                                match FileFreshness.planLook currentClean storedTrust with
+                                | FileFreshness.Diffable baseline ->
+                                    // WHAT to diff against is the plan's decision, not
+                                    // `storedSymbols`'s. This call site used to pass the
+                                    // stored rows for BOTH diffable arms, which made
+                                    // `EverySymbolIsNew` behave exactly like
+                                    // `DiffAgainstStored` — and whenever the rows were
+                                    // this run's own, that is the self-comparison
+                                    // AUTOMATION-228 introduced the widening to replace.
+                                    // A self-comparison reports zero changes every time.
+                                    let priorSymbols = FileFreshness.baselineRows baseline storedSymbols
+
+                                    let (changes, _events) = detectChanges normalizedSymbols priorSymbols
 
                                     // AUTOMATION-228. A trustworthy extraction has now
                                     // been taken AND consumed, so the rows it leaves
                                     // behind are a real "before" for the next look —
                                     // which is what keeps a missing baseline costing ONE
                                     // widening per file rather than one on every save.
-                                    // Marked only here: the bypass arm below discards its
-                                    // extraction, and a baseline it never established
-                                    // must not be claimed.
+                                    // Marked only here: the bypass arms below discard
+                                    // their extraction, and a baseline they never
+                                    // established must not be claimed.
                                     priorRows.MarkBaselineEstablished relPath
 
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                        $"detectChanges for %s{relPath} (stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, baseline=%A{baseline}): %d{changes.Length} changes, %d{priorSymbols.Length} diffed against, %d{normalizedSymbols.Length} current"
 
-                                    changedSymbolNames changes, false
-                                | _ ->
+                                    changedSymbolNames changes
+                                | FileFreshness.NothingHidden ->
+                                    // The ordinary cold scan. Its full-suite baseline runs
+                                    // anyway, so there is no wider answer being declined.
                                     Logging.info
                                         "test-prune"
-                                        $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, rows=%A{storedRows}, trust=%A{storedTrust}, storedRowCount=%d{storedSymbols.Length}); falling back to no-diff for this file"
+                                        $"no baseline and no sidecar record for %s{relPath} (rows=%A{storedRows}); the cold-scan full-suite run covers it"
 
-                                    [], true
+                                    []
+                                | FileFreshness.FileUnverified ->
+                                    // The one arm that DROPS a file's changes. At warn,
+                                    // and stating the consequence rather than the
+                                    // mechanism, because "detectChanges bypassed" at info
+                                    // is what this defect looked like for three runs.
+                                    Logging.warn
+                                        "test-prune"
+                                        $"NOT SELECTED: %s{relPath} changed but FCS reported errors for it on this check, so its symbols may be partial and no tests were selected from it (stored=%A{storedFreshness}, rows=%A{storedRows}, storedRowCount=%d{storedSymbols.Length}). The next FCS-clean check of this file widens it back in."
 
-                            ignore suppressedDiff
+                                    []
 
                             let newChangedSymbols =
                                 if not changedNames.IsEmpty then

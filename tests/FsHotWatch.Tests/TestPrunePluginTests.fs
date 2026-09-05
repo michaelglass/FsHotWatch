@@ -5547,14 +5547,22 @@ let badTypeUse : int = "wrong-type"
 
 // =============================================================================
 // The per-file freshness sidecar gates the detectChanges call site, so cross-restart
-// Phase B replay only computes a real diff for files that ended their last session
-// FCS-clean. Without it a fresh daemon's first FCS check sees ~0 stored rows for files
-// whose prior session ended dirty, and reports a phantom "all symbols changed" delta —
-// the 4921-affected-tests regression.
+// Phase B replay never DIFFS against rows that ended their last session FCS-dirty:
+// those rows may be partial, and diffing a complete extraction against them reports a
+// phantom "all symbols changed" delta — the 4921-affected-tests regression.
+//
+// AUTOMATION-526. "Never diff against them" was always right. "Therefore contribute
+// nothing" was not, and that is what this gate used to do. A file whose last check hit
+// a transient FCS error had its tests selected by NO impact-filtered run afterwards —
+// silently, under a green check, because nothing distinguished "I cannot tell what
+// changed in this file" from "nothing changed in this file". The stored rows are not a
+// baseline; the CURRENT extraction, which the gate has already established is clean, is
+// complete. So the answer is the one `Clean, NoRows` already gives: there is no before,
+// and every symbol in the file is new.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
-let ``Phase B replay: stored=dirty, current=clean → detectChanges bypassed`` () =
+let ``Phase B replay: stored=dirty, current=clean → the file's tests are SELECTED, not dropped`` () =
     withTempDir "tp-phaseb-bypass" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let relPath = "PhaseB.fsx"
@@ -5620,14 +5628,20 @@ let phaseBTest () = ()
 
         emitFileAndQuiesce host result
 
-        // Stored=empty against current=N would produce N changes without the gate. The
-        // sidecar said dirty when the FileChecked arrived, so the diff is skipped.
+        // AUTOMATION-526. This read `= "[]"` before the fix, and that empty list IS the
+        // defect: the sidecar said dirty when the FileChecked arrived, so the file was
+        // dropped from selection entirely on the very pass that recovered from the FCS
+        // error. Nothing warned; the run was green.
         let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
-        test <@ changedFiles.Value = "[]" @>
+        // Exactly this one file. `Contains` alone would also pass a fix that escalated
+        // to "everything changed" — the over-widening AUTOMATION-526's positive control
+        // forbids — so the whole list is pinned: the widening is per FILE.
+        test <@ changedFiles.Value = $"[\"%s{relPath}\"]" @>
 
         // The clean recheck flips the sidecar dirty → clean, so the NEXT restart's Phase B
-        // trusts the rows.
+        // trusts the rows — which is what bounds the widening to ONE pass per recovery
+        // rather than one on every subsequent save.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean relPath freshness @>)
 
