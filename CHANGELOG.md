@@ -218,6 +218,39 @@ graded by the verdict; missing or mismatched run identity is recorded as not mea
   dependent lane. The CLI remains last, so it cannot publish references to core
   or plugin versions that NuGet has not made available yet.
 
+### test-prune: an observation is not a debt — a phantom obligation stops costing a whole suite (AUTOMATION-572)
+
+A cycle that changed a file nothing has ever traced at runtime wrote a runtime-coverage
+obligation naming **no project**. Neither question asked of that ledger could be answered
+by it: the "is anything owed?" check reads `Map.isEmpty` and saw a non-empty map, so for
+the rest of the daemon session the zero-affected green skip and the stale-rerun guard were
+both refused; the "which projects does the debt select?" read got nothing, and an empty
+selection means *every configured project, in full*. A debt nothing could select and
+nothing could discharge, paid for with a whole suite — and the only trace it left was a
+log line naming a cause that was not the real one.
+
+- **Only a file that obligates at least one project enters the runtime-coverage ledger.**
+  `selectByRuntimeCoverage` still reports every changed file (callers depend on that); the
+  merge no longer turns a file with an empty project set into an entry. A cycle that finds
+  nothing to add also cannot *discharge* a standing obligation — that remains the job of
+  the run that covered it.
+- **A full-suite widening now names, attributes and counts its cause.** The single fixed
+  sentence `No affected classes (cold start / pending queue) — running all tests` named two
+  causes out of five, was printed over runs that were neither, and claimed "all tests" for
+  runs that were a couple of force-run projects. It is replaced by every applicable cause —
+  no session baseline yet, N queued symbols, runtime-coverage debt over N files naming N
+  projects, an unreadable ledger, N outstanding failures — plus what will actually run.
+- **A widening nobody can attribute is now loud.** If zero classes are affected and
+  *nothing* is owed, the skip should have discharged the cycle for free. That combination
+  now logs a warning naming the cost, instead of quietly running a suite. This is the alarm
+  for the same hole being re-opened by a different arm: the failure mode is silence, not an
+  error, which is how the phantom obligation above survived twelve full-suite reruns
+  without leaving one attributable line.
+- `tests/FsHotWatch.Tests/TestPrunePluginTests.fs` pins the ledger invariant across *every*
+  transition that can produce one — merge, retire, prune, and a save/load round trip — so a
+  new arm that admits an obligation naming no project fails there rather than in a gate run
+  days later.
+
 ### release: the publication barrier verifies a dotnet TOOL by installing and running it (AUTOMATION-602)
 
 `FsHotWatch.Cli 0.14.0-alpha.30` was published, indexed, and publicly downloadable. The
