@@ -1222,7 +1222,7 @@ let createWith
       Commands =
         [ // Idempotent and cheap: it sets a flag, it does not build. The next cache
           // LOOKUP misses, so the build runs for real and re-emits the artifacts
-          // TestPrune gates on. `confirm` calls it because the merge verb does not
+          // TestPrune gates on. `confirm` calls it because the unfiltered verb does not
           // get to trust a cache when its job is to be the thing you trust.
           //
           // The literal, not a shared constant: plugins live BELOW the CLI, so
