@@ -370,18 +370,55 @@ you, reads no socket and starts nothing:
 
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
-# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict · 6 IN FLIGHT
 ```
 
-Its stdout is *only* the envelope, which always states `applies` — a stale green
-can never be mistaken for a current one:
+Its stdout is *only* the envelope, which always states `applies` and `inFlight` — a
+stale green can never be mistaken for a current one:
 
 ```json
-{ "schema": "fshw-verdict-report-v1", "applies": false,
+{ "schema": "fshw-verdict-report-v1", "applies": false, "inFlight": false,
   "reason": "stale: the verdict describes a different tree",
   "currentTreeHash": "sha256:692e536c…",
   "verdict": { "…the file, verbatim…" } }
 ```
+
+### Exit 6 — a run is in flight over this tree
+
+The verdict is stamped **once, at completion**. Between a run's start and its publish,
+the file holds the PREVIOUS run's result — and when the tree has not moved that result
+parses cleanly, matches on `treeHash` and on producer, and reads **green**. Under
+continuous verification, where something is nearly always running, that is most reads.
+
+A run therefore CLAIMS the repo for its duration, one file per invocation under
+`.fshw/in-flight/`, written before it starts and removed after its verdict is on disk.
+`fshw verdict` reads those claims — no socket, no daemon, as before — and when one is
+held by a run OTHER than the one that published the verdict, it reports:
+
+```json
+{ "schema": "fshw-verdict-report-v1", "applies": false, "inFlight": true,
+  "reason": "in flight: a run is verifying THIS tree right now — check (pid 41207 on …",
+  "verdict": { "…the previous run's file, verbatim…" } }
+```
+
+Exit **6**, and never the verdict's own code. Distinct from 4 because the consequence
+is different: 4 means *the code moved, go and re-run*; 6 means *the answer is being
+computed — wait, and do not start a second check*.
+
+Three rules this obeys:
+
+- **The existing staleness answers are untouched.** The in-flight question is asked only
+  where the verdict would otherwise APPLY, so a moved tree, a different binary and a
+  different hashing scheme are still 4, even during a run.
+- **A run reads back its own verdict.** The claim carries the invocation id the verdict
+  records as `attribution.invocationId`; a match is the run that published it, not a
+  refusal.
+- **A crashed run does not wedge the workspace.** A claim whose process is provably gone
+  is abandoned and reaped by the next command. Every unknown — a foreign host, a claim
+  file that will not parse — leans "in flight": what is unknown is WHO is running, never
+  WHETHER anyone is.
+
+See [ADR-019](../../docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
 
 If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v3`) is:
 
