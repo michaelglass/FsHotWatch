@@ -131,6 +131,26 @@ executed`. Agent mode tokens it `warn` (so `next:` points at `status`, never `do
 **status** stays `Completed` on purpose — nothing failed, and reporting a failure would
 turn an honest exit 3 (no verdict) into an exit 1 (failures found).
 
+### The run finished and its answer was lost — exit 7
+
+`check` and `confirm` exit **7** when the daemon **settled** — it built, ran the suite and
+committed its evidence — and the CLI then failed before it could receive that result and
+publish a verdict. It is the only non-zero code that says nothing about your code: the
+work was done, and the answer was dropped carrying it back.
+
+It is separate from **2** because the remedy is opposite. Exit 2 means *nothing was
+verified — spend the time*. Exit 7 means *the time was already spent*: the run's own
+output is on disk under `.fshw/test-runs/`, and re-running pays for a twenty-minute suite
+to re-derive an answer that already exists. A retry loop that reads both as 2 does
+exactly that. The verdict file is still written, so a finished run never leaves the
+previous run's verdict standing as if it were current.
+
+The cause this code was introduced for was a reply the daemon could not build: a broadly
+red suite where every per-test diagnostic carried the whole project's captured output, so
+the ledger's size was `failing tests × output` rather than their sum. That reply is now
+bounded (`ErrorLedger.Transport`) and a memory fault is attributed to the process that
+actually had it — the message says **DAEMON** or **CLI**, and never guesses.
+
 ### `waiting on build` — and why `fshw stop` is not the answer
 
 `check` can report **`waiting on build`** and exit **2**: a test project's tests did not
@@ -142,8 +162,8 @@ gets its own exit code.
 * *the build artifact was not produced* — a build-ordering race. It settles on the next
   build, so an autonomous loop or deploy preflight should **retry**. The rest of this
   section is about that case.
-* *`stale build output`* — the artifact exists and its bytes do not match the sources it
-  was built from. This one does **not** settle: retrying, `fshw confirm` and restarting
+* *`stale build output`* — the artifact exists and does not match what the tree says it
+  should be. This one does **not** settle: retrying, `fshw confirm` and restarting
   the daemon each spend a full cycle to arrive back at the identical refusal, because
   the problem is bytes on disk rather than anything cached. The message names every
   affected project and the file that is stale; run `dotnet build`, and if it reports
@@ -151,6 +171,16 @@ gets its own exit code.
   `dotnet build --no-incremental` re-emits it. `fshw` repairs this itself where the
   repair is provable (a build-output copy whose origin is on disk) and says so by name;
   a refusal means it was not.
+
+  One shape of it names `.deps.json` rather than a `.dll`, and it has a different
+  remedy trap: the runtime dependency manifest is older than the
+  `obj/project.assets.json` it is generated from, so the manifest lists the reference
+  closure of a restore that has been superseded. A `dotnet restore` will **not** fix
+  it — restore writes the assets file and never touches `bin/**/*.deps.json`, which is
+  why this state outlives the automatic recovery that repairs the compile. Only a build
+  regenerates it. Do not "fix" it by adding a direct `ProjectReference` to whatever
+  failed to load: that puts an entry in the manifest and makes the symptom vanish while
+  leaving the superseded restore exactly where it was.
 
 If an otherwise-unchanged re-run says the FIRST one again, the build is serving a **cached result
 its outputs no longer support**. The escape is:
@@ -278,10 +308,25 @@ sufficient.
   "timingIncompleteReasons": [],
   "observedElapsedMs": 102381,
   "invocationId": "8cc0715e5df6420dbe2157066dc0ac5c",
+  "runs": [
+    { "runId": "24bf66063d004decb0447e3cc3ece719",
+      "suites": [
+        { "project": "Intelligence.Tests.Unit",
+          "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
+          "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 } ] },
+    { "runId": "9f21ba0c7f7e4a0e8a6b2d1c4e5f6071",
+      "suites": [
+        { "project": "Intelligence.Build.Tests",
+          "ctrf": ".fshw/test-runs/9f21ba0c…/Intelligence.Build.Tests.ctrf.json",
+          "total": 566, "passed": 566, "failed": 0, "skipped": 0 } ] }
+  ],
   "suites": [
     { "project": "Intelligence.Tests.Unit",
       "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
-      "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 }
+      "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 },
+    { "project": "Intelligence.Build.Tests",
+      "ctrf": ".fshw/test-runs/9f21ba0c…/Intelligence.Build.Tests.ctrf.json",
+      "total": 566, "passed": 566, "failed": 0, "skipped": 0 }
   ],
   "reddenedBy": [],
   "reddenedByCount": 0
@@ -370,18 +415,56 @@ you, reads no socket and starts nothing:
 
 ```bash
 fshw verdict          # stdout: a JSON envelope; exit code: the answer
-# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict · 6 IN FLIGHT
+#   (`check` adds 7 — the run finished and its result never reached the CLI)
 ```
 
-Its stdout is *only* the envelope, which always states `applies` — a stale green
-can never be mistaken for a current one:
+Its stdout is *only* the envelope, which always states `applies` and `inFlight` — a
+stale green can never be mistaken for a current one:
 
 ```json
-{ "schema": "fshw-verdict-report-v1", "applies": false,
+{ "schema": "fshw-verdict-report-v1", "applies": false, "inFlight": false,
   "reason": "stale: the verdict describes a different tree",
   "currentTreeHash": "sha256:692e536c…",
   "verdict": { "…the file, verbatim…" } }
 ```
+
+### Exit 6 — a run is in flight over this tree
+
+The verdict is stamped **once, at completion**. Between a run's start and its publish,
+the file holds the PREVIOUS run's result — and when the tree has not moved that result
+parses cleanly, matches on `treeHash` and on producer, and reads **green**. Under
+continuous verification, where something is nearly always running, that is most reads.
+
+A run therefore CLAIMS the repo for its duration, one file per invocation under
+`.fshw/in-flight/`, written before it starts and removed after its verdict is on disk.
+`fshw verdict` reads those claims — no socket, no daemon, as before — and when one is
+held by a run OTHER than the one that published the verdict, it reports:
+
+```json
+{ "schema": "fshw-verdict-report-v1", "applies": false, "inFlight": true,
+  "reason": "in flight: a run is verifying THIS tree right now — check (pid 41207 on …",
+  "verdict": { "…the previous run's file, verbatim…" } }
+```
+
+Exit **6**, and never the verdict's own code. Distinct from 4 because the consequence
+is different: 4 means *the code moved, go and re-run*; 6 means *the answer is being
+computed — wait, and do not start a second check*.
+
+Three rules this obeys:
+
+- **The existing staleness answers are untouched.** The in-flight question is asked only
+  where the verdict would otherwise APPLY, so a moved tree, a different binary and a
+  different hashing scheme are still 4, even during a run.
+- **A run reads back its own verdict.** The claim carries the invocation id the verdict
+  records as `attribution.invocationId`; a match is the run that published it, not a
+  refusal.
+- **A crashed run does not wedge the workspace.** A claim whose process is provably gone
+  is abandoned and reaped by the next command. Every unknown — a foreign host, a claim
+  file that will not parse — leans "in flight": what is unknown is WHO is running, never
+  WHETHER anyone is.
+
+See [ADR-019](../../docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
 
 If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v3`) is:
 
@@ -456,6 +539,25 @@ harness because of it. Absence must never be something the reader has to decode.
 
 The newest 10 run directories are retained; history is evidence, so old runs are
 **rotated, never wiped on start**.
+
+**One check writes SEVERAL of these directories, and the verdict names them all.**
+A check runs the tests in batches — the impact-selected run, the rerun a mid-run
+change queues behind it, `confirm`'s forced full suite, the drain of a queued
+`run-tests` — and each batch gets its own run directory. `runId` names the batch the
+verdict was **graded** from, which is only one of them; `runs[]` names **every** batch
+the check ran, and `suites[]` is the flattening of `runs[]`, so it covers all of them
+too.
+
+So the question "did *my* test run in this check?" is answered by `runs[]` or
+`suites[]`, never by opening the single directory `runId` points at. Reading `runId`
+as the whole of the check is how three sessions concluded their tests had never run —
+one landed on 566 tests out of the 10,979 that had actually executed — and two of them
+nearly redid work that was already green. One project can appear **twice** in
+`suites[]`, from two batches, with different counts; that is what happened, and the
+totals then count test *executions*, not distinct tests.
+
+And check the **full** class name when you search the reports: `Persona` matches
+`Impersonation`, which hands you five confident hits from unrelated tests.
 
 ### `.fshw/heartbeat` — is the daemon still *working*?
 
