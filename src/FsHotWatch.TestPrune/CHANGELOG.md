@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- fix(AUTOMATION-526): a file whose last FCS check reported errors is stamped
+  `fcsClean = false`, and on the pass that RECOVERED — FCS clean again, extraction
+  complete — `FileFreshness.trustStoredRows` answered `NoDiff`, so the file
+  contributed no changed symbols and none of its tests were selected. Silently, and
+  under a green check: a four-test guard was invisible to three consecutive
+  impact-filtered runs. The `Dirty` stamp describes the stored ROWS, which may be
+  partial and so are never a diff baseline; it says nothing about the file. The answer
+  is now the one a `Clean` stamp over an empty index already gives — there is no usable
+  before, so every symbol currently in the file is new. The widening is per FILE, not
+  per project, and is bounded to one pass per recovery.
+  - `NoDiff` is now reachable from exactly one pair, `Unknown, NoRows` — the ordinary
+    cold scan, whose full-suite baseline runs anyway. A test enumerates the whole 3×3
+    decision table and fails if any other pair drifts into it.
+  - The call site diffed against the stored rows for BOTH diffable arms, which made
+    `EverySymbolIsNew` behave exactly like `DiffAgainstStored`: AUTOMATION-228's
+    widening existed in the type and its unit tests but never in the running daemon,
+    and whenever the rows were the ones that run had just written it was the
+    self-comparison the widening was introduced to replace. `FileFreshness.planLook`
+    now carries the baseline (`AgainstStoredRows` / `AgainstNothing`) and
+    `FileFreshness.baselineRows` applies it.
+  - The two ways of contributing nothing are named separately — `NothingHidden` (the
+    cold scan; nothing is being declined) and `FileUnverified` (the file's changes were
+    DROPPED). The latter logs at warn and states the consequence; the call site
+    previously computed a `bool` for this and then `ignore`d it, so both went out at
+    info and looked identical.
+
 ## 0.13.0-alpha.30 - 2026-09-03
 
 - AUTOMATION-555: every executed `tests.beforeRun` step is timed and filed under

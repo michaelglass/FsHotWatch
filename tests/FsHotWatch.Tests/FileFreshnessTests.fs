@@ -350,10 +350,15 @@ let ``trustStoredRows: Unknown diffs only against PRIOR rows (ADR-010 seeded DB)
     test <@ trustStoredRows Unknown NoRows = NoDiff @>
 
 [<Fact(Timeout = 5000)>]
-let ``trustStoredRows: Dirty never diffs, whatever the index holds`` () =
-    test <@ trustStoredRows Dirty RowsFromPriorRun = NoDiff @>
-    test <@ trustStoredRows Dirty RowsFromThisRun = NoDiff @>
-    test <@ trustStoredRows Dirty NoRows = NoDiff @>
+let ``trustStoredRows: Dirty never diffs, whatever the index holds — it WIDENS instead`` () =
+    // AUTOMATION-526. "Never diffs" was always right; "contributes nothing" was the
+    // mistake. The `Dirty` stamp is a statement about the stored ROWS — written while
+    // FCS reported errors, possibly partial — and says nothing about the current
+    // extraction, which the call site has already established is clean and complete.
+    // So it is the same fact `Clean, NoRows` states: there is no usable before.
+    test <@ trustStoredRows Dirty RowsFromPriorRun = EverySymbolIsNew @>
+    test <@ trustStoredRows Dirty RowsFromThisRun = EverySymbolIsNew @>
+    test <@ trustStoredRows Dirty NoRows = EverySymbolIsNew @>
 
 // -----------------------------------------------------------------------------
 // AUTOMATION-228 — rows this run wrote are not a baseline.
@@ -394,8 +399,194 @@ let ``PositiveControl AUTOMATION-228: PRIOR rows still buy the cheap diff — th
 
 [<Fact(Timeout = 5000)>]
 let ``AUTOMATION-228: a dirty extraction is still never diffed against, whoever wrote the rows`` () =
-    // The clock does not outrank the sidecar's explicit "these rows may be PARTIAL".
-    test <@ trustStoredRows Dirty RowsFromThisRun = NoDiff @>
+    // The clock does not outrank the sidecar's explicit "these rows may be PARTIAL" —
+    // the answer is never `DiffAgainstStored`. AUTOMATION-526 changed WHICH non-diff
+    // answer it is, not this claim.
+    test <@ trustStoredRows Dirty RowsFromThisRun <> DiffAgainstStored @>
+    test <@ trustStoredRows Dirty RowsFromPriorRun <> DiffAgainstStored @>
+
+// -----------------------------------------------------------------------------
+// AUTOMATION-526 — a recovery that cannot determine a diff must not select NOTHING.
+//
+// A test file whose symbol analysis hit a transient FCS error is stamped
+// `fcsClean = false`. On the pass that RECOVERS — FCS clean again, extraction
+// complete — `Dirty, _ -> NoDiff` made the file contribute no changed symbols at all.
+// Not "the file was unchanged": the file was never asked. A four-test guard was
+// invisible to three consecutive impact-filtered runs that way, and the runs were
+// green, because a blind check and a genuinely green check are the same green check
+// from outside.
+// -----------------------------------------------------------------------------
+
+/// The name a `SymbolChange` carries, whichever kind it is. These assertions are about
+/// WHICH symbols reached the selector, not about how each one changed.
+let private changedName (change: SymbolChange) : string =
+    match change with
+    | Added n
+    | Removed n
+    | Modified n -> n
+
+/// A symbol row for a test file, used to build the recovery scenario below.
+let private guardTest (name: string) (hash: string) : SymbolInfo =
+    { FullName = $"Heartbeat.%s{name}"
+      Kind = SymbolKind.Value
+      SourceFile = "tests/HeartbeatAlarmWiringTests.fs"
+      LineStart = 1
+      LineEnd = 1
+      ContentHash = hash
+      IsExtern = false }
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-526: the pass that RECOVERS from a transient FCS error selects the file's tests`` () =
+    // The reproduction, as the plugin runs it: sidecar → classify → trustStoredRows →
+    // planLook → detectChanges. Every step is the real function.
+    let sidecar = markDirty "tests/HeartbeatAlarmWiringTests.fs" Map.empty
+    let freshness = classify "tests/HeartbeatAlarmWiringTests.fs" sidecar
+
+    // Guard: the fixture really is in the recovery state, or everything below is vacuous.
+    test <@ freshness = Dirty @>
+
+    // The rows the DIRTY check left behind: partial, only the one test that parsed.
+    let storedDuringDirtyCheck = [ guardTest "alarmWiringA" "h1" ]
+
+    // The recovery pass: FCS clean again, so the extraction is COMPLETE.
+    let currentAfterRecovery =
+        [ guardTest "alarmWiringA" "h1"
+          guardTest "alarmWiringB" "h2"
+          guardTest "alarmWiringC" "h3"
+          guardTest "alarmWiringD" "h4" ]
+
+    // `currentClean = true` — that is what makes this the recovery pass and not the
+    // failure itself.
+    let plan = planLook true (trustStoredRows freshness RowsFromPriorRun)
+
+    // It must be a diff, and it must be against NOTHING: the partial rows are not a
+    // baseline, so every symbol currently in the file is new to the index.
+    test <@ plan = Diffable AgainstNothing @>
+
+    // `baselineRows` is the plugin's own call — the seam, not a re-derivation of it.
+    let priorSymbols =
+        match plan with
+        | Diffable baseline -> baselineRows baseline storedDuringDirtyCheck
+        | NothingHidden
+        | FileUnverified -> []
+
+    let (changes, _) = detectChanges currentAfterRecovery priorSymbols
+    let selected = changes |> List.map changedName
+
+    // All four, BY NAME. "not empty" would pass on a fix that selected only the three
+    // the partial rows happened to be missing.
+    test
+        <@
+            List.sort selected = [ "Heartbeat.alarmWiringA"
+                                   "Heartbeat.alarmWiringB"
+                                   "Heartbeat.alarmWiringC"
+                                   "Heartbeat.alarmWiringD" ]
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-526: the recovery pass selected NOTHING when the partial rows were this run's own`` () =
+    // The silent-zero shape, shown rather than described. The pre-fix answer was
+    // `NoDiff` for every `Dirty` pair; and even routed to `EverySymbolIsNew`, a call
+    // site that diffs against `storedSymbols` anyway gets zero when those rows are the
+    // ones this run just wrote. Both roads led to the same empty selection.
+    let identicalRows = [ guardTest "alarmWiringA" "h1"; guardTest "alarmWiringB" "h2" ]
+
+    let (selfDiff, _) = detectChanges identicalRows identicalRows
+    test <@ List.isEmpty selfDiff @>
+
+    // The plan refuses that baseline, and `baselineRows` is what enforces it. Asserting
+    // only `plan = Diffable AgainstNothing` would pass against the defect this fix
+    // found: a call site that named the widening and then diffed against the stored
+    // rows anyway, which is how AUTOMATION-228's widening came to exist in the type and
+    // in these tests but never in the running daemon.
+    let plan = planLook true (trustStoredRows Dirty RowsFromThisRun)
+    test <@ plan = Diffable AgainstNothing @>
+
+    let priorSymbols =
+        match plan with
+        | Diffable baseline -> baselineRows baseline identicalRows
+        | NothingHidden
+        | FileUnverified -> identicalRows
+
+    test <@ List.isEmpty priorSymbols @>
+
+    let (widened, _) = detectChanges identicalRows priorSymbols
+    test <@ (widened |> List.map changedName |> List.sort) = [ "Heartbeat.alarmWiringA"; "Heartbeat.alarmWiringB" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-526: baselineRows is what makes AgainstNothing mean nothing`` () =
+    // The seam on its own. `AgainstNothing` is a widening only if the rows are actually
+    // withheld; a consumer that names it and hands over the stored rows regardless gets
+    // a self-comparison and reports zero changes, which is indistinguishable from
+    // "unchanged".
+    let rows = [ guardTest "alarmWiringA" "h1" ]
+
+    test <@ baselineRows AgainstNothing rows = [] @>
+
+    // PositiveControl: it is not "always empty". The narrow arm must still hand the real
+    // baseline over, or impact filtering is deleted rather than corrected.
+    test <@ baselineRows AgainstStoredRows rows = rows @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-526: NoDiff is reachable from exactly ONE pair — the detector-went-blind guard`` () =
+    // THE test for the failure mode itself rather than for one instance of it.
+    //
+    // `NoDiff` is the only `StoredRowTrust` that can hide a change: it contributes no
+    // symbols, so nothing selects tests, so the run is green having verified nothing
+    // about the file. Asserting "the Dirty arm no longer returns NoDiff" would not
+    // catch the NEXT arm to drift into it. This enumerates the whole 3x3 product and
+    // names the single pair entitled to that answer — the ordinary cold scan, whose
+    // full-suite baseline runs anyway, so nothing is being declined.
+    //
+    // If a future edit routes any other pair to `NoDiff`, this fails by name.
+    let allPairs =
+        [ for freshness in [ Clean; Dirty; Unknown ] do
+              for rows in [ NoRows; RowsFromPriorRun; RowsFromThisRun ] -> freshness, rows ]
+
+    // Guard: the product really is the whole table, so a shrunk list cannot pass this
+    // vacuously.
+    test <@ List.length allPairs = 9 @>
+
+    let blind = allPairs |> List.filter (fun (f, r) -> trustStoredRows f r = NoDiff)
+
+    test <@ blind = [ (Unknown, NoRows) ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``PositiveControl AUTOMATION-526: an ordinary run still PRUNES — the fix is not "select everything"`` () =
+    // Required by the ticket, and the reason the guard above is not satisfied by
+    // deleting impact filtering. A warm daemon with a clean sidecar and real prior
+    // rows must still take the narrow answer, and an unchanged file must still select
+    // NOTHING — that is the entire value of the feature.
+    let unchanged = [ guardTest "alarmWiringA" "h1"; guardTest "alarmWiringB" "h2" ]
+
+    let plan = planLook true (trustStoredRows Clean RowsFromPriorRun)
+    test <@ plan = Diffable AgainstStoredRows @>
+
+    let (changes, _) = detectChanges unchanged unchanged
+    test <@ List.isEmpty changes @>
+
+    // …and a real edit to one of them still selects exactly that one, so the narrow
+    // answer is narrow because it is CORRECT, not because it is empty.
+    let edited = [ guardTest "alarmWiringA" "h1-edited"; guardTest "alarmWiringB" "h2" ]
+    let (afterEdit, _) = detectChanges edited unchanged
+    test <@ (afterEdit |> List.map changedName) = [ "Heartbeat.alarmWiringA" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``AUTOMATION-526: planLook separates the two ways of contributing nothing`` () =
+    // The loudness half. The call site used to compute a `suppressedDiff: bool` and
+    // then `ignore` it, so "an ordinary cold scan, nothing hidden" and "this file's
+    // changes were DROPPED" were the same value and the same info-level log line.
+    // They need opposite reactions, so they are separate cases.
+    test <@ planLook true NoDiff = NothingHidden @>
+    test <@ planLook false DiffAgainstStored = FileUnverified @>
+    test <@ planLook false EverySymbolIsNew = FileUnverified @>
+    test <@ planLook false NoDiff = FileUnverified @>
+
+    // An FCS-dirty CURRENT extraction is never diffable, whatever the stored rows are
+    // worth: widening from symbols that may themselves be partial would enqueue names
+    // that need not exist in the tree.
+    for trust in [ DiffAgainstStored; EverySymbolIsNew; NoDiff ] do
+        test <@ planLook false trust = FileUnverified @>
 
 // -----------------------------------------------------------------------------
 // `PriorRowLedger` — the clock itself.
