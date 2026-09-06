@@ -74,6 +74,20 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+- AUTOMATION-339: **a run that verified nothing is a run-outcome CASE, not a summary
+  string.** AUTOMATION-198 stopped a zero-project test run from rendering `✓`, but did it
+  with a `NOTHING VERIFIED: ` prefix on the summary that three surfaces parsed back. The
+  fact now travels as a value: `RunVerdict.verifiedNothing detail elapsed` builds the
+  verdict, the host records the run as `RunOutcome.VerifiedNothing detail`, the status
+  payload carries it as `{"tag":"verifiedNothing","detail":…}`, and the compact, verbose,
+  agent and `verdict.json` surfaces key their `⚠`/`warn` off the case. The status stays
+  `Completed`, so exit codes are unchanged — a zero-project check still exits **3**
+  (NO VERDICT), never 1. `RunSummary.saysNothingVerified` is gone (nothing parses the
+  words any more); `RunSummary.nothingVerified` survives as the display formatter the
+  verdict constructor uses. The task-cache entry format is bumped (4 → 5) because a
+  cached verdict now records the fact and a pre-bump entry carrying the old marker would
+  otherwise replay as a verified run: one cold re-run per repository.
+
 - AUTOMATION-110: **a green proves what it skipped was green too.** An impact-filtered
   green used to mean "the subset I chose to run passed" and was read as "the suite is
   green" — 17 tests sat red on `main` for weeks, never selected (AUTOMATION-108).
@@ -105,6 +119,36 @@ All notable changes to FsHotWatch packages are documented here.
     the changed code over HTTP, an edge no AST analysis has, which is why quarantine (not
     a better selector) is the mechanism that makes sustained rot impossible.
 
+- AUTOMATION-110: **a green proves what it skipped was green too.** An impact-filtered
+  green used to mean "the subset I chose to run passed" and was read as "the suite is
+  green" — 17 tests sat red on `main` for weeks, never selected (AUTOMATION-108).
+  Three changes, in the ticket's order:
+  - **Red-test quarantine is durable.** A test red in the last run that executed it was
+    already re-selected on every run until it passed (AUTOMATION-67) — but only within a
+    daemon session. The "a restart runs the full suite anyway" argument was false
+    whenever the durable pending queue was non-empty at restart (the ordinary state after
+    a red run): the first run was impact-filtered and the red was gone. The reds now live
+    in `.fshw/test-prune/outstanding-failures.json` beside the queue, loaded at startup
+    and quarantined into the first run exactly as in-session reds are.
+  - **A green is relative to a full-suite baseline, and cannot be built without one.**
+    `verdict.json`'s `outcome.green` carries `baseline` — the last run that executed every
+    configured project (`.fshw/test-prune/full-suite-baseline.json`), or `no-test-suite`
+    for a repository with none. A daemon reporting no baseline (cold repository, or
+    `tests.projects` grown since) makes `fshw check` exit **3** (`incomplete`, naming the
+    reason) rather than green, and the daemon widens its next run to the full suite to
+    earn one. A green verdict file written by an earlier version has no baseline and is
+    now unreadable — `confirm` earns the evidence instead of trusting the file. A red
+    full suite records the baseline too: it proves what every other test did, and its
+    reds are quarantined.
+  - **Owed-but-unrunnable coverage is reported, not written off.** A changed symbol whose
+    only covering tests live in a test project `tests.projects` does not list is still
+    dropped from the queue (AUTOMATION-99 — nothing here can discharge it), but the
+    write-off names the project: a warning in the log, `unrunnableProjects` on the
+    `test-scope` reply, and the `changes-uncovered` reason in the verdict and terminal.
+    This was the reviewer's candidate cause (c) for AUTOMATION-108; the intelligence
+    repository lists every test project, so it was not the cause there — the 17 reached
+    the changed code over HTTP, an edge no AST analysis has, which is why quarantine (not
+    a better selector) is the mechanism that makes sustained rot impossible.
 - AUTOMATION-555 (rework): **a verdict's timing now covers the wall time the check spent
   waiting on the DAEMON, and `timing evidence complete` is derived from the spans, never
   asserted.** QA failed the first landing on the load-bearing criterion: on nine real

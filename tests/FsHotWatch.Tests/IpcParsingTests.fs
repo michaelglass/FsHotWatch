@@ -115,6 +115,19 @@ let ``parseTaggedOutcome parses failed with error`` () =
     test <@ parseTaggedOutcome el = Some(FailedRun "boom") @>
 
 [<Fact(Timeout = 15000)>]
+let ``parseTaggedOutcome parses verifiedNothing with its detail`` () =
+    // AUTOMATION-339: the run that executed nothing is a CASE on the wire.
+    let el = parseEl """{"tag":"verifiedNothing","detail":"no test executed"}"""
+    test <@ parseTaggedOutcome el = Some(VerifiedNothing "no test executed") @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTaggedOutcome: a verifiedNothing with no detail is still a verified-nothing run`` () =
+    // The case is the fact; the detail is its words. A payload that lost the words
+    // must not turn into a pass or into a failure.
+    let el = parseEl """{"tag":"verifiedNothing"}"""
+    test <@ parseTaggedOutcome el = Some(VerifiedNothing "") @>
+
+[<Fact(Timeout = 15000)>]
 let ``parseTaggedOutcome returns None for non-object`` () =
     let el = parseEl "\"Completed\""
     test <@ parseTaggedOutcome el = None @>
@@ -130,6 +143,13 @@ let ``parseOutcomeField tagged failed`` () =
 let ``parseOutcomeField tagged completed`` () =
     let outcomeEl = parseEl """{"tag":"completed"}"""
     test <@ parseOutcomeField outcomeEl = CompletedRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseOutcomeField tagged verifiedNothing`` () =
+    let outcomeEl =
+        parseEl """{"tag":"verifiedNothing","detail":"0 test project(s) ran"}"""
+
+    test <@ parseOutcomeField outcomeEl = VerifiedNothing "0 test project(s) ran" @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseOutcomeField: an outcome tag this build does not recognize is a FAILED run, not a pass`` () =

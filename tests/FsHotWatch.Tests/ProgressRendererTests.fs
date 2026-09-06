@@ -927,12 +927,18 @@ let ``verbose Completed with zero elapsed states it in words instead of omitting
 // Every one of these has a PAIRED positive control on the same rendering path: "it isn't
 // green" passes trivially if the renderer stopped emitting ✓ at all.
 
-/// A terminal that carries the verified-nothing verdict — the summary the test-prune
-/// plugin records for a run that executed no project. Built through `RunSummary`, the
-/// producer's own constructor, so a change to the marker breaks the test rather than
+/// A terminal whose run record carries `RunOutcome.VerifiedNothing` — what the daemon
+/// records for a run that executed no project (AUTOMATION-339). The summary is the
+/// words the producer's verdict constructor puts on it, built through the same
+/// `RunSummary.nothingVerified` so a change to the words breaks the test rather than
 /// silently making it assert nothing.
+let private verifiedNothingRun (summary: string) : RunRecord =
+    { completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) (Some summary) with
+        Outcome = VerifiedNothing "0 test project(s) ran, no test executed" }
+
 let private verifiedNothingStatus () : ParsedPluginStatus =
-    okStatus (Some(RunSummary.nothingVerified "0 test project(s) ran, no test executed"))
+    { okStatus None with
+        LastRun = Some(verifiedNothingRun (RunSummary.nothingVerified "0 test project(s) ran, no test executed")) }
 
 /// The control: a run that DID execute, worded exactly as the healthy line is. Note it
 /// carries `selected: no` too — that is a MODE flag, not a count, and no surface may
@@ -997,20 +1003,68 @@ let ``AUTOMATION-198: agent still tokens a run that DID execute as ok`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-198: a REPLAYED verified-nothing run is not a check either`` () =
-    // The cache-replay path appends " (cached)" to the summary it replays. A replay of a
-    // run that executed nothing verified exactly as much as the original did, so the
-    // marker is matched on the PREFIX, not by equality.
+    // The cache-replay path appends " (cached)" to the summary it replays and rebuilds
+    // the verdict from the cached entry, so the run record's outcome is
+    // `VerifiedNothing` again. The glyph keys off the case; the words may carry any
+    // suffix.
     let replayed =
-        okStatus (
-            Some(
-                RunSummary.nothingVerified "0 test project(s) ran, no test executed"
-                + " (cached)"
-            )
-        )
+        { okStatus None with
+            LastRun =
+                Some(
+                    verifiedNothingRun (
+                        RunSummary.nothingVerified "0 test project(s) ran, no test executed"
+                        + " (cached)"
+                    )
+                ) }
 
     let lines = renderPlugin Compact true now "test-prune" replayed |> stripMany
     test <@ lines.[0].Contains "⚠" @>
     test <@ not (lines.[0].Contains "✓") @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-339: a verified-nothing record with no summary is worded from the case`` () =
+    // The words are DISPLAY, derived from the case when the record carries none: the
+    // renderer says what the run did instead, rather than printing an empty line for it.
+    let wordless =
+        { okStatus None with
+            LastRun =
+                Some
+                    { completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None with
+                        Outcome = VerifiedNothing "no project was selected" } }
+
+    let compact = renderPlugin Compact true now "test-prune" wordless |> stripMany
+    test <@ compact.[0].Contains "⚠" @>
+    test <@ compact.[0].Contains "NOTHING VERIFIED: no project was selected" @>
+
+    let verbose = renderPlugin Verbose true now "test-prune" wordless |> stripMany
+
+    test
+        <@
+            verbose
+            |> List.exists (fun l -> l.Contains "NOTHING VERIFIED: no project was selected")
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-339: the glyph keys off the VerifiedNothing CASE, not the summary's words`` () =
+    // The summary here is the healthy counts line — the very words that used to render
+    // `✓`. The run record says the run verified nothing, and the case wins: no surface
+    // parses the sentence any more.
+    let caseOnly =
+        { okStatus None with
+            LastRun = Some(verifiedNothingRun "0 passed, 0 failed in 0 projects") }
+
+    let compact = renderPlugin Compact true now "test-prune" caseOnly |> stripMany
+    test <@ compact.[0].Contains "⚠" @>
+    test <@ not (compact.[0].Contains "✓") @>
+
+    let agent = agentLine "test-prune" caseOnly
+    test <@ agent.[0].StartsWith "test-prune: warn" @>
+
+    // Control: the same words with a `CompletedRun` outcome ARE a pass — the words
+    // decide nothing either way.
+    let wordsOnly = okStatus (Some "0 passed, 0 failed in 0 projects")
+    let control = renderPlugin Compact true now "test-prune" wordsOnly |> stripMany
+    test <@ control.[0].Contains "✓" @>
 
 [<Fact(Timeout = 15000)>]
 let ``AUTOMATION-198: a verified-nothing run warns without reddening the verdict`` () =

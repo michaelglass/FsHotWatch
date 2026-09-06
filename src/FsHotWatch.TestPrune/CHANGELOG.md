@@ -2,8 +2,12 @@
 
 ## Unreleased
 
-## 0.13.0-alpha.32 - 2026-09-06
+- AUTOMATION-339: the zero-project and host-aborted terminals report
+  `RunVerdict.verifiedNothing` (via `PluginStatus.verifiedNothingNow`) instead of a
+  marked summary string, so the run record carries `RunOutcome.VerifiedNothing`. Status
+  and exit codes unchanged: `Completed`, exit 3 for a run that executed nothing.
 
+## 0.13.0-alpha.32 - 2026-09-06
 - AUTOMATION-110: prior reds are DURABLE — `.fshw/test-prune/outstanding-failures.json`,
   loaded at construction and quarantined into the first run of a session as in-session
   reds are (an unreadable file takes the AUTOMATION-150 road: widen to the full suite).

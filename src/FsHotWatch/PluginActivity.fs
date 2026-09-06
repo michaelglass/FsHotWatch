@@ -50,6 +50,7 @@ let private runRecordBytes (r: RunRecord) =
         match r.Outcome with
         | FailedRun e -> stringBytes e
         | TimedOut r -> stringBytes r
+        | VerifiedNothing d -> stringBytes d
         | CompletedRun -> 0
 
     summaryBytes + errorBytes + (r.ActivityTail |> List.sumBy stringBytes)

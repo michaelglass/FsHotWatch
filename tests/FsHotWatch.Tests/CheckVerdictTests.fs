@@ -1094,3 +1094,49 @@ let ``AUTOMATION-110: Baseline.describe names the run, when it earned and how ma
         @>
 
     test <@ (Baseline.describe Baseline.NoTestSuite).Contains "no test suite" @>
+
+// ----------------------------------------------------------------------------
+// AUTOMATION-339. A run that verified nothing is `RunOutcome.VerifiedNothing` on a
+// `Completed` status. It must not count as a failed plugin: a zero-project check
+// exits 3 (NO VERDICT), never 1 (failures found).
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-339: a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — the check exits 3, never 1``
+    ()
+    =
+    let verifiedNothing: ParsedPluginStatus =
+        { Status = StatusView.Completed DateTime.UtcNow
+          Subtasks = []
+          ActivityTail = []
+          LastRun =
+            Some
+                { StartedAt = DateTime.UtcNow
+                  Elapsed = TimeSpan.Zero
+                  Outcome = FsHotWatch.Events.VerifiedNothing "0 test project(s) ran, no test executed"
+                  Summary = Some "NOTHING VERIFIED: 0 test project(s) ran, no test executed"
+                  ActivityTail = [] }
+          Diagnostics = DiagnosticCounts.empty }
+
+    let statuses = Map.ofList [ "test-prune", verifiedNothing ]
+    test <@ not (CheckInputs.anyPluginFailed statuses) @>
+
+    let zeroProjectCheck =
+        { inputs false Complete (NoTestsRun NoTestsReason.Unstated) with
+            PluginStatuses = statuses }
+
+    let outcome = verdict InnerLoop zeroProjectCheck
+    test <@ outcome = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated) @>
+    test <@ exitCode outcome = 3 @>
+
+    // Control: the same inputs with a FAILED plugin are exit 1 — the distinction this
+    // ticket refuses to collapse.
+    let failed =
+        { verifiedNothing with
+            Status = StatusView.Failed("boom", DateTime.UtcNow) }
+
+    let failedPlugin =
+        { zeroProjectCheck with
+            PluginStatuses = Map.ofList [ "test-prune", failed ] }
+
+    test <@ exitCode (verdict InnerLoop failedPlugin) = 1 @>

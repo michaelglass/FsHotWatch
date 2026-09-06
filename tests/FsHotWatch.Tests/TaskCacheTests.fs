@@ -797,6 +797,7 @@ let ``FileTaskCache roundtrips all CachedStatus variants`` () =
             [ CachedFileCompleted(TimeSpan.FromMilliseconds 250.0)
               CachedFileFailed("boom", TimeSpan.FromMilliseconds 125.0)
               CachedRunCompleted(RunVerdict.create "6 passed, 0 failed" (TimeSpan.FromSeconds 2.0))
+              CachedRunCompleted(RunVerdict.verifiedNothing "0 test project(s) ran" (TimeSpan.FromSeconds 2.0))
               CachedRunFailed("kaput", RunVerdict.create "1 failed" (TimeSpan.FromSeconds 3.0)) ]
 
         for i, status in statuses |> List.indexed do
@@ -815,6 +816,42 @@ let ``FileTaskCache roundtrips all CachedStatus variants`` () =
 
         for i, status in statuses |> List.indexed do
             test <@ (c2.TryGet (ck "plugin" $"%d{i}") (hash "k")).Value.Status = status @>)
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-339: a replayed verified-nothing verdict is still a verified-nothing verdict`` () =
+    // The cache stores the VERDICT, and a replay rebuilds a `Completed` from it. If the
+    // fact did not survive the round trip as a value, the replayed run would be recorded
+    // `CompletedRun` and render `✓` — the AUTOMATION-198 defect, reopened by the cache.
+    withTempDir "ftc-verified-nothing" (fun tmpDir ->
+        let c = FileTaskCache(tmpDir) :> ITaskCache
+
+        let put (id: string) (verdict: RunVerdict) =
+            c.Set
+                (ck "plugin" id)
+                (hash "k")
+                { CacheKey = hash "k"
+                  Errors = []
+                  Status = CachedRunCompleted verdict
+                  EmittedEvents = [] }
+
+        put "empty" (RunVerdict.verifiedNothing "no project was selected" (TimeSpan.FromSeconds 1.0))
+        put "control" (RunVerdict.create "6 passed, 0 failed" (TimeSpan.FromSeconds 1.0))
+
+        let c2 = FileTaskCache(tmpDir) :> ITaskCache
+
+        let verdictOf id =
+            match (c2.TryGet (ck "plugin" id) (hash "k")).Value.Status with
+            | CachedRunCompleted v -> v
+            | other -> failwithf "expected CachedRunCompleted, got %A" other
+
+        let empty = verdictOf "empty"
+        test <@ empty.NothingVerified = Some "no project was selected" @>
+        test <@ RunOutcome.ofCompletedVerdict empty = VerifiedNothing "no project was selected" @>
+        test <@ empty.Summary = "NOTHING VERIFIED: no project was selected" @>
+
+        let control = verdictOf "control"
+        test <@ control.NothingVerified = None @>
+        test <@ RunOutcome.ofCompletedVerdict control = CompletedRun @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips cached events`` () =

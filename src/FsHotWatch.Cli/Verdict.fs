@@ -132,6 +132,13 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         else
             PluginOutcome.Ok
 
+    // A clean ledger is `Warn`, never `Ok`: the terminal is not evidence of a pass.
+    // Failing diagnostics keep their own token.
+    let warnUnlessDiagnosed () =
+        match okOrDiag () with
+        | PluginOutcome.Ok -> PluginOutcome.Warn
+        | other -> other
+
     let timedOutLastRun () =
         match parsed.LastRun with
         | Some r ->
@@ -155,14 +162,12 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
     // Fail closed on a `Completed` that is not evidence of a pass. Two reasons reach
     // this, and they share one rule rather than one copy of it each:
     //   * NO RUN RECORD at all — nothing to vouch for the completion;
-    //   * a run record saying the run VERIFIED NOTHING (AUTOMATION-198) — the summary
-    //     says what happened, and an absence of evidence is not a pass.
+    //   * a run record whose outcome is `VerifiedNothing` (AUTOMATION-198) — the run
+    //     executed nothing, and an absence of evidence is not a pass.
     // Either way a clean ledger downgrades to `warn`; failing diagnostics still take
     // precedence, so nothing here can hide a red.
     | StatusView.Completed _ when parsed.LastRun.IsNone || ParsedPluginStatus.verifiedNothing parsed ->
-        match okOrDiag () with
-        | PluginOutcome.Ok -> Some PluginOutcome.Warn
-        | other -> Some other
+        Some(warnUnlessDiagnosed ())
     | StatusView.Completed _ -> Some(okOrDiag ())
     | StatusView.Idle ->
         parsed.LastRun
@@ -170,6 +175,9 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
             match r.Outcome with
             | FailedRun _ -> PluginOutcome.Fail
             | TimedOut _ -> PluginOutcome.TimedOut
+            // The same rule as the `Completed` arm: an idle plugin whose last run
+            // verified nothing has no pass to report either.
+            | VerifiedNothing _ -> warnUnlessDiagnosed ()
             | CompletedRun -> okOrDiag ())
 
 /// One plugin's line in the verdict.
@@ -3239,6 +3247,7 @@ let pluginVerdicts
                     | Some s, _ -> nonEmpty s
                     | None, FailedRun err -> nonEmpty err
                     | None, TimedOut reason -> nonEmpty reason
+                    | None, VerifiedNothing detail -> nonEmpty (RunSummary.nothingVerified detail)
                     | None, CompletedRun -> None) }))
 
 /// The CTRF reports THIS RUN produced — the files in the run's own directory.
