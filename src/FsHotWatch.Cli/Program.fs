@@ -664,7 +664,7 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
                 $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a merge \
                    verdict cannot be earned from it. `fshw confirm` will report NO VERDICT."
 
-            IpcParsing.TestRunReport.ofScopeOnly ScopeUnknown
+            IpcParsing.TestRunReport.noTestSuite
         else
             IpcParsing.parseTestRunReport reply
     with ex ->
@@ -2164,8 +2164,11 @@ let executeCommand
                 let verb = Verdict.Command.token v.Command
 
                 match v.Outcome with
-                | Verdict.Green ->
+                | Verdict.Green baseline ->
                     say $"%s{Color.green}✓%s{Color.reset} %s{verb}: green — for THIS tree (%s{v.TreeHash})"
+                    // AUTOMATION-110. Say what the green is relative to, so "green" is
+                    // read as a claim about the whole suite and can be audited as one.
+                    say $"  %s{CheckVerdict.Baseline.describe baseline}"
                 | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
                 | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
             | Verdict.Report.Stale(v, reason) ->

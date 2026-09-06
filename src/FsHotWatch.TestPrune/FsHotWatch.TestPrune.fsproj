@@ -34,6 +34,7 @@
     <Compile Include="Flakiness.fs" />
     <Compile Include="FileFreshness.fs" />
     <Compile Include="PendingVerification.fs" />
+    <Compile Include="FullSuiteBaseline.fs" />
     <Compile Include="DependencyFanout.fs" />
     <Compile Include="ArtifactFreshness.fs" />
     <Compile Include="StaleArtifactPreflight.fs" />

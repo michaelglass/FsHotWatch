@@ -291,7 +291,9 @@ sufficient.
   "treeDeclaredCount": 29,
   "treeAbsentDeclarationCount": 0,
   "scope":   { "kind": "full", "ranProjects": 6, "totalProjects": 6 },
-  "outcome": { "kind": "green" },
+  "outcome": { "kind": "green",
+               "baseline": { "kind": "full-suite-run", "runId": "24bf66063d004decb0447e3cc3ece719",
+                             "earnedAt": "2026-07-14T10:50:31.0000000Z", "projects": 6 } },
   "exitCode": 0,
   "plugins": [
     { "name": "test-prune", "outcome": "ok", "elapsedMs": 91449,
@@ -388,10 +390,22 @@ field.
 
 | Field | Values |
 |-------|--------|
-| `outcome.kind` | `green` · `red` · `incomplete` (with `reason`) |
+| `outcome.kind` | `green` (with `baseline`) · `red` · `incomplete` (with `reason`) |
+| `outcome.baseline.kind` | `full-suite-run` (with `runId` / `earnedAt` / `projects`) · `no-test-suite` |
 | `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
 | `command` | `check` (impact-scoped) · `confirm` (unfiltered, evidence-required) |
+
+A `green` always names its **baseline**: the last run that executed every configured
+test project, which is the run the tests this check *skipped* were last executed in.
+An impact-filtered green is a claim about the whole suite only relative to that run —
+the daemon's durable ledgers carry every symbol changed since (`pending-verification.json`)
+and every test red since (`outstanding-failures.json`, re-selected on every run until it
+passes) — so a green with nothing to be relative to is not representable. A check whose
+daemon reports no baseline (a cold repository, or `tests.projects` grown since the last
+full run) exits **3** with `incomplete` naming the reason, and the daemon widens its next
+run to the full suite to earn one. `no-test-suite` is the one green a repository with no
+test projects can make.
 
 `incomplete` is the honest third answer: **nothing is known to be broken, and
 nothing is known to be sound either.** A `confirm` whose tests ran impact-filtered

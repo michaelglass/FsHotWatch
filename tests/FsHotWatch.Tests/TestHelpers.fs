@@ -678,3 +678,36 @@ let terminalSummaryOf (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) 
 /// status, so a visible `(cached)` means the replayed ledger has already landed.
 let waitForCachedReplay (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) (timeoutMs: int) =
     waitUntilTrue (fun () -> (terminalSummaryOf host plugin).Contains "(cached)") timeoutMs
+
+/// AUTOMATION-110. The full-suite baseline every green in these tests is relative to.
+/// One fixture, so a test that grades a green names the SAME baseline the daemon reply
+/// it mocks reports — a green and its baseline are one value, not two settings.
+module BaselineFixtures =
+    let runId = System.Guid.Parse("b0000000-1100-4000-8000-000000000110")
+
+    let earnedAt = System.DateTime(2026, 9, 6, 12, 0, 0, System.DateTimeKind.Utc)
+
+    let ref: FsHotWatch.Cli.IpcParsing.BaselineRef =
+        { RunId = runId
+          EarnedAt = earnedAt
+          Projects = 1 }
+
+    let reading = FsHotWatch.Cli.IpcParsing.BaselineReading.Valid ref
+    let baseline = FsHotWatch.Cli.CheckVerdict.Baseline.FullSuiteRun ref
+
+    /// The JSON fragment a mocked `test-scope` reply carries for this baseline —
+    /// appended inside the reply object, so `"scope":"full",...` stays as written.
+    let replyFragment =
+        $""","baseline":{{"runId":"{runId.ToString("N")}","earnedAt":"{earnedAt.ToString("o")}","projects":["P"]}}"""
+
+    /// `TestRunReport.ofScopeOnly`, carrying this baseline — for tests whose subject is
+    /// the scope, the comparison or the rendering, not the baseline.
+    let reportOf (scope: FsHotWatch.Cli.IpcParsing.TestScope) : FsHotWatch.Cli.IpcParsing.TestRunReport =
+        { FsHotWatch.Cli.IpcParsing.TestRunReport.ofScopeOnly scope with
+            Baseline = reading }
+
+    let isGreen (o: FsHotWatch.Cli.Verdict.Outcome) =
+        match o with
+        | FsHotWatch.Cli.Verdict.Green _ -> true
+        | FsHotWatch.Cli.Verdict.Red
+        | FsHotWatch.Cli.Verdict.Incomplete _ -> false

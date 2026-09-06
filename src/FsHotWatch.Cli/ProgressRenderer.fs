@@ -669,7 +669,7 @@ module AgentHints =
         // is true, and therefore something a human must meet before any pointer.
         let zeroSelectionLines =
             match v.Scope with
-            | NoTestsRun(NoTestsReason.ChangesUncovered(symbols, total)) ->
+            | NoTestsRun(NoTestsReason.ChangesUncovered(symbols, total, unrunnable)) ->
                 let listed = String.concat ", " symbols
                 let more = total - List.length symbols
                 let suffix = if more > 0 then $" (and {more} more)" else ""
@@ -677,7 +677,14 @@ module AgentHints =
                 [ $"    ZERO     ⚠ NOTHING COVERS THIS CHANGE — %d{total} changed symbol(s) have no covering test."
                   "             This run verified nothing about them and completed green anyway. The index cannot see"
                   "             reflection, DI, or generated code, so this is a NON-ANSWER, not a pass."
-                  $"             uncovered: %s{listed}%s{suffix}" ]
+                  $"             uncovered: %s{listed}%s{suffix}"
+                  // AUTOMATION-110. The write-off, where the reader is looking: these symbols
+                  // DO have tests, in a project this daemon is not configured to run.
+                  if unrunnable.SymbolCount > 0 then
+                      let projects = String.concat ", " unrunnable.Projects
+
+                      $"             ⚠ %d{unrunnable.SymbolCount} of them ARE covered — by %s{projects}, which `tests.projects` does not list."
+                      "               That obligation was written off, not discharged: list the project, or declare it excluded." ]
             | NoTestsRun NoTestsReason.AlreadyVerified ->
                 [ "             this tree is test-equivalent to the last green run — nothing needed re-verifying;"
                   "             this is a legitimate zero rather than a missed selection" ]

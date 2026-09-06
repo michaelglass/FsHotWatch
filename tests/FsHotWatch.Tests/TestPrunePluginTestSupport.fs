@@ -152,6 +152,33 @@ let writeAt (path: string) (contents: string) (mtime: DateTime) =
 
 let p (parts: string list) = Path.Combine(List.toArray parts)
 
+/// A repo root no other test shares. AUTOMATION-110 made two more TestPrune ledgers
+/// durable (`outstanding-failures.json`, `full-suite-baseline.json`) beside the pending
+/// queue that already was, and a plugin created over a SHARED root (`"/tmp"`) loads
+/// whatever the previous test left there — a red from one test quarantined into the
+/// next test's selection. The queue had the same leak and got away with it only because
+/// most tests end with it empty; reds are the opposite. Not deleted afterwards: these
+/// are a few small JSON files, and a cleanup that raced the plugin's own writes would
+/// be a second source of flakiness.
+let isolatedRoot () : string =
+    let dir =
+        Path.Combine(Path.GetTempPath(), $"fshw-tp-{Guid.NewGuid():N}")
+        |> Path.GetFullPath
+
+    Directory.CreateDirectory(dir) |> ignore
+    dir
+
+/// AUTOMATION-110. Record a full-suite baseline over `projects` for a repo root, so a
+/// test about some OTHER rule (the zero-affected skip, cache replay, an empty ledger)
+/// is not widened to the full suite by the one rule this fixture satisfies: a
+/// repository with no baseline must earn one before a filtered run can be green.
+let seedBaseline (root: string) (projects: string list) : unit =
+    FsHotWatch.TestPrune.FullSuiteBaseline.save
+        root
+        { RunId = Guid.NewGuid()
+          EarnedAt = DateTime.UtcNow
+          Projects = Set.ofList projects }
+
 module PendingQueueHelpers =
     open FsHotWatch.TestPrune
 

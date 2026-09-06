@@ -2481,7 +2481,11 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
                 fun _ name args ->
                     async {
                         seen <- (name, args) :: seen
-                        return """{"scope":"full","ranProjects":6,"totalProjects":6}"""
+
+                        return
+                            """{"scope":"full","ranProjects":6,"totalProjects":6"""
+                            + BaselineFixtures.replyFragment
+                            + "}"
                     } }
 
     let run = readTestRun ipc "pipe"

@@ -7,6 +7,7 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.CheckVerdict
+open FsHotWatch.Tests.TestHelpers
 
 /// The scope these coverage-convergence tests are indifferent to. Convergence is
 /// about COMPLETENESS (did every file get checked), not about what the tests
@@ -36,7 +37,8 @@ let private inputs (hasFailures: bool) (coverage: Coverage) (scope: TestScope) :
       WaitingOnBuild = BuildWait.NotWaiting
       RunnerAborted = RunnerAbort.NoAbort
       Coverage = coverage
-      Scope = scope }
+      Scope = scope
+      Baseline = BaselineFixtures.reading }
 
 // ----------------------------------------------------------------------------
 // THE MISSING TERM. `hasFailures` was computed by each transport, and the run-once
@@ -56,7 +58,8 @@ let ``verdict: a plugin that FAILED with a spotless ledger is FailuresFound, in 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop crashed = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation crashed = CheckOutcome.FailuresFound @>
@@ -73,7 +76,8 @@ let ``verdict: a plugin in a status this build cannot READ is FailuresFound, nev
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop unreadable = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation unreadable = CheckOutcome.FailuresFound @>
@@ -89,10 +93,11 @@ let ``verdict: a healthy plugin map does not manufacture a failure`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
-    test <@ verdict InnerLoop healthy = CheckOutcome.Clean @>
-    test <@ verdict Confirmation healthy = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop healthy = (CheckOutcome.Clean BaselineFixtures.baseline) @>
+    test <@ verdict Confirmation healthy = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 // ----------------------------------------------------------------------------
 // 224 — "waiting on build" is INCOMPLETE (exit 2), never a red (exit 1). A test
@@ -113,7 +118,8 @@ let ``verdict: waiting on build with NO failures is WaitingOnBuild / exit 2, nev
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild [] @>
     test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild [] @>
@@ -131,7 +137,8 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop failureAndWaiting = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation failureAndWaiting = CheckOutcome.FailuresFound @>
@@ -140,7 +147,7 @@ let ``verdict: a REAL failure alongside waiting on build still short-circuits to
 [<Fact(Timeout = 15000)>]
 let ``verdict: a clean full run is still Clean / exit 0 — no regression from the waiting-on-build term`` () =
     let clean = inputs false Complete (FullSuite 4)
-    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+    test <@ verdict Confirmation clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ exitCode (verdict Confirmation clean) = 0 @>
 
 // ----------------------------------------------------------------------------
@@ -163,7 +170,7 @@ let ``verdict: failures + Unknown -> FailuresFound`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Complete -> Clean`` () =
-    test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete anyScope) = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Incomplete -> Incomplete`` () =
@@ -179,7 +186,7 @@ let ``verdict: clean + Unknown -> Incomplete (Unknown never reads as Clean)`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: Clean -> 0`` () =
-    test <@ exitCode CheckOutcome.Clean = 0 @>
+    test <@ exitCode (CheckOutcome.Clean BaselineFixtures.baseline) = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: FailuresFound -> 1`` () =
@@ -226,7 +233,7 @@ let ``converge: already complete after first re-read -> Clean`` () =
     let outcome =
         converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 2) anyScope)
 
-    test <@ outcome = CheckOutcome.Clean @>
+    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ scans.Value >= 1 @>
 
 [<Fact(Timeout = 15000)>]
@@ -260,7 +267,7 @@ let ``converge: progress then complete (5 -> 2 -> 0) -> Clean`` () =
     let outcome =
         converge InnerLoop 3 triggerScan reread (inputs false (Incomplete 5) anyScope)
 
-    test <@ outcome = CheckOutcome.Clean @>
+    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ scans.Value = 2 @>
 
 [<Fact(Timeout = 15000)>]
@@ -302,7 +309,7 @@ let ``converge: Unknown then complete -> Clean`` () =
     let outcome =
         converge InnerLoop 3 triggerScan reread (inputs false Unknown anyScope)
 
-    test <@ outcome = CheckOutcome.Clean @>
+    test <@ outcome = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 // ----------------------------------------------------------------------------
 // AUTOMATION-112 — a merge verdict cannot be produced from an impact-filtered run.
@@ -316,7 +323,8 @@ let ``converge: Unknown then complete -> Clean`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: a full-suite run with no failures is the ONLY route to Clean`` () =
-    test <@ verdict Confirmation (inputs false Complete (FullSuite 4)) = CheckOutcome.Clean @>
+    test
+        <@ verdict Confirmation (inputs false Complete (FullSuite 4)) = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: an impact-filtered run cannot yield Clean`` () =
@@ -359,10 +367,14 @@ let ``Confirmation: incomplete coverage still outranks scope`` () =
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
     // The fast loop keeps its optimization; `confirm` is where the merge claim is made.
-    test <@ verdict InnerLoop (inputs false Complete (ImpactFiltered(1, 4))) = CheckOutcome.Clean @>
+    test
+        <@
+            verdict InnerLoop (inputs false Complete (ImpactFiltered(1, 4))) = (CheckOutcome.Clean
+                BaselineFixtures.baseline)
+        @>
     // A repo with no test-prune plugin has no tests to run, and punishing it would be
     // nonsense. `ScopeUnknown` is "we cannot say", not "we ran nothing".
-    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: NO TESTS RAN is never Clean — the inner loop may test LESS, not NOTHING`` () =
@@ -399,7 +411,7 @@ let ``exitCode: UnearnedScope is its own code, distinct from failure and incompl
     let unearned = exitCode (CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)))
 
     test <@ unearned = 3 @>
-    test <@ unearned <> exitCode CheckOutcome.Clean @>
+    test <@ unearned <> exitCode (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ unearned <> exitCode CheckOutcome.FailuresFound @>
     test <@ unearned <> exitCode (CheckOutcome.Incomplete 1) @>
 
@@ -595,7 +607,7 @@ let ``InnerLoop: an ABSENT scope is still Clean — the split may not punish a t
     // daemon has no `test-scope` command (no test projects configured), or a run is in
     // flight. Making THAT non-green would turn every ordinary `fshw check` on a repo
     // without tests into an exit 3 — a worse bug than the one above.
-    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop (inputs false Complete ScopeUnknown) = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     // ...and `confirm` still refuses it, exactly as before.
     test <@ verdict Confirmation (inputs false Complete ScopeUnknown) = CheckOutcome.UnearnedScope ScopeUnknown @>
 
@@ -633,7 +645,8 @@ let ``AUTOMATION-303: an all-unattributable ledger is NO VERDICT (exit 3), not a
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 6 }
+          Scope = FullSuite 6
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop stale = CheckOutcome.StaleDaemonState 51 @>
     test <@ verdict Confirmation stale = CheckOutcome.StaleDaemonState 51 @>
@@ -653,7 +666,8 @@ let ``AUTOMATION-303: ONE attributable diagnostic among them keeps the red`` () 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 6 }
+          Scope = FullSuite 6
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop mixed = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation mixed = CheckOutcome.FailuresFound @>
@@ -672,7 +686,8 @@ let ``AUTOMATION-303: a FAILING PLUGIN beside a stale ledger keeps the red`` () 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 6 }
+          Scope = FullSuite 6
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop crashedBesideStale = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation crashedBesideStale = CheckOutcome.FailuresFound @>
@@ -690,10 +705,11 @@ let ``AUTOMATION-303: a CLEAN ledger is still Clean, never stale-daemon-state`` 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 6 }
+          Scope = FullSuite 6
+          Baseline = BaselineFixtures.reading }
 
-    test <@ verdict InnerLoop clean = CheckOutcome.Clean @>
-    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
+    test <@ verdict Confirmation clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ exitCode (verdict Confirmation clean) = 0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -708,7 +724,8 @@ let ``AUTOMATION-303: converge does not re-scan stale daemon state`` () =
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 6 }
+          Scope = FullSuite 6
+          Baseline = BaselineFixtures.reading }
 
     let mutable scans = 0
 
@@ -774,7 +791,8 @@ let ``AUTOMATION-201: the verdict carries the stale deferrals, still exit 2, sti
           WaitingOnBuild = BuildWait.StaleOutput stale
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop waiting = CheckOutcome.WaitingOnBuild stale @>
     test <@ verdict Confirmation waiting = CheckOutcome.WaitingOnBuild stale @>
@@ -799,7 +817,8 @@ let ``AUTOMATION-201: a real failure beside a stale-output defer is still Failur
           WaitingOnBuild = BuildWait.StaleOutput [ "stale build output — x" ]
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop both = CheckOutcome.FailuresFound @>
 
@@ -823,7 +842,8 @@ let ``AUTOMATION-294: a killed test host is RunnerAborted — exit 2, never the 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     // Both modes: an abort is not a scope question, so `confirm` may not treat it as one.
     test <@ verdict InnerLoop aborted = CheckOutcome.RunnerAborted abortMessages @>
@@ -840,7 +860,7 @@ let ``AUTOMATION-294: a killed test host is RunnerAborted — exit 2, never the 
     test
         <@
             exitCode (CheckOutcome.RunnerAborted abortMessages)
-            <> exitCode CheckOutcome.Clean
+            <> exitCode (CheckOutcome.Clean BaselineFixtures.baseline)
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -855,7 +875,8 @@ let ``AUTOMATION-294: THE OTHER DIRECTION — a real failure beside an abort is 
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop both = CheckOutcome.FailuresFound @>
     test <@ verdict Confirmation both = CheckOutcome.FailuresFound @>
@@ -880,10 +901,11 @@ let ``AUTOMATION-294: NoAbort changes nothing — a clean run is still Clean`` (
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.NoAbort
           Coverage = Complete
-          Scope = FullSuite 4 }
+          Scope = FullSuite 4
+          Baseline = BaselineFixtures.reading }
 
-    test <@ verdict InnerLoop clean = CheckOutcome.Clean @>
-    test <@ verdict Confirmation clean = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
+    test <@ verdict Confirmation clean = (CheckOutcome.Clean BaselineFixtures.baseline) @>
 
     test <@ RunnerAbort.classify [] = RunnerAbort.NoAbort @>
     test <@ RunnerAbort.classify abortMessages = RunnerAbort.HostDied abortMessages @>
@@ -905,7 +927,8 @@ let ``AUTOMATION-294: an abort DOMINATES a concurrent build defer`` () =
           WaitingOnBuild = BuildWait.ArtifactNotProduced
           RunnerAborted = RunnerAbort.HostDied abortMessages
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     test <@ verdict InnerLoop both = CheckOutcome.RunnerAborted abortMessages @>
 
@@ -924,7 +947,8 @@ let ``AUTOMATION-294: converge does NOT retry an abort — no automatic retry to
           WaitingOnBuild = BuildWait.NotWaiting
           RunnerAborted = RunnerAbort.HostDied abortMessages
           Coverage = Complete
-          Scope = anyScope }
+          Scope = anyScope
+          Baseline = BaselineFixtures.reading }
 
     let outcome =
         converge InnerLoop 3 (fun () -> scans <- scans + 1) (fun () -> aborted) aborted
@@ -962,10 +986,111 @@ let ``exitCode: ResultUnreceived -> 7, and never a code that claims something ab
             <> exitCode (CheckOutcome.UnearnedScope anyScope)
         @>
 
-    test <@ exitCode (CheckOutcome.ResultUnreceived "x") <> exitCode CheckOutcome.Clean @>
+    test
+        <@
+            exitCode (CheckOutcome.ResultUnreceived "x")
+            <> exitCode (CheckOutcome.Clean BaselineFixtures.baseline)
+        @>
 
     test
         <@
             exitCode (CheckOutcome.ResultUnreceived "x")
             <> exitCode CheckOutcome.FailuresFound
         @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-110 — a `Clean` cannot be minted without a baseline
+// ---------------------------------------------------------------------------
+
+let private withBaseline (baseline: BaselineReading) (i: CheckInputs) : CheckInputs = { i with Baseline = baseline }
+
+[<Fact>]
+let ``AUTOMATION-110: a clean check carries the baseline the daemon reported, in both modes`` () =
+    let clean = inputs false Complete (FullSuite 4)
+
+    test <@ verdict InnerLoop clean = CheckOutcome.Clean(Baseline.FullSuiteRun BaselineFixtures.ref) @>
+    test <@ verdict Confirmation clean = CheckOutcome.Clean(Baseline.FullSuiteRun BaselineFixtures.ref) @>
+
+[<Fact>]
+let ``AUTOMATION-110: an ABSENT baseline is NO VERDICT (exit 3) carrying the daemon's reason, never a green`` () =
+    let absent =
+        inputs false Complete (ImpactFiltered(1, 4))
+        |> withBaseline (BaselineReading.Absent "tests.projects gained Acceptance since")
+
+    let outcome = verdict InnerLoop absent
+    test <@ outcome = CheckOutcome.NoBaseline "tests.projects gained Acceptance since" @>
+    test <@ exitCode outcome = 3 @>
+
+    // A FULL-SUITE reading with no baseline is the same refusal: the daemon reports the
+    // baseline from its accounted full run, and a full run whose projects were not all
+    // accounted for did not earn one.
+    let fullButAbsent =
+        inputs false Complete (FullSuite 4)
+        |> withBaseline (BaselineReading.Absent "why")
+
+    test <@ verdict Confirmation fullButAbsent = CheckOutcome.NoBaseline "why" @>
+
+[<Fact>]
+let ``AUTOMATION-110: a daemon that did not REPORT a baseline is refused, with this build's words`` () =
+    let silent =
+        inputs false Complete (ImpactFiltered(1, 4))
+        |> withBaseline BaselineReading.NotReported
+
+    match verdict InnerLoop silent with
+    | CheckOutcome.NoBaseline reason -> test <@ reason.Contains "did not report a full-suite baseline" @>
+    | other -> failwithf "an unreported baseline must be refused, got %A" other
+
+[<Fact>]
+let ``AUTOMATION-110: a repo with NO test suite is clean relative to nothing, and only when its scope is unknown`` () =
+    let none =
+        inputs false Complete ScopeUnknown |> withBaseline BaselineReading.NoTestSuite
+
+    test <@ verdict InnerLoop none = CheckOutcome.Clean Baseline.NoTestSuite @>
+    // `confirm` still refuses an unknown scope — the baseline does not buy it a full suite.
+    test <@ verdict Confirmation none = CheckOutcome.UnearnedScope ScopeUnknown @>
+
+[<Fact>]
+let ``AUTOMATION-110: failures, aborts and deferrals outrank a missing baseline`` () =
+    let absent = BaselineReading.Absent "none yet"
+
+    test <@ verdict InnerLoop (inputs true Complete anyScope |> withBaseline absent) = CheckOutcome.FailuresFound @>
+
+    let aborted =
+        { inputs false Complete anyScope with
+            RunnerAborted = RunnerAbort.HostDied [ "killed" ] }
+        |> withBaseline absent
+
+    test <@ verdict InnerLoop aborted = CheckOutcome.RunnerAborted [ "killed" ] @>
+
+    // And an unearned scope is named before the baseline: "nothing ran" is the more
+    // specific fact.
+    let nothingRan =
+        inputs false Complete (NoTestsRun NoTestsReason.Unstated) |> withBaseline absent
+
+    test <@ verdict InnerLoop nothingRan = CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated) @>
+
+[<Fact>]
+let ``AUTOMATION-110: a missing baseline is TERMINAL for convergence — a re-scan cannot earn one`` () =
+    let absent =
+        inputs false Complete (ImpactFiltered(1, 4))
+        |> withBaseline (BaselineReading.Absent "none yet")
+
+    let mutable scans = 0
+
+    let outcome =
+        converge InnerLoop 3 (fun () -> scans <- scans + 1) (fun () -> absent) absent
+
+    test <@ outcome = CheckOutcome.NoBaseline "none yet" @>
+    test <@ scans = 0 @>
+
+[<Fact>]
+let ``AUTOMATION-110: Baseline.describe names the run, when it earned and how many projects`` () =
+    let described = Baseline.describe (Baseline.FullSuiteRun BaselineFixtures.ref)
+
+    test
+        <@
+            described.Contains(BaselineFixtures.runId.ToString("N"))
+            && described.Contains "1 project"
+        @>
+
+    test <@ (Baseline.describe Baseline.NoTestSuite).Contains "no test suite" @>

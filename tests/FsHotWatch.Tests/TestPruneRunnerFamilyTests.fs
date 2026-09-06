@@ -7,6 +7,7 @@ open Swensen.Unquote
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 // --- CTRF runner family: report flags follow the resolved xUnit major ---
 
@@ -270,8 +271,14 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             TimeoutSec = Some 30
             ReportVerificationFormat = AutoDetect } ]
 
-    let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
-    let handler = create ":memory:" repoRoot (Some configs) None None None None []
+    // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's
+    // `.fshw/test-prune/` ledgers — and since AUTOMATION-110 made the full-suite baseline
+    // durable, that stamped the real daemon's baseline with `Xunit4RunnerFixture` as the
+    // only project, which it then (correctly) refused and re-earned with a full run.
+    // Only the fixture project path needs the real repository.
+    let pluginRoot = isolatedRoot ()
+    let host = PluginHost.create (Unchecked.defaultof<_>) pluginRoot
+    let handler = create ":memory:" pluginRoot (Some configs) None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously

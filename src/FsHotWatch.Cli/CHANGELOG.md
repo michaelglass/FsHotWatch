@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- AUTOMATION-110: **`Verdict.Outcome.Green` carries a `Baseline`** — `FullSuiteRun` (the
+  run every skipped test was last executed in) or `NoTestSuite` — and cannot be
+  constructed without one. `CheckVerdict.CheckOutcome.Clean` carries the same, minted
+  only from a `BaselineReading.Valid` / `NoTestSuite` on `CheckInputs`; an `Absent` or
+  `NotReported` reading is the new `CheckOutcome.NoBaseline` — exit **3**, `incomplete`
+  in the file, terminal for convergence, and explained in its own words
+  (`CheckProse.noBaseline`). `verdict.json` writes `outcome.baseline` and a green without
+  one reads as `Unreadable`; `create` refuses a `NoTestSuite` green beside any scope but
+  `ScopeUnknown`.
+- AUTOMATION-110: `IpcParsing.TestRunReport.Baseline` (`BaselineReading`) is parsed from
+  the daemon's `baseline` / `baselineAbsent`, failing closed to `NotReported`;
+  `TestRunReport.noTestSuite` is the one path that states `NoTestSuite` (both transports'
+  "no `test-scope` command" branch). `NoTestsReason.ChangesUncovered` carries
+  `UnrunnableCoverage` (the symbols covered only by unlisted projects, and which), shown
+  by the terminal renderer, the verdict file and `describe`.
+- AUTOMATION-110: the projected check reading (AUTOMATION-259) is green relative to the
+  daemon's baseline, and `Incomparable` when there is none.
+
 ## 0.14.0-alpha.43 - 2026-09-06
 
 - AUTOMATION-555 (rework): **timing completeness is derived from the spans, and the

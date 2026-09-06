@@ -50,7 +50,7 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
                 $"the plugin host has no `%s{TestScopeCommand}` command — no test projects are configured, so a merge \
                    verdict cannot be earned here. `fshw confirm --run-once` will report NO VERDICT."
 
-            TestRunReport.ofScopeOnly ScopeUnknown
+            TestRunReport.noTestSuite
         | Some reply -> parseTestRunReport reply
     with ex ->
         Logging.warn
@@ -368,7 +368,8 @@ let private runOnceAndVerdictIn
               WaitingOnBuild = waitingOnBuild daemon pluginName
               RunnerAborted = runnerAborted daemon pluginName
               Coverage = liveCoverage daemon
-              Scope = run.Scope }
+              Scope = run.Scope
+              Baseline = run.Baseline }
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
