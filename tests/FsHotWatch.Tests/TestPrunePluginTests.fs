@@ -32,14 +32,14 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
 [<Fact(Timeout = 15000)>]
 let ``testprune subscribes to BatchChecked`` () =
     // FileChecked (per-file accumulation) is retained alongside BatchChecked (the
     // cohort-complete flush): both subscriptions must be present, not one or the other.
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
 
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeBatchChecked) @>
@@ -48,7 +48,7 @@ let ``testprune subscribes to BatchChecked`` () =
 let ``affected-tests command returns empty array when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
@@ -59,7 +59,7 @@ let ``affected-tests command returns empty array when no files checked`` () =
 let ``changed-files command returns empty list when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
@@ -70,7 +70,7 @@ let ``changed-files command returns empty list when no files checked`` () =
 let ``test-prune error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
     let fakeResult =
@@ -266,7 +266,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
 let ``test-results command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
@@ -288,7 +288,8 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             TimeoutSec = None
             ReportVerificationFormat = AutoDetect } ]
 
-    let handler = create ":memory:" "/tmp" (Some configs) None None None None []
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some configs) None None None None []
 
     host.RegisterHandler(handler)
 
@@ -803,7 +804,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
 [<Fact(Timeout = 15000)>]
 let ``run-tests not registered when no testConfigs`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create ":memory:" "/tmp" None None None None None []
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -868,7 +869,7 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
 [<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
     // Framework-managed plugins need no explicit dispose; this pins only construction.
-    let _handler = create ":memory:" "/tmp" None None None None None []
+    let _handler = create ":memory:" (isolatedRoot ()) None None None None None []
     ()
 
 [<Fact(Timeout = 15000)>]
@@ -959,8 +960,15 @@ let ``test errors are cleared when all tests pass`` () =
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
         File.Delete(Path.Combine(tmpDir, "fail_flag"))
+
+        // Sync on the run's TERMINAL status, not on the ledger going clean: the
+        // `TestsFinished` handler rewrites the ledger first and reports the status last,
+        // and reading the status inside that window sees `Running` for a run that has
+        // already passed (AUTOMATION-110 widened the window by persisting the reds and
+        // the baseline between the two).
+        let await = beginAwaitNextTerminal host "test-prune"
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
-        waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 12000
+        test <@ await.Wait(TimeSpan.FromSeconds 15.0) @>
 
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
@@ -1775,6 +1783,9 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 [<Fact(Timeout = 30000)>]
 let ``all changed symbols with no covering test complete green without running`` () =
     withTempDir "tp-nothing-to-verify" (fun tmpDir ->
+        // AUTOMATION-110: the nothing-to-verify skip is relative to a full-suite
+        // baseline like every other green; without one the run widens to earn it.
+        seedBaseline tmpDir [ "TestProject" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
         // Created only if the suite runs — and it must not.
@@ -3663,7 +3674,7 @@ let ``AUTOMATION-572 no runtime obligation ledger transition may name zero proje
 [<Fact>]
 let ``AUTOMATION-572 a zero-affected widening names every outstanding debt`` () =
     let causes =
-        zeroAffectedWidening false true 3 (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ]) 2
+        zeroAffectedWidening false true 3 (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ]) 2 None
 
     test
         <@
@@ -3687,17 +3698,17 @@ let ``AUTOMATION-572 an obligation naming no project is not counted as a reason 
     // suite. Reporting it as a cause would restore exactly the silence this ticket closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
     let mixed = Map.add "src/Traced.fs" (Map.ofList [ "IntegrationTests", 1L ]) phantom
 
-    test <@ zeroAffectedWidening true false 0 mixed 0 = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
+    test <@ zeroAffectedWidening true false 0 mixed 0 None = [ ZeroAffectedWidening.RuntimeCoverageDebt(1, 1) ] @>
 
 [<Fact>]
 let ``AUTOMATION-572 nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0) @>
+    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None) @>
 
 // `ingestAndEmitCoverage` ingests each project's raw runner cobertura into the TestPrune
 // DB (max-merge, symbol-relative), then emits the full DB once to the single shared
@@ -4288,6 +4299,10 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
     // the former, so emitting from the async left cached EmittedEvents empty and cache
     // replay could not re-fire TestRunCompleted to downstream subscribers.
     withTempDir "tp-cache-emit" (fun tmpDir ->
+        // AUTOMATION-110: the cache key is salted by whether the run would be widened
+        // to the full suite, and the FIRST run of a repo with no baseline is. Seeding
+        // one keeps the key the write and the read compute the same.
+        seedBaseline tmpDir [ "TestProject" ]
         let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
         let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
         let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cacheIface)

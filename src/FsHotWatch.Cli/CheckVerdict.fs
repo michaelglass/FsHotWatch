@@ -142,13 +142,45 @@ module RunnerAbort =
         | [] -> RunnerAbort.NoAbort
         | msgs -> RunnerAbort.HostDied msgs
 
+/// AUTOMATION-110. What a green is RELATIVE to. A `Clean` — and so a `Verdict.Green` —
+/// cannot be constructed without one, which is the type-level half of "a green must
+/// prove what it skipped was green too": the tests an impact-filtered run skips were
+/// last executed in the baseline run, and every change or red since is owed through
+/// the daemon's durable ledgers (pending queue, outstanding failures). A green with no
+/// baseline is not a weaker green; it is not representable.
+[<RequireQualifiedAccess>]
+type Baseline =
+    /// The full-suite run every skipped test was last executed in.
+    | FullSuiteRun of BaselineRef
+    /// The daemon runs no tests at all: nothing is skipped, so nothing is baselined.
+    /// Only reachable from the positive "no `test-scope` command" reading — never from
+    /// a fault, a `running` reply, or an older daemon.
+    | NoTestSuite
+
+module Baseline =
+    let describe (b: Baseline) : string =
+        match b with
+        | Baseline.FullSuiteRun r ->
+            let runId = r.RunId.ToString("N")
+            let earnedAt = r.EarnedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+            $"relative to full-suite run %s{runId} (%s{earnedAt}, %d{r.Projects} project(s))"
+        | Baseline.NoTestSuite -> "no test suite is configured, so nothing was skipped"
+
 /// The decided outcome of a `check`, in one-to-one correspondence with an exit
 /// code. `Incomplete` carries the residual unchecked count for reporting
 /// (`-1` when coverage was `Unknown` — count not reported by the daemon).
 [<RequireQualifiedAccess>]
 type CheckOutcome =
-    /// Complete coverage and no failures.
-    | Clean
+    /// Complete coverage and no failures — relative to `baseline` (AUTOMATION-110).
+    | Clean of baseline: Baseline
+    /// AUTOMATION-110. No failures, complete coverage, an acceptable scope — and NO
+    /// full-suite baseline for the skipped tests to be green relative to: none has
+    /// been earned on this ledger, `tests.projects` grew since, or the daemon did not
+    /// say. Nothing is claimed broken and nothing is claimed sound: NO VERDICT, exit 3,
+    /// beside `UnearnedScope`, which is the same refusal for the same reason one level
+    /// down (that one says "the run was too narrow"; this says "and nothing vouches for
+    /// what it left out"). `reason` is the daemon's own words.
+    | NoBaseline of reason: string
     /// Failures found (regardless of coverage — failures short-circuit).
     | FailuresFound
     /// No failures, but completeness could not be achieved.
@@ -226,7 +258,7 @@ type CheckOutcome =
 /// through to a default exit code.
 let exitCode (outcome: CheckOutcome) : int =
     match outcome with
-    | CheckOutcome.Clean -> 0
+    | CheckOutcome.Clean _ -> 0
     | CheckOutcome.FailuresFound -> 1
     | CheckOutcome.Incomplete _ -> 2
     // "Waiting on build" is the same class of answer as `Incomplete`: the run
@@ -236,6 +268,9 @@ let exitCode (outcome: CheckOutcome) : int =
     // "failed". Exit 2, NEVER the 1 it used to return (AUTOMATION-294).
     | CheckOutcome.RunnerAborted _ -> 2
     | CheckOutcome.UnearnedScope _ -> 3
+    // AUTOMATION-110. No verdict, for the unearned-scope reason: what ran passed, and
+    // nothing vouches for what did not run.
+    | CheckOutcome.NoBaseline _ -> 3
     // Same exit code as an unearned scope, and for the same reason: the run produced
     // no verdict. "I cannot tell" is not a pass and it is not a failure.
     | CheckOutcome.StaleDaemonState _ -> 3
@@ -297,6 +332,10 @@ type CheckInputs =
         Coverage: Coverage
         /// What the tests that ran actually COVERED. `ScopeUnknown` is never full-suite.
         Scope: TestScope
+        /// AUTOMATION-110. What the daemon said its greens are relative to. `NotReported`
+        /// is never a baseline, exactly as `Coverage.Unknown` is never `Complete`. A
+        /// transport that forgets it fails to compile.
+        Baseline: BaselineReading
     }
 
 module CheckInputs =
@@ -384,6 +423,20 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         // known, nameable cause.
         CheckOutcome.WaitingOnBuild(BuildWait.staleDeferrals inputs.WaitingOnBuild)
     else
+        // AUTOMATION-110. The only door to `Clean`: every arm below that used to be
+        // `Clean` goes through here, so a green without a baseline has no constructor
+        // to be minted from. `Absent` carries the daemon's reason; `NotReported` gets
+        // this build's, because the daemon said nothing.
+        let clean () =
+            match inputs.Baseline with
+            | BaselineReading.Valid baseline -> CheckOutcome.Clean(Baseline.FullSuiteRun baseline)
+            | BaselineReading.NoTestSuite -> CheckOutcome.Clean Baseline.NoTestSuite
+            | BaselineReading.Absent reason -> CheckOutcome.NoBaseline reason
+            | BaselineReading.NotReported ->
+                CheckOutcome.NoBaseline
+                    "the daemon did not report a full-suite baseline — a daemon older than this CLI, or a reading \
+                     taken before one was asked — so nothing vouches for the tests this run skipped"
+
         match coverage with
         | Complete ->
             // Matched as a PAIR (not a nested `match testScope` per mode), so every
@@ -421,9 +474,9 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // The inner loop keeps impact filtering, which is what it is good at.
             // `ScopeUnknown` is tolerated here — a repo with no test-prune plugin
             // configured has no tests to run, and punishing it would be nonsense.
-            | InnerLoop, (FullSuite _ | ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.Clean
+            | InnerLoop, (FullSuite _ | ImpactFiltered _ | ScopeUnknown) -> clean ()
             // `confirm` demands the full suite and accepts nothing narrower.
-            | Confirmation, FullSuite _ -> CheckOutcome.Clean
+            | Confirmation, FullSuite _ -> clean ()
             | Confirmation, (ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.UnearnedScope testScope
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
@@ -484,7 +537,11 @@ let converge
 
     match initOutcome with
     | CheckOutcome.FailuresFound
-    | CheckOutcome.Clean
+    | CheckOutcome.Clean _
+    // AUTOMATION-110. Terminal like `UnearnedScope`: a re-scan does not earn a
+    // baseline — only a full-suite run does, and the daemon widens its next run to
+    // one on its own.
+    | CheckOutcome.NoBaseline _
     // `WaitingOnBuild` is terminal here for the same reason as `UnearnedScope`:
     // re-scanning does not retroactively run a test the settled run already
     // deferred. exit 2 says "could not complete — retry", which is the answer.

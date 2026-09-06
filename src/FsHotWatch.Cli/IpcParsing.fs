@@ -41,10 +41,31 @@ type DiagnosticsResponse =
       Statuses: Map<string, ParsedPluginStatus>
       Coverage: Coverage }
 
+/// AUTOMATION-110. Of the changed symbols a zero-selection run dropped as uncovered, the
+/// ones that DO have covering tests — in test projects `tests.projects` does not list.
+/// The daemon wrote the obligation off because it can never run them; this is the
+/// write-off, named, so a reader can list the project (or declare it excluded) instead
+/// of concluding the index is blind.
+type UnrunnableCoverage =
+    { SymbolCount: int
+      Projects: string list }
+
+module UnrunnableCoverage =
+    let none = { SymbolCount = 0; Projects = [] }
+
+    let describe (u: UnrunnableCoverage) : string =
+        if u.SymbolCount = 0 then
+            ""
+        else
+            let projects = String.concat ", " u.Projects
+
+            $"; %d{u.SymbolCount} of them ARE covered — by tests in %s{projects}, which `tests.projects` does not list, so \
+              the obligation was written off here, not discharged"
+
 [<RequireQualifiedAccess>]
 type NoTestsReason =
     | AlreadyVerified
-    | ChangesUncovered of symbols: string list * total: int
+    | ChangesUncovered of symbols: string list * total: int * unrunnable: UnrunnableCoverage
     | Unstated
     | UnknownReason of token: string
 
@@ -53,21 +74,53 @@ module NoTestsReason =
         match reason with
         | NoTestsReason.AlreadyVerified ->
             "no tests ran — this tree is test-equivalent to the last green run (nothing needed re-verifying)"
-        | NoTestsReason.ChangesUncovered(symbols, total) ->
+        | NoTestsReason.ChangesUncovered(symbols, total, unrunnable) ->
             let more = total - List.length symbols
             let suffix = if more > 0 then $" (and %d{more} more)" else ""
             let listed = String.concat ", " symbols
-            $"no tests ran — %d{total} changed symbol(s) have NO covering test in the index: %s{listed}%s{suffix}"
+
+            $"no tests ran — %d{total} changed symbol(s) have NO covering test in the index: %s{listed}%s{suffix}%s{UnrunnableCoverage.describe unrunnable}"
         | NoTestsReason.Unstated -> "no tests ran (the daemon did not say why)"
         | NoTestsReason.UnknownReason token ->
             $"no tests ran (reason '%s{token}', which this build does not understand)"
 
-    let ofToken token symbols total =
+    let ofToken token symbols total (unrunnable: UnrunnableCoverage) =
         match token with
         | None -> NoTestsReason.Unstated
         | Some "already-verified" -> NoTestsReason.AlreadyVerified
-        | Some "changes-uncovered" -> NoTestsReason.ChangesUncovered(symbols, max total (List.length symbols))
+        | Some "changes-uncovered" ->
+            NoTestsReason.ChangesUncovered(symbols, max total (List.length symbols), unrunnable)
         | Some token -> NoTestsReason.UnknownReason token
+
+/// AUTOMATION-110. The full-suite run an impact-filtered green is RELATIVE to — the one
+/// in which every test the filtered run skipped was last executed. `Verdict.Outcome.Green`
+/// cannot be constructed without one (or the positive statement that there is no test
+/// suite to baseline), which is what makes "green" mean "the whole suite" rather than
+/// "the subset I chose to run".
+type BaselineRef =
+    {
+        /// The full-suite run's id — its reports sit at `.fshw/test-runs/<runId>/`.
+        RunId: Guid
+        EarnedAt: DateTime
+        /// How many configured projects it accounted for.
+        Projects: int
+    }
+
+/// What the daemon said about its baseline. Every way of not getting a valid one is a
+/// VALUE, because each is a different fact with a different remedy.
+[<RequireQualifiedAccess>]
+type BaselineReading =
+    /// A full-suite run has accounted for every configured project on this ledger.
+    | Valid of BaselineRef
+    /// The daemon said there is none, and why — a cold repository, or `tests.projects`
+    /// grew since. The daemon widens its next run to earn one.
+    | Absent of reason: string
+    /// The daemon runs no tests at all (no `test-scope` command): there is nothing to
+    /// skip, so nothing to baseline. The only reading a test-less repo can be green on.
+    | NoTestSuite
+    /// The reply carried no baseline field at all — a daemon older than this CLI, or a
+    /// path where no daemon was asked. Never rounds up to `Valid`.
+    | NotReported
 
 /// What the last completed test run actually COVERED.
 ///
@@ -488,6 +541,10 @@ type TestRunReport =
         /// report say "and 12 more" instead of implying the short list is all of
         /// them. Zero from an older daemon.
         SeedCount: int
+        /// AUTOMATION-110. The full-suite baseline the daemon's greens are relative to.
+        /// `NotReported` from a daemon that predates the field — which `CheckVerdict`
+        /// refuses to call green, exactly as it refuses a scope it could not read.
+        Baseline: BaselineReading
     }
 
 module TestRunReport =
@@ -505,7 +562,16 @@ module TestRunReport =
           SessionRuns = []
           CheckRuns = []
           Seeds = []
-          SeedCount = 0 }
+          SeedCount = 0
+          Baseline = BaselineReading.NotReported }
+
+    /// AUTOMATION-110. The report for a daemon/host with NO `test-scope` command: no
+    /// test projects are configured, so there is no scope, no run, and nothing a
+    /// baseline could vouch for. The ONE path that may state `NoTestSuite` — a transport
+    /// fault or an older daemon must not reach it.
+    let noTestSuite: TestRunReport =
+        { ofScopeOnly ScopeUnknown with
+            Baseline = BaselineReading.NoTestSuite }
 
 /// Parse the JSON reply from the test-prune `test-scope` command.
 ///
@@ -547,10 +613,26 @@ let parseTestRunReport (json: string) : TestRunReport =
                     |> Seq.toList
                 | _ -> []
 
+            // AUTOMATION-110. Absent from an older daemon — silence, never a claim.
+            let unrunnable: UnrunnableCoverage =
+                { SymbolCount = readInt "unrunnableSymbolCount" |> Option.defaultValue 0
+                  Projects =
+                    match root.TryGetProperty("unrunnableProjects") with
+                    | true, value when value.ValueKind = JsonValueKind.Array ->
+                        value.EnumerateArray()
+                        |> Seq.choose (fun item ->
+                            if item.ValueKind = JsonValueKind.String then
+                                Some(item.GetString())
+                            else
+                                None)
+                        |> Seq.toList
+                    | _ -> [] }
+
             NoTestsReason.ofToken
                 (tryGetStringProp root "noTestsReason")
                 symbols
                 (readInt "uncoveredSymbolCount" |> Option.defaultValue (List.length symbols))
+                unrunnable
 
         let scope =
             match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
@@ -606,6 +688,42 @@ let parseTestRunReport (json: string) : TestRunReport =
                 |> Seq.toList
             | _ -> []
 
+        // AUTOMATION-110. Fails CLOSED like the scope: a `baseline` object this build
+        // cannot read is `NotReported`, never `Valid`; a stated `baselineAbsent` is the
+        // daemon's own reason and is carried verbatim.
+        let baseline =
+            match root.TryGetProperty("baseline"), root.TryGetProperty("baselineAbsent") with
+            | (true, b), _ when b.ValueKind = JsonValueKind.Object ->
+                let runId =
+                    tryGetStringProp b "runId"
+                    |> Option.bind (fun s ->
+                        match Guid.TryParse s with
+                        | true, g -> Some g
+                        | _ -> None)
+
+                let earnedAt =
+                    tryGetStringProp b "earnedAt"
+                    |> Option.bind (fun s ->
+                        match DateTime.TryParse(s, null, Globalization.DateTimeStyles.RoundtripKind) with
+                        | true, d -> Some d
+                        | _ -> None)
+
+                let projects =
+                    match b.TryGetProperty("projects") with
+                    | true, p when p.ValueKind = JsonValueKind.Array -> Some(p.GetArrayLength())
+                    | _ -> None
+
+                match runId, earnedAt, projects with
+                | Some runId, Some earnedAt, Some projects ->
+                    BaselineReading.Valid
+                        { RunId = runId
+                          EarnedAt = earnedAt
+                          Projects = projects }
+                | _ -> BaselineReading.NotReported
+            | _, (true, reason) when reason.ValueKind = JsonValueKind.String ->
+                BaselineReading.Absent(reason.GetString())
+            | _ -> BaselineReading.NotReported
+
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -614,14 +732,12 @@ let parseTestRunReport (json: string) : TestRunReport =
           // would hand every check the whole session.
           CheckRuns = []
           Seeds = seeds
-          SeedCount = seedCount }
+          SeedCount = seedCount
+          Baseline = baseline }
     with ex ->
-        { Scope = ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
-          RunId = None
-          SessionRuns = []
-          CheckRuns = []
-          Seeds = []
-          SeedCount = 0 }
+        TestRunReport.ofScopeOnly (
+            ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"
+        )
 
 /// AUTOMATION-259. Did the impact selection `check` WOULD have used reach a test this
 /// run saw fail?

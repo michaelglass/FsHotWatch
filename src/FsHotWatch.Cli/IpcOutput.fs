@@ -159,14 +159,19 @@ let private runnerAborted (resp: DiagnosticsResponse) : CheckVerdict.RunnerAbort
 /// This is the daemon's half of "one verdict, two transports"; the in-process half is
 /// `RunOnceCheck.reread`. Neither computes a verdict; both hand over the same record,
 /// and `CheckVerdict` decides. Adding a term to `CheckInputs` breaks both.
-let internal checkInputs (noWarnFail: bool) (scope: TestScope) (resp: DiagnosticsResponse) : CheckVerdict.CheckInputs =
+let internal checkInputs
+    (noWarnFail: bool)
+    (run: TestRunReport)
+    (resp: DiagnosticsResponse)
+    : CheckVerdict.CheckInputs =
     { PluginStatuses = resp.Statuses
       FailingDiagnostics = failingDiagnosticCount noWarnFail resp
       UnattributableDiagnostics = unattributableCountOf noWarnFail resp
       WaitingOnBuild = waitingOnBuild resp
       RunnerAborted = runnerAborted resp
       Coverage = resp.Coverage
-      Scope = scope }
+      Scope = run.Scope
+      Baseline = run.Baseline }
 
 /// True if a DiagnosticsResponse contains failures: any plugin Failed (or in a status
 /// this build cannot read), or any error/warning-severity diagnostic (warnings
@@ -1370,7 +1375,7 @@ let pollAndRenderForInvocation
             finalStatuses.Value <- resp.Statuses
             finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
             finalCauses.Value <- redCausesOf noWarnFail resp
-            checkInputs noWarnFail run.Scope resp
+            checkInputs noWarnFail run resp
 
         let firstRun = getTestRun () |> observeTestRun
 
@@ -1388,7 +1393,7 @@ let pollAndRenderForInvocation
         // The reading `confirm` is about to throw away. Hoisted out of the `else` branch
         // below because BOTH branches need it now: one grades it, the other escalates past
         // it — and AUTOMATION-259 records what it said either way.
-        let preEscalation = checkInputs noWarnFail firstRun.Scope firstResp
+        let preEscalation = checkInputs noWarnFail firstRun firstResp
 
         let initialRead =
             if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope then

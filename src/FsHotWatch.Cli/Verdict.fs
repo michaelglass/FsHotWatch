@@ -630,7 +630,11 @@ let MaxRedCauses = 10
 /// and nothing is known to be sound either — a `confirm` that ran impact-filtered tests
 /// lands here, and so does a check whose coverage could not be confirmed. NEVER a green.
 type Outcome =
-    | Green
+    /// AUTOMATION-110. Green RELATIVE TO a baseline — the full-suite run every test
+    /// this check skipped was last executed in (or the positive statement that there
+    /// is no test suite). Not an annotation on a green: a green with nothing to be
+    /// relative to has no constructor. See `CheckVerdict.Baseline`.
+    | Green of baseline: CheckVerdict.Baseline
     | Red
     | Incomplete of reason: string
 
@@ -638,7 +642,7 @@ module Outcome =
     /// The wire tag. Total.
     let tag (o: Outcome) : string =
         match o with
-        | Green -> "green"
+        | Green _ -> "green"
         | Red -> "red"
         | Incomplete _ -> "incomplete"
 
@@ -727,6 +731,15 @@ module CheckProse =
     /// of 2026-08-12 survived a scan and vanished on a stop. An operator who tries the
     /// documented remedy first loses another full gate cycle, so the sentence that saves
     /// the cycle is the one that says which remedy does NOT work.
+    /// AUTOMATION-110. What ran passed, and nothing vouches for what did not run. The
+    /// remedy is the one the daemon takes on its own — its next run is the full suite —
+    /// so the reader is told to re-run rather than to hunt for a failure.
+    let noBaseline (reason: string) =
+        $"NO FULL-SUITE BASELINE — %s{reason}. The tests that ran passed, but an impact-filtered run is only green \
+           RELATIVE to a full-suite run that executed the tests it skipped, and there is none to be relative to. \
+           Nothing failed (not a red) and nothing is proven (not a pass). The daemon widens its next run to the full \
+           suite to earn one: re-run `fshw check`, or `fshw confirm`."
+
     let staleDaemonState (unattributable: int) =
         $"NO VERDICT — all %d{unattributable} failing diagnostic(s) are ones this run cannot attribute to the tree on \
            disk: an FCS `internal error:` (the checker crashed, so it found nothing) or a diagnostic against a file \
@@ -816,6 +829,10 @@ module CheckProse =
         // claim about the whole suite and the tests that ran do not support one, so it
         // has no verdict to give. Say so; never launder it into a green.
         | CheckVerdict.CheckOutcome.UnearnedScope scope -> Some(scopeTooNarrow scope)
+        // AUTOMATION-110. Its own words, because the usual reading of an exit 3 — "the
+        // run was too narrow, run `confirm`" — is only half right here: the run may have
+        // been the full suite, and what is missing is the record that it was.
+        | CheckVerdict.CheckOutcome.NoBaseline reason -> Some(noBaseline reason)
         // AUTOMATION-303 AC5. Every failing diagnostic was unattributable to this tree,
         // so the run has no verdict — and the remedy is named HERE, where the person who
         // needs it is looking, rather than left in a ticket they have not read.
@@ -824,14 +841,17 @@ module CheckProse =
         // the reader is about to draw the usual conclusion from a non-zero exit, and the
         // usual conclusion — "re-run it" — is the expensive wrong move here.
         | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Some(resultUnreceived reason)
-        | CheckVerdict.CheckOutcome.Clean
+        | CheckVerdict.CheckOutcome.Clean _
         | CheckVerdict.CheckOutcome.FailuresFound -> None
 
 /// Derive the file's outcome from the check's — the SAME value the exit code is
 /// derived from, so the two can never disagree.
 let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     match outcome with
-    | CheckVerdict.CheckOutcome.Clean -> Green
+    | CheckVerdict.CheckOutcome.Clean baseline -> Green baseline
+    // AUTOMATION-110. `incomplete`, never `green`, and the reason names the missing
+    // baseline so a consumer of `verdict.json` reads "re-run" rather than "tests failed".
+    | CheckVerdict.CheckOutcome.NoBaseline reason -> Incomplete(CheckProse.noBaseline reason)
     | CheckVerdict.CheckOutcome.FailuresFound -> Red
     | CheckVerdict.CheckOutcome.Incomplete n ->
         if n > 0 then
@@ -1099,14 +1119,14 @@ module CheckComparison =
     /// read as agreement.
     let private failuresFound (o: Outcome) : bool option =
         match o with
-        | Green -> Some false
+        | Green _ -> Some false
         | Red -> Some true
         | Incomplete _ -> None
 
     let private whyNoAnswer (o: Outcome) : string =
         match o with
         | Incomplete reason -> reason
-        | Green
+        | Green _
         | Red -> Outcome.tag o
 
     /// THE classification, and the only door into a `CheckComparison` that claims one.
@@ -1378,6 +1398,28 @@ let private hasFailingPlugin (v: Verdict) : bool =
 let private isUnexplainedRed (v: Verdict) : bool =
     v.Outcome = Red && not (hasFailingPlugin v) && List.isEmpty v.RedCauses
 
+/// AUTOMATION-110. The baseline a green names must agree with the scope beside it:
+/// `NoTestSuite` is only true of a daemon with no test projects, whose scope is
+/// `ScopeUnknown` — beside any other scope it claims tests ran in a repo that has none.
+///
+/// A green beside a baseline from an EARLIER run is the ordinary case and is what the
+/// field exists to record. That includes a FULL-SUITE green: the daemon records the
+/// baseline from the last full run whose every project was ACCOUNTED for, and a full
+/// run with a project that produced no accountable outcome (an empty test project
+/// matching zero tests) legitimately keeps the earlier one. Refusing that pair here
+/// would turn an honest verdict into an exception at the one place a verdict is minted.
+let private baselineAgreesWithScope (v: Verdict) : Result<Verdict, string> =
+    match v.Outcome, v.Scope with
+    | Green(CheckVerdict.Baseline.NoTestSuite), ScopeUnknown -> Ok v
+    | Green(CheckVerdict.Baseline.NoTestSuite), scope ->
+        Error
+            $"a GREEN verdict claims there is no test suite to baseline, yet records a test scope \
+               (%s{TestScope.describe scope}) — a repo whose tests ran has a suite, and its green must name the \
+               full-suite run it is relative to."
+    | Green(CheckVerdict.Baseline.FullSuiteRun _), _
+    | Red, _
+    | Incomplete _, _ -> Ok v
+
 [<Literal>]
 let private UnexplainedRedReason =
     "the recorded red names no failing plugin and no structural red cause — it cannot establish what failed"
@@ -1417,7 +1459,7 @@ let private validate (v: Verdict) : Result<Verdict, string> =
         | Incomplete _ -> Ok v
         | Red when isUnexplainedRed v -> Error $"a RED verdict is unexplained — %s{UnexplainedRedReason}."
         | Red -> Ok v
-        | Green ->
+        | Green _ ->
             match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
             | [] -> Ok v
             | failing ->
@@ -1460,6 +1502,7 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 
     scopeAgreesWithCommand ()
     |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
+    |> Result.bind (fun _ -> baselineAgreesWithScope v)
     |> Result.bind (fun _ -> divergenceAgreesWithRecord ())
 
 /// The scope a `command`'s verdict may RECORD, given what the run actually reported.
@@ -1624,11 +1667,22 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
              | NoTestsReason.Unstated -> null)
            uncoveredSymbols =
             (match reason with
-             | NoTestsReason.ChangesUncovered(symbols, _) -> box (List.toArray symbols)
+             | NoTestsReason.ChangesUncovered(symbols, _, _) -> box (List.toArray symbols)
              | _ -> null)
            uncoveredSymbolCount =
             (match reason with
-             | NoTestsReason.ChangesUncovered(_, total) -> box total
+             | NoTestsReason.ChangesUncovered(_, total, _) -> box total
+             | _ -> null)
+           // AUTOMATION-110. The write-off, on the record.
+           unrunnableSymbolCount =
+            (match reason with
+             | NoTestsReason.ChangesUncovered(_, _, unrunnable) when unrunnable.SymbolCount > 0 ->
+                 box unrunnable.SymbolCount
+             | _ -> null)
+           unrunnableProjects =
+            (match reason with
+             | NoTestsReason.ChangesUncovered(_, _, unrunnable) when unrunnable.SymbolCount > 0 ->
+                 box (List.toArray unrunnable.Projects)
              | _ -> null)
            excluded = gaps |}
         :> obj
@@ -1642,9 +1696,23 @@ let private scopeJson (excluded: SolutionScope.Exclusion list option) (scope: Te
            excluded = gaps |}
         :> obj
 
+/// AUTOMATION-110 on the wire. Tagged with `kind` like every other sum in this file.
+let private baselineJson (baseline: CheckVerdict.Baseline) : obj =
+    match baseline with
+    | CheckVerdict.Baseline.FullSuiteRun r ->
+        {| kind = "full-suite-run"
+           runId = r.RunId.ToString("N")
+           earnedAt = r.EarnedAt.ToString("o")
+           projects = r.Projects |}
+        :> obj
+    | CheckVerdict.Baseline.NoTestSuite -> {| kind = "no-test-suite" |} :> obj
+
 let private outcomeJson (outcome: Outcome) : obj =
     match outcome with
-    | Green -> {| kind = "green" |} :> obj
+    | Green baseline ->
+        {| kind = "green"
+           baseline = baselineJson baseline |}
+        :> obj
     | Red -> {| kind = "red" |} :> obj
     | Incomplete reason ->
         {| kind = "incomplete"
@@ -2309,7 +2377,21 @@ let private parseScope (el: JsonElement) : TestScope =
                 else
                     None)
 
-        NoTestsRun(NoTestsReason.ofToken token symbols total)
+        let unrunnable: UnrunnableCoverage =
+            { SymbolCount = tryInt el "unrunnableSymbolCount" |> Option.defaultValue 0
+              Projects =
+                match tryProp el "unrunnableProjects" with
+                | Some value when value.ValueKind = JsonValueKind.Array ->
+                    value.EnumerateArray()
+                    |> Seq.choose (fun item ->
+                        if item.ValueKind = JsonValueKind.String then
+                            Some(item.GetString())
+                        else
+                            None)
+                    |> Seq.toList
+                | _ -> [] }
+
+        NoTestsRun(NoTestsReason.ofToken token symbols total unrunnable)
     | Some "unknown", _, _ -> ScopeUnknown
     // Everything else — a kind from another version, a self-contradicting "full",
     // outright garbage. The file said something about its scope and this build cannot
@@ -2343,9 +2425,41 @@ let private parseExcluded (scopeEl: JsonElement) : SolutionScope.Exclusion list 
         |> Some
     | _ -> None
 
+/// AUTOMATION-110, read back. A green whose baseline is missing or unreadable is NOT a
+/// green — it is the verdict shape this ticket retired, and `None` makes the file
+/// `Unreadable`, which every consumer treats as "earn it again".
+let private parseBaseline (el: JsonElement) : CheckVerdict.Baseline option =
+    match tryString el "kind" with
+    | Some "no-test-suite" -> Some CheckVerdict.Baseline.NoTestSuite
+    | Some "full-suite-run" ->
+        let runId =
+            tryString el "runId"
+            |> Option.bind (fun s ->
+                match Guid.TryParse s with
+                | true, g -> Some g
+                | _ -> None)
+
+        let earnedAt =
+            tryString el "earnedAt"
+            |> Option.bind (fun s ->
+                match DateTime.TryParse(s, null, Globalization.DateTimeStyles.RoundtripKind) with
+                | true, d -> Some d
+                | _ -> None)
+
+        match runId, earnedAt, tryInt el "projects" with
+        | Some runId, Some earnedAt, Some projects ->
+            Some(
+                CheckVerdict.Baseline.FullSuiteRun
+                    { RunId = runId
+                      EarnedAt = earnedAt
+                      Projects = projects }
+            )
+        | _ -> None
+    | _ -> None
+
 let private parseOutcome (el: JsonElement) : Outcome option =
     match tryString el "kind" with
-    | Some "green" -> Some Green
+    | Some "green" -> tryProp el "baseline" |> Option.bind parseBaseline |> Option.map Green
     | Some "red" -> Some Red
     | Some "incomplete" -> Some(Incomplete(tryString el "reason" |> Option.defaultValue "no reason recorded"))
     | _ -> None
@@ -2948,7 +3062,7 @@ let isFullSuiteGreen (v: Verdict) : bool =
     match v.Outcome with
     | Red
     | Incomplete _ -> false
-    | Green -> TestScope.isFullSuite v.Scope
+    | Green _ -> TestScope.isFullSuite v.Scope
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
 /// daemon, sets a scope, or runs a test.
@@ -3027,7 +3141,16 @@ let describeStillApplies (v: Verdict) : string =
             | n when n > 1 -> $"%s{suite}, %d{passed} passed across %d{n} runs"
             | _ -> $"%s{suite}, %d{passed} passed"
 
-    $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence})"
+    // AUTOMATION-110. The baseline is what makes this green auditable as a claim about
+    // the whole suite, so it is printed with the evidence. `isFullSuiteGreen` is the only
+    // door in, so the outcome is a `Green`; the other arms are named, not wildcarded.
+    let baseline =
+        match v.Outcome with
+        | Green b -> $"; %s{CheckVerdict.Baseline.describe b}"
+        | Red
+        | Incomplete _ -> ""
+
+    $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence}%s{baseline})"
 
 /// The machine-readable envelope `fshw verdict` prints on stdout.
 ///
@@ -3318,14 +3441,33 @@ let projectedImpactScopedRun
                 // A run whose tests failed cannot be GREEN. If it reads that way the two
                 // sources disagree about the same run, and a comparison built on a
                 // contradiction is not a comparison.
-                | Green ->
+                | Green _ ->
                     refuse
                         "the run recorded failing tests and a green verdict at the same time — the projection will \
                          not compare two readings that contradict each other"
                 | Incomplete why -> refuse why
                 | Red ->
                     match NonTestRed.classify statuses causes with
-                    | NoneBeyondTheTests -> recorded report.Scope Green [] (MissedFailures.Enumerated missed)
+                    | NoneBeyondTheTests ->
+                        // AUTOMATION-110. `check` would have been green RELATIVE to the
+                        // daemon's baseline — the same one this verdict read. With none,
+                        // `check` would have refused too, and that is not a green to compare.
+                        match runReport.Baseline with
+                        | BaselineReading.Valid b ->
+                            recorded
+                                report.Scope
+                                (Green(CheckVerdict.Baseline.FullSuiteRun b))
+                                []
+                                (MissedFailures.Enumerated missed)
+                        | BaselineReading.NoTestSuite ->
+                            recorded
+                                report.Scope
+                                (Green CheckVerdict.Baseline.NoTestSuite)
+                                []
+                                (MissedFailures.Enumerated missed)
+                        | BaselineReading.Absent why -> refuse $"`check` would have had no full-suite baseline: %s{why}"
+                        | BaselineReading.NotReported ->
+                            refuse "`check` would have had no full-suite baseline: the daemon reported none"
                     | AttributableBeyondTheTests -> recorded report.Scope Red [] (MissedFailures.Enumerated missed)
                     | OnlyUnattributableBeyondTheTests ->
                         refuse

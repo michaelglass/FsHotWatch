@@ -318,23 +318,35 @@ let ``AUTOMATION-111 none scope preserves why no tests ran`` () =
     let unstated = scopeOf ""
 
     test <@ alreadyVerified = NoTestsRun NoTestsReason.AlreadyVerified @>
-    test <@ changesUncovered = NoTestsRun(NoTestsReason.ChangesUncovered([ "Jobs.definitions" ], 4)) @>
+
+    test
+        <@
+            changesUncovered = NoTestsRun(
+                NoTestsReason.ChangesUncovered([ "Jobs.definitions" ], 4, UnrunnableCoverage.none)
+            )
+        @>
+
     test <@ unstated = (NoTestsRun NoTestsReason.Unstated) @>
 
 [<Fact(Timeout = 10000)>]
 let ``AUTOMATION-111 zero reasons are total across known unknown and truncated evidence`` () =
     let already = NoTestsReason.describe NoTestsReason.AlreadyVerified
-    let uncovered = NoTestsReason.describe (NoTestsReason.ChangesUncovered([ "A" ], 3))
+
+    let uncovered =
+        NoTestsReason.describe (NoTestsReason.ChangesUncovered([ "A" ], 3, UnrunnableCoverage.none))
+
     let unknown = NoTestsReason.describe (NoTestsReason.UnknownReason "future-zero")
 
     test <@ already.Contains "test-equivalent" @>
     test <@ uncovered.Contains "A" && uncovered.Contains "and 2 more" @>
     test <@ unknown.Contains "future-zero" && unknown.Contains "does not understand" @>
 
-    let widenedCount = NoTestsReason.ofToken (Some "changes-uncovered") [ "A"; "B" ] 0
-    let future = NoTestsReason.ofToken (Some "future-zero") [] 0
+    let widenedCount =
+        NoTestsReason.ofToken (Some "changes-uncovered") [ "A"; "B" ] 0 UnrunnableCoverage.none
 
-    test <@ widenedCount = NoTestsReason.ChangesUncovered([ "A"; "B" ], 2) @>
+    let future = NoTestsReason.ofToken (Some "future-zero") [] 0 UnrunnableCoverage.none
+
+    test <@ widenedCount = NoTestsReason.ChangesUncovered([ "A"; "B" ], 2, UnrunnableCoverage.none) @>
     test <@ future = NoTestsReason.UnknownReason "future-zero" @>
 
 [<Fact(Timeout = 10000)>]
@@ -516,3 +528,77 @@ let ``DaemonEvidence.parse is NotServed for a daemon that sends no ledger`` () =
     test <@ DaemonEvidence.parse """{"count":0,"files":{},"statuses":{},"unchecked":0}""" = DaemonEvidence.NotServed @>
     test <@ DaemonEvidence.parse """{"daemonPhases":"nope"}""" = DaemonEvidence.NotServed @>
     test <@ DaemonEvidence.parse "not json" = DaemonEvidence.NotServed @>
+
+// --- AUTOMATION-110: the baseline on the wire ------------------------------------
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-110 a test-scope reply naming a baseline parses to Valid, with its run and project count`` () =
+    let report =
+        parseTestRunReport
+            """{"scope":"filtered","ranProjects":1,"totalProjects":3,"baseline":{"runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":["A","B","C"]},"baselineAbsent":null}"""
+
+    match report.Baseline with
+    | BaselineReading.Valid b ->
+        test <@ b.RunId = Guid.Parse "b0000000-1100-4000-8000-000000000110" @>
+        test <@ b.Projects = 3 @>
+        test <@ b.EarnedAt = DateTime(2026, 9, 6, 12, 0, 0, DateTimeKind.Utc) @>
+    | other -> failwithf "expected a valid baseline, got %A" other
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-110 a reply stating why the baseline is absent parses to Absent with that reason`` () =
+    let report =
+        parseTestRunReport
+            """{"scope":"filtered","ranProjects":1,"totalProjects":3,"baseline":null,"baselineAbsent":"no full-suite run yet"}"""
+
+    test <@ report.Baseline = BaselineReading.Absent "no full-suite run yet" @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-110 a reply with no baseline field, or a malformed one, is NotReported — never Valid`` () =
+    let silent =
+        parseTestRunReport """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+
+    test <@ silent.Baseline = BaselineReading.NotReported @>
+
+    let malformed =
+        parseTestRunReport
+            """{"scope":"full","ranProjects":3,"totalProjects":3,"baseline":{"runId":"not-a-guid","earnedAt":"2026-09-06T12:00:00Z","projects":[]}}"""
+
+    test <@ malformed.Baseline = BaselineReading.NotReported @>
+
+    // The paths that never asked a daemon carry no baseline either.
+    test <@ (TestRunReport.ofScopeOnly ScopeUnknown).Baseline = BaselineReading.NotReported @>
+
+    // And the one positive statement a test-less repo can make is its own value.
+    test <@ TestRunReport.noTestSuite.Baseline = BaselineReading.NoTestSuite @>
+    test <@ TestRunReport.noTestSuite.Scope = ScopeUnknown @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-110 a zero-selection reply names the symbols covered only by unlisted projects`` () =
+    let report =
+        parseTestRunReport
+            """{"scope":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1,"unrunnableSymbolCount":1,"unrunnableProjects":["Unlisted"]}"""
+
+    match report.Scope with
+    | NoTestsRun(NoTestsReason.ChangesUncovered(symbols, total, unrunnable)) ->
+        test <@ symbols = [ "Lib.orphan" ] && total = 1 @>
+
+        test
+            <@
+                unrunnable = { SymbolCount = 1
+                               Projects = [ "Unlisted" ] }
+            @>
+
+        let described =
+            NoTestsReason.describe (NoTestsReason.ChangesUncovered(symbols, total, unrunnable))
+
+        test <@ described.Contains "Unlisted" && described.Contains "written off" @>
+    | other -> failwithf "expected changes-uncovered with the unrunnable project, got %A" other
+
+    // Absent from an older daemon: silence, not a claim.
+    let older =
+        parseTestRunReport
+            """{"scope":"none","ranProjects":0,"totalProjects":1,"noTestsReason":"changes-uncovered","uncoveredSymbols":["Lib.orphan"],"uncoveredSymbolCount":1}"""
+
+    match older.Scope with
+    | NoTestsRun(NoTestsReason.ChangesUncovered(_, _, unrunnable)) -> test <@ unrunnable = UnrunnableCoverage.none @>
+    | other -> failwithf "expected changes-uncovered, got %A" other

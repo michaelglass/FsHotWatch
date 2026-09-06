@@ -51,7 +51,10 @@ every test project in the solution.
 ## Workflows
 
 **Did my edit break anything? / Confirm clean before claiming done.**
-`fshw -a check`. It runs every plugin and blocks until done. Exit 0 = green; 1 = failures; 2 = completeness unconfirmed.
+`fshw -a check`. It runs every plugin and blocks until done. Exit 0 = green; 1 = failures; 2 = completeness unconfirmed;
+3 = no verdict — nothing failed, but the daemon holds no full-suite baseline for the tests
+this run skipped (a cold repository, or `tests.projects` grew). It widens its next run to
+earn one: run `check` again, or `confirm`.
 
 **A plugin looks unhappy — inspect without re-running.**
 `fshw -a status` lists `name: state` per plugin (`ok` / `fail` / `warn` / `running`). Drill in with `fshw status <plugin>` (`build`, `test-prune`, `analyzers`, `lint`, `format`).

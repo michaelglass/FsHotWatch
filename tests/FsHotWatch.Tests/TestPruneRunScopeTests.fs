@@ -159,7 +159,7 @@ let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed p
     // impact-filtered re-run selects only ProjB while ProjA is skipped and recorded as a
     // filtered pass.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -194,7 +194,7 @@ let ``AUTOMATION-125: a DISJOINT impact-filtered green does NOT clear a failed p
 [<Fact(Timeout = 20000)>]
 let ``a run where every project matched zero tests is not a green terminal status`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let zeroMatch = TestsNoMatch("Zero tests ran", TimeSpan.FromSeconds 1.0)
 
@@ -214,7 +214,7 @@ let ``a run where every project matched zero tests is not a green terminal statu
 [<Fact(Timeout = 20000)>]
 let ``a run where one project matched zero tests and another really ran is still green`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let zeroMatch = TestsNoMatch("Zero tests ran", TimeSpan.FromSeconds 1.0)
 
@@ -278,7 +278,7 @@ let ``AUTOMATION-125: an unfiltered re-run (test-rerun) clears an outstanding re
     // The escape hatch the rule leans on: `test-rerun` runs every project UNFILTERED, so
     // it covers everything and may clear anything. Without it the rule is a wedge.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -301,7 +301,7 @@ let ``AUTOMATION-125: a filtered green over a DIFFERENT class in the same projec
     // OTHER than the failing one executed the project without executing the failure, so
     // "ProjA passed" is true of that run and says nothing about the red.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA ] (fullSuiteLaunch [ "ProjA" ])
@@ -326,7 +326,7 @@ let ``AUTOMATION-125: the zero-affected skip (0 ran, green) cannot launder an ou
     // The likeliest laundering path in practice: after the failing run the next build
     // changes nothing relevant, so the skip gate completes "green, 0 ran".
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", failedProjA ] (fullSuiteLaunch [ "ProjA" ])
@@ -354,7 +354,7 @@ let ``AUTOMATION-198: a run that executed NO project records a verdict that says
     // This is the state that put `✓ test-prune — 0 passed, 0 failed in 0 projects` on a
     // check that verified nothing and then (correctly) refused to certify it.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let _ctx, statuses, _ledger, _final =
         driveRuns handler [ testsFinishedEvent [] emptyLaunch ]
@@ -376,7 +376,7 @@ let ``AUTOMATION-198: a run that DID execute keeps its counts verdict`` () =
     // Without this, "the verdict says nothing was verified" would pass just as well if
     // every run started claiming it.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let _ctx, statuses, _ledger, _final =
         driveRuns handler [ testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]) ]
@@ -395,7 +395,7 @@ let ``AUTOMATION-294: a run whose test HOST DIED completes as an ABORT, never as
     // status line and `PluginStatus.Failed` underneath it — a definite negative about a
     // project whose tests never finished running.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let aborted =
         TestsErrored "test host was KILLED by SIGKILL (exit 137) — it never reached its own exit"
@@ -429,7 +429,7 @@ let ``AUTOMATION-294: THE OTHER DIRECTION — a run with a REAL failure still fa
     // nothing and a reader must not add it to the failure count — but it neither
     // launders the failure nor is counted as one.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let aborted = TestsErrored "test host was KILLED by SIGKILL (exit 137)"
 
@@ -455,7 +455,7 @@ let ``AUTOMATION-125: a TIMED-OUT project's red needs a WHOLE-project pass, not 
     // A project killed for being stuck is a fact about the PROJECT (`Class = None`), so
     // only a run that executed the project in full can clear it.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let timedOut =
         testsFinishedEvent
@@ -1302,7 +1302,8 @@ let ``AUTOMATION-125: confirm still rejects a filtered green as UnearnedScope`` 
                   WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
                   RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
                   Coverage = FsHotWatch.Cli.IpcParsing.Complete
-                  Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total) }
+                  Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(ran, total)
+                  Baseline = BaselineFixtures.reading }
 
         test <@ FsHotWatch.Cli.CheckVerdict.exitCode outcome = 3 @>
     | other -> Assert.Fail($"a run with a filtered project is not a full-suite scope, got %A{other}")
@@ -1338,7 +1339,8 @@ let ``AUTOMATION-125 x 129: a RAW-filter run with no report evidence claims NO c
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
-          Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun FsHotWatch.Cli.IpcParsing.NoTestsReason.Unstated }
+          Scope = FsHotWatch.Cli.IpcParsing.NoTestsRun FsHotWatch.Cli.IpcParsing.NoTestsReason.Unstated
+          Baseline = BaselineFixtures.reading }
 
     let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation noTestsRan
@@ -1375,7 +1377,8 @@ let ``AUTOMATION-225 x 112: a raw-filter run WITH evidence is a FILTERED scope, 
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
-          Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) }
+          Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2)
+          Baseline = BaselineFixtures.reading }
 
     let confirmed =
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation filtered
@@ -1473,7 +1476,7 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
     // consumer outside the handler must be able to read the second, or it invents its own
     // answer to "what did this run cover?" and the two drift.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let filteredRun =
         testsFinishedEvent
@@ -1491,7 +1494,7 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow drain cannot replace the full-suite receipt exposed to the verdict writer`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -1545,7 +1548,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
     // `runIds` is everything this session ran, and it is what lets a check name every
     // batch it produced instead of only the last.
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -1589,7 +1592,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
 [<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -1639,7 +1642,7 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
 [<Fact(Timeout = 15000)>]
 let ``manual run reply terminates when its shared test host cannot start`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let reply = System.Threading.Tasks.TaskCompletionSource<string>()
     let mutable posted: TestPruneMsg option = None
@@ -1670,7 +1673,7 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let seedsA = [ "Lib.A.changed" ]
     let seedsB = [ "Lib.B.changed" ]
@@ -1700,7 +1703,7 @@ let ``a run receipt keeps its launch seeds when a later cohort flushes while it 
 [<Fact(Timeout = 20000)>]
 let ``a zero-selection receipt carries the previous seeds captured at launch`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA" ]) None None None None []
 
     let previousSeeds = [ "Lib.PreviouslyVerified.changed" ]
 
@@ -1725,7 +1728,7 @@ let ``a zero-selection receipt carries the previous seeds captured at launch`` (
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow failure remains red while the earlier full-suite receipt is retained`` () =
     let handler =
-        create ":memory:" "/tmp" (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
     let fullRun =
         testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
@@ -2398,6 +2401,10 @@ let ``AUTOMATION-343: a cached test-prune replay clears the whole ledger, exactl
     // really cleared everything already says so in its own captured errors. This test
     // is what proves that claim about the plugin that actually relies on it.
     withTempDir "a343-tp-parity" (fun tmpDir ->
+        // AUTOMATION-110: the cache key is salted by full-suite widening, and a repo with
+        // no baseline widens its first run; seed one so the second dispatch replays.
+        seedBaseline tmpDir [ "TestProject" ]
+
         let cache =
             FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
 

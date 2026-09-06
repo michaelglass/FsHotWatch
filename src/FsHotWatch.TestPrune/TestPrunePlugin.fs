@@ -814,10 +814,28 @@ type ProjectSelection =
     /// Launched under a class filter — only these classes were asked to run.
     | ProjectClasses of Set<string>
 
+/// AUTOMATION-110. Changed symbols that DO have covering tests — in a test project
+/// `tests.projects` does not list, so this daemon can never run them. Keyed by symbol,
+/// valued by the unlisted projects holding its only covering tests.
+///
+/// Dropped from the pending queue by the same rule as a symbol with no test at all
+/// (AUTOMATION-99: retaining it wedges the queue forever), but never SILENTLY: the
+/// obligation is written off here, and the write-off is what the verdict has to say.
+/// A reader who sees "no covering test" for a symbol that has one in an unlisted
+/// project concludes the analyzer is broken; a reader who sees the project name can
+/// decide whether to list it or declare it excluded.
+type UnrunnableCoverage = Map<string, Set<string>>
+
+module UnrunnableCoverage =
+    let projects (unrunnable: UnrunnableCoverage) : Set<string> =
+        unrunnable |> Map.values |> Set.unionMany
+
 [<RequireQualifiedAccess>]
 type UncoveredChanges =
     | No
-    | AllUncovered of symbols: string list
+    /// Every symbol was dropped: `symbols` names them all, `unrunnable` the subset
+    /// that had covering tests this daemon cannot run.
+    | AllUncovered of symbols: string list * unrunnable: UnrunnableCoverage
 
 module UncoveredChanges =
     let isAll =
@@ -829,7 +847,7 @@ module UncoveredChanges =
 type ZeroSelection =
     | NotAZero
     | AlreadyVerified
-    | ChangesUncovered of symbols: string list
+    | ChangesUncovered of symbols: string list * unrunnable: UnrunnableCoverage
 
 module ZeroSelection =
     let token =
@@ -840,9 +858,15 @@ module ZeroSelection =
 
     let symbols =
         function
-        | ZeroSelection.ChangesUncovered symbols -> symbols
+        | ZeroSelection.ChangesUncovered(symbols, _) -> symbols
         | ZeroSelection.NotAZero
         | ZeroSelection.AlreadyVerified -> []
+
+    let unrunnable =
+        function
+        | ZeroSelection.ChangesUncovered(_, unrunnable) -> unrunnable
+        | ZeroSelection.NotAZero
+        | ZeroSelection.AlreadyVerified -> Map.empty
 
 [<RequireQualifiedAccess>]
 type MissCause =
@@ -1238,12 +1262,16 @@ type internal ZeroAffectedWidening =
     | UnreadableLedger
     /// A prior red is outstanding and must be re-executed before anything goes green.
     | OutstandingFailures of count: int
+    /// AUTOMATION-110. No full-suite baseline vouches for what a filtered run would
+    /// skip — none recorded, or it never executed a project configured since.
+    | NoFullSuiteBaseline of reason: string
 
 module internal ZeroAffectedWidening =
     let describe (cause: ZeroAffectedWidening) =
         match cause with
         | ZeroAffectedWidening.NoSessionBaseline ->
             "no run has completed in this session yet (no baseline to be equivalent to)"
+        | ZeroAffectedWidening.NoFullSuiteBaseline reason -> reason
         | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
         | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
             $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
@@ -1268,11 +1296,17 @@ let internal zeroAffectedWidening
     (queuedSymbols: int)
     (runtimeObligations: RuntimeCoverageObligations)
     (outstandingFailures: int)
+    (fullSuiteBaselineInvalid: string option)
     : ZeroAffectedWidening list =
     [ if not hasSessionBaseline then
           ZeroAffectedWidening.NoSessionBaseline
       if ledgerUnreadable then
           ZeroAffectedWidening.UnreadableLedger
+      // An unreadable ledger already invalidates the baseline; naming it twice would
+      // report two debts for one cause.
+      match fullSuiteBaselineInvalid with
+      | Some reason when not ledgerUnreadable -> ZeroAffectedWidening.NoFullSuiteBaseline reason
+      | _ -> ()
       if queuedSymbols > 0 then
           ZeroAffectedWidening.QueuedSymbols queuedSymbols
       // Counted through the projects it NAMES, never through `Map.isEmpty`: a file
@@ -1396,11 +1430,12 @@ type TestPruneState =
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
         /// it passes. The shared error ledger is a projection of this list.
         ///
-        /// Session-scoped by design (not persisted). A daemon restart has no baseline
-        /// (`LastResults = None`), so its first run is the FULL suite — which re-runs
-        /// the failing test and re-establishes (or genuinely clears) the red from
-        /// evidence. Persisting it would buy nothing and could only wedge a red that
-        /// no longer exists.
+        /// DURABLE (AUTOMATION-110): persisted beside the pending-verification queue
+        /// and loaded at construction, so a red survives a daemon restart and is
+        /// quarantined into the next run exactly as it would have been in the session
+        /// that found it. The earlier "a restart runs the full suite anyway" argument
+        /// was false whenever the durable queue was non-empty at restart — see
+        /// `OutstandingFailure.load`.
         OutstandingFailures: OutstandingFailure list
         /// What the last completed run actually COVERED — the receipt that goes with
         /// `LastResults` (which says what it FOUND). Read together: a green result means
@@ -2354,6 +2389,137 @@ module internal OutstandingFailure =
         |> List.distinct
         |> List.sort
         |> String.concat ", "
+
+    // -----------------------------------------------------------------------
+    // AUTOMATION-110 — the reds are DURABLE.
+    //
+    // They used to be session-scoped, on the argument that a restarted daemon has no
+    // `LastResults` and so runs the full suite, which re-finds any red. That argument
+    // holds only when the durable pending queue is EMPTY at restart. With symbols
+    // queued — the ordinary case after a red run, because a failing project blocks the
+    // commit of every symbol it covers — the restarted daemon's first run is
+    // impact-FILTERED, `hasCachedResults` is then true, and a red from the previous
+    // session that the filter does not reach is never selected again: the
+    // AUTOMATION-108 shape, reproduced by a restart. Quarantine is memory; memory that
+    // does not survive the process is not memory.
+    //
+    // Same rules as `PendingVerification`: a missing file is an honest empty; a file
+    // that exists and cannot be read is `Unreadable`, and the caller treats that as
+    // debt of unknown membership (the AUTOMATION-150 recovery: widen to the full suite,
+    // which re-executes every test and rebuilds this list from evidence).
+    //
+    // `Entry.Detail` is deliberately NOT persisted. It is the captured runner output
+    // — unbounded, and already on disk under `.fshw/test-runs/<runId>/` — and a
+    // quarantined red is re-executed by the very next run, which re-derives it.
+    // -----------------------------------------------------------------------
+
+    [<RequireQualifiedAccess>]
+    type LoadedFailures =
+        | Loaded of OutstandingFailure list
+        | Unreadable of reason: string
+
+    let sidecarPath (repoRoot: string) : string =
+        Path.Combine(FsHwPaths.root repoRoot, "test-prune", "outstanding-failures.json")
+
+    let private toJson (f: OutstandingFailure) : Nodes.JsonObject =
+        let obj = Nodes.JsonObject()
+        obj.["project"] <- Nodes.JsonValue.Create(f.Project)
+
+        obj.["class"] <-
+            (match f.Class with
+             | Some c -> Nodes.JsonValue.Create(c)
+             | None -> null)
+
+        obj.["method"] <-
+            (match f.Method with
+             | Some m -> Nodes.JsonValue.Create(m)
+             | None -> null)
+
+        obj.["file"] <- Nodes.JsonValue.Create(f.File)
+        obj.["message"] <- Nodes.JsonValue.Create(f.Entry.Message)
+        obj.["severity"] <- Nodes.JsonValue.Create(ErrorLedger.DiagnosticSeverity.toString f.Entry.Severity)
+        obj.["line"] <- Nodes.JsonValue.Create(f.Entry.Line)
+        obj.["column"] <- Nodes.JsonValue.Create(f.Entry.Column)
+        obj
+
+    let private ofJson (node: Nodes.JsonNode) : Result<OutstandingFailure, string> =
+        if isNull node then
+            Error "a `null` entry where a failure was expected"
+        else
+            try
+                let obj = node.AsObject()
+
+                let str (name: string) =
+                    match obj.[name] with
+                    | null -> None
+                    | v -> Some(v.GetValue<string>())
+
+                let int (name: string) =
+                    match obj.[name] with
+                    | null -> 0
+                    | v -> v.GetValue<int>()
+
+                match str "project", str "file", str "message", str "severity" with
+                | Some project, Some file, Some message, Some severity ->
+                    match ErrorLedger.DiagnosticSeverity.fromString severity with
+                    | None -> Error $"unknown severity '%s{severity}'"
+                    | Some severity ->
+                        Ok
+                            { Project = project
+                              Class = str "class"
+                              Method = str "method"
+                              File = file
+                              Entry =
+                                { Message = message
+                                  Severity = severity
+                                  Line = int "line"
+                                  Column = int "column"
+                                  Detail = None } }
+                | _ -> Error $"an entry missing `project`, `file`, `message` or `severity` (%s{node.ToJsonString()})"
+            with ex ->
+                Error $"%s{ex.GetType().Name}: %s{ex.Message}"
+
+    let load (repoRoot: string) : LoadedFailures =
+        let path = sidecarPath repoRoot
+
+        if not (File.Exists path) then
+            LoadedFailures.Loaded []
+        else
+            try
+                let json = File.ReadAllText path
+
+                if String.IsNullOrWhiteSpace json then
+                    LoadedFailures.Unreadable
+                        "the file is empty — `save` always writes at least `[]`, so this is a torn write"
+                else
+                    match Nodes.JsonNode.Parse(json) with
+                    | null -> LoadedFailures.Unreadable "the file holds a bare JSON `null`, not an array of failures"
+                    | root ->
+                        let read = root.AsArray() |> Seq.map ofJson |> List.ofSeq
+
+                        match
+                            read
+                            |> List.tryPick (function
+                                | Error reason -> Some reason
+                                | Ok _ -> None)
+                        with
+                        | Some reason -> LoadedFailures.Unreadable reason
+                        | None ->
+                            read
+                            |> List.choose (function
+                                | Ok f -> Some f
+                                | Error _ -> None)
+                            |> LoadedFailures.Loaded
+            with ex ->
+                LoadedFailures.Unreadable $"%s{ex.GetType().Name}: %s{ex.Message}"
+
+    let save (repoRoot: string) (failures: OutstandingFailure list) : unit =
+        let arr = Nodes.JsonArray()
+
+        for f in failures do
+            arr.Add(toJson f)
+
+        FsHwPaths.atomicWriteAllText (sidecarPath repoRoot) (arr.ToJsonString())
 
 /// The ledger diagnostic for a file the symbol analyser could not read. A WARNING keyed
 /// to the file itself, so it surfaces in `fshw check` output and — under the default
@@ -4649,6 +4815,35 @@ let internal createWithLaunchDeadline
     /// Cleared only by a full-suite run that passed EVERY runnable project.
     let mutable ledgerRecoveryOutstandingRef = ledgerUnreadableReason.IsSome
 
+    /// AUTOMATION-110. The reds carried in from the previous session — quarantined into
+    /// the first run exactly as in-session reds are. An UNREADABLE file is debt of unknown
+    /// membership and takes the AUTOMATION-150 road: widen to the full suite, which
+    /// re-executes every test and rebuilds the list from evidence.
+    let loadedFailures =
+        match OutstandingFailure.load repoRoot with
+        | OutstandingFailure.LoadedFailures.Loaded failures -> failures
+        | OutstandingFailure.LoadedFailures.Unreadable reason ->
+            ledgerRecoveryOutstandingRef <- true
+
+            Logging.warn
+                "test-prune"
+                $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. It records every test still red from earlier runs, so which tests are owed is now UNKNOWN. Every test run is widened to every configured project in full until a full suite has re-executed them all."
+
+            []
+
+    /// AUTOMATION-110. The full-suite watermark this ledger's impact-filtered greens are
+    /// relative to. `None` until a full-suite run has accounted for every configured
+    /// project; an unreadable file is the same recovery, said out loud.
+    let mutable fullSuiteBaselineRef: FullSuiteBaseline.Baseline option =
+        match FullSuiteBaseline.load repoRoot with
+        | FullSuiteBaseline.LoadedBaseline.Loaded baseline -> baseline
+        | FullSuiteBaseline.LoadedBaseline.Unreadable reason ->
+            Logging.warn
+                "test-prune"
+                $"the full-suite baseline (%s{FullSuiteBaseline.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. The next test run is widened to the full suite to earn a new one."
+
+            None
+
     let loadedRuntimeObligations = loadRuntimeCoverageObligations repoRoot
 
     let mutable runtimeObligationsRef =
@@ -4718,13 +4913,58 @@ let internal createWithLaunchDeadline
             $"the pending-verification ledger (%s{PendingVerification.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. It records every symbol still awaiting a green test run, so what is owed is now UNKNOWN — which is NOT the same as nothing owed. Until a FULL-SUITE run passes, every test run is widened to every configured project in full and no cached verdict may be replayed."
     | None -> ()
 
+    /// The test projects this daemon can actually RUN — i.e. the ones in
+    /// `testConfigs`. Empty when the plugin is analysis-only.
+    ///
+    /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
+    /// analyzed, which is not the same set as the projects fshw is configured to run. A
+    /// symbol covered ONLY by an unconfigured project can never be proven green — its
+    /// covering project never executes, so it never appears in a run's results and never
+    /// commits, sitting in the pending queue forever while the verdict stays red.
+    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
+    /// `check` exited 1, because those symbols were covered by
+    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
+    ///
+    /// So "covered" means "covered by a test we can actually run". A symbol whose only
+    /// covering tests are unrunnable is dropped from the queue by the same rule as one
+    /// with no covering test at all — but it is REPORTED as owed-but-unrunnable, naming
+    /// the projects, never silently (AUTOMATION-110; see `flushAndQueryAffected`).
+    let runnableProjects: Set<string> =
+        match testConfigs with
+        | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
+        | None -> Set.empty
+
+    /// AUTOMATION-110. Why the full-suite baseline cannot vouch for what a filtered run
+    /// over the configured projects would skip — `None` when it can. Analysis-only
+    /// daemons make no test claim and so owe no baseline.
+    ///
+    /// An unreadable pending-verification ledger is folded in: the baseline composes
+    /// with the queue (the queue names what changed since the baseline), so a baseline
+    /// beside a ledger that cannot be read vouches for nothing until a full suite
+    /// re-earns both.
+    let baselineInvalidReason () : string option =
+        if Set.isEmpty runnableProjects then
+            None
+        elif Volatile.Read(&ledgerRecoveryOutstandingRef) then
+            Some
+                "the verification ledger could not be read, so the full-suite baseline cannot say what changed since it was earned"
+        else
+            match Volatile.Read(&fullSuiteBaselineRef) with
+            | None -> Some FullSuiteBaseline.absentReason
+            | Some baseline -> FullSuiteBaseline.staleness runnableProjects baseline
+
     /// The one question every skip in this plugin is really asking: is the
     /// needs-testing queue PROVABLY empty? An unreadable ledger is never `true` here
     /// — an empty queue we could not read is not an empty queue (AUTOMATION-150).
+    ///
+    /// AUTOMATION-110: an absent or stale full-suite baseline is owed work too — the
+    /// tests a filtered run skips have nothing to be equivalent TO until one exists —
+    /// so it is folded in here rather than checked beside this at each skip site.
     let nothingOwed () =
         Set.isEmpty pendingQueueRef
         && Map.isEmpty runtimeObligationsRef
         && not (Volatile.Read(&ledgerRecoveryOutstandingRef))
+        && Option.isNone (baselineInvalidReason ())
 
     /// What a drain is FOR, in words. An unreadable ledger owes a debt whose size
     /// cannot be printed, so it is named rather than counted.
@@ -4734,7 +4974,13 @@ let internal createWithLaunchDeadline
         if Volatile.Read(&ledgerRecoveryOutstandingRef) then
             $"an UNREADABLE pending-verification ledger (what is owed is UNKNOWN, so only a full suite can prove it) + %d{queued} newly-queued symbol(s)"
         else
-            $"%d{queued} symbol(s) awaiting verification"
+            // AUTOMATION-110. A drain owed only to the baseline says so, or a reader sees
+            // "0 symbol(s) awaiting verification — draining now" and goes looking for the
+            // bug in the queue.
+            match baselineInvalidReason () with
+            | Some reason ->
+                $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})"
+            | None -> $"%d{queued} symbol(s) awaiting verification"
 
     /// Persist the durable queue — UNLESS an unreadable ledger's debt is still
     /// outstanding (AUTOMATION-150).
@@ -4755,6 +5001,18 @@ let internal createWithLaunchDeadline
                 Logging.warn
                     "test-prune"
                     $"failed to persist pending-verification queue%s{context}: %s{ex.Message}; in-memory queue still updated"
+
+    /// AUTOMATION-110. The durable reds — same write guard as `persistQueue`, for the
+    /// same reason: while an unreadable ledger's debt is outstanding the corrupt bytes
+    /// are the honest record, and only the recovering full suite may rewrite them.
+    let persistFailures (failures: OutstandingFailure list) =
+        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
+            try
+                OutstandingFailure.save repoRoot failures
+            with ex ->
+                Logging.warn
+                    "test-prune"
+                    $"failed to persist outstanding failures: %s{ex.Message}; in-memory list still updated"
 
     /// AUTOMATION-112. When set, every test run this plugin launches is UNFILTERED —
     /// every configured project, in full. Requested by `fshw confirm` through the
@@ -4800,7 +5058,7 @@ let internal createWithLaunchDeadline
     /// `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
     ///
     /// Non-empty ⇒ no cache participation at all; see `cacheKeyFor`.
-    let mutable outstandingFailuresRef: OutstandingFailure list = []
+    let mutable outstandingFailuresRef: OutstandingFailure list = loadedFailures
 
     /// What the runs in THIS PROCESS have actually covered (AUTOMATION-161), mirrored out
     /// of the mailbox state for the CACHE-KEY intercept — same closure-local + `Volatile`
@@ -4847,26 +5105,6 @@ let internal createWithLaunchDeadline
     /// under-reported by the oldest ones, which is worse than the truth and much better
     /// than naming one.
     let mutable completedRunsRef: Guid list = []
-
-    /// The test projects this daemon can actually RUN — i.e. the ones in
-    /// `testConfigs`. Empty when the plugin is analysis-only.
-    ///
-    /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
-    /// analyzed, which is not the same set as the projects fshw is configured to run. A
-    /// symbol covered ONLY by an unconfigured project can never be proven green — its
-    /// covering project never executes, so it never appears in a run's results and never
-    /// commits, sitting in the pending queue forever while the verdict stays red.
-    /// Observed: two full suites passed back-to-back while the queue kept 2 symbols and
-    /// `check` exited 1, because those symbols were covered by
-    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
-    ///
-    /// So "covered" means "covered by a test we can actually run". A symbol whose only
-    /// covering tests are unrunnable is dropped by the same rule as one with no covering
-    /// test at all.
-    let runnableProjects: Set<string> =
-        match testConfigs with
-        | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
-        | None -> Set.empty
 
     let expectedRuntimeCoverageProjects =
         match testConfigs, coveragePaths with
@@ -5156,15 +5394,47 @@ let internal createWithLaunchDeadline
         // DAEMON RUNS (see `runnableCoveringTests` — AUTOMATION-99: a symbol covered
         // only by an unconfigured project is unverifiable here and wedged the verdict).
         // Only ever REMOVES from the queue, so it cannot under-test.
+        //
+        // AUTOMATION-110 — the two ways of having no runnable covering test are told
+        // apart and the second is REPORTED, never merely dropped: a symbol with no test
+        // anywhere, and a symbol whose only covering tests live in a project
+        // `tests.projects` does not list. The AUTOMATION-99 rule wrote the second off
+        // as the first; that is the "documented, deliberate hole" AUTOMATION-108's
+        // reviewer named as a candidate cause for a red the gate never selected. The
+        // queue still drops it (nothing here can ever discharge it), but the write-off
+        // names the project, in the log AND on the verdict (`UncoveredChanges`).
         let uncovered =
             symbols
             |> List.filter (fun s -> (runnableCoveringTests s).IsEmpty)
             |> Set.ofList
 
+        let unrunnable: UnrunnableCoverage =
+            if Set.isEmpty uncovered || Set.isEmpty runnableProjects then
+                Map.empty
+            else
+                uncovered
+                |> Set.toList
+                |> List.choose (fun s ->
+                    match db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList with
+                    | projects when Set.isEmpty projects -> None
+                    | projects -> Some(s, projects))
+                |> Map.ofList
+
         if not (Set.isEmpty uncovered) then
             Logging.info
                 "test-prune"
                 $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
+
+            if not (Map.isEmpty unrunnable) then
+                let projects =
+                    UnrunnableCoverage.projects unrunnable |> Set.toList |> String.concat ", "
+
+                Logging.warn
+                    "test-prune"
+                    $"%d{Map.count unrunnable} of them ARE covered — by tests in %s{projects}, which `tests.projects` does \
+                      not list, so this daemon cannot run them. The obligation is written off here, not discharged: \
+                      list the project, or declare it excluded, if its tests are meant to gate. Symbols: \
+                      %s{describeAll (unrunnable |> Map.keys |> List.ofSeq)}"
 
             commitPending uncovered
 
@@ -5223,7 +5493,7 @@ let internal createWithLaunchDeadline
 
         let allChangesUncovered =
             if noCoveringTest && List.isEmpty unknownToIndex then
-                UncoveredChanges.AllUncovered(List.sort symbols)
+                UncoveredChanges.AllUncovered(List.sort symbols, unrunnable)
             else
                 UncoveredChanges.No
 
@@ -5301,7 +5571,8 @@ let internal createWithLaunchDeadline
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
           QueuedCommandRuns = []
-          OutstandingFailures = []
+          // AUTOMATION-110. The previous session's reds, quarantined into the first run.
+          OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None }
@@ -5358,8 +5629,13 @@ let internal createWithLaunchDeadline
             //    made without it cannot be trusted either. Same shape as 113: the
             //    missing input is a SAFETY input, so its absence widens rather than
             //    narrows.
+            //  * AUTOMATION-110 — NO VALID FULL-SUITE BASELINE: run every project,
+            //    because the tests a filtered run skips have nothing to be equivalent
+            //    to. A cold repository earns its baseline here; a repository whose
+            //    `tests.projects` grew re-earns it. Same shape as 150.
             let scopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
             let ledgerUnreadable = Volatile.Read(&ledgerRecoveryOutstandingRef)
+            let baselineInvalid = baselineInvalidReason ()
 
             // The coarse fallback only needs to know WHICH files are unanalysable; the
             // map's values exist so the ledger projection can re-report their
@@ -5375,7 +5651,7 @@ let internal createWithLaunchDeadline
                 let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
                 let widened = Set.union widened runtimeForceProjects
 
-                if scopeIsFullSuite || ledgerUnreadable then
+                if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
                     Set.union widened (fullSuiteProjects configs)
                 else
                     widened
@@ -5384,6 +5660,13 @@ let internal createWithLaunchDeadline
                 Logging.info
                     "test-prune"
                     "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
+
+            match baselineInvalid with
+            | Some reason when not ledgerUnreadable ->
+                Logging.info
+                    "test-prune"
+                    $"Scope: FULL SUITE (no valid full-suite baseline) — %s{reason}. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project."
+            | _ -> ()
 
             if ledgerUnreadable then
                 Logging.warn
@@ -5606,7 +5889,8 @@ let internal createWithLaunchDeadline
                                 WouldHaveRun = None
                                 ZeroSelection =
                                     (match inputs.ChangedSymbolsAllUncovered with
-                                     | UncoveredChanges.AllUncovered symbols -> ZeroSelection.ChangesUncovered symbols
+                                     | UncoveredChanges.AllUncovered(symbols, unrunnable) ->
+                                         ZeroSelection.ChangesUncovered(symbols, unrunnable)
                                      | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
                         )
                 else
@@ -5623,6 +5907,7 @@ let internal createWithLaunchDeadline
                                 (Set.count pendingQueueRef)
                                 runtimeObligationsRef
                                 (List.length inputs.OutstandingFailures)
+                                baselineInvalid
 
                         // An EMPTY selection is not "a few projects": `selectionOf` reads
                         // it as no selection at all and every configured project runs in
@@ -6001,12 +6286,30 @@ let internal createWithLaunchDeadline
                             |> List.map (fun id -> id.ToString("N"))
                             |> List.toArray
 
+                        // AUTOMATION-110. The full-suite baseline this ledger's greens are
+                        // relative to, on EVERY branch — a `running` reply still names the
+                        // baseline a later reading will be judged against. `baseline` is
+                        // the reference; `baselineAbsent` says why there is none. Both
+                        // null only for an analysis-only daemon, which makes no test claim.
+                        let baseline, baselineAbsent =
+                            match baselineInvalidReason (), Volatile.Read(&fullSuiteBaselineRef) with
+                            | None, Some b when not (Set.isEmpty runnableProjects) ->
+                                box
+                                    {| runId = b.RunId.ToString("N")
+                                       earnedAt = b.EarnedAt.ToString("o")
+                                       projects = b.Projects |> Set.toArray |},
+                                null
+                            | None, _ -> null, null
+                            | Some reason, _ -> null, box reason
+
                         if ctx.IsRunning "tests" then
                             return
                                 JsonSerializer.Serialize(
                                     {| scope = "running"
                                        runId = runId
-                                       runIds = runIds |}
+                                       runIds = runIds
+                                       baseline = baseline
+                                       baselineAbsent = baselineAbsent |}
                                 )
                         else
                             let evidenceCoverage =
@@ -6020,6 +6323,8 @@ let internal createWithLaunchDeadline
                                     JsonSerializer.Serialize(
                                         {| scope = "full"
                                            runIds = runIds
+                                           baseline = baseline
+                                           baselineAbsent = baselineAbsent
                                            ranProjects = n
                                            totalProjects = n
                                            runId = runId
@@ -6031,6 +6336,8 @@ let internal createWithLaunchDeadline
                                     JsonSerializer.Serialize(
                                         {| scope = "filtered"
                                            runIds = runIds
+                                           baseline = baseline
+                                           baselineAbsent = baselineAbsent
                                            ranProjects = ran
                                            totalProjects = total
                                            runId = runId
@@ -6047,6 +6354,8 @@ let internal createWithLaunchDeadline
                                     JsonSerializer.Serialize(
                                         {| scope = "none"
                                            runIds = runIds
+                                           baseline = baseline
+                                           baselineAbsent = baselineAbsent
                                            ranProjects = 0
                                            totalProjects = total
                                            runId = runId
@@ -6058,7 +6367,12 @@ let internal createWithLaunchDeadline
                                              | None -> null)
                                            uncoveredSymbols =
                                             (ZeroSelection.symbols zero |> List.truncate 8 |> List.toArray)
-                                           uncoveredSymbolCount = List.length (ZeroSelection.symbols zero) |}
+                                           uncoveredSymbolCount = List.length (ZeroSelection.symbols zero)
+                                           // AUTOMATION-110. Of the uncovered symbols, how many
+                                           // HAVE covering tests this daemon cannot run, and where.
+                                           unrunnableSymbolCount = Map.count (ZeroSelection.unrunnable zero)
+                                           unrunnableProjects =
+                                            (ZeroSelection.unrunnable zero |> UnrunnableCoverage.projects |> Set.toArray) |}
                                     )
                     }
 
@@ -7007,6 +7321,7 @@ let internal createWithLaunchDeadline
                     // reach for.
                     reportOutstanding ctx unanalyzable outstandingFailures
                     Volatile.Write(&outstandingFailuresRef, outstandingFailures)
+                    persistFailures outstandingFailures
 
                     // AUTOMATION-161. THIS is the moment the process acquires test
                     // evidence — a run completed and we know what it covered. Until it
@@ -7147,20 +7462,62 @@ let internal createWithLaunchDeadline
                     // left the corrupt file untouched until this moment, so that a crash
                     // mid-recovery leaves the next session the same honest "unknown" rather
                     // than a clean, empty, WRONG ledger.
-                    if
-                        Volatile.Read(&ledgerRecoveryOutstandingRef)
-                        && not aborted
+                    let executedFullSuite =
+                        not aborted
                         && not (Set.isEmpty runnableProjects)
                         && completed.Verification = Ran FullSuite
+
+                    if
+                        Volatile.Read(&ledgerRecoveryOutstandingRef)
+                        && executedFullSuite
                         && runnableProjects |> Set.forall projectPassed
                     then
                         Volatile.Write(&ledgerRecoveryOutstandingRef, false)
                         persistQueue " after recovering an unreadable ledger"
+                        persistFailures outstandingFailures
                         persistRuntimeObligations (fun _ -> Map.empty)
 
                         Logging.info
                             "test-prune"
                             "A full suite passed every configured project — the unreadable pending-verification ledger has been rewritten and its unknown debt discharged. Impact filtering resumes."
+
+                    // AUTOMATION-110 — the full-suite WATERMARK. Written when a full-suite
+                    // run has ACCOUNTED for every configured project: passed, or red with
+                    // the red recorded in the durable outstanding list. Not only for a
+                    // green run — a red full suite still proves what every other test did,
+                    // and its reds are quarantined until they pass — so the inner loop can
+                    // resume impact filtering (plus quarantine) after one full run rather
+                    // than running the whole suite until the last red is fixed. A project
+                    // that produced no accountable outcome (deferred, errored) is neither,
+                    // and `Ran FullSuite` is already false for it.
+                    //
+                    // The same `executedFullSuite` the AUTOMATION-150 discharge reads: two
+                    // readings of what a full-suite run is would let one recover a ledger
+                    // the other refused to baseline.
+                    let accountedFor (proj: string) =
+                        projectPassed proj
+                        || outstandingFailures |> List.exists (fun f -> f.Project = proj)
+
+                    if executedFullSuite && runnableProjects |> Set.forall accountedFor then
+                        let baseline: FullSuiteBaseline.Baseline =
+                            { RunId = completed.RunId
+                              EarnedAt = DateTime.UtcNow
+                              Projects = runnableProjects }
+
+                        Volatile.Write(&fullSuiteBaselineRef, Some baseline)
+
+                        try
+                            FullSuiteBaseline.save repoRoot baseline
+                        with ex ->
+                            Logging.warn
+                                "test-prune"
+                                $"failed to persist the full-suite baseline: %s{ex.Message}; the next session will re-earn it"
+
+                        let runId = completed.RunId.ToString("N")
+
+                        Logging.info
+                            "test-prune"
+                            $"Full-suite baseline recorded: run %s{runId} accounted for every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
 
                     // The in-memory hot view must shed ONLY the committed symbols,
                     // never the whole list — symbols left in the queue (mid-run
@@ -7791,7 +8148,9 @@ let internal createWithLaunchDeadline
             // cached verdict. Salting the key with the requested scope makes that
             // impossible rather than merely unlikely.
             let fullSuiteScopeHash () =
-                if Volatile.Read(&fullSuiteScopeRef) then
+                // AUTOMATION-110: a run widened by a missing baseline is a full-suite
+                // run too, and must not replay a filtered run's cached verdict.
+                if Volatile.Read(&fullSuiteScopeRef) || Option.isSome (baselineInvalidReason ()) then
                     Some "full"
                 else
                     None
