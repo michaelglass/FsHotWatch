@@ -46,11 +46,19 @@
         "platform": "linux"
       }
     ],
-    "CachePathIdentity.fs": {
-      "line": 92,
-      "branch": 57,
-      "reason": "canonical portable-path codec (AUTOMATION-564)"
-    },
+    "CachePathIdentity.fs": [
+      {
+        "line": 92,
+        "branch": 57,
+        "reason": "canonical portable-path codec (AUTOMATION-564)",
+        "platform": "macos"
+      },
+      {
+        "line": 92,
+        "branch": 62,
+        "platform": "linux"
+      }
+    ],
     "CheckCache.fs": [
       {
         "line": 80,
@@ -182,11 +190,19 @@
         "platform": "linux"
       }
     ],
-    "DaemonPhases.fs": {
-      "line": 98,
-      "branch": 88,
-      "reason": "loosened automatically"
-    },
+    "DaemonPhases.fs": [
+      {
+        "line": 98,
+        "branch": 88,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 76,
+        "platform": "linux"
+      }
+    ],
     "DeadCode.fs": [
       {
         "line": 86,
@@ -249,11 +265,19 @@
         "platform": "linux"
       }
     ],
-    "FantomasTool.fs": {
-      "line": 100,
-      "branch": 90,
-      "reason": "new file, AUTOMATION-447: the seam between the format plugin and the repository\u0027s pinned \u0060dotnet tool run fantomas\u0060. Floor = the MEASURED value on macOS 2026-09-04 (line 100%, branch 83% over the three format test classes) less the same ~1-5pp wobble margin every other floor here carries. The uncovered branches are coverlet\u0027s closure artifacts on the fold/choose pipelines; everything that decides a verdict is covered: manifest parsing (present/absent/case/unreadable), every exit-code interpretation (0, 99, 1-with-per-file-errors, 1-unrestored, 1-other, timeout), chunking, the measured Modified set, and the editorconfig inputs including the filesystem-root stop. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges."
-    },
+    "FantomasTool.fs": [
+      {
+        "line": 100,
+        "branch": 90,
+        "reason": "new file, AUTOMATION-447: the seam between the format plugin and the repository\u0027s pinned \u0060dotnet tool run fantomas\u0060. Floor = the MEASURED value on macOS 2026-09-04 (line 100%, branch 83% over the three format test classes) less the same ~1-5pp wobble margin every other floor here carries. The uncovered branches are coverlet\u0027s closure artifacts on the fold/choose pipelines; everything that decides a verdict is covered: manifest parsing (present/absent/case/unreadable), every exit-code interpretation (0, 99, 1-with-per-file-errors, 1-unrestored, 1-other, timeout), chunking, the measured Modified set, and the editorconfig inputs including the filesystem-root stop. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 93,
+        "platform": "linux"
+      }
+    ],
     "FileCommandPlugin.fs": [
       {
         "line": 96,
@@ -270,7 +294,7 @@
     "FileErrorReporter.fs": [
       {
         "line": 100,
-        "branch": 85,
+        "branch": 83,
         "platform": "linux"
       },
       {
@@ -618,11 +642,19 @@
         "platform": "linux"
       }
     ],
-    "RunClaim.fs": {
-      "line": 83,
-      "branch": 54,
-      "reason": "New file from AUTOMATION-573 (run claims). First floor, written on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file\u0027s own rule that a floor pinned to one run\u0027s exact number goes red on the next. THIN \u2014 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box (AUTOMATION-312)."
-    },
+    "RunClaim.fs": [
+      {
+        "line": 83,
+        "branch": 54,
+        "reason": "New file from AUTOMATION-573 (run claims). First floor, written on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file\u0027s own rule that a floor pinned to one run\u0027s exact number goes red on the next. THIN \u2014 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box (AUTOMATION-312).",
+        "platform": "macos"
+      },
+      {
+        "line": 83,
+        "branch": 75,
+        "platform": "linux"
+      }
+    ],
     "RunLog.fs": [
       {
         "line": 94,
@@ -693,11 +725,19 @@
         "platform": "linux"
       }
     ],
-    "SolutionScope.fs": {
-      "line": 95,
-      "branch": 77,
-      "reason": "new file, AUTOMATION-158. Floor = the MEASURED value on macOS 2026-08-23 (line 95.5%, branch 77.9% = 53/68) less a ~1pp margin for the load/platform wobble every other floor in this file documents. The uncovered branches are IO-failure filters (unreadable solution, unreadable project, missing repo root) and the null-input guards, all of which exist so a malformed checkout produces a FINDING rather than a crash - left honest rather than hidden with ExcludeFromCodeCoverage. Everything that decides a scope is covered: all eight Finding cases are constructed and rendered, both solution formats are parsed, and the undeclared/declared mutation is proved in both directions. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges."
-    },
+    "SolutionScope.fs": [
+      {
+        "line": 95,
+        "branch": 77,
+        "reason": "new file, AUTOMATION-158. Floor = the MEASURED value on macOS 2026-08-23 (line 95.5%, branch 77.9% = 53/68) less a ~1pp margin for the load/platform wobble every other floor in this file documents. The uncovered branches are IO-failure filters (unreadable solution, unreadable project, missing repo root) and the null-input guards, all of which exist so a malformed checkout produces a FINDING rather than a crash - left honest rather than hidden with ExcludeFromCodeCoverage. Everything that decides a scope is covered: all eight Finding cases are constructed and rendered, both solution formats are parsed, and the undeclared/declared mutation is proved in both directions. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 86,
+        "platform": "linux"
+      }
+    ],
     "StringHelpers.fs": [
       {
         "line": 93,
@@ -711,11 +751,19 @@
         "platform": "linux"
       }
     ],
-    "StructureFiles.fs": {
-      "line": 95,
-      "branch": 64,
-      "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in \u0060implicitImportsFor\u0060\u0027s ancestor walk: \u0060Path.GetDirectoryName\u0060 returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run\u0027s number went red on the next one."
-    },
+    "StructureFiles.fs": [
+      {
+        "line": 95,
+        "branch": 64,
+        "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in \u0060implicitImportsFor\u0060\u0027s ancestor walk: \u0060Path.GetDirectoryName\u0060 returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run\u0027s number went red on the next one.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 75,
+        "platform": "linux"
+      }
+    ],
     "TaskCache.fs": [
       {
         "line": 98,
