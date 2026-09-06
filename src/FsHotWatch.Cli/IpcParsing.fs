@@ -337,6 +337,12 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
         | Some "timedOut" ->
             let reason = tryGetStringProp el "reason" |> Option.defaultValue ""
             Some(TimedOut reason)
+        // A `verifiedNothing` with no readable `detail` is still a verified-nothing run:
+        // the CASE is the fact, the detail is its words. Defaulting the words, never
+        // the case, keeps a mangled payload from reading as a pass.
+        | Some "verifiedNothing" ->
+            let detail = tryGetStringProp el "detail" |> Option.defaultValue ""
+            Some(VerifiedNothing detail)
         | _ -> None
 
 /// Parse a lastRun.outcome field (tagged-object shape).

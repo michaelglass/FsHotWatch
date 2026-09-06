@@ -38,6 +38,14 @@ let private deserializeErrorEntry (obj: JsonObject) : ErrorEntry =
         | true -> Some(obj["detail"].GetValue<string>())
         | false -> None }
 
+let private serializeVerdict (obj: JsonObject) (verdict: RunVerdict) =
+    obj["summary"] <- verdict.Summary
+    obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
+
+    match verdict.NothingVerified with
+    | Some detail -> obj["nothingVerified"] <- detail
+    | None -> ()
+
 let private serializeStatus (status: CachedStatus) =
     let obj = JsonObject()
 
@@ -51,23 +59,30 @@ let private serializeStatus (status: CachedStatus) =
         obj["elapsedMs"] <- elapsed.TotalMilliseconds
     | CachedRunCompleted verdict ->
         obj["type"] <- "runCompleted"
-        obj["summary"] <- verdict.Summary
-        obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
+        serializeVerdict obj verdict
     | CachedRunFailed(msg, verdict) ->
         obj["type"] <- "runFailed"
         obj["message"] <- msg
-        obj["summary"] <- verdict.Summary
-        obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
+        serializeVerdict obj verdict
 
     obj
 
 /// Verdict fields are REQUIRED on both run-entry shapes: an entry with an empty
 /// summary (`RunVerdict.create` throws) has no evidence to replay, so it must read as
 /// a cache MISS, never as a verdict-free terminal.
+///
+/// `nothingVerified` is written only for a verdict that carries it, and its presence
+/// is what rebuilds the verdict through `RunVerdict.verifiedNothing`: a replayed
+/// verified-nothing run verified exactly as much as the original did, and the fact
+/// must survive the round trip as a VALUE — the summary's words are display, and no
+/// reader parses them (AUTOMATION-339). An entry written before the field existed is
+/// refused by the format version below, never read as a verified run.
 let private deserializeVerdict (obj: JsonObject) : RunVerdict =
-    RunVerdict.create
-        (obj["summary"].GetValue<string>())
-        (TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()))
+    let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
+
+    match obj["nothingVerified"] with
+    | null -> RunVerdict.create (obj["summary"].GetValue<string>()) elapsed
+    | detail -> RunVerdict.verifiedNothing (detail.GetValue<string>()) elapsed
 
 let private deserializeStatus (obj: JsonObject) : CachedStatus =
     match obj["type"].GetValue<string>() with
@@ -321,7 +336,7 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 /// rejected one layer deeper by a field read throwing, which reports every stale
 /// entry as a parse FAILURE. The cost of a bump is a one-time re-run.
 [<Literal>]
-let private EntryFormatVersion = 4
+let private EntryFormatVersion = 5
 
 /// The marker a run writes when it cleared its WHOLE ledger. Not a path, so it is
 /// exempt from path encoding on the way out and on the way back in.

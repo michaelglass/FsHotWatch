@@ -2517,6 +2517,46 @@ let ``an IDLE plugin is judged by the run it last completed`` () =
     test <@ Verdict.pluginOutcomeOf true DateTime.UtcNow idleAfterTimeout = Some Verdict.PluginOutcome.TimedOut @>
     test <@ Verdict.pluginOutcomeOf true DateTime.UtcNow idleAfterPass = Some Verdict.PluginOutcome.Ok @>
 
+[<Fact>]
+let ``AUTOMATION-339: a verified-nothing plugin verdict is worded from the case when the record has no summary`` () =
+    // `plugins[]` in verdict.json: the case decides the token (`warn`) and, with no summary
+    // on the record, supplies the words — the same display text every renderer shows.
+    let wordless =
+        status
+            (StatusView.Completed DateTime.UtcNow)
+            (TimeSpan.FromSeconds 1.0)
+            (Events.VerifiedNothing "no project was selected")
+            None
+
+    match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", wordless ]) with
+    | [ p ] ->
+        test <@ p.Outcome = Verdict.PluginOutcome.Warn @>
+        test <@ p.Summary = Some "NOTHING VERIFIED: no project was selected" @>
+    | other -> failwith $"expected one plugin verdict, got %A{other}"
+
+[<Fact>]
+let ``AUTOMATION-339: an IDLE plugin whose last run VERIFIED NOTHING is a WARN, never ok and never fail`` () =
+    // The same rule as the `Completed` arm, reached through the cache-replay shape: the
+    // run record says the run executed nothing. `Warn` — nothing broke — so the verdict
+    // is refused its green without being reddened into "failures found".
+    let idleAfterNothing =
+        status
+            StatusView.Idle
+            (TimeSpan.FromSeconds 2.0)
+            (VerifiedNothing "no project was selected")
+            (Some "NOTHING VERIFIED: no project was selected")
+
+    let outcome = Verdict.pluginOutcomeOf true DateTime.UtcNow idleAfterNothing
+    test <@ outcome = Some Verdict.PluginOutcome.Warn @>
+    test <@ outcome |> Option.map Verdict.PluginOutcome.isFailing = Some false @>
+
+    // Failing diagnostics still take precedence: a warn cannot hide a red.
+    let withErrors =
+        { idleAfterNothing with
+            Diagnostics = { Errors = 1; Warnings = 0 } }
+
+    test <@ Verdict.pluginOutcomeOf true DateTime.UtcNow withErrors = Some Verdict.PluginOutcome.Fail @>
+
 // ---------------------------------------------------------------------------
 // Tree hash — the arms that only a hostile filesystem reaches.
 // ---------------------------------------------------------------------------

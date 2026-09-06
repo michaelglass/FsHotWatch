@@ -85,15 +85,41 @@ type ProjectCheckResult =
         FileResults: Map<string, FileCheckResult>
     }
 
+/// The words a run that VERIFIED NOTHING is shown with. Pure DISPLAY: nothing reads
+/// this text back to decide anything — the fact itself is `RunVerdict.NothingVerified`
+/// on the verdict and `RunOutcome.VerifiedNothing` on the run record (AUTOMATION-339).
+/// Before that it was a marked prefix on the summary that three surfaces parsed; a
+/// case is what the compiler enforces at every fold, a prefix is what drifts.
+module RunSummary =
+    /// Leads the summary, so the fact survives truncation and so the reader meets it
+    /// before any count. Upper-case because it is the headline, not a footnote.
+    [<Literal>]
+    let private NothingVerifiedPrefix = "NOTHING VERIFIED: "
+
+    /// The summary line for a run that proved nothing. `detail` states what it did
+    /// instead — e.g. "0 test project(s) ran, no test executed".
+    let nothingVerified (detail: string) : string = NothingVerifiedPrefix + detail
+
 /// The evidence every terminal status carries: what the run did and how long it
-/// took. The representation is private and `RunVerdict.create` is the only
-/// constructor; it rejects an empty summary, so no call site can build a
+/// took. The representation is private and the `RunVerdict` module holds the only
+/// constructors; both reject an empty summary, so no call site can build a
 /// content-free `✓`.
+///
+/// A run can finish without failing and still prove nothing — no test project was
+/// selected, so no test binary was invoked. The STATUS for that is `Completed`:
+/// nothing FAILED, and reporting `Failed` would both claim a failure that did not
+/// happen and turn `check`'s honest exit 3 ("NO VERDICT — the tests that ran were no
+/// tests ran") into an exit 1 ("failures found"). But no surface may render it as a
+/// bare `✓` either: a reader scanning plugin glyphs would see success for a run that
+/// executed nothing (AUTOMATION-198). `NothingVerified` is that fact, as a value: the
+/// host records it on the run as `RunOutcome.VerifiedNothing`, and every renderer
+/// keys its glyph off the case rather than off the summary's words.
 [<NoComparison>]
 type RunVerdict =
     private
         { summary: string
-          elapsed: System.TimeSpan }
+          elapsed: System.TimeSpan
+          nothingVerified: string option }
 
     /// Human-readable statement of what the run did — e.g.
     /// "6 passed, 0 failed in 6 projects". Rendered by `fshw status`/`check`
@@ -106,48 +132,39 @@ type RunVerdict =
     /// `TimeSpan.Zero` is the conventional "no measurable work ran" value.
     member this.Elapsed = this.elapsed
 
+    /// `Some detail` when the run EXECUTED NOTHING — the detail says what it did
+    /// instead. `None` is a run whose summary is evidence of what it verified.
+    member this.NothingVerified = this.nothingVerified
+
 module RunVerdict =
-    /// The ONLY constructor. Throws on a null/empty/whitespace summary.
-    let create (summary: string) (elapsed: System.TimeSpan) : RunVerdict =
+    let private requireSummary (summary: string) =
         if System.String.IsNullOrWhiteSpace summary then
             invalidArg
                 (nameof summary)
                 "a RunVerdict summary must state what the run did — empty/whitespace is the content-free ✓ AUTOMATION-99 exists to kill"
 
-        { summary = summary; elapsed = elapsed }
+    /// The verdict of a run that verified what its summary says. Throws on a
+    /// null/empty/whitespace summary.
+    let create (summary: string) (elapsed: System.TimeSpan) : RunVerdict =
+        requireSummary summary
 
-/// The vocabulary a TERMINAL status uses to say "this run VERIFIED NOTHING".
-///
-/// A run can finish without failing and still prove nothing — no test project was
-/// selected, so no test binary was invoked. The STATUS for that is `Completed`:
-/// nothing FAILED, and reporting `Failed` would both claim a failure that did not
-/// happen and turn `check`'s honest exit 3 ("NO VERDICT — the tests that ran were no
-/// tests ran") into an exit 1 ("failures found"). But no surface may render it as a
-/// bare `✓` either: a reader scanning plugin glyphs would see success for a run that
-/// executed nothing (AUTOMATION-198).
-///
-/// The renderer's only channel to a plugin's terminal is the run summary, so the
-/// marker is WRITTEN here by one constructor and READ here by one predicate — the
-/// same single-writer/single-reader discipline as `RunVerification.token`/`tryParse`.
-/// A producer that hand-wrote the sentence and a consumer that hand-matched it are
-/// how the two ends drift, and the drift fails OPEN (back to a ✓).
-module RunSummary =
-    /// Leads the summary, so the fact survives truncation and so the reader meets it
-    /// before any count. Upper-case because it is the headline, not a footnote.
-    [<Literal>]
-    let private NothingVerifiedPrefix = "NOTHING VERIFIED: "
+        { summary = summary
+          elapsed = elapsed
+          nothingVerified = None }
 
-    /// The summary for a run that proved nothing. `detail` states what it did instead
-    /// — e.g. "0 test project(s) ran, no test executed".
-    let nothingVerified (detail: string) : string = NothingVerifiedPrefix + detail
+    /// The verdict of a run that VERIFIED NOTHING: no file compared, no test run, no
+    /// project selected. `detail` states what it did instead and must be non-empty;
+    /// the summary is `RunSummary.nothingVerified detail`, so the one sentence every
+    /// surface shows is built here and nowhere else.
+    let verifiedNothing (detail: string) (elapsed: System.TimeSpan) : RunVerdict =
+        if System.String.IsNullOrWhiteSpace detail then
+            invalidArg
+                (nameof detail)
+                "a verified-nothing verdict must say what the run did instead — an unexplained absence of evidence is not a verdict"
 
-    /// Does this summary state that the run verified nothing?
-    ///
-    /// `StartsWith`, not equality: the cache-replay path APPENDS " (cached)" to the
-    /// summary it replays (`PluginFramework.markCached`), and a replayed nothing-run
-    /// verified exactly as much as the original did.
-    let saysNothingVerified (summary: string) : bool =
-        summary.StartsWith(NothingVerifiedPrefix, System.StringComparison.Ordinal)
+        { summary = RunSummary.nothingVerified detail
+          elapsed = elapsed
+          nothingVerified = Some detail }
 
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
@@ -167,6 +184,13 @@ module PluginStatus =
     /// Completed at the current UTC instant, carrying the verdict.
     let completedNow (summary: string) (elapsed: System.TimeSpan) : PluginStatus =
         Completed(System.DateTime.UtcNow, RunVerdict.create summary elapsed)
+
+    /// Completed at the current UTC instant, carrying a verdict that says the run
+    /// VERIFIED NOTHING (`RunVerdict.verifiedNothing`). `Completed`, not `Failed`:
+    /// nothing broke, and a failure would turn an honest "no verdict" into "failures
+    /// found". The run record it produces carries `RunOutcome.VerifiedNothing`.
+    let verifiedNothingNow (detail: string) (elapsed: System.TimeSpan) : PluginStatus =
+        Completed(System.DateTime.UtcNow, RunVerdict.verifiedNothing detail elapsed)
 
     /// Failed at the current UTC instant. `error` is the full diagnosis;
     /// `summary` is the one-line human verdict recorded in run history.
@@ -200,6 +224,21 @@ type RunOutcome =
     | CompletedRun
     | FailedRun of error: string
     | TimedOut of reason: string
+    /// The run completed — nothing failed — having EXECUTED NOTHING: no test run, no
+    /// file compared, no project selected. `detail` says what it did instead. Its
+    /// status is `Completed` (so `check` keeps its honest exit 3, never an exit 1), and
+    /// no surface may render it as a pass (AUTOMATION-198, made a case by
+    /// AUTOMATION-339).
+    | VerifiedNothing of detail: string
+
+module RunOutcome =
+    /// The outcome the host records for a `Completed` status: the verdict decides
+    /// whether the run verified what it says or nothing at all. THE one mapping from
+    /// verdict to run record, so the two cannot disagree.
+    let ofCompletedVerdict (verdict: RunVerdict) : RunOutcome =
+        match verdict.NothingVerified with
+        | Some detail -> VerifiedNothing detail
+        | None -> CompletedRun
 
 /// Record of a single completed or failed plugin run.
 type RunRecord =

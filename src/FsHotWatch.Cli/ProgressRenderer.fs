@@ -71,6 +71,7 @@ let private runSummary (lastRun: RunRecord) : string =
     | CompletedRun, None -> ""
     | FailedRun err, None -> summariseError err
     | TimedOut reason, None -> summariseError reason
+    | VerifiedNothing detail, None -> RunSummary.nothingVerified detail
 
 let private latestActivity (tail: string list) =
     match tail |> List.tryLast with

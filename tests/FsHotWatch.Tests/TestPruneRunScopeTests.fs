@@ -363,8 +363,16 @@ let ``AUTOMATION-198: a run that executed NO project records a verdict that says
     | PluginStatus.Completed(_, verdict) ->
         // The STATUS stays `Completed` — nothing failed, and a `Failed` would turn
         // `check`'s honest exit 3 (NO VERDICT) into an exit 1 (failures found). The
-        // VERDICT is what has to stop reading as a pass; every renderer glyphs off it.
-        test <@ RunSummary.saysNothingVerified verdict.Summary @>
+        // VERDICT is what has to stop reading as a pass: it carries the fact as a value,
+        // and the host records the run as `RunOutcome.VerifiedNothing` (AUTOMATION-339).
+        test <@ verdict.NothingVerified = Some "0 test project(s) ran, no test executed" @>
+
+        test
+            <@
+                match RunOutcome.ofCompletedVerdict verdict with
+                | VerifiedNothing _ -> true
+                | _ -> false
+            @>
         // Never the counts line: "0 passed, 0 failed" is a pass report, and `in 0
         // projects` is the only part of it that says otherwise.
         test <@ not (verdict.Summary.Contains "0 passed") @>
@@ -383,7 +391,8 @@ let ``AUTOMATION-198: a run that DID execute keeps its counts verdict`` () =
 
     match lastStatus statuses with
     | PluginStatus.Completed(_, verdict) ->
-        test <@ not (RunSummary.saysNothingVerified verdict.Summary) @>
+        test <@ verdict.NothingVerified = None @>
+        test <@ RunOutcome.ofCompletedVerdict verdict = CompletedRun @>
         test <@ verdict.Summary.Contains "1 passed, 0 failed" @>
         test <@ verdict.Summary.Contains "in 1 projects" @>
     | other -> Assert.Fail($"a run that executed and passed must complete green, got %A{other}")
@@ -409,9 +418,9 @@ let ``AUTOMATION-294: a run whose test HOST DIED completes as an ABORT, never as
     | PluginStatus.Completed(_, verdict) ->
         // `Completed`, exactly like the pure-defer case: nothing FAILED, and a `Failed`
         // here would turn the honest exit 2 back into the exit 1 this ticket is about.
-        // The SUMMARY is what carries the fact, and it says NOTHING VERIFIED — so no
-        // renderer can glyph this run with a bare tick either.
-        test <@ RunSummary.saysNothingVerified verdict.Summary @>
+        // The VERDICT carries the fact (`RunOutcome.VerifiedNothing` on the run record),
+        // so no renderer can glyph this run with a bare tick either.
+        test <@ verdict.NothingVerified.IsSome @>
         test <@ verdict.Summary.Contains "ABORTED" @>
         test <@ verdict.Summary.Contains "ProjB" @>
         test <@ verdict.Summary.Contains "NOT a test failure" @>
