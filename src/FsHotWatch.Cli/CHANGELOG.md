@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- AUTOMATION-339: `IpcParsing.parseTaggedOutcome` reads the daemon's `verifiedNothing`
+  outcome tag as `RunOutcome.VerifiedNothing detail` (a tag with no readable `detail` is
+  still the case, with empty words — never a pass, never a failure).
+  `ParsedPluginStatus.verifiedNothing` is now structural — a match on the run record's
+  outcome — rather than a prefix match on the summary; the compact, verbose and agent
+  renderers and `Verdict.pluginOutcomeOf` (which drives `plugins[]` in `verdict.json`)
+  all key off it unchanged. `pluginOutcomeOf` also applies the rule to an `Idle` plugin
+  whose last run verified nothing (the cache-replay shape): `warn`, never `ok`.
+  `CheckInputs.anyPluginFailed` is untouched, so a zero-project check still exits 3.
+
 - AUTOMATION-110: **`Verdict.Outcome.Green` carries a `Baseline`** — `FullSuiteRun` (the
   run every skipped test was last executed in) or `NoTestSuite` — and cannot be
   constructed without one. `CheckVerdict.CheckOutcome.Clean` carries the same, minted

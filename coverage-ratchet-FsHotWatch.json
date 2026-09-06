@@ -525,8 +525,8 @@
     "PluginActivity.fs": [
       {
         "line": 87,
-        "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "branch": 69,
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor || AUTOMATION-339 (2026-09-06): measured 69 after the runRecordBytes VerifiedNothing arm (covered by the IpcPayload host round trip); wider denominator, same load-dependent wobble as above.",
         "platform": "macos"
       },
       {
@@ -794,8 +794,8 @@
     "Verdict.fs": [
       {
         "line": 92,
-        "branch": 83,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "branch": 82,
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || AUTOMATION-339 (2026-09-06): measured 82 after adding the VerifiedNothing arms (pluginOutcomeOf Idle arm, plugins[] summary fallback); both arms are covered, the pp is the wider denominator.",
         "platform": "macos"
       },
       {

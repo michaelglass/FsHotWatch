@@ -72,8 +72,9 @@ module ParsedPluginStatus =
     /// Did the run behind this status VERIFY NOTHING — did it complete having executed
     /// no test at all (AUTOMATION-198)?
     ///
-    /// Read off the run record's summary through `RunSummary.saysNothingVerified`, the
-    /// one reader for the one writer. THE definition, so the three surfaces that must
+    /// Read off the run record's OUTCOME: `RunOutcome.VerifiedNothing` is the case the
+    /// daemon records for it (AUTOMATION-339), so this is a structural question, not a
+    /// match on the summary's words. THE definition, so the three surfaces that must
     /// refuse a `✓` for it — compact, verbose, and `pluginOutcomeOf` (which drives both
     /// agent mode and `plugins[]` in the verdict file) — cannot disagree about which
     /// runs those are.
@@ -83,7 +84,7 @@ module ParsedPluginStatus =
     /// here would put the wrong sentence on it.
     let verifiedNothing (parsed: ParsedPluginStatus) : bool =
         match parsed.LastRun with
-        | Some { Summary = Some s } -> RunSummary.saysNothingVerified s
+        | Some { Outcome = VerifiedNothing _ } -> true
         | _ -> false
 
 /// Describes a FileCommand-style plugin run for staleness detection: when did

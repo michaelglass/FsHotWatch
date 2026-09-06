@@ -301,3 +301,39 @@ let ``PluginStatus.completedNow and failedNow carry their verdict`` () =
         test <@ v.Summary = "2 failed: A, B" @>
         test <@ v.Elapsed = TimeSpan.FromSeconds 3.0 @>
     | other -> failwithf "expected Failed, got %A" other
+
+// --- AUTOMATION-339: a run that verified nothing is a case on the run record ---
+
+[<Fact(Timeout = 15000)>]
+let ``RunVerdict.verifiedNothing carries the fact as a value and words it in one place`` () =
+    let v =
+        RunVerdict.verifiedNothing "0 test project(s) ran, no test executed" (TimeSpan.FromSeconds 2.0)
+
+    test <@ v.NothingVerified = Some "0 test project(s) ran, no test executed" @>
+    test <@ v.Summary = RunSummary.nothingVerified "0 test project(s) ran, no test executed" @>
+    test <@ v.Summary.StartsWith "NOTHING VERIFIED: " @>
+    test <@ v.Elapsed = TimeSpan.FromSeconds 2.0 @>
+
+    // Control: the plain constructor is a run that verified what it says.
+    let plain = RunVerdict.create "6 passed, 0 failed in 6 projects" TimeSpan.Zero
+    test <@ plain.NothingVerified = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``RunVerdict.verifiedNothing refuses an unexplained absence of evidence`` () =
+    raises<ArgumentException> <@ RunVerdict.verifiedNothing "" TimeSpan.Zero @>
+    raises<ArgumentException> <@ RunVerdict.verifiedNothing "   " TimeSpan.Zero @>
+
+[<Fact(Timeout = 15000)>]
+let ``RunOutcome.ofCompletedVerdict is the one mapping from verdict to run record`` () =
+    let empty = RunVerdict.verifiedNothing "no project was selected" TimeSpan.Zero
+    let plain = RunVerdict.create "ok" TimeSpan.Zero
+    test <@ RunOutcome.ofCompletedVerdict empty = VerifiedNothing "no project was selected" @>
+    test <@ RunOutcome.ofCompletedVerdict plain = CompletedRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``PluginStatus.verifiedNothingNow is a Completed status, never a Failed one`` () =
+    // `Completed`: nothing broke, and a `Failed` would turn `check`'s honest exit 3 into
+    // an exit 1. The verdict on it is the verified-nothing one.
+    match PluginStatus.verifiedNothingNow "no test executed" TimeSpan.Zero with
+    | Completed(_, verdict) -> test <@ verdict.NothingVerified = Some "no test executed" @>
+    | other -> failwithf "expected Completed, got %A" other
