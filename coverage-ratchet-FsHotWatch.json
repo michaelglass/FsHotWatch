@@ -4,20 +4,20 @@
       {
         "line": 81,
         "branch": 77,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a + lifecycle + §1 fcs-signature add untested branches; line drifts 74-76% across runs Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 80,
         "branch": 55,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
     "ArtifactFreshness.fs": {
       "line": 100,
       "branch": 97,
-      "reason": "honest floor at the achieved value for the AUTOMATION-122 closure-scoped freshness gate: 100% line, 97.1% branch (33/34). Every real arm is covered by ArtifactFreshness tests in TestPrunePluginTests - both closure directions (out-of-closure edit => fresh; in-closure edit => stale), the content/fixture copy check, the fail-closed InputsUndeterminable arms (unparseable fsproj at the root and deep in the closure, ProjectReference with no Include, ProjectReference to a missing project), reference cycles, unbuilt/uncopied dependencies, multi-TFM, and the SafeWalk symlink regressions. The single uncovered branch is coverlet's lambda-closure artifact on the per-TFM Array.map, not a reachable arm - left honest rather than hidden with ExcludeFromCodeCoverage."
+      "reason": "honest floor at the achieved value for the AUTOMATION-122 closure-scoped freshness gate: 100% line, 97.1% branch (33/34). Every real arm is covered by ArtifactFreshness tests in TestPrunePluginTests - both closure directions (out-of-closure edit =\u003E fresh; in-closure edit =\u003E stale), the content/fixture copy check, the fail-closed InputsUndeterminable arms (unparseable fsproj at the root and deep in the closure, ProjectReference with no Include, ProjectReference to a missing project), reference cycles, unbuilt/uncopied dependencies, multi-TFM, and the SafeWalk symlink regressions. The single uncovered branch is coverlet\u0027s lambda-closure artifact on the per-TFM Array.map, not a reachable arm - left honest rather than hidden with ExcludeFromCodeCoverage."
     },
     "BuildDiagnostics.fs": [
       {
@@ -36,13 +36,13 @@
       {
         "line": 93,
         "branch": 93,
-        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 94.9/86.1 stable across 8 CI runs after stabilization push; tightened from 89/81 lucky-ceiling floor Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 94.9/86.1 stable across 8 CI runs after stabilization push; tightened from 89/81 lucky-ceiling floor Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 93,
         "branch": 80,
-        "reason": "BuildInputsHasher unit-tested || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "BuildInputsHasher unit-tested || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -63,26 +63,26 @@
       {
         "line": 80,
         "branch": 50,
-        "reason": "§1 fcsCheckSignature: see macos reason",
+        "reason": "\u00A71 fcsCheckSignature: see macos reason",
         "platform": "linux"
       },
       {
         "line": 100,
         "branch": 88,
-        "reason": "loosened automatically || AUTOMATION-564 re-baselined the BRANCH floor 91 -> 86 (measured 88, set ~2pp under per this file's convention). Not a coverage regression: the absolute number of COVERED branches went UP. `getProjectOptionsHashRelativeTo` added a `relativizeJoined` helper whose array enumeration carries a null-argument branch that no honest test can take (FSharpProjectOptions.SourceFiles is never null in any state FCS produces), so the file gained branches faster than it gained covered ones. The pre-existing uncovered branch at `fcsCheckSignature`'s non-null FullCheck arm — which needs a live FSharpCheckFileResults — is unchanged. The LINE floor stays at 100%."
+        "reason": "loosened automatically || AUTOMATION-564 re-baselined the BRANCH floor 91 -\u003E 86 (measured 88, set ~2pp under per this file\u0027s convention). Not a coverage regression: the absolute number of COVERED branches went UP. \u0060getProjectOptionsHashRelativeTo\u0060 added a \u0060relativizeJoined\u0060 helper whose array enumeration carries a null-argument branch that no honest test can take (FSharpProjectOptions.SourceFiles is never null in any state FCS produces), so the file gained branches faster than it gained covered ones. The pre-existing uncovered branch at \u0060fcsCheckSignature\u0060\u0027s non-null FullCheck arm \u2014 which needs a live FSharpCheckFileResults \u2014 is unchanged. The LINE floor stays at 100%."
       }
     ],
     "CheckPipeline.fs": [
       {
         "line": 86,
         "branch": 66,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can\u0027t lower an existing floor). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 77,
         "branch": 60,
-        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -111,7 +111,7 @@
       {
         "line": 100,
         "branch": 66,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this.",
         "platform": "macos"
       },
       {
@@ -125,7 +125,7 @@
       {
         "line": 95,
         "branch": 87,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -138,7 +138,7 @@
       {
         "line": 89,
         "branch": 77,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -152,13 +152,13 @@
       {
         "line": 79,
         "branch": 76,
-        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 75,
         "branch": 69,
-        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -166,7 +166,7 @@
       {
         "line": 87,
         "branch": 80,
-        "reason": "2026-06-12: nondeterminism FIXED by extracting the config-watcher's debounce/reason branches into debounceShouldFire/configChangeReason/onConfigFsEvent (unit-tested with injected clocks; FSW lambda is branchless, its line pinned by RealWatchTests) -- coverage is now identical across runs (77.7 line / 78.8 branch, 104/132). Floors settled at 77/78 via official loosen. Historical: branch flipped 78.5-80.0 between identical runs because the suppressed-debounce arm only executed when the OS double-fired within the 200ms window. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "2026-06-12: nondeterminism FIXED by extracting the config-watcher\u0027s debounce/reason branches into debounceShouldFire/configChangeReason/onConfigFsEvent (unit-tested with injected clocks; FSW lambda is branchless, its line pinned by RealWatchTests) -- coverage is now identical across runs (77.7 line / 78.8 branch, 104/132). Floors settled at 77/78 via official loosen. Historical: branch flipped 78.5-80.0 between identical runs because the suppressed-debounce arm only executed when the OS double-fired within the 200ms window. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -180,13 +180,13 @@
       {
         "line": 100,
         "branch": 73,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render\u002Bparse round-trip and its strict-parse rejections, identitySourceFile\u0027s dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable-\u003ENone), buildIdentity\u0027s version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf\u0027s GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute \u2014 every assembly the test host can load has one) and hashFile\u0027s debug-log arm on a mid-read IO failure. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 71,
-        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render+parse round-trip and its strict-parse rejections, identitySourceFile's dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable->None), buildIdentity's version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf's GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute — every assembly the test host can load has one) and hashFile's debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "reason": "binary-identity handshake (AUTOMATION-147). Every decision is unit-tested directly: compareIdentity (match / different-content-same-version / different-version / NO-RECORD-is-stale), BinaryIdentity render\u002Bparse round-trip and its strict-parse rejections, identitySourceFile\u0027s dll/exe/none resolution, hashFile (determinism, content-sensitivity, unreadable-\u003ENone), buildIdentity\u0027s version sanitization and the DETERMINISTIC unhashable sentinel, identityOf with and without an entry assembly, and the on-disk record/read/verdict round-trip. The uncovered branches are the reflection fallbacks that cannot be reproduced in-process: versionOf\u0027s GetName().Version arm (reached only for an assembly with NO AssemblyInformationalVersionAttribute \u2014 every assembly the test host can load has one) and hashFile\u0027s debug-log arm on a mid-read IO failure. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
@@ -220,12 +220,12 @@
       {
         "line": 97,
         "branch": 100,
-        "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline + CPM + missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL — not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
+        "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline \u002B CPM \u002B missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL \u2014 not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
       },
       {
         "line": 95,
         "branch": 90,
-        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -233,7 +233,7 @@
       {
         "line": 91,
         "branch": 86,
-        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness — incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` — exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs + a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20<->32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness \u2014 incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells \u0060dotnet restore\u0060/\u0060paket restore\u0060/\u0060tool restore\u0060 \u2014 exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs \u002B a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20\u003C-\u003E32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -247,7 +247,7 @@
       {
         "line": 100,
         "branch": 94,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || Branch floor lowered 95 -> 93 on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: AUTOMATION-747's ErrorLedger.Transport adds branches the current tests do not reach (32/34 = 94.1%).",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run. || Branch floor lowered 95 -\u003E 93 on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: AUTOMATION-747\u0027s ErrorLedger.Transport adds branches the current tests do not reach (32/34 = 94.1%).",
         "platform": "macos"
       },
       {
@@ -261,7 +261,7 @@
       {
         "line": 96,
         "branch": 87,
-        "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -269,7 +269,7 @@
       {
         "line": 100,
         "branch": 90,
-        "reason": "new file, AUTOMATION-447: the seam between the format plugin and the repository's pinned `dotnet tool run fantomas`. Floor = the MEASURED value on macOS 2026-09-04 (line 100%, branch 83% over the three format test classes) less the same ~1-5pp wobble margin every other floor here carries. The uncovered branches are coverlet's closure artifacts on the fold/choose pipelines; everything that decides a verdict is covered: manifest parsing (present/absent/case/unreadable), every exit-code interpretation (0, 99, 1-with-per-file-errors, 1-unrestored, 1-other, timeout), chunking, the measured Modified set, and the editorconfig inputs including the filesystem-root stop. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
+        "reason": "new file, AUTOMATION-447: the seam between the format plugin and the repository\u0027s pinned \u0060dotnet tool run fantomas\u0060. Floor = the MEASURED value on macOS 2026-09-04 (line 100%, branch 83% over the three format test classes) less the same ~1-5pp wobble margin every other floor here carries. The uncovered branches are coverlet\u0027s closure artifacts on the fold/choose pipelines; everything that decides a verdict is covered: manifest parsing (present/absent/case/unreadable), every exit-code interpretation (0, 99, 1-with-per-file-errors, 1-unrestored, 1-other, timeout), chunking, the measured Modified set, and the editorconfig inputs including the filesystem-root stop. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
         "platform": "macos"
       },
       {
@@ -282,7 +282,7 @@
       {
         "line": 96,
         "branch": 86,
-        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       },
       {
@@ -300,20 +300,20 @@
       {
         "line": 100,
         "branch": 80,
-        "reason": "Lowered from 85 on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: AUTOMATION-747 deleted this module's own truncation branches in favour of ErrorLedger.Transport, leaving 8/10 = 80.0%. Set ~1pp under the measurement. The linux entry still says 85 and will red in CI for the same deletion — refresh it from the next CI run."
+        "reason": "Lowered from 85 on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: AUTOMATION-747 deleted this module\u0027s own truncation branches in favour of ErrorLedger.Transport, leaving 8/10 = 80.0%. Set ~1pp under the measurement. The linux entry still says 85 and will red in CI for the same deletion \u2014 refresh it from the next CI run."
       }
     ],
     "FileFreshness.fs": [
       {
         "line": 92,
         "branch": 91,
-        "reason": "loosened automatically Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened automatically Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 79,
-        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -321,7 +321,7 @@
       {
         "line": 94,
         "branch": 84,
-        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 93.1/77.9 stable across 8 CI runs; tightened from very loose 78/67 floor (15pp / 11pp drift from observed) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 93.1/77.9 stable across 8 CI runs; tightened from very loose 78/67 floor (15pp / 11pp drift from observed) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -335,7 +335,7 @@
       {
         "line": 84,
         "branch": 69,
-        "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -354,7 +354,7 @@
       {
         "line": 98,
         "branch": 95,
-        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -362,7 +362,7 @@
       {
         "line": 98,
         "branch": 48,
-        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -370,13 +370,13 @@
       {
         "line": 93,
         "branch": 91,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 89,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
     ],
@@ -390,7 +390,7 @@
       {
         "line": 95,
         "branch": 63,
-        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -410,13 +410,13 @@
       {
         "line": 88,
         "branch": 78,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 84,
         "branch": 68,
-        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "lower line coverage on Linux CI || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -424,7 +424,7 @@
       {
         "line": 89,
         "branch": 75,
-        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC + interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict + convergence logic it delegates to is in CheckVerdict.fs at 96%+ coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC \u002B interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict \u002B convergence logic it delegates to is in CheckVerdict.fs at 96%\u002B coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -438,7 +438,7 @@
       {
         "line": 90,
         "branch": 76,
-        "reason": "loosened: legacy-parser removal shifted coverage percentages Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened: legacy-parser removal shifted coverage percentages Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -451,13 +451,13 @@
       {
         "line": 91,
         "branch": 72,
-        "reason": "loosened 2026-04-26 §2a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened 2026-04-26 \u00A72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post §2a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
       }
     ],
@@ -471,7 +471,7 @@
       {
         "line": 10,
         "branch": 5,
-        "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -479,13 +479,13 @@
       {
         "line": 90,
         "branch": 91,
-        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns + Begin/End + WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback's overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) — pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run.",
+        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns \u002B Begin/End \u002B WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback\u0027s overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive. NOTE: an automated ratchet pass raised this to line=90/branch=100 and the gate promptly went red at branch=91.7% (11/12) \u2014 pinning this file at 100% contradicts the jitter this very comment documents. Do not re-tighten from a single lucky run.",
         "platform": "macos"
       },
       {
         "line": 84,
         "branch": 72,
-        "reason": "AUTOMATION-15 daemon watchdog; same timer-scheduling jitter as macOS. Conservative floor pending a green Linux CI sample. || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them. || Linux branch floor 78 -> 72 on 2026-08-13. 78 was set from a single CI measurement with ~2pp headroom and went red on the very next run at 76.9%. This file's own note says per-file coverage is load-dependent; a floor within a couple of points of the measurement will keep failing releases for no signal.",
+        "reason": "AUTOMATION-15 daemon watchdog; same timer-scheduling jitter as macOS. Conservative floor pending a green Linux CI sample. || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them. || Linux branch floor 78 -\u003E 72 on 2026-08-13. 78 was set from a single CI measurement with ~2pp headroom and went red on the very next run at 76.9%. This file\u0027s own note says per-file coverage is load-dependent; a floor within a couple of points of the measurement will keep failing releases for no signal.",
         "platform": "linux"
       }
     ],
@@ -493,13 +493,13 @@
       {
         "line": 96,
         "branch": 71,
-        "reason": "exception-handling branches + IgnoreFilterCache reload paths that fire inconsistently across runs Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 96,
         "branch": 65,
-        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -507,7 +507,7 @@
       {
         "line": 97,
         "branch": 100,
-        "reason": "honest floor for the durable pending-verification sidecar. AUTOMATION-150 made `load` return `LoadedQueue = Loaded | Unreadable`, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered — measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by `mise run coverage-ratchet` against BOTH platforms' CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent. NOTE: an automated ratchet pass raised this to line=97/branch=100 from a single run; restored. Per-file coverage is non-deterministic (the collector only emits a source line once its method JIT-compiles, so the denominator wobbles with load), so a 100% branch floor is a trap that fires on a busy box. Do not re-tighten from one lucky run.",
+        "reason": "honest floor for the durable pending-verification sidecar. AUTOMATION-150 made \u0060load\u0060 return \u0060LoadedQueue = Loaded | Unreadable\u0060, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered \u2014 measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by \u0060mise run coverage-ratchet\u0060 against BOTH platforms\u0027 CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent. NOTE: an automated ratchet pass raised this to line=97/branch=100 from a single run; restored. Per-file coverage is non-deterministic (the collector only emits a source line once its method JIT-compiles, so the denominator wobbles with load), so a 100% branch floor is a trap that fires on a busy box. Do not re-tighten from one lucky run.",
         "platform": "macos"
       },
       {
@@ -521,13 +521,13 @@
       {
         "line": 87,
         "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
         "platform": "macos"
       },
       {
         "line": 87,
         "branch": 54,
-        "reason": "deterministic remainder is platform-independent — converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "deterministic remainder is platform-independent \u2014 converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -535,7 +535,7 @@
       {
         "line": 97,
         "branch": 98,
-        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 96.5/87.8 stable across 8 CI runs post coverage-fix series; tightened from 93/82 (gives 1pp safety margin for jitter) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 96.5/87.8 stable across 8 CI runs post coverage-fix series; tightened from 93/82 (gives 1pp safety margin for jitter) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -549,7 +549,7 @@
       {
         "line": 94,
         "branch": 82,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -563,13 +563,13 @@
       {
         "line": 92,
         "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
+        "reason": "plugin-wedge detection \u002B self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is \u0027cannot-tell\u0027, past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor\u0027s default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms.",
         "platform": "macos"
       },
       {
         "line": 92,
         "branch": 87,
-        "reason": "plugin-wedge detection + self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is 'cannot-tell', past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor's default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "reason": "plugin-wedge detection \u002B self-heal (AUTOMATION-147). The pure decisions are all unit-tested: resolveBound precedence (no way to configure the detector off), classifyRunning (under-bound is \u0027cannot-tell\u0027, past-bound is wedged, future-since clamps), decideTick (one escalation per interval, fresh escalations for a new run of the same plugin, wedge declaration, and the fail-closed busy-with-no-Running-plugin arm), every wording function, the breadcrumb round-trip, and runTick (fire-at-most-once via the atomic latch, escalation-without-recovery, never-throws-out-of-a-tick). The uncovered lines/branches are live-timer and defensive-only: createMonitor\u0027s default-30s wrapper (the explicit-period createMonitorWith is exercised), the tryFire-loser branch reachable only when a concurrent tick wins the CompareExchange first, and the breadcrumb IO catch arms. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
@@ -577,13 +577,13 @@
       {
         "line": 99,
         "branch": 100,
-        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. AUTOMATION-126 pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "stable floor: the kill-on-timeout Kill catch arm is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. AUTOMATION-126 pushed the observed value to 97.9% line / 100% branch by making every drain decision a pure function (pumpReachedEof / classifyDrain) that unit tests can drive through all arms; floor left conservative Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 93,
         "branch": 94,
-        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value — ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2->47, ProcessHelper.fs 70->103, MacFsEvents.fs 40->54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
+        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value \u2014 ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired || Linux floor re-baselined 2026-08-12 from CI run 31588655291. Not a coverage regression: every one of these files still passes its LINE floor, and the branch TOTALS grew in files nobody edited (Events.fs 2-\u003E47, ProcessHelper.fs 70-\u003E103, MacFsEvents.fs 40-\u003E54). The collector reports loaded methods, and the new WaitWedgeTests construct a PluginHost and drive waitForAllTerminalCore, pulling far more code into the measured surface without covering it. Floors set ~2pp under the measured value so a load-dependent wobble does not re-red them.",
         "platform": "linux"
       }
     ],
@@ -591,7 +591,7 @@
       {
         "line": 90,
         "branch": 76,
-        "reason": "loosened automatically Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened automatically Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -604,7 +604,7 @@
       {
         "line": 77,
         "branch": 70,
-        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a `try/with ConfigError` around the `check --run-once` arm whose catch (eprintfn + exit 2) only runs when plugin registration raises — a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78->80 to a flaky lucky-ceiling, which the guard's own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs — pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% — daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline's 79 pin). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a \u0060try/with ConfigError\u0060 around the \u0060check --run-once\u0060 arm whose catch (eprintfn \u002B exit 2) only runs when plugin registration raises \u2014 a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78-\u003E80 to a flaky lucky-ceiling, which the guard\u0027s own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor \u002B pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline\u0027s 79 pin). Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -618,7 +618,7 @@
       {
         "line": 91,
         "branch": 81,
-        "reason": "loosened: CLI rendering paths not exercised on all platforms Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened: CLI rendering paths not exercised on all platforms Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -646,7 +646,7 @@
       {
         "line": 83,
         "branch": 54,
-        "reason": "New file from AUTOMATION-573 (run claims). First floor, written on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file's own rule that a floor pinned to one run's exact number goes red on the next. THIN — 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box (AUTOMATION-312).",
+        "reason": "New file from AUTOMATION-573 (run claims). First floor, written on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests: measured line=83.5%, branch=54.2% (13/24). Set ~1pp under the measurement per this file\u0027s own rule that a floor pinned to one run\u0027s exact number goes red on the next. THIN \u2014 11 of 24 branches are unexercised; raise this once the claim paths have tests. No linux entry: set that from CI, never from a dev box (AUTOMATION-312).",
         "platform": "macos"
       },
       {
@@ -659,13 +659,13 @@
       {
         "line": 94,
         "branch": 75,
-        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file's tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm — the `with ex when isExpectedFileFailure ex` guard around `writer.Dispose()` in `Close`, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested.",
+        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file\u0027s tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm \u2014 the \u0060with ex when isExpectedFileFailure ex\u0060 guard around \u0060writer.Dispose()\u0060 in \u0060Close\u0060, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested.",
         "platform": "macos"
       },
       {
         "line": 94,
         "branch": 75,
-        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file's tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm — the `with ex when isExpectedFileFailure ex` guard around `writer.Dispose()` in `Close`, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested. Linux floor mirrors macOS: the module has no platform-specific paths.",
+        "reason": "AUTOMATION-279, new file. Floor = the ACTUAL achieved value, no margin: this file\u0027s tests are deterministic filesystem operations (no FCS, no timing, no load dependence), so unlike the load-dependent floors elsewhere in this file a no-margin pin here does not flake. The 3 uncovered branches are ONE arm \u2014 the \u0060with ex when isExpectedFileFailure ex\u0060 guard around \u0060writer.Dispose()\u0060 in \u0060Close\u0060, i.e. a FLUSH that fails at close time. Reaching it needs a volume that fills between the last write and the close, which cannot be scheduled. The classification it delegates to (isExpectedFileFailure) IS covered directly on every arm, including the propagate-a-bug-in-fshw arm. Do NOT auto-ratchet this upward: the remainder is unreachable, not merely untested. Linux floor mirrors macOS: the module has no platform-specific paths.",
         "platform": "linux"
       }
     ],
@@ -673,13 +673,13 @@
       {
         "line": 84,
         "branch": 73,
-        "reason": "honest floor at the ACHIEVED value (macOS: 72.1% line, 56.2% branch, 9/16) for the run-once check/confirm orchestration shell (AUTOMATION-117). Same shape as IpcOutput.fs's pollAndRender, and left honest for the same reason: what remains uncovered is the shell that drives a REAL Daemon end to end — RunOnce (dotnet build + the whole test suite), the console/UI.fail reporting arms (Clean/FailuresFound/Incomplete/UnearnedScope), the staleness-warning arm, and the settle-failure arm. Those need a real build and a real test run, and FsHotWatch.IntegrationTests (where such a test would live) is EXCLUDED from coverage, so it could not lift this number anyway. Everything that DECIDES anything is pure and lives elsewhere at 95%+: CheckVerdict.fs (verdict/converge/confirmNeedsFullRun) and IpcParsing.fs (parseTestRunReport/isFullSuite). The in-process transport this file does own — readTestRun, requestFullSuiteScope, requestFullRun, including their unknown-command and throwing arms — IS unit-tested against a real PluginHost in RunOnceOutputTests. Left uncovered rather than hidden with ExcludeFromCodeCoverage. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "honest floor at the ACHIEVED value (macOS: 72.1% line, 56.2% branch, 9/16) for the run-once check/confirm orchestration shell (AUTOMATION-117). Same shape as IpcOutput.fs\u0027s pollAndRender, and left honest for the same reason: what remains uncovered is the shell that drives a REAL Daemon end to end \u2014 RunOnce (dotnet build \u002B the whole test suite), the console/UI.fail reporting arms (Clean/FailuresFound/Incomplete/UnearnedScope), the staleness-warning arm, and the settle-failure arm. Those need a real build and a real test run, and FsHotWatch.IntegrationTests (where such a test would live) is EXCLUDED from coverage, so it could not lift this number anyway. Everything that DECIDES anything is pure and lives elsewhere at 95%\u002B: CheckVerdict.fs (verdict/converge/confirmNeedsFullRun) and IpcParsing.fs (parseTestRunReport/isFullSuite). The in-process transport this file does own \u2014 readTestRun, requestFullSuiteScope, requestFullRun, including their unknown-command and throwing arms \u2014 IS unit-tested against a real PluginHost in RunOnceOutputTests. Left uncovered rather than hidden with ExcludeFromCodeCoverage. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
         "line": 62,
         "branch": 37,
-        "reason": "PROVISIONAL — not yet measured on Linux. Same orchestration shell as the macOS entry; the number is extrapolated from the observed macOS→Linux gap on the sibling shell IpcOutput.fs (80/53 macOS vs 69/35 Linux), because this file could only be measured on macOS when it was written. RE-TIGHTEN FROM THE FIRST CI ARTIFACTS via `mise run loosen-from-ci` — which is how IpcOutput.fs's own Linux floor was set. If Linux comes in HIGHER than this, RAISE it: a floor below the achieved value is a floor that hides a future regression.",
+        "reason": "PROVISIONAL \u2014 not yet measured on Linux. Same orchestration shell as the macOS entry; the number is extrapolated from the observed macOS\u2192Linux gap on the sibling shell IpcOutput.fs (80/53 macOS vs 69/35 Linux), because this file could only be measured on macOS when it was written. RE-TIGHTEN FROM THE FIRST CI ARTIFACTS via \u0060mise run loosen-from-ci\u0060 \u2014 which is how IpcOutput.fs\u0027s own Linux floor was set. If Linux comes in HIGHER than this, RAISE it: a floor below the achieved value is a floor that hides a future regression.",
         "platform": "linux"
       }
     ],
@@ -687,7 +687,7 @@
       {
         "line": 89,
         "branch": 76,
-        "reason": "loosened: new severity counting branches Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened: new severity counting branches Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -701,13 +701,13 @@
       {
         "line": 100,
         "branch": 92,
-        "reason": "symlink-safe walker (2026-07-13 wedge fix); 12/14 branches covered on macos — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not). FLOOR LOWERED 87 → 85 on 2026-08-23 WITHOUT a coverage regression: the same two arms are uncovered as when this floor was written, but the branch DENOMINATOR fell from 16 to 14, and 2-of-16 clears an 87% floor while 2-of-14 does not. This is the drift AUTOMATION-312 describes and the reason AUTOMATION-119 wants covered COUNTS rather than a percentage — thellma/intelligence already gates on absolute covered lines/branches for exactly this. The linux entry is deliberately untouched: this box is macos and cannot observe the linux branch model, which counts DU arms differently; that floor moves from a CI measurement.",
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 12/14 branches covered on macos \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not). FLOOR LOWERED 87 \u2192 85 on 2026-08-23 WITHOUT a coverage regression: the same two arms are uncovered as when this floor was written, but the branch DENOMINATOR fell from 16 to 14, and 2-of-16 clears an 87% floor while 2-of-14 does not. This is the drift AUTOMATION-312 describes and the reason AUTOMATION-119 wants covered COUNTS rather than a percentage \u2014 thellma/intelligence already gates on absolute covered lines/branches for exactly this. The linux entry is deliberately untouched: this box is macos and cannot observe the linux branch model, which counts DU arms differently; that floor moves from a CI measurement.",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 87,
-        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered \u2014 the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
         "platform": "linux"
       }
     ],
@@ -715,13 +715,13 @@
       {
         "line": 100,
         "branch": 93,
-        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on macOS 2026-09-04: line 100% (every line executed), branch 15/16 = 93.8%. The single uncovered edge is the compiler-generated exception filter of `tryParseLine`'s `try ... with _ ->`: the handler catches everything, so the not-matched edge cannot be reached from any input, and the reachable half IS covered (malformed JSON, a truncated line, and a line missing a field all parse to None). Everything a caller depends on is exercised: the JSON round-trip, series ordering on disk, both IO failure paths (unwritable record, locked file), the forced-GC opt-in in both directions, and all three RetentionVerdict cases including the zero-baseline guard. Left honest rather than hidden with ExcludeFromCodeCoverage.",
+        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on macOS 2026-09-04: line 100% (every line executed), branch 15/16 = 93.8%. The single uncovered edge is the compiler-generated exception filter of \u0060tryParseLine\u0060\u0027s \u0060try ... with _ -\u003E\u0060: the handler catches everything, so the not-matched edge cannot be reached from any input, and the reachable half IS covered (malformed JSON, a truncated line, and a line missing a field all parse to None). Everything a caller depends on is exercised: the JSON round-trip, series ordering on disk, both IO failure paths (unwritable record, locked file), the forced-GC opt-in in both directions, and all three RetentionVerdict cases including the zero-baseline guard. Left honest rather than hidden with ExcludeFromCodeCoverage.",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 90,
-        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on Linux CI run 33870122165 (2026-09-04): line 100%, branch 20/22 = 90.9%. Linux instruments 22 branches where macOS sees 16 — the same source, a different count of compiler-generated edges — so the platforms carry separate floors per this file's convention. The uncovered edges are the unreachable halves of catch-all exception filters, not untested logic: line coverage is 100% on both platforms.",
+        "reason": "new file, AUTOMATION-610. Floor = the MEASURED value on Linux CI run 33870122165 (2026-09-04): line 100%, branch 20/22 = 90.9%. Linux instruments 22 branches where macOS sees 16 \u2014 the same source, a different count of compiler-generated edges \u2014 so the platforms carry separate floors per this file\u0027s convention. The uncovered edges are the unreachable halves of catch-all exception filters, not untested logic: line coverage is 100% on both platforms.",
         "platform": "linux"
       }
     ],
@@ -742,7 +742,7 @@
       {
         "line": 93,
         "branch": 66,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split) Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -755,7 +755,7 @@
       {
         "line": 95,
         "branch": 64,
-        "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in `implicitImportsFor`'s ancestor walk: `Path.GetDirectoryName` returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run's number went red on the next one.",
+        "reason": "AUTOMATION-303. Measured 94.4% line / 64.3% branch (9/14) locally. The five uncovered branches are the defensive totality guards in \u0060implicitImportsFor\u0060\u0027s ancestor walk: \u0060Path.GetDirectoryName\u0060 returning null or empty for the project dir, and the parent-equals-self stop. Those fire only AT a filesystem root, which no portable test can stage - the reachable root case (walk up, find nothing, stop) IS covered by the SIBLING-directory test. Floor set below the measurement rather than at it: per ADR 0019 coverage here is load-dependent, and two floors pinned to a single run\u0027s number went red on the next one.",
         "platform": "macos"
       },
       {
@@ -790,7 +790,7 @@
       {
         "line": 93,
         "branch": 84,
-        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered — VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run's measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
+        "reason": "AUTOMATION-129, 2026-07-14: floor = the ACTUAL achieved value, no margin. The uncovered branches are exception FILTERS on filesystem IO (unreadable file / undeletable dir / unenumerable dir); the reachable ones ARE covered \u2014 VerdictTests chmods real files and real directories to drive them. Cover new arms rather than loosening this. Floor restored 2026-08-07: an auto-ratchet pass had pinned this to a single run\u0027s measurement (under 1pp headroom, and two such floors went red on the next run). Per-file coverage is load-dependent - re-baseline from CI on BOTH platforms, not one local run.",
         "platform": "macos"
       },
       {
@@ -804,13 +804,13 @@
       {
         "line": 100,
         "branch": 86,
-        "reason": "new file, AUTOMATION-165. Floor = the ACTUAL achieved value on macOS 2026-08-26 (line 100%, branch 86.4% = 19/22) less a ~1pp margin for the load wobble every floor in this file documents. Every reachable arm is covered: each parse rejection, the glob/literal/directory resolution paths, the absent-declaration sentinel in both directions, and the mode-000 config and mode-000 repo root that drive the IO fallbacks. The three uncovered branch points are all short-circuits that cannot both be forced - the `||` in escapesRepo, the JsonException filter in parse, and the IOException half of tryRead (only UnauthorizedAccessException is forceable from a test, which is why this module has ONE such arm rather than one per call site). Left honest rather than hidden with ExcludeFromCodeCoverage. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
+        "reason": "new file, AUTOMATION-165. Floor = the ACTUAL achieved value on macOS 2026-08-26 (line 100%, branch 86.4% = 19/22) less a ~1pp margin for the load wobble every floor in this file documents. Every reachable arm is covered: each parse rejection, the glob/literal/directory resolution paths, the absent-declaration sentinel in both directions, and the mode-000 config and mode-000 repo root that drive the IO fallbacks. The three uncovered branch points are all short-circuits that cannot both be forced - the \u0060||\u0060 in escapesRepo, the JsonException filter in parse, and the IOException half of tryRead (only UnauthorizedAccessException is forceable from a test, which is why this module has ONE such arm rather than one per call site). Left honest rather than hidden with ExcludeFromCodeCoverage. Linux is unmeasured here (the dev boxes are macOS) - re-baseline it from CI if it diverges.",
         "platform": "macos"
       },
       {
         "line": 97,
         "branch": 77,
-        "reason": "provisional Linux floor (AUTOMATION-165): not measured locally - the dev boxes are macOS, and this module's IO-fallback tests are guarded on `not IsWindows` but still depend on Unix file modes behaving as they do here. Set below the macOS actual by the margin this repo already sees on pure-logic files (cf. Verdict.fs), to be settled from CI artifacts. NOT a licence to loosen the macOS floor.",
+        "reason": "provisional Linux floor (AUTOMATION-165): not measured locally - the dev boxes are macOS, and this module\u0027s IO-fallback tests are guarded on \u0060not IsWindows\u0060 but still depend on Unix file modes behaving as they do here. Set below the macOS actual by the margin this repo already sees on pure-logic files (cf. Verdict.fs), to be settled from CI artifacts. NOT a licence to loosen the macOS floor.",
         "platform": "linux"
       }
     ],
@@ -840,7 +840,7 @@
       {
         "coveredLines": 342,
         "coveredBranches": 30,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 30/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 30/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -848,13 +848,13 @@
       {
         "coveredLines": 219,
         "coveredBranches": 35,
-        "reason": "Net -2 branches across AUTOMATION-495 and 528 (528 adds the DepsManifestOlderThanRestore arm; 495's remedy rework removes more than it adds). Measured 35/36 branches. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason — refresh it from the next CI run.",
+        "reason": "Net -2 branches across AUTOMATION-495 and 528 (528 adds the DepsManifestOlderThanRestore arm; 495\u0027s remedy rework removes more than it adds). Measured 35/36 branches. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
         "platform": "macos"
       },
       {
         "coveredLines": 198,
         "coveredBranches": 77,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 77/77 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 77/77 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -868,7 +868,7 @@
       {
         "coveredLines": 30,
         "coveredBranches": 9,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -882,7 +882,7 @@
       {
         "coveredLines": 754,
         "coveredBranches": 158,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 158/179 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 12 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 158/179 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 12 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -896,7 +896,7 @@
       {
         "coveredLines": 55,
         "coveredBranches": 28,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/46 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/46 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -910,7 +910,7 @@
       {
         "coveredLines": 45,
         "coveredBranches": 7,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 7/8 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 7/8 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -924,7 +924,7 @@
       {
         "coveredLines": 160,
         "coveredBranches": 46,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/66 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/66 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -938,7 +938,7 @@
       {
         "coveredLines": 84,
         "coveredBranches": 79,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 79/80 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 79/80 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -952,7 +952,7 @@
       {
         "coveredLines": 13,
         "coveredBranches": 6,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 6/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 6/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -966,7 +966,7 @@
       {
         "coveredLines": 9,
         "coveredBranches": 4,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -980,7 +980,7 @@
       {
         "coveredLines": 209,
         "coveredBranches": 41,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -994,7 +994,7 @@
       {
         "coveredLines": 77,
         "coveredBranches": 31,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1002,13 +1002,13 @@
       {
         "coveredLines": 1175,
         "coveredBranches": 149,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered lines wobbled 1074 -> 1071 between the two runs (daemon timing paths); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered lines wobbled 1074 -\u003E 1071 between the two runs (daemon timing paths); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
         "platform": "macos"
       },
       {
         "coveredLines": 1086,
         "coveredBranches": 238,
-        "reason": "Branches lowered 239 -> 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry's lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Branches lowered 239 -\u003E 238 by CI run 33821589420 (PR #11, 2026-09-04), which printed 238/319 with the same denominator: the daemon timing paths wobble by one branch run to run, as the macos entry\u0027s lines do. Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 239/319 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1022,7 +1022,7 @@
       {
         "coveredLines": 798,
         "coveredBranches": 371,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 371/430 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 8 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 371/430 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 8 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1036,7 +1036,7 @@
       {
         "coveredLines": 51,
         "coveredBranches": 24,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 24/24 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 24/24 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1050,7 +1050,7 @@
       {
         "coveredLines": 60,
         "coveredBranches": 23,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/30 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 10 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/30 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 10 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1064,7 +1064,7 @@
       {
         "coveredLines": 41,
         "coveredBranches": 13,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1078,7 +1078,7 @@
       {
         "coveredLines": 156,
         "coveredBranches": 46,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 15 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 46/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 15 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1092,7 +1092,7 @@
       {
         "coveredLines": 6,
         "coveredBranches": 0,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1106,7 +1106,7 @@
       {
         "coveredLines": 321,
         "coveredBranches": 95,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 95/95 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 95/95 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1120,7 +1120,7 @@
       {
         "coveredLines": 78,
         "coveredBranches": 49,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 49/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 49/51 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1134,7 +1134,7 @@
       {
         "coveredLines": 9,
         "coveredBranches": 2,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1148,7 +1148,7 @@
       {
         "coveredLines": 247,
         "coveredBranches": 63,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 63/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 63/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 3 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1156,7 +1156,7 @@
       {
         "coveredLines": 26,
         "coveredBranches": 8,
-        "reason": "AUTOMATION-747 replaced this module's own cap with ErrorLedger.Transport's, deleting the local truncation branches. Measured 8/10 branches. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason — refresh it from the next CI run.",
+        "reason": "AUTOMATION-747 replaced this module\u0027s own cap with ErrorLedger.Transport\u0027s, deleting the local truncation branches. Measured 8/10 branches. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
         "platform": "macos"
       },
       {
@@ -1176,7 +1176,7 @@
       {
         "coveredLines": 92,
         "coveredBranches": 47,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 47/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 47/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1190,7 +1190,7 @@
       {
         "coveredLines": 305,
         "coveredBranches": 133,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 133/152 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 133/152 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1204,7 +1204,7 @@
       {
         "coveredLines": 107,
         "coveredBranches": 38,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 38/54 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1212,7 +1212,7 @@
       {
         "coveredLines": 244,
         "coveredBranches": 26,
-        "reason": "re-baselined 2026-09-04 for AUTOMATION-447: the plugin no longer formats in-process — the exit-code, output-parsing and pin logic moved to FantomasTool.fs, so this file has FEWER branches (26, all covered, from ~31) and the old floor of 30 was structurally unreachable. Floor = one full local run (2862 tests: 232 lines, 26/26 branches) less a 2-line / 1-branch wobble margin. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "reason": "re-baselined 2026-09-04 for AUTOMATION-447: the plugin no longer formats in-process \u2014 the exit-code, output-parsing and pin logic moved to FantomasTool.fs, so this file has FEWER branches (26, all covered, from ~31) and the old floor of 30 was structurally unreachable. Floor = one full local run (2862 tests: 232 lines, 26/26 branches) less a 2-line / 1-branch wobble margin. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
         "platform": "macos"
       },
       {
@@ -1232,7 +1232,7 @@
       {
         "coveredLines": 8,
         "coveredBranches": 1,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 1/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 1/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1246,7 +1246,7 @@
       {
         "coveredLines": 33,
         "coveredBranches": 10,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 10/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 10/10 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1260,7 +1260,7 @@
       {
         "coveredLines": 51,
         "coveredBranches": 35,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 35/38 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 35/38 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1274,7 +1274,7 @@
       {
         "coveredLines": 44,
         "coveredBranches": 13,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 13/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1288,7 +1288,7 @@
       {
         "coveredLines": 133,
         "coveredBranches": 41,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 41/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1302,7 +1302,7 @@
       {
         "coveredLines": 266,
         "coveredBranches": 55,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 55/78 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 55/78 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1316,7 +1316,7 @@
       {
         "coveredLines": 563,
         "coveredBranches": 218,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/282 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/282 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1330,7 +1330,7 @@
       {
         "coveredLines": 298,
         "coveredBranches": 223,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 223/279 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 223/279 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1344,7 +1344,7 @@
       {
         "coveredLines": 4,
         "coveredBranches": 0,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 0/0 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1358,7 +1358,7 @@
       {
         "coveredLines": 135,
         "coveredBranches": 20,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1372,7 +1372,7 @@
       {
         "coveredLines": 10,
         "coveredBranches": 2,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1386,7 +1386,7 @@
       {
         "coveredLines": 47,
         "coveredBranches": 21,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/84 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/84 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1394,13 +1394,13 @@
       {
         "coveredLines": 63,
         "coveredBranches": 12,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered branches wobbled 12 -> 11 between the two runs (watchdog timing path); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "reason": "min of two full local runs 2026-09-04 (2815 tests each); covered branches wobbled 12 -\u003E 11 between the two runs (watchdog timing path); floor = the min. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
         "platform": "macos"
       },
       {
         "coveredLines": 59,
         "coveredBranches": 20,
-        "reason": "Branches 21 -> 20 on 2026-09-04 (AUTOMATION-448, PR #14): CI run 33834835515 measured 20/26 on a tree with NO src/ change, while main runs 33742353641 and 33833361422 measured 21/26. Floor = the min observed across CI runs: this file's override entries already document that the timer-callback branches wobble +/-1 under load, and a count floor pinned to one run's exact value re-reds the gate on the next wobble for no signal. || Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Branches 21 -\u003E 20 on 2026-09-04 (AUTOMATION-448, PR #14): CI run 33834835515 measured 20/26 on a tree with NO src/ change, while main runs 33742353641 and 33833361422 measured 21/26. Floor = the min observed across CI runs: this file\u0027s override entries already document that the timer-callback branches wobble \u002B/-1 under load, and a count floor pinned to one run\u0027s exact value re-reds the gate on the next wobble for no signal. || Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 21/26 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1414,7 +1414,7 @@
       {
         "coveredLines": 84,
         "coveredBranches": 28,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/28 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 28/28 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1428,7 +1428,7 @@
       {
         "coveredLines": 60,
         "coveredBranches": 23,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/34 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 23/34 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1442,7 +1442,7 @@
       {
         "coveredLines": 42,
         "coveredBranches": 14,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 14/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 14/14 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1456,7 +1456,7 @@
       {
         "coveredLines": 172,
         "coveredBranches": 54,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 54/96 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 9 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 54/96 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 9 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1470,7 +1470,7 @@
       {
         "coveredLines": 760,
         "coveredBranches": 149,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 149/169 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 149/169 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 2 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1484,7 +1484,7 @@
       {
         "coveredLines": 281,
         "coveredBranches": 75,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 75/87 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 75/87 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1498,7 +1498,7 @@
       {
         "coveredLines": 79,
         "coveredBranches": 39,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 39/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 39/44 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1512,7 +1512,7 @@
       {
         "coveredLines": 271,
         "coveredBranches": 115,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 115/118 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 29 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 115/118 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 29 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1526,7 +1526,7 @@
       {
         "coveredLines": 68,
         "coveredBranches": 32,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 32/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 32/42 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1540,7 +1540,7 @@
       {
         "coveredLines": 745,
         "coveredBranches": 294,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 294/398 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 47 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 294/398 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 47 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1554,7 +1554,7 @@
       {
         "coveredLines": 384,
         "coveredBranches": 218,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/262 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 11 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 218/262 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 11 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1568,7 +1568,7 @@
       {
         "coveredLines": 154,
         "coveredBranches": 58,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 58/60 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 58/60 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1582,7 +1582,7 @@
       {
         "coveredLines": 35,
         "coveredBranches": 12,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 12/16 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 12/16 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1596,7 +1596,7 @@
       {
         "coveredLines": 189,
         "coveredBranches": 31,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 31/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 4 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1610,7 +1610,7 @@
       {
         "coveredLines": 119,
         "coveredBranches": 51,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1624,7 +1624,7 @@
       {
         "coveredLines": 64,
         "coveredBranches": 18,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 17 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1638,7 +1638,7 @@
       {
         "coveredLines": 192,
         "coveredBranches": 101,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 101/117 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 101/117 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1652,7 +1652,7 @@
       {
         "coveredLines": 24,
         "coveredBranches": 18,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/18 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 18/18 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1660,13 +1660,13 @@
       {
         "coveredLines": 165,
         "coveredBranches": 20,
-        "reason": "AUTOMATION-495 deleted the whole-run short-circuit (`if not (isEmpty unrepairable) || not (isEmpty tripped)`) — the breaker is per-file now, so those branches no longer exist. Measured 20/20 branches, 100%. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason — refresh it from the next CI run.",
+        "reason": "AUTOMATION-495 deleted the whole-run short-circuit (\u0060if not (isEmpty unrepairable) || not (isEmpty tripped)\u0060) \u2014 the breaker is per-file now, so those branches no longer exist. Measured 20/20 branches, 100%. Lowered on 2026-09-05, eight-change merge batch (AUTOMATION-495, 528, 526, 394, 533, 572, 573, 747), one full local run of 3044 tests. Branches went down because covered code was DELETED, not because a test stopped running. Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312) and is now UNREACHABLE for the same reason \u2014 refresh it from the next CI run.",
         "platform": "macos"
       },
       {
         "coveredLines": 153,
         "coveredBranches": 40,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 40/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 7 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 40/40 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 7 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1680,7 +1680,7 @@
       {
         "coveredLines": 15,
         "coveredBranches": 4,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 4/6 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1694,7 +1694,7 @@
       {
         "coveredLines": 13,
         "coveredBranches": 9,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 9/12 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 6 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1708,7 +1708,7 @@
       {
         "coveredLines": 51,
         "coveredBranches": 20,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 20/20 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 0 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1722,7 +1722,7 @@
       {
         "coveredLines": 40,
         "coveredBranches": 2,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 2/2 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1736,7 +1736,7 @@
       {
         "coveredLines": 1173,
         "coveredBranches": 551,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 551/647 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 32 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1750,7 +1750,7 @@
       {
         "coveredLines": 135,
         "coveredBranches": 45,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 45/48 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 45/48 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 18 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],
@@ -1764,7 +1764,7 @@
       {
         "coveredLines": 248,
         "coveredBranches": 74,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 74/104 exact from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool\u0027s own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ]
