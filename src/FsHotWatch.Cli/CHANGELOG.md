@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.44 - 2026-09-06
+
 - AUTOMATION-110: **`Verdict.Outcome.Green` carries a `Baseline`** — `FullSuiteRun` (the
   run every skipped test was last executed in) or `NoTestSuite` — and cannot be
   constructed without one. `CheckVerdict.CheckOutcome.Clean` carries the same, minted
