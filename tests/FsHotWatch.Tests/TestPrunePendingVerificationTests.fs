@@ -1323,7 +1323,13 @@ let ``a MISSING ledger (fresh clone) is legitimately empty and does NOT force a 
     // The trade this fix must NOT make: fail-open swapped for a stuck full suite. A fresh
     // clone has no ledger at all, which is a provable "nothing owed" and must stay a fast
     // no-op.
+    //
+    // "fresh clone" here means a fresh LEDGER. A repository with no
+    // full-suite baseline does widen — once, to earn it — which is a different rule with
+    // its own tests; this one is about the missing-vs-unreadable ledger boundary, so the
+    // baseline is given.
     withTempDir "tp-ledger-missing" (fun tmpDir ->
+        seedBaseline tmpDir [ "P1"; "P2" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
@@ -1353,6 +1359,8 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
     // The other half of the boundary. Misclassify `[]` as unreadable and every idle daemon
     // grinds a full suite forever.
     withTempDir "tp-ledger-empty" (fun tmpDir ->
+        // a baseline, so the only rule under test is the ledger's.
+        seedBaseline tmpDir [ "P1"; "P2" ]
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"

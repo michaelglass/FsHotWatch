@@ -165,8 +165,10 @@ means "the answer is being computed, wait".
 This — not the progress display — is the surface agents and CI should read. Full
 schema, exit codes, and the tree-hash recipe: [CLI
 README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci),
-[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md) and
-[ADR-019](docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
+[ADR-013](docs/adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md),
+[ADR-019](docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md) and
+[ADR-021](docs/adr-021-a-green-is-relative-to-a-full-suite-baseline.md) (a green names
+the full-suite run the tests it skipped were last executed in).
 
 ### `.fshw/heartbeat` — is this daemon still *working*?
 

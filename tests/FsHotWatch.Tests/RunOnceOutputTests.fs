@@ -706,7 +706,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
 
                               return
                                   if scopeReads = 1 then
-                                      $"""{{"scope":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"}}"""
+                                      $"""{{"scope":"filtered","ranProjects":2,"totalProjects":4,"runId":"%O{runId}"{BaselineFixtures.replyFragment}}}"""
                                   else
                                       """{"scope":"none","noTestsReason":"already-verified"}"""
                           } ]
@@ -768,12 +768,12 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             []
             FsHotWatch.Cli.CheckVerdict.InnerLoop
             false
-            (FsHotWatch.Cli.IpcParsing.TestRunReport.ofScopeOnly (FsHotWatch.Cli.IpcParsing.FullSuite 1))
+            (BaselineFixtures.reportOf (FsHotWatch.Cli.IpcParsing.FullSuite 1))
             FsHotWatch.Cli.Verdict.NoReading
             Map.empty
             []
             (FsHotWatch.Cli.IpcOutput.SettledTree.capture repoRoot [])
-            FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean
+            (FsHotWatch.Cli.CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
         |> ignore
 
         let createDaemon (root: string) =
@@ -981,7 +981,12 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                     [ FsHotWatch.Cli.IpcParsing.SetScopeCommand, fun _ctx _state _args -> async { return "" }
                       FsHotWatch.Cli.IpcParsing.TestScopeCommand,
                       fun _ctx _state _args ->
-                          async { return """{"scope":"full","ranProjects":1,"totalProjects":1}""" } ]
+                          async {
+                              return
+                                  """{"scope":"full","ranProjects":1,"totalProjects":1"""
+                                  + BaselineFixtures.replyFragment
+                                  + "}"
+                          } ]
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   CacheKey = None
                   Teardown = None }
@@ -1217,7 +1222,10 @@ let ``readTestRun parses a full-suite reply from the in-process host`` () =
     let host =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"full","ranProjects":3,"totalProjects":3}""" ]
+              fun _ ->
+                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  + BaselineFixtures.replyFragment
+                  + "}" ]
 
     let report = FsHotWatch.Cli.RunOnceCheck.readTestRun host
     test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 3 @>
@@ -1228,7 +1236,10 @@ let ``readTestRun reports an impact-filtered run as filtered, never as full`` ()
     let host =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"filtered","ranProjects":1,"totalProjects":3}""" ]
+              fun _ ->
+                  """{"scope":"filtered","ranProjects":1,"totalProjects":3"""
+                  + BaselineFixtures.replyFragment
+                  + "}" ]
 
     let report = FsHotWatch.Cli.RunOnceCheck.readTestRun host
     test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 3) @>
@@ -1282,7 +1293,8 @@ let private innerLoopExitFor (scope: FsHotWatch.Cli.IpcParsing.TestScope) : int 
           WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
           RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
           Coverage = FsHotWatch.Cli.IpcParsing.Complete
-          Scope = scope }
+          Scope = scope
+          Baseline = BaselineFixtures.reading }
 
     FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.InnerLoop inputs
     |> FsHotWatch.Cli.CheckVerdict.exitCode
@@ -1297,7 +1309,10 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
     let ranEverything =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"full","ranProjects":3,"totalProjects":3}""" ]
+              fun _ ->
+                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  + BaselineFixtures.replyFragment
+                  + "}" ]
 
     test <@ innerLoopExitFor (scopeReadFrom ranEverything) = 0 @>
 
@@ -1328,7 +1343,10 @@ let ``check refuses a scope read that FAULTED — a fault may not be read as a p
     let selfContradicting =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"full","ranProjects":2,"totalProjects":4}""" ]
+              fun _ ->
+                  """{"scope":"full","ranProjects":2,"totalProjects":4"""
+                  + BaselineFixtures.replyFragment
+                  + "}" ]
 
     test <@ innerLoopExitFor (scopeReadFrom selfContradicting) <> 0 @>
 
@@ -1358,7 +1376,8 @@ let ``confirm refuses every scope it did not positively establish — fault or n
               WaitingOnBuild = FsHotWatch.Cli.CheckVerdict.BuildWait.NotWaiting
               RunnerAborted = FsHotWatch.Cli.CheckVerdict.RunnerAbort.NoAbort
               Coverage = FsHotWatch.Cli.IpcParsing.Complete
-              Scope = scope }
+              Scope = scope
+              Baseline = BaselineFixtures.reading }
 
         FsHotWatch.Cli.CheckVerdict.verdict FsHotWatch.Cli.CheckVerdict.Confirmation inputs
         |> FsHotWatch.Cli.CheckVerdict.exitCode
@@ -1367,7 +1386,10 @@ let ``confirm refuses every scope it did not positively establish — fault or n
     let full =
         hostWith
             [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
-              fun _ -> """{"scope":"full","ranProjects":3,"totalProjects":3}""" ]
+              fun _ ->
+                  """{"scope":"full","ranProjects":3,"totalProjects":3"""
+                  + BaselineFixtures.replyFragment
+                  + "}" ]
 
     test <@ confirmExit (scopeReadFrom full) = 0 @>
 
@@ -1509,4 +1531,4 @@ let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in bo
 
         let v = verdictOnDisk repoRoot
         test <@ v.ExitCode = 0 @>
-        test <@ v.Outcome = FsHotWatch.Cli.Verdict.Green @>)
+        test <@ BaselineFixtures.isGreen (v.Outcome) @>)

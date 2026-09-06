@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- prior reds are DURABLE — `.fshw/test-prune/outstanding-failures.json`,
+  loaded at construction and quarantined into the first run of a session as in-session
+  reds are (an unreadable file takes the road: widen to the full suite).
+  The session-scoped design was unsound whenever the durable queue was non-empty at
+  restart, which made the restarted daemon's first run impact-filtered and dropped every
+  red the filter did not reach — the shape, reproduced by a restart.
+- a FULL-SUITE BASELINE (`.fshw/test-prune/full-suite-baseline.json`) —
+  the last run that executed every configured project and left each one accounted for
+  (passed, or red and recorded). `nothingOwed` now includes its validity: with none, or
+  with a project configured since it was earned, every run is widened to the full suite
+  (the same shape as an unreadable ledger) until one re-earns it, and the zero-affected
+  skip is refused with a named `NoFullSuiteBaseline` cause. `test-scope` reports
+  `baseline` (`runId`, `earnedAt`, `projects`) on every branch, or `baselineAbsent` with
+  the reason. The cache key is salted by the widening, so a filtered run's cached verdict
+  cannot replay for a run that would be widened.
+- `flushAndQueryAffected` tells "no covering test" apart from "covered
+  only by a project `tests.projects` does not list". The second is still dropped from the
+  queue, but is WARNED with the project names and carried on
+  `UncoveredChanges` / `ZeroSelection` to the `test-scope` reply as
+  `unrunnableSymbolCount` / `unrunnableProjects`.
+
 ## 0.13.0-alpha.31 - 2026-09-06
 
 - fix: a file whose last FCS check reported errors is stamped

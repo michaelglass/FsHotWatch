@@ -88,10 +88,10 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
 
     FsHotWatch.Cli.Verdict.create
         FsHotWatch.Cli.Verdict.Check
-        (TestRunReport.ofScopeOnly (FullSuite 1))
+        (BaselineFixtures.reportOf (FullSuite 1))
         tree
         (Some [])
-        FsHotWatch.Cli.Verdict.Green
+        (FsHotWatch.Cli.Verdict.Green BaselineFixtures.baseline)
         0
         [ { Name = "test-prune"
             Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
@@ -505,7 +505,7 @@ let ``run-level hooks are attached to the invocation's own verdict with observed
 
         match FsHotWatch.Cli.Verdict.read root with
         | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
-            test <@ verdict.Outcome = FsHotWatch.Cli.Verdict.Green @>
+            test <@ BaselineFixtures.isGreen (verdict.Outcome) @>
 
             test <@ verdict.Hooks |> List.map _.Scope = [ "tests.beforeRun"; "run.beforeRun"; "run.afterRun" ] @>
 
@@ -681,7 +681,7 @@ let ``premature terminal fallback never overwrites a newer invocation verdict`` 
         match FsHotWatch.Cli.Verdict.read root with
         | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
             test <@ verdict.InvocationId = Some "newer-invocation" @>
-            test <@ verdict.Outcome = FsHotWatch.Cli.Verdict.Green @>
+            test <@ BaselineFixtures.isGreen (verdict.Outcome) @>
             test <@ verdict.Hooks |> List.map _.Scope = [ "tests.beforeRun" ] @>
         | other -> failwith $"expected newer verdict to survive, got %A{other}")
 
@@ -795,7 +795,7 @@ let ``signal downgrade still wins after ordinary finalization already won the te
         test <@ code = 0 @>
 
         match FsHotWatch.Cli.Verdict.read root with
-        | FsHotWatch.Cli.Verdict.Reading.Found ordinary -> test <@ ordinary.Outcome = FsHotWatch.Cli.Verdict.Green @>
+        | FsHotWatch.Cli.Verdict.Reading.Found ordinary -> test <@ BaselineFixtures.isGreen (ordinary.Outcome) @>
         | other -> failwith $"ordinary finalization did not preserve green: %A{other}"
 
         releaseSignal.Set()
@@ -857,7 +857,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
         let verdict =
             FsHotWatch.Cli.Verdict.create
                 FsHotWatch.Cli.Verdict.Confirm
-                (TestRunReport.ofScopeOnly (FullSuite 1))
+                (BaselineFixtures.reportOf (FullSuite 1))
                 ({ Hash = tree.Hash
                    FileCount = tree.FileCount
                    SkippedCount = tree.SkippedCount
@@ -865,7 +865,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                    AbsentDeclarationCount = tree.AbsentDeclarationCount }
                 : TreeHash.Tree)
                 (Some [])
-                FsHotWatch.Cli.Verdict.Green
+                (FsHotWatch.Cli.Verdict.Green BaselineFixtures.baseline)
                 0
                 ([ { Name = "test-prune"
                      Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
