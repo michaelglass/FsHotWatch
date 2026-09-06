@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- the zero-project and host-aborted terminals report
+  `RunVerdict.verifiedNothing` (via `PluginStatus.verifiedNothingNow`) instead of a
+  marked summary string, so the run record carries `RunOutcome.VerifiedNothing`. Status
+  and exit codes unchanged: `Completed`, exit 3 for a run that executed nothing.
+
 - prior reds are DURABLE — `.fshw/test-prune/outstanding-failures.json`,
   loaded at construction and quarantined into the first run of a session as in-session
   reds are (an unreadable file takes the road: widen to the full suite).
