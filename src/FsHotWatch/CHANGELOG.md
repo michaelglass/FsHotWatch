@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.29 - 2026-09-06
+
 - AUTOMATION-555 (rework): **the daemon records every phase it spends wall time in.**
   New `DaemonPhases` module: a bounded, thread-safe `Ledger` of `PhaseRecord`s
   (`Scope`, `StartedAt`, `Elapsed`, `Detail`), reachable as `PluginHost.Phases`.
