@@ -148,7 +148,8 @@ type PluginHost
                         // derives startedAt from it rather than guessing.
                         match status with
                         | Completed(at, verdict) ->
-                            activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
+                            let outcome = RunOutcome.ofCompletedVerdict verdict
+                            activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at)
                         | Failed(err, at, verdict) ->
                             activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
                         | Idle

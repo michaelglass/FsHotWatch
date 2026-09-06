@@ -105,6 +105,10 @@ let private outcomePayload (outcome: RunOutcome) : obj =
     | CompletedRun -> {| tag = "completed" |} :> obj
     | FailedRun e -> {| tag = "failed"; error = e |} :> obj
     | TimedOut r -> {| tag = "timedOut"; reason = r |} :> obj
+    | VerifiedNothing d ->
+        {| tag = "verifiedNothing"
+           detail = d |}
+        :> obj
 
 let private pluginStatusPayload
     (host: PluginHost)

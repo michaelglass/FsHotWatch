@@ -108,6 +108,56 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     test <@ run.ActivityTail = [ "line one"; "line two"; "line three" ] @>
     test <@ run.Elapsed >= TimeSpan.Zero @>
 
+let private verifiedNothingHandler (name: string) (detail: string) =
+    { Name = PluginName.create name
+      Init = ()
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChanged _ ->
+                    ctx.ReportStatus(Running DateTime.UtcNow)
+                    ctx.ReportStatus(PluginStatus.verifiedNothingNow detail TimeSpan.Zero)
+                | _ -> ()
+
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      CacheKey = None
+      Teardown = None }
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-339: a verified-nothing run reaches the CLI as the VerifiedNothing case, status still Completed`` () =
+    // The whole hop the ticket is about: plugin verdict → host run record → status
+    // payload → CLI parser. The status stays `Completed` (so `check` keeps its exit 3
+    // rather than an exit 1), and the run record's outcome is the case, not a prefix
+    // some reader has to find in the summary.
+    let host = PluginHost.create nullChecker "/tmp/test"
+    host.RegisterHandler(verifiedNothingHandler "empty" "0 test project(s) ran, no test executed")
+    host.RegisterHandler(completedHandlerWith "control" "6 passed, 0 failed in 6 projects" (fun _ -> async.Return()))
+    host.EmitFileChanged(SourceChanged [ "a.fs" ])
+    waitUntil (fun () -> host.GetHistory("empty") |> List.isEmpty |> not) 12000
+    waitUntil (fun () -> host.GetHistory("control") |> List.isEmpty |> not) 12000
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses (target.GetStatus())
+
+    let empty = parsed.["empty"]
+
+    match empty.Status with
+    | StatusView.Completed _ -> ()
+    | other -> failwithf "expected Completed, got %A" other
+
+    test <@ empty.LastRun.Value.Outcome = VerifiedNothing "0 test project(s) ran, no test executed" @>
+    test <@ empty.LastRun.Value.Summary = Some "NOTHING VERIFIED: 0 test project(s) ran, no test executed" @>
+    test <@ ParsedPluginStatus.verifiedNothing empty @>
+
+    // Positive control on the same wire: a run that verified something is `CompletedRun`.
+    let control = parsed.["control"]
+    test <@ control.LastRun.Value.Outcome = CompletedRun @>
+    test <@ not (ParsedPluginStatus.verifiedNothing control) @>
+
 [<Fact(Timeout = 15000)>]
 let ``GetStatus payload preserves multi-line failure error`` () =
     let host = PluginHost.create nullChecker "/tmp/test"

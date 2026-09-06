@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- AUTOMATION-339: **`RunOutcome.VerifiedNothing of detail`** — a `Completed` run that
+  executed nothing, as a case beside `CompletedRun | FailedRun | TimedOut`. It is
+  derived from the verdict: `RunVerdict` carries `NothingVerified: string option`, built
+  only by the new `RunVerdict.verifiedNothing detail elapsed` (throws on a blank detail,
+  as `create` does on a blank summary), and `RunOutcome.ofCompletedVerdict` is the one
+  mapping the host applies on every `Completed` terminal. New `PluginStatus.verifiedNothingNow`
+  and `PluginCtxHelpers.completeVerifyingNothing` mirror `completedNow` / `completeWith`.
+  The status payload serialises the case as `{"tag":"verifiedNothing","detail":…}`.
+  **Removed:** `RunSummary.saysNothingVerified` — the fact is no longer read off the
+  summary's words. `RunSummary.nothingVerified` remains, as pure display. The fact lives
+  on the verdict rather than as an activity-level outcome override (the
+  `CompleteWithTimeout` mechanism) because the task cache stores the verdict and replays
+  it as a fresh `Completed`: an override would not survive replay and the replayed run
+  would render as a pass. `FileTaskCache` writes the detail as `nothingVerified` on run
+  entries and bumps the entry format to 5, so entries written before the field existed
+  read as a miss instead of as a verified run.
+
 ## 0.10.0-alpha.29 - 2026-09-06
 
 - AUTOMATION-555 (rework): **the daemon records every phase it spends wall time in.**

@@ -1365,6 +1365,12 @@ module PluginCtxHelpers =
     let completeWith (ctx: PluginCtx<'Msg>) (summary: string) (elapsed: System.TimeSpan) : unit =
         ctx.ReportStatus(PluginStatus.completedNow summary elapsed)
 
+    /// Transition status to Completed at the current UTC time with a verdict that says
+    /// the run VERIFIED NOTHING — `detail` is what it did instead. The run record then
+    /// carries `RunOutcome.VerifiedNothing`, and every surface refuses it a green.
+    let completeVerifyingNothing (ctx: PluginCtx<'Msg>) (detail: string) (elapsed: System.TimeSpan) : unit =
+        ctx.ReportStatus(PluginStatus.verifiedNothingNow detail elapsed)
+
     /// Transition status to Failed at the current UTC time. `error` is the
     /// full diagnosis; the verdict carries the one-line `summary` and the
     /// measured duration — same single channel as `completeWith`.

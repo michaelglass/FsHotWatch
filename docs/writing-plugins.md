@@ -32,16 +32,14 @@ let myPlugin: PluginHandler<MyState, unit> =
                 match event with
                 // Most plugins care about only some of what they are handed. Say so
                 // out loud: a run that examined NOTHING must not render as a ✓, and
-                // the framework cannot infer that for you. `RunSummary.nothingVerified`
-                // is the marker every surface reads to downgrade the glyph to ⚠ (and
-                // the agent / verdict.json token to `warn`). The STATUS stays
-                // `Completed` — nothing failed.
+                // the framework cannot infer that for you. `RunVerdict.verifiedNothing`
+                // is the verdict every surface reads to downgrade the glyph to ⚠ (and
+                // the agent / verdict.json token to `warn`) — the run record carries
+                // `RunOutcome.VerifiedNothing`. The STATUS stays `Completed` — nothing
+                // failed.
                 | FileChecked result when not ((AbsFilePath.value result.File).EndsWith ".fs") ->
                     ctx.ReportStatus(
-                        Completed(
-                            DateTime.UtcNow,
-                            RunVerdict.create (RunSummary.nothingVerified "not an F# source file") TimeSpan.Zero
-                        )
+                        Completed(DateTime.UtcNow, RunVerdict.verifiedNothing "not an F# source file" TimeSpan.Zero)
                     )
 
                     return state
@@ -205,17 +203,27 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
                     // project at all would report green having executed nothing.
                     // `Verification` is the total run-level answer and it settles
                     // emptiness first.
-                    let summary =
-                        match completed.Verification with
-                        | Ran FullSuite -> $"full suite: %d{List.length green} green, %d{List.length failed} failed"
-                        | Ran Partial -> $"impact-filtered: %d{List.length green} green, %d{List.length failed} failed"
-                        | NoProjectsSelected -> RunSummary.nothingVerified "no project was selected"
-                        | AllZeroMatch n -> RunSummary.nothingVerified $"%d{n} project(s) ran, all matched zero tests"
-                        | NothingExecuted -> RunSummary.nothingVerified "no project executed a test"
+                    let verdict =
+                        let elapsed = completed.TotalElapsed
 
-                    // `nothingVerified` marks the three cases above so every surface
-                    // refuses them a ✓. The status stays `Completed` — nothing FAILED.
-                    ctx.ReportStatus(Completed(DateTime.UtcNow, RunVerdict.create summary completed.TotalElapsed))
+                        match completed.Verification with
+                        | Ran FullSuite ->
+                            RunVerdict.create
+                                $"full suite: %d{List.length green} green, %d{List.length failed} failed"
+                                elapsed
+                        | Ran Partial ->
+                            RunVerdict.create
+                                $"impact-filtered: %d{List.length green} green, %d{List.length failed} failed"
+                                elapsed
+                        | NoProjectsSelected -> RunVerdict.verifiedNothing "no project was selected" elapsed
+                        | AllZeroMatch n ->
+                            RunVerdict.verifiedNothing $"%d{n} project(s) ran, all matched zero tests" elapsed
+                        | NothingExecuted -> RunVerdict.verifiedNothing "no project executed a test" elapsed
+
+                    // `verifiedNothing` makes the three cases above a verdict every surface
+                    // refuses a ✓ — the run record's outcome is `VerifiedNothing`, a case,
+                    // not a summary prefix. The status stays `Completed` — nothing FAILED.
+                    ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
 
                     return state
                 | _ -> return state
@@ -236,8 +244,8 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
 **Status & errors**
 - `ctx.ReportStatus(status)` — report `Running(since = ...)`, or a terminal `Completed(at, verdict)` / `Failed(error, at, verdict)`.
   Every terminal CARRIES its `RunVerdict` (what the run did + how long it took), and `RunVerdict.create` rejects an empty summary — a content-free `✓` does not typecheck. `PluginCtxHelpers.completeWith` / `failedWith` are the ergonomic constructors.
-- `RunSummary.nothingVerified "<why>"` — the summary for a run that **executed nothing**: no file compared, no test run, no project selected. It marks the summary `NOTHING VERIFIED: …`, and every surface then refuses the run a green (`⚠` instead of `✓`, `warn` in agent mode and in `.fshw/verdict.json`'s `plugins[]`). Report the terminal as `Completed` — nothing failed, and a `Failed` would turn an honest "no verdict" into "failures found".
-  An empty summary does not typecheck, but a *misleading* one does: `0 files checked` is a well-formed summary that renders `✓`. `nothingVerified` is how you stop it. The framework cannot infer this, so a plugin that verifies nothing and stays quiet about it still shows a checkmark.
+- `RunVerdict.verifiedNothing "<why>" elapsed` (or `PluginCtxHelpers.completeVerifyingNothing ctx "<why>" elapsed`) — the verdict for a run that **executed nothing**: no file compared, no test run, no project selected. The run record's outcome becomes `RunOutcome.VerifiedNothing` — a case, not a summary prefix — the summary reads `NOTHING VERIFIED: …`, and every surface then refuses the run a green (`⚠` instead of `✓`, `warn` in agent mode and in `.fshw/verdict.json`'s `plugins[]`). Report the terminal as `Completed` — nothing failed, and a `Failed` would turn an honest "no verdict" into "failures found".
+  An empty summary does not typecheck, but a *misleading* one does: `0 files checked` is a well-formed summary that renders `✓`. `verifiedNothing` is how you stop it. The framework cannot infer this, so a plugin that verifies nothing and stays quiet about it still shows a checkmark.
 - `ctx.ReportErrors(file, entries)` / `ctx.ClearErrors(file)` / `ctx.ClearAllErrors()` — manage diagnostics in the shared error ledger.
 - `ctx.CompleteWithTimeout(reason)` — mark the next terminal transition as `TimedOut` (you still report the terminal itself; its verdict carries the summary).
 

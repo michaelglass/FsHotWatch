@@ -7734,23 +7734,23 @@ let internal createWithLaunchDeadline
                                     // The STATUS stays `Completed`: nothing failed, and a
                                     // `Failed` here would claim one — turning `check`'s honest
                                     // exit 3 "NO VERDICT" into an exit 1 "failures found". It is
-                                    // the SUMMARY that carries the fact, and every renderer keys
-                                    // its glyph off it (`ParsedPluginStatus.verifiedNothing`).
+                                    // the VERDICT that carries the fact — the run record becomes
+                                    // `RunOutcome.VerifiedNothing` — and every renderer keys its
+                                    // glyph off that case (`ParsedPluginStatus.verifiedNothing`).
                                     //
                                     // Asked of `RunVerification`, THE derivation, so this is a
                                     // question about the RUN ("did anything execute?") and not
                                     // about one selection bug: any future path that lands an
                                     // executed-nothing run here is covered without a new arm.
-                                    let verdictSummary =
+                                    let verdict =
                                         if RunVerification.verifiedNothing (verificationOf results.Results) then
-                                            RunSummary.nothingVerified
+                                            RunVerdict.verifiedNothing
                                                 $"%d{total} test project(s) ran, no test executed"
+                                                results.Elapsed
                                         else
-                                            runSummary
+                                            RunVerdict.create runSummary results.Elapsed
 
-                                    ctx.ReportStatus(
-                                        Completed(DateTime.UtcNow, RunVerdict.create verdictSummary results.Elapsed)
-                                    )
+                                    ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
                                 elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
                                     // AUTOMATION-125. Everything this run RAN passed, the
                                     // queue is drained — and yet an earlier failure it did
@@ -7821,9 +7821,10 @@ let internal createWithLaunchDeadline
                                     // A NON-failing terminal, exactly like the pure-defer
                                     // arm above: the `HostAborted`-severity ledger entries
                                     // route the verdict to `RunnerAborted`/exit 2 rather
-                                    // than the exit 1 a red earns. The summary carries
-                                    // `RunSummary.nothingVerified`, so no renderer can
-                                    // give this run a bare `✓` either.
+                                    // than the exit 1 a red earns. The verdict is a
+                                    // verified-nothing one (`RunOutcome.VerifiedNothing` on
+                                    // the run record), so no renderer can give this run a
+                                    // bare `✓` either.
                                     let deferredNote =
                                         if deferred > 0 then
                                             let dn = deferredList |> List.map fst |> String.concat ", "
@@ -7835,11 +7836,7 @@ let internal createWithLaunchDeadline
                                         $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{deferredNote}"
 
                                     if carriedCount = 0 then
-                                        ctx.ReportStatus(
-                                            PluginStatus.completedNow
-                                                (RunSummary.nothingVerified abortLine)
-                                                results.Elapsed
-                                        )
+                                        ctx.ReportStatus(PluginStatus.verifiedNothingNow abortLine results.Elapsed)
                                     else
                                         // A carried RED from an earlier run outranks an
                                         // abort — same rule the defer arm applies, and for
