@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.43 - 2026-09-06
+
 - AUTOMATION-555 (rework): **timing completeness is derived from the spans, and the
   spans cover the daemon's own phases.** The first landing attributed only each plugin's
   `lastRun` and the hook steps, and its `timingIncompleteReasons` was a list producers
