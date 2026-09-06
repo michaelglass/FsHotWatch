@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.31 - 2026-09-06
+
 - fix(AUTOMATION-526): a file whose last FCS check reported errors is stamped
   `fcsClean = false`, and on the pass that RECOVERED — FCS clean again, extraction
   complete — `FileFreshness.trustStoredRows` answered `NoDiff`, so the file
