@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.32 - 2026-09-06
+
 - prior reds are DURABLE — `.fshw/test-prune/outstanding-failures.json`,
   loaded at construction and quarantined into the first run of a session as in-session
   reds are (an unreadable file takes the road: widen to the full suite).
