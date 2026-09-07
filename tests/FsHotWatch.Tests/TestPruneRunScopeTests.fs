@@ -2752,3 +2752,140 @@ let ``failuresOf still carries the whole output when NO test could be named`` ()
 
     let entry = (failuresOf Map.empty results |> List.exactlyOne).Entry
     test <@ entry.Detail = Some output @>
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``AUTOMATION-474 ordinary unchanged build preserves executed evidence through AlreadyVerified completion`` (filtered: bool) =
+    withTempDir "a474-build-noop-receipt" (fun root ->
+        let config =
+            { a125Config "ProjA" with
+                // The intended path executes no command. Accidental widening cannot
+                // manufacture a passing suite from this fixture.
+                Command = "a474-unexpected-test-execution" }
+
+        let configs = [ config; { config with Project = "ProjB" } ]
+        let handler = create ":memory:" root (Some configs) None None None None []
+        let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+        let mutable scheduled: (SharedResourceState -> Async<TestPruneMsg>) option = None
+
+        let ctx =
+            { recordingCtx with
+                RepoRoot = root
+                RunExclusiveShared =
+                    fun _ _ work _ _ ->
+                        scheduled <- Some work
+                        SharedClaimed }
+
+        let fullRun =
+            testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+
+        let full = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+
+        let earned =
+            if filtered then
+                // Explicit manual scope is an existing receipt boundary. Drive it
+                // before supplying the filtered completion, retaining the baseline.
+                let reply = System.Threading.Tasks.TaskCompletionSource<string>()
+                let launched =
+                    handler.Update ctx full (Custom(RunTestsRequested(configs, Some "ProjATests", reply)))
+                    |> Async.RunSynchronously
+
+                let narrow =
+                    testsFinishedEvent
+                        [ "ProjA", passed true; "ProjB", impactSkipped ]
+                        (filteredLaunch [ "ProjA", [ "ProjATests" ] ])
+
+                handler.Update ctx launched narrow |> Async.RunSynchronously
+            else
+                full
+
+        scheduled <- None
+        let earnedRunId = earned.EvidenceReceipt.Value.RunId
+
+        // Exercise the ordinary idle BuildSucceeded boundary, not just two
+        // synthetic TestsFinished messages (which miss the premature reset).
+        let launched =
+            handler.Update ctx earned (BuildCompleted BuildSucceeded)
+            |> Async.RunSynchronously
+
+        Assert.True(scheduled.IsSome, "ordinary build must schedule the real impact-selection work")
+        let completion = scheduled.Value Ready |> Async.RunSynchronously
+
+        match completion with
+        | TestsFinished(_, completed, launch) ->
+            test <@ completed.Results.IsEmpty @>
+            test <@ completed.Verification = NoProjectsSelected @>
+            test <@ launch.ZeroSelection = ZeroSelection.AlreadyVerified @>
+        | other -> Assert.Fail($"expected AlreadyVerified completion, got %A{other}")
+
+        let settled = handler.Update ctx launched (Custom completion) |> Async.RunSynchronously
+        test <@ settled.LastCoverage = RunCoverage.none @>
+
+        let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+        let commandCtx: CommandCtx<TestPruneMsg> =
+            { RepoRoot = root
+              Log = ignore
+              Post = ignore
+              IsRunning = fun _ -> false
+              ProjectGraph = ProjectGraphAccessor.none }
+
+        let report =
+            scopeCommand commandCtx settled [||]
+            |> Async.RunSynchronously
+            |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+        test <@ report.RunId = Some earnedRunId @>
+        let expectedScope =
+            if filtered then FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2)
+            else FsHotWatch.Cli.IpcParsing.FullSuite 2
+
+        test <@ report.Scope = expectedScope @>)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``AUTOMATION-474 unavailable execution revokes a previously earned receipt`` (artifactsUnavailable: bool) =
+    withTempDir "a474-unavailable-after-pass" (fun root ->
+        let handler = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+        let ctx, statuses, _ = makeTestPruneRecordingCtx ()
+        let fullRun = testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+        let earned = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+        test <@ earned.EvidenceReceipt.IsSome @>
+
+        let failure =
+            if artifactsUnavailable then ArtifactsUnavailable("new build artifacts are invalid", None)
+            else TestHostUnavailable("new test host could not start", None)
+
+        let final = handler.Update ctx earned (Custom failure) |> Async.RunSynchronously
+        test <@ final.EvidenceReceipt.IsNone @>
+        test <@ final.PendingRerun @>
+
+        match lastStatus statuses with
+        | PluginStatus.Failed _ -> ()
+        | other -> Assert.Fail($"an unavailable new execution must stay failed, got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-474 new dependency debt is not retired by unavailable execution after a pass`` () =
+    withTempDir "a474-new-dependency-debt" (fun root ->
+        let handler = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+        let recordingCtx, statuses, _ = makeTestPruneRecordingCtx ()
+        let mutable scheduled: (SharedResourceState -> Async<TestPruneMsg>) option = None
+        let ctx =
+            { recordingCtx with
+                RunExclusiveShared = fun _ _ work _ _ -> scheduled <- Some work; SharedClaimed }
+
+        let fullRun = testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ])
+        let earned = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
+        let withDebt = { earned with PendingForceRunProjects = Set.singleton "ProjA" }
+        let launched = handler.Update ctx withDebt (BuildCompleted BuildSucceeded) |> Async.RunSynchronously
+        Assert.True(scheduled.IsSome, "pending dependency work must reach the execution boundary")
+        // A real resource refusal, not a synthetic green completion. No subprocess.
+        let unavailable = scheduled.Value (Invalid "dependency artifacts unavailable") |> Async.RunSynchronously
+        let final = handler.Update ctx launched (Custom unavailable) |> Async.RunSynchronously
+        test <@ final.EvidenceReceipt.IsNone @>
+        test <@ final.PendingRerun @>
+        match lastStatus statuses with
+        | PluginStatus.Failed _ -> ()
+        | other -> Assert.Fail($"new dependency work cannot reuse the prior green, got %A{other}"))
