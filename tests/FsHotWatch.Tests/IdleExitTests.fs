@@ -365,15 +365,31 @@ let ``runTick with floor disabled ignores pressure`` () =
     test <@ runTick deps (FireLatch.create ()) <> TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 0 @>
 
+[<Theory>]
+[<InlineData(10.0, false)>]
+[<InlineData(31.0, true)>]
+[<InlineData(31.0, false)>]
+let ``runTick preserves an already fired latch for every eligibility state`` (idleMin: float, busy: bool) =
+    let deps, shutdownCalls, _ = makeDeps idleMin busy
+    let latch = FireLatch.create ()
+    test <@ FireLatch.tryFire latch @>
+    test <@ runTick deps latch = TickOutcome.AlreadyFired @>
+    test <@ shutdownCalls.Value = 0 @>
+
 [<Fact>]
 let ``runTick fires shutdown at most once across concurrent ticks`` () =
     let deps, shutdownCalls, _ = makeDeps 31.0 false
     let latch = FireLatch.create ()
 
     // Pins the atomic latch: a non-atomic one fired 7x in 41ms under this hammer.
-    Parallel.For(0, 5_000, fun _ -> runTick deps latch |> ignore) |> ignore
+    let outcomes = Array.zeroCreate<TickOutcome> 5_000
+
+    Parallel.For(0, outcomes.Length, fun index -> outcomes[index] <- runTick deps latch)
+    |> ignore
 
     test <@ shutdownCalls.Value = 1 @>
+    test <@ outcomes |> Array.filter ((=) TickOutcome.Fired) |> Array.length = 1 @>
+    test <@ outcomes |> Array.filter ((=) TickOutcome.AlreadyFired) |> Array.length = outcomes.Length - 1 @>
 
 [<Fact>]
 let ``runTick swallows a throwing shutdown without escaping`` () =

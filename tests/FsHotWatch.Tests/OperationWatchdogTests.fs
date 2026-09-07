@@ -175,24 +175,32 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
     use w =
         new Watchdog(
             TimeSpan.FromSeconds(1.0),
-            heartbeatEvery = TimeSpan.FromHours(1.0), // suppress heartbeat noise here
+            heartbeatEvery = TimeSpan.Zero, // every completed tick supplies an observable heartbeat
             now = (fun () -> clock.Value),
             log = logged.Add,
             tick = TimeSpan.FromMilliseconds(20.0)
         )
 
     w.Begin "wedged-rpc" |> ignore
-    // Advance the clock past the threshold so subsequent ticks see a wedge.
+
+    let heartbeatCount () =
+        logged
+        |> Seq.filter (fun line -> line.StartsWith("heartbeat:") && line.Contains "wedged-rpc running 100s")
+        |> Seq.length
+
+    // Observe a completed tick while the operation is still young, before moving
+    // the clock. This covers the non-wedged path without racing the first timer.
+    waitUntil (fun () -> logged |> Seq.exists (fun line -> line.Contains "in-flight wedged-rpc")) 5000
     clock.Value <- t0.AddSeconds 100.0
 
     let overrunsSoFar () =
         logged |> Seq.filter (fun l -> l.StartsWith("operation exceeded")) |> Seq.toList
 
-    // Poll rather than sleep a fixed time: the 20ms tick can be delayed under
-    // parallel-suite CPU pressure. Once seen, let a few more ticks pass and assert
-    // it stays at exactly one — once per episode, not once per tick.
+    // Observe more completed ticks after the overrun; a fixed sleep did not
+    // prove another tick ran when the suite was under CPU pressure.
     waitUntil (fun () -> not (overrunsSoFar ()).IsEmpty) 5000
-    Thread.Sleep(200)
+    let heartbeatsAfterOverrun = heartbeatCount ()
+    waitUntil (fun () -> heartbeatCount () >= heartbeatsAfterOverrun + 3) 5000
 
     let overruns = overrunsSoFar ()
     test <@ overruns.Length = 1 @>
