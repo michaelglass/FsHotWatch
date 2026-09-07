@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.33 - 2026-09-07
+
 - AUTOMATION-339: the zero-project and host-aborted terminals report
   `RunVerdict.verifiedNothing` (via `PluginStatus.verifiedNothingNow`) instead of a
   marked summary string, so the run record carries `RunOutcome.VerifiedNothing`. Status
