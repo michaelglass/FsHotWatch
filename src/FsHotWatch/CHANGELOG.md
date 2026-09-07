@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.30 - 2026-09-07
+
 - **`RunOutcome.VerifiedNothing of detail`** — a `Completed` run that
   executed nothing, as a case beside `CompletedRun | FailedRun | TimedOut`. It is
   derived from the verdict: `RunVerdict` carries `NothingVerified: string option`, built
