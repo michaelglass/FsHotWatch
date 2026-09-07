@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.45 - 2026-09-07
+
 - `IpcParsing.parseTaggedOutcome` reads the daemon's `verifiedNothing`
   outcome tag as `RunOutcome.VerifiedNothing detail` (a tag with no readable `detail` is
   still the case, with empty words — never a pass, never a failure).
