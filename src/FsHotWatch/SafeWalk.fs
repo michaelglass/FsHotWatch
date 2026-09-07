@@ -132,11 +132,9 @@ let describeSkip (skipped: SkippedDir) : string =
 /// `Error`. Anything else is a bug in this walker or a broken runtime, and must
 /// fault the caller rather than be laundered into an empty result.
 ///
-/// ONE arm covering both types, not one arm each: they mean the same thing here and
-/// get the same answer, and only `UnauthorizedAccessException` is forceable from a
-/// test (a mode-000 directory). Split into two arms, the other gets a body line no
-/// test can ever execute — a permanent coverage hole standing in for a distinction
-/// this function does not make.
+/// ONE arm covering both types: they mean the same thing here and get the same
+/// answer. Tests exercise a permission hole and a directory removed between its
+/// parent's enumeration and lazy descent, without a racing thread.
 let private attemptRead (read: unit -> 'a[]) : Result<'a[], string> =
     try
         Ok(read ())

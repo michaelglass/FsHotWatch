@@ -1252,6 +1252,52 @@ let ``discovery failure marker rejects null and unrelated messages`` () =
     test <@ not (isTotalDiscoveryFailureMessage null) @>
     test <@ not (isTotalDiscoveryFailureMessage "some other configuration error") @>
 
+[<Fact(Timeout = 15000)>]
+let ``throwing workspace loader records failed discovery and rejects verdict admission`` () =
+    withTempDir "daemon-discovery-loader-throws" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Broken.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let notifications = Event<Types.WorkspaceProjectState>()
+
+        let loader =
+            { new IWorkspaceLoader with
+                member _.LoadProjects(_projectPaths) = failwith "injected loader failure"
+
+                member _.LoadProjects(_projectPaths, _customProperties, _binaryLog) =
+                    failwith "injected loader failure"
+
+                member _.LoadSln(_solutionPath) = failwith "injected loader failure"
+                member _.LoadSln(_solutionPath, _customProperties, _binaryLog) = failwith "injected loader failure"
+
+                [<CLIEvent>]
+                member _.Notifications = notifications.Publish }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir Daemon.DaemonOptions.defaults loader (fun _ -> [])
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        let completed = daemon.DiscoverySnapshot() |> Option.get
+        test <@ completed.Discovered = 1 @>
+        test <@ completed.Loaded = 0 @>
+        test <@ completed.OptionsMapped = 0 @>
+        test <@ completed.Registered = 0 @>
+        test <@ daemon.TotalDiscoveryFailure().IsSome @>
+        let mutable ordinaryWaitCalled = false
+
+        let verdictWait =
+            waitForVerdictUnlessDiscoveryFailed
+                daemon.WaitForDiscoveryAdmission
+                (fun _ ->
+                    ordinaryWaitCalled <- true
+                    System.Threading.Tasks.Task.FromResult(()))
+                (TimeSpan.FromSeconds(1.0))
+
+        Assert.Throws<InvalidOperationException>(fun () -> verdictWait.GetAwaiter().GetResult())
+        |> ignore
+
+        test <@ not ordinaryWaitCalled @>)
+
 [<Fact(Timeout = 30000)>]
 let ``verdict admission waits while the real loader seam is between clear and completion`` () =
     withTempDir "daemon-discovery-race" (fun tmpDir ->

@@ -1300,8 +1300,8 @@
     "Ipc.fs": [
       {
         "coveredLines": 288,
-        "coveredBranches": 41,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 38,
+        "reason": "AUTOMATION-339 follow-up, 2026-09-08: re-baselined macOS covered branches 41 -> 38 using baseline-lines after a full 3116-test run. Adding VerifiedNothing changed outcomePayload union-match emission: the former 3/4 branch site disappeared, and file totals changed 41/52 -> 38/48. Covered-line and percentage floors unchanged; Linux remains CI-only.",
         "platform": "macos"
       },
       {
@@ -1454,8 +1454,8 @@
     "PluginActivity.fs": [
       {
         "coveredLines": 182,
-        "coveredBranches": 40,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 36,
+        "reason": "AUTOMATION-339 follow-up, 2026-09-08: re-baselined macOS covered branches 40 -> 36 using baseline-lines after a full 3116-test run. Adding VerifiedNothing changed runRecordBytes union-match emission: the former 4/4 branch site disappeared, and file totals changed 40/56 -> 36/52. Covered-line and percentage floors unchanged; Linux remains CI-only.",
         "platform": "macos"
       },
       {
@@ -1734,8 +1734,8 @@
     "Verdict.fs": [
       {
         "coveredLines": 1445,
-        "coveredBranches": 449,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 443,
+        "reason": "AUTOMATION-339 follow-up, 2026-09-08: re-baselined macOS covered branches 449 -> 443 using baseline-lines after a full 3116-test run. The preserved 449/540 report and current 443/534 report differ only by the removed 2/2 timedOutLastRun and 4/4 idle-outcome match branch sites after VerifiedNothing changed union-match emission; retained branch sequences agree. Covered-line and percentage floors unchanged; Linux remains CI-only.",
         "platform": "macos"
       },
       {
