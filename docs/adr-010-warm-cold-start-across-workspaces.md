@@ -104,3 +104,32 @@ to copy once per fresh workspace.
 - If a shared daemon is reconsidered, the bar is still evidence that *simultaneously-active*
   (not merely numerous) workspaces oversubscribe even after seeding + content-addressed
   caching remove the redundant recompute.
+
+## QA rework: repository identity is the whole directory key
+
+The shared-store namespace previously combined a checkout label with an identity
+suffix. Comparing only the suffix in tests hid that the store uses the whole name:
+`main-<digest>` and `worker-<digest>` are different directories. The namespace now
+contains only a fixed prefix and the full repository-identity digest. The changed
+name also isolates entries written under the defective identity scheme.
+
+A secondary jj workspace can store `../../../.jj/repo`, relative to its `.jj`
+directory. Resolve that pointer before hashing it; hashing the literal text aliases
+same-named workers in unrelated repositories. Git's `gitdir:` pointer likewise
+resolves from the directory containing `.git`. Tests compare complete namespaces
+and pair same-repository sharing with unrelated, identically laid-out repositories.
+
+Do not substitute analyzer source hashes for assembly hashes to manufacture sharing.
+ADR-011 still applies: the assembly is what the host executes, and build options,
+references and generated inputs can change it without changing those source files.
+The downstream analyzer output must be made reproducible; until its bytes agree,
+a cache miss is correct. Namespace correctness alone does not establish the ticket's
+five-fresh-workspace timing criterion, which remains a separate measurement.
+
+A final filesystem reproduction found that trimming a `worktrees/<name>` suffix
+also aliases two unrelated `git init --separate-git-dir` repositories whose Git
+directories happen to use those names. That heuristic is rejected. Read Git's
+`commondir` file instead, resolving relative contents from the administrative Git
+directory. Missing or unusable metadata keeps the original Git directory identity;
+only recorded shared-directory metadata grants sharing. Tests now create that
+metadata rather than treating a fabricated path shape as proof of a worktree.
