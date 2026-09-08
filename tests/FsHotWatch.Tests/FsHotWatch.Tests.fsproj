@@ -38,6 +38,7 @@
     <Compile Include="DebouncedWorkTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
+    <Compile Include="VerdictEvidenceTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
     <Compile Include="PluginHostActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />

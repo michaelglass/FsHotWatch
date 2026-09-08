@@ -7,7 +7,15 @@ open Xunit
 open FsHotWatch
 
 let private awaitResult (work: Task<unit>) =
-    work.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+    let winner =
+        Task.WhenAny([| work :> Task; Task.Delay(TimeSpan.FromSeconds 5.0) |]).GetAwaiter().GetResult()
+
+    Assert.True(
+        obj.ReferenceEquals(work, winner),
+        "the original operation receipt must settle within the observation bound"
+    )
+
+    work.GetAwaiter().GetResult()
 
 [<Fact(Timeout = 20000)>]
 let ``queued successor is owned before predecessor receipt completes`` () =
