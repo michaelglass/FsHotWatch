@@ -1187,7 +1187,7 @@ let ``stable discovery admission includes attempts queued behind the active load
     let secondEntered = new Threading.ManualResetEventSlim(false)
     let secondResume = new Threading.ManualResetEventSlim(false)
 
-    let snapshot loaded =
+    let snapshot loaded : DiscoverySnapshot =
         { Discovered = 1
           Loaded = loaded
           OptionsMapped = loaded
@@ -1268,6 +1268,7 @@ let ``verdict admission waits while the real loader seam is between clear and co
         try
             discovery <- Async.StartAsTask(daemon.DiscoverAndRegisterProjects()) |> Some
             test <@ loader.Entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ daemon.ProjectModelObservation() = FsHotWatch.ProjectModel.Observation.Rediscovering 1L @>
 
             // The graph/pipeline have been cleared and the loader has not returned.
             // This exact window used to be misread as a completed zero-load result.
@@ -1341,7 +1342,9 @@ let ``verdict admission restarts when discovery begins after the host wait start
                 FsEventsLatencySeconds = 60.0 }
 
         use daemon =
-            Daemon.createWithWorkspaceLoader nullChecker tmpDir daemonOptions loader (fun _ -> [])
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir daemonOptions loader (fun projects ->
+                projects
+                |> List.map (fun project -> makeProjectOptions project.ProjectFileName [] []))
 
         daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
 
@@ -1405,6 +1408,138 @@ let ``verdict admission restarts when discovery begins after the host wait start
             with _ ->
                 ())
 
+[<Theory(Timeout = 30000)>]
+[<InlineData(false, false)>]
+[<InlineData(true, false)>]
+[<InlineData(true, true)>]
+let ``unchanged fingerprint scan uses a coherent model across rediscovery``
+    (hasSource: bool, rediscoverAfterCapture: bool)
+    =
+    withTempDir "daemon-scan-discovery-race" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Stable.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Stable.fs")
+        let sources = if hasSource then [ sourcePath ] else []
+
+        if hasSource then
+            File.WriteAllText(sourcePath, "module Stable\nlet value = 1\n")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = sources }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+
+        // The injected loader supplies evaluated compiler options; give the
+        // independent deps guard its fresh assets marker so this race test does
+        // not attempt a real restore of the deliberately minimal project.
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            if hasSource then
+                let options, _ =
+                    checker.GetProjectOptionsFromScript(
+                        sourcePath,
+                        FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                    )
+                    |> Async.RunSynchronously
+
+                { options with
+                    ProjectFileName = projectPath
+                    SourceFiles = [| sourcePath |] }
+            else
+                makeProjectOptions projectPath [] []
+
+        let options =
+            { Daemon.DaemonOptions.defaults with
+                FsEventsLatencySeconds = 60.0 }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader checker tmpDir options loader (fun projects ->
+                projects |> List.map (fun _ -> fcsOptions))
+
+        // Establish both a healthy registry and the scan's unchanged fingerprint.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
+        let originalProject = File.ReadAllBytes(projectPath)
+        let originalWriteTime = File.GetLastWriteTimeUtc(projectPath)
+        use preprocessorEntered = new Threading.ManualResetEventSlim(false)
+        use preprocessorResume = new Threading.ManualResetEventSlim(false)
+        let mutable rediscovery: System.Threading.Tasks.Task<unit> option = None
+        let mutable scan: System.Threading.Tasks.Task<unit> option = None
+
+        if rediscoverAfterCapture then
+            daemon.RegisterPreprocessor(
+                { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                    member _.Name = "capture-barrier"
+
+                    member _.Process files _ =
+                        preprocessorEntered.Set()
+                        preprocessorResume.Wait()
+
+                        Ok
+                            { Modified = []
+                              Considered = files.Length
+                              Evidence = "capture barrier released" }
+
+                    member _.Dispose() = () }
+            )
+
+        try
+            if rediscoverAfterCapture then
+                scan <- Some(Async.StartAsTask(daemon.ScanAll()))
+                test <@ preprocessorEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+
+            rediscovery <- Some(Async.StartAsTask(daemon.DiscoverAndRegisterProjects()))
+            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ daemon.Pipeline.GetRegisteredProjects().IsEmpty @>
+
+            if not rediscoverAfterCapture then
+                scan <- Some(Async.StartAsTask(daemon.ScanAll()))
+
+            let runningScan = scan.Value
+            preprocessorResume.Set()
+            let bound = if rediscoverAfterCapture then 10000 else 1000
+
+            let first =
+                System.Threading.Tasks.Task
+                    .WhenAny(runningScan, System.Threading.Tasks.Task.Delay(bound))
+                    .GetAwaiter()
+                    .GetResult()
+
+            let completedWhileCleared = obj.ReferenceEquals(first, runningScan)
+            loader.Resume(1)
+            rediscovery.Value.GetAwaiter().GetResult()
+            runningScan.GetAwaiter().GetResult()
+
+            test <@ File.ReadAllBytes(projectPath) = originalProject @>
+            test <@ File.GetLastWriteTimeUtc(projectPath) = originalWriteTime @>
+            test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
+            // A scan issued during the clear must wait; one whose immutable plan
+            // was captured beforehand must finish without retaining the writer lease.
+            test <@ completedWhileCleared = rediscoverAfterCapture @>
+
+            let scans =
+                FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+            test <@ scans.Length = 2 @>
+
+            for sample in scans do
+                test <@ sample.FilesRegistered = sources.Length @>
+                test <@ sample.FilesChecked = sources.Length @>
+                test <@ sample.FilesUnchecked = 0 @>
+        finally
+            preprocessorResume.Set()
+            loader.Resume(1)
+            rediscovery |> Option.iter (fun running -> running.GetAwaiter().GetResult())
+            scan |> Option.iter (fun running -> running.GetAwaiter().GetResult()))
+
 [<Fact(Timeout = 15000)>]
 let ``a loaded project that maps or registers as zero is not a loader failure`` () =
     withTempDir "daemon-mapping-distinct" (fun tmpDir ->
@@ -1426,6 +1561,56 @@ let ``a loaded project that maps or registers as zero is not a loader failure`` 
         test <@ completed.OptionsMapped = 0 @>
         test <@ completed.Registered = 0 @>
         test <@ daemon.TotalDiscoveryFailure() = None @>)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``verdict admission refuses a discovered model that registered no projects`` (mappingProducedOptions: bool) =
+    withTempDir "daemon-unavailable-model" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Loaded.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = BlockingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        loader.Resume()
+
+        let options =
+            { Daemon.DaemonOptions.defaults with
+                RunMode = Daemon.RunMode.OneShot }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir options loader (fun _ ->
+                if mappingProducedOptions then
+                    // A mapped option whose path cannot be registered: a distinct
+                    // later-stage failure, after the loader successfully returned.
+                    [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
+                else
+                    [])
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        let completed = daemon.DiscoverySnapshot() |> Option.get
+        test <@ completed.Discovered = 1 @>
+        test <@ completed.Loaded = 1 @>
+        test <@ completed.OptionsMapped = (if mappingProducedOptions then 1 else 0) @>
+        test <@ completed.Registered = 0 @>
+        test <@ daemon.TotalDiscoveryFailure() = None @>
+
+        match daemon.ProjectModelObservation() with
+        | FsHotWatch.ProjectModel.Observation.Unavailable(snapshot, reason) ->
+            test <@ snapshot.Generation = 1L @>
+            test <@ snapshot.Counts = completed @>
+
+            let expected =
+                if mappingProducedOptions then
+                    FsHotWatch.ProjectModel.UnavailableReason.RegistrationFailed
+                else
+                    FsHotWatch.ProjectModel.UnavailableReason.MappingFailed
+
+            test <@ reason = expected @>
+        | observation -> failwithf "Expected unavailable model, got %A" observation
+
+        let admission = daemon.WaitForDiscoveryAdmission().GetAwaiter().GetResult()
+        test <@ admission.Failure.IsSome @>)
 
 [<Fact(Timeout = 15000)>]
 let ``verdict wait fails immediately when total discovery failed`` () =
