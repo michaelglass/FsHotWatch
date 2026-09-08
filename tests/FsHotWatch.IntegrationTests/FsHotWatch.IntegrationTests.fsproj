@@ -20,6 +20,8 @@
   <ItemGroup>
     <Compile Include="../FsHotWatch.Tests/TestHelpers.fs" Link="TestHelpers.fs" />
     <Compile Include="ProcessHelperTimeoutTests.fs" />
+    <Compile Include="LauncherGroupSurvivalTests.fs" />
+    <Compile Include="SupervisedProcessTests.fs" />
     <Compile Include="PluginActivityConcurrencyTests.fs" />
     <Compile Include="PluginTimeoutTests.fs" />
     <Compile Include="TestPruneStormTests.fs" />
@@ -28,6 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Fixtures/LauncherLifetimeFixture/LauncherLifetimeFixture.fsproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
