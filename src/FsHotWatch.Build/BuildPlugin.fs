@@ -69,7 +69,9 @@ type BuildState =
 /// status. The summary is deliberately NOT carried: the handler derives it from
 /// the outcome via `buildSummary`, the same pure helper the worker logs with, so
 /// the two can never disagree.
-type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
+type BuildMsg =
+    | BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
+    | ForceRebuildRequested of reply: System.Threading.Tasks.TaskCompletionSource<string>
 
 /// Diagnostic for the "MSBuild exited non-zero but produced no parseable
 /// diagnostics" failure mode (typically a bail during evaluation/restore).
@@ -851,7 +853,8 @@ let createWith
                         }))
                 (function
                 | BuildDone(BuildPassed _, _, _) -> Ready
-                | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries)
+                | ForceRebuildRequested _ -> Invalid "Build worker returned a command instead of a build outcome")
                 (fun ex ->
                     BuildDone(
                         BuildOutputFailed [ ex.Message ],
@@ -984,7 +987,8 @@ let createWith
                             }))
                     (function
                     | BuildDone(BuildPassed _, _, _) -> Ready
-                    | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries))
+                    | BuildDone(outcome, entries, _) -> Invalid(buildSummary outcome entries)
+                    | ForceRebuildRequested _ -> Invalid "Build worker returned a command instead of a build outcome")
                     (fun ex ->
                         BuildDone(
                             BuildOutputFailed [ ex.Message ],
@@ -1071,6 +1075,13 @@ let createWith
         fun ctx state event ->
             async {
                 match event with
+                | Custom(ForceRebuildRequested reply) ->
+                    forceRebuild.Value <- true
+
+                    reply.TrySetResult(JsonSerializer.Serialize({| status = "ok"; forced = true |}))
+                    |> ignore
+
+                    return state
                 | TestRunStarted started ->
                     let activeTestRuns = Set.add started.RunId state.ActiveTestRuns
                     activeTestRunsForCache.Value <- activeTestRuns
@@ -1230,13 +1241,18 @@ let createWith
           // "set-scope"/"run-tests" in TestPrunePlugin. The CLI-side constant
           // carries the contract doc; a test pins the two spellings together.
           "force-rebuild",
-          fun _ctx _state _args ->
+          PluginCommand.Request(fun ctx _args ->
               async {
-                  forceRebuild.Value <- true
-                  return JsonSerializer.Serialize({| status = "ok"; forced = true |})
-              }
+                  let reply =
+                      System.Threading.Tasks.TaskCompletionSource<string>(
+                          System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                      )
+
+                  ctx.Post(ForceRebuildRequested reply)
+                  return! reply.Task.WaitAsync(TimeSpan.FromSeconds 30.0) |> Async.AwaitTask
+              })
           "build-status",
-          fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx state _args ->
               async {
                   let lastResult = Lifecycle.value state.LastBuild
 
@@ -1260,7 +1276,7 @@ let createWith
                                  output = outputs |> String.concat "\n" |> truncateOutput 200 |}
                           )
                   | None -> return JsonSerializer.Serialize({| status = "not run" |})
-              } ]
+              }) ]
       Subscriptions =
         // Deliberately NOT `BatchChecked`: every source change drives a real
         // MSBuild build, so there is no test-only-skip phase to wait on the FCS

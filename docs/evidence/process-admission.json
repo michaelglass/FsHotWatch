@@ -1,0 +1,37 @@
+{
+  "scope": "Late registration after Registry.KillAll; fixture kills only its own fresh child",
+  "redRun": "76d045f0ffd9406cafc010fac63d437e",
+  "red": {
+    "tests": 1,
+    "passed": 0,
+    "failed": 1,
+    "assertion": "shutdown must reap a child that registers after process admission closed"
+  },
+  "redLog": "/tmp/late-process-red.log",
+  "correction": "Atomic admission closure and bounded child termination",
+  "verification": "Full ProcessHelper class passed after formatted compile; full CI/integration remains pending",
+  "greenRun": "4abdd6433c354858a5befb9e58cc0867",
+  "green": {
+    "tests": 112,
+    "passed": 112,
+    "failed": 0,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788904513008,
+    "stop": 1788904523521
+  },
+  "compile": {
+    "session": 45832,
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/tmp/process-formatted-compile.log"
+  },
+  "testLog": "/tmp/process-helper-formatted.log",
+  "sha256": {
+    "src/FsHotWatch/ProcessRegistry.fs": "acbb306d3bbd47a416a3361bacb58862c31863403616b725f0ebe754dc2b9b05",
+    "tests/FsHotWatch.Tests/ProcessHelperTests.fs": "57690c028e317527e2a1bb05aa33d7e9bb815791c70fc8ca34e3c84ca6d442aa"
+  }
+}

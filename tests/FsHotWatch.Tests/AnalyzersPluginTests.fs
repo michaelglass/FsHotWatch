@@ -1011,7 +1011,9 @@ let ``diagnostics command sums findings across files in a populated state`` () =
     let (_, diagnosticsCmd) =
         handler.Commands |> List.find (fun (name, _) -> name = "diagnostics")
 
-    let json = diagnosticsCmd nullCommandCtx populated [||] |> Async.RunSynchronously
+    let json =
+        FsHotWatch.PluginFramework.PluginCommand.invoke diagnosticsCmd nullCommandCtx populated [||]
+        |> Async.RunSynchronously
 
     test <@ json.Contains("\"diagnostics\":2") @>
     test <@ json.Contains("\"files\":1") @>

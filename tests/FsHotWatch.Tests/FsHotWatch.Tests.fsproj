@@ -34,6 +34,8 @@
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
+    <Compile Include="SupervisedWorkTests.fs" />
+    <Compile Include="DebouncedWorkTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
@@ -90,6 +92,7 @@
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="LauncherLifetimeTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />

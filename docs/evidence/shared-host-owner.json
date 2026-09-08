@@ -1,0 +1,67 @@
+{
+  "scope": "shared host publication; intermediate verified checkpoint, not ticket completion",
+  "red": {
+    "run": "4b8c38aa61844c3c88f5f1b19c38bd06",
+    "tests": 2,
+    "failed": 2,
+    "assertion": "preprocessor work must prevent host rest"
+  },
+  "green": [
+    {
+      "run": "acd0e965628643c3b3b599c2e3de3207",
+      "summary": {
+        "tests": 58,
+        "passed": 58,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788885165068,
+        "stop": 1788885171311
+      }
+    },
+    {
+      "run": "f72e3a5683d64a07a7675f3c34b365c7",
+      "summary": {
+        "tests": 3133,
+        "passed": 3133,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788885204216,
+        "stop": 1788885289310
+      }
+    },
+    {
+      "run": "23620376060244f7a9128e14322a5b0a",
+      "summary": {
+        "tests": 61,
+        "passed": 61,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788885297910,
+        "stop": 1788885304281
+      }
+    }
+  ],
+  "verification": "Formatted compile passed zero warnings/errors; sequential framework and host client chain90521 exited0. Daemon automatically selected the broader3133-test unit run while host request queued; all passed. Outstanding failures empty. This is not full CI/integration qualification.",
+  "deferral": "Earlier74618 compiled but test request exit3/no tests after formatter changed source. Daemon19703 later absent with log ending at automatic build startup; cause unproven, no process stopped by root. Recompiled formatted source before successful90521.",
+  "implementation": [
+    "One host Store mailbox publishes immutable plugin rows and host obligations together. Typed Owner capabilities no longer have separate publication mailboxes.",
+    "Host busy names, completed event count, and executor faults read the same aggregate snapshot.",
+    "Dispatch parent stays owned across recipient admissions; preprocessor batch and named operation remain owned through classification.",
+    "Existing receipt completion remains after state publication; worker ownership survives executor faults."
+  ],
+  "remaining": [
+    "Complete scan/batch supervision and lifecycle ownership",
+    "Separate status presentation from privately minted verdict evidence",
+    "Remove remaining quiescence/generation heuristics per full issue contract",
+    "Full CI, integration, consumer qualification and review before merge"
+  ]
+}

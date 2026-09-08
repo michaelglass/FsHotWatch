@@ -1,0 +1,39 @@
+{
+  "scope": "scan observation/lifecycle current-API assertionred; production correction pending",
+  "red": {
+    "run": "aa858f87521c432eba4c0c0cee29f700",
+    "summary": {
+      "tests": 3,
+      "passed": 0,
+      "failed": 3,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788887293239,
+      "stop": 1788887303475
+    },
+    "failures": [
+      {
+        "name": "FsHotWatch.Tests.DaemonTests.blocked scan discovery remains owned and observable(readStatus: True)",
+        "message": "scan observation must not wait for the loader"
+      },
+      {
+        "name": "FsHotWatch.Tests.DaemonTests.blocked scan discovery remains owned and observable(readStatus: False)",
+        "message": "admitted scan must remain in the host work ledger"
+      },
+      {
+        "name": "FsHotWatch.Tests.DaemonTests.disposed daemon rejects scan admission instead of abandoning its receipt",
+        "message": "Assert.Throws() Failure: Exception type was not an exact match\nExpected: typeof(System.ObjectDisposedException)\nActual:   typeof(System.TimeoutException)\n---- System.TimeoutException : The operation has timed out."
+      }
+    ]
+  },
+  "client": "88982 terminalexit1",
+  "requirements": [
+    "scan discovery remains visible in shared host work ownership",
+    "scan status/generation reads never wait on blocked loader",
+    "scan admission after disposal rejects rather than abandoning receipt"
+  ],
+  "cleanup": "Fixture releases blocked loader and drains scan/read tasks; disposed-mailbox fixture cancels/drains its own abandoned caller. No background fixture process intentionally left running.",
+  "next": "Implement scan identity lifecycle through shared owner and nonblocking supervision, preserving queued requests, deadlines and actual worker cleanup. No snapshot-only or independent-busy-flag completion claim."
+}

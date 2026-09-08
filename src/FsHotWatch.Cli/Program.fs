@@ -359,6 +359,22 @@ type IpcOps =
       IsRunning: string -> bool
       LaunchDaemon: string -> string -> string -> unit }
 
+/// Production launch boundary shared with owned-process lifetime fixtures.
+let internal launchDaemonProcess
+    (exe: string)
+    (toolPrefix: string)
+    (repoRoot: string)
+    (extraArgs: string)
+    (logFile: string)
+    =
+    let quote (value: string) =
+        "'" + value.Replace("'", "'\"'\"'") + "'"
+
+    let command =
+        $"nohup {quote exe} {toolPrefix}{extraArgs}start </dev/null >> {quote logFile} 2>&1 &"
+
+    DetachedLaunch.launch repoRoot command
+
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
     { Shutdown = IpcClient.shutdown
@@ -384,16 +400,7 @@ let defaultIpcOps: IpcOps =
 
             let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
 
-            let psi =
-                System.Diagnostics.ProcessStartInfo(
-                    "/bin/sh",
-                    $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
-                )
-
-            psi.WorkingDirectory <- repoRoot
-            psi.UseShellExecute <- false
-            let proc = System.Diagnostics.Process.Start(psi)
-            proc.WaitForExit() }
+            launchDaemonProcess exe toolPrefix repoRoot extraArgs logFile }
 
 /// Unwrap nested AggregateException down to the most informative inner exception
 /// so we don't print "One or more errors occurred. (...)" wrapping the real message.
@@ -2366,8 +2373,7 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
 
-[<EntryPoint>]
-let main args =
+let private runMain args =
     let argList = args |> Array.toList
 
     // Bare `--help` / `-h` / `help` (no subcommand) prints global help with global flags.
@@ -2472,3 +2478,9 @@ let main args =
                 forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
+
+[<EntryPoint>]
+let main args =
+    match DetachedLaunch.tryRun args with
+    | Some exitCode -> exitCode
+    | None -> runMain args

@@ -1,0 +1,170 @@
+{
+  "scope": "Local immutable work-owner replacement and exact host event receipts; intermediate work, not full issue acceptance",
+  "ownershipRed": "0db5d55eecfb42b8943fa353083a1bec",
+  "consumerBarrierRed": "dde79cd3bbfb4f7ead934e72479d2b05",
+  "verifiedClasses": {
+    "PluginHostTests": {
+      "runId": "c254b61625354398a52fccd73d15ca44",
+      "summary": {
+        "tests": 59,
+        "passed": 59,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788878345954,
+        "stop": 1788878352001
+      },
+      "controls": []
+    },
+    "TestPrunePluginTests": {
+      "runId": "07a2fee62ced4a2c827f011a8fe2c7c0",
+      "summary": {
+        "tests": 155,
+        "passed": 155,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788878250379,
+        "stop": 1788878286220
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.TestPrunePluginTests.comment-only change does not add file to ChangedFiles but AST change does",
+          "status": "passed",
+          "duration": 258,
+          "suite": "97871d3f-9512-4800-b96a-320c809ba65e",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPrunePluginTests.fs",
+          "line": 2371,
+          "extra": {
+            "id": "38322f4e-d076-429d-8f74-c5ea787066b3",
+            "collection": "2d4fb4b2-36de-4447-a93f-474a729248b3",
+            "type": "FsHotWatch.Tests.TestPrunePluginTests",
+            "method": "comment-only change does not add file to ChangedFiles but AST change does"
+          }
+        }
+      ]
+    },
+    "TestPrunePendingVerificationTests": {
+      "runId": "36e3f0cb98af417792479cfc4deb676d",
+      "summary": {
+        "tests": 66,
+        "passed": 66,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788878110010,
+        "stop": 1788878130897
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.TestPrunePendingVerificationTests.a failing full run cannot discharge boot-scan debt",
+          "status": "passed",
+          "duration": 1552,
+          "suite": "1bb65252-e10d-4e3d-8487-192b4aef47c1",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPrunePendingVerificationTests.fs",
+          "line": 701,
+          "extra": {
+            "id": "4c0e8812-baf9-446d-ba8e-9b66146076e0",
+            "collection": "497f6234-7489-41f3-9149-194c8628c105",
+            "type": "FsHotWatch.Tests.TestPrunePendingVerificationTests",
+            "method": "a failing full run cannot discharge boot-scan debt"
+          }
+        }
+      ]
+    },
+    "IpcTests": {
+      "runId": "7eb7185b3e63441397dcce3abe9bdb63",
+      "summary": {
+        "tests": 51,
+        "passed": 51,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788877644024,
+        "stop": 1788877647751
+      },
+      "controls": []
+    },
+    "TestPruneRunScopeTests": {
+      "runId": "fca5f072eeb849e7aebee746c1bfd872",
+      "summary": {
+        "tests": 91,
+        "passed": 91,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788877633844,
+        "stop": 1788877634651
+      },
+      "controls": []
+    },
+    "BuildPluginTests": {
+      "runId": "1756974a59364a82bbae4809b8fb9f8c",
+      "summary": {
+        "tests": 111,
+        "passed": 111,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788877482820,
+        "stop": 1788877504005
+      },
+      "controls": []
+    },
+    "PluginFrameworkTests": {
+      "runId": "ed2a828b28fb4ec285b51f6367d7469c",
+      "summary": {
+        "tests": 48,
+        "passed": 48,
+        "failed": 0,
+        "skipped": 0
+      },
+      "evidenceNote": "CTRF summary and four owner controls were read during this phase before run retention removed the CTRF. The preserved runner log independently confirms 48 passed, 0 failed; zero skipped was observed in that CTRF summary.",
+      "log": "/private/tmp/local-owner-framework.log"
+    }
+  },
+  "compile": {
+    "session": 86304,
+    "exitCode": 0,
+    "warnings": 0,
+    "errors": 0
+  },
+  "sourceSha256": {
+    "src/FsHotWatch/PluginWorkOwner.fs": "68fb2d93bda4aa8a4875db493a6ec747b372bde9bbe7519809578026b8e63b7d",
+    "src/FsHotWatch/PluginFramework.fs": "e9621007231803abfd2988a61ba4c348078d32479ceb142e45e8f09b913534d8",
+    "src/FsHotWatch/PluginHost.fs": "71aadc938c056f4381f10c2a647f107b25819b9ffc729c289f44a9c39b4f5516",
+    "src/FsHotWatch/FsHotWatch.fsproj": "88ed5cffcff2212276fbd8928763f2259646d7c4cc2a27152b8e2213504776e0",
+    "tests/FsHotWatch.Tests/PluginFrameworkTests.fs": "b8a556de4d13873b46f3b4ea7232fe898c470617af7ad7b71d0f237231947504",
+    "tests/FsHotWatch.Tests/TestPrunePendingVerificationTests.fs": "c23acc1cda222cf1fe244b974a9eface742c84126bed6f86a2430dd339060346",
+    "tests/FsHotWatch.Tests/TestPrunePluginTests.fs": "0599958dc1559f53ad598bec89d383ef5dea3fdefe0d4c52907d6cc689db357c"
+  },
+  "outstandingFailures": [],
+  "removedLocalAuthorities": [
+    "inflightCount",
+    "runSlots dictionary",
+    "runSlotsLock",
+    "separate publishedState cell",
+    "separate completedDispatches cell"
+  ],
+  "limitations": [
+    "This is targeted verification across incremental stages; no whole-tree CI/verdict is claimed.",
+    "Host-wide aggregation, UI-status/evidence separation, typed queued slots, pending-verification accounting and bounded supervision are unfinished.",
+    "statusLock and the UI terminal guard still remain pending host evidence integration.",
+    "The plugin executor still awaits Update; only the new in-memory ownership mailbox is nonblocking.",
+    "Startup-failure callbacks, shared handoff exceptions and owner fault/shutdown need full supervision and terminal-receipt auditing before final acceptance.",
+    "No merge, package release, consumer qualification or Plane QA transition."
+  ],
+  "uniqueTargetedTests": 581
+}

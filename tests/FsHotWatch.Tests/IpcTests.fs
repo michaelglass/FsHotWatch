@@ -85,7 +85,9 @@ let ``server responds to RunCommand`` () =
         { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
+          Commands =
+            [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           Teardown = None }
@@ -182,11 +184,12 @@ let ``RunCommand with plugin that returns a result`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "echo",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let msg = if args.Length > 0 then args.[0] else "empty"
                       return $"echoed: {msg}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           Teardown = None }
@@ -499,11 +502,12 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "hello",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let arg = if args.Length > 0 then args.[0] else "world"
                       return $"hello {arg}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           Teardown = None }
@@ -1429,6 +1433,59 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     test <@ inner.Message.Contains("WaitForScan") @>
     // The wedge report's inline recovery rides along, so the client knows what to do.
     test <@ inner.Message.Contains("fshw stop") @>
+
+[<Fact(Timeout = 20000)>]
+let ``RPC deadline includes a synchronous callback before its task is returned`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use entered = new System.Threading.ManualResetEventSlim(false)
+    use release = new System.Threading.ManualResetEventSlim(false)
+
+    let callbackExited =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration =
+                fun _ ->
+                    entered.Set()
+
+                    try
+                        release.Wait()
+                        Task.FromResult(())
+                    finally
+                        callbackExited.TrySetResult(()) |> ignore }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 100.0)
+
+    // Invoke off the test thread: the current callback blocks before returning
+    // its task, which is precisely the part the RPC deadline must also bound.
+    let invocation: Task<string> =
+        Task.Run<string>(System.Func<Task<string>>(fun () -> target.WaitForScan(-1L)))
+
+    try
+        Assert.True(entered.Wait(5000), "the callback must enter before observing its deadline")
+
+        let winner =
+            Task.WhenAny([| invocation :> Task; Task.Delay(2000) |]).GetAwaiter().GetResult()
+
+        Assert.True(
+            obj.ReferenceEquals(invocation, winner),
+            "RPC deadline did not cover the synchronous callback before it returned a task"
+        )
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () -> invocation.GetAwaiter().GetResult() |> ignore)
+
+        Assert.Contains("WaitForScan", failure.Message)
+    finally
+        // Neither the intended red nor a future passing timeout may strand work.
+        release.Set()
+        Assert.True(callbackExited.Task.Wait(5000), "the released callback must leave its blocking prefix")
+
+        let drained =
+            Task.WhenAny([| invocation :> Task; Task.Delay(5000) |]).GetAwaiter().GetResult()
+
+        Assert.True(obj.ReferenceEquals(invocation, drained), "the released callback must drain")
 
 [<Fact(Timeout = 15000)>]
 let ``an RPC that completes inside the deadline returns normally`` () =

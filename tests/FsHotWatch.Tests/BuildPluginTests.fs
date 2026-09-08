@@ -2081,10 +2081,57 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
 // trusts.
 // ---------------------------------------------------------------------------
 
+/// Drive a direct command fixture through a real registered owner.
+let private forceRebuildThroughOwner handler =
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    host.RegisterHandler handler
+    host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
+
 /// A handler warmed through one real build, plus its cache-key function.
 let private warmedWithKeyFn () =
     let handler = warmedHandler "echo" "ok" []
     handler, handler.CacheKey.Value
+
+[<Fact(Timeout = 15000)>]
+[<Trait("OwnerCommand", "Rebuild")>]
+let ``force-rebuild replies only after the owner applies its intent`` () =
+    task {
+        let handler, cacheKeyFn = warmedWithKeyFn ()
+        let fileEvent = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+        let originalKey = cacheKeyFn fileEvent
+        Assert.True(originalKey.IsSome, "positive control requires a warm build cache")
+        let posted = ResizeArray<BuildMsg>()
+
+        let commandCtx: CommandCtx<BuildMsg> =
+            { RepoRoot = "/tmp"
+              Log = ignore
+              Post = posted.Add
+              IsRunning = fun _ -> false
+              ProjectGraph = ProjectGraphAccessor.none }
+
+        let command =
+            handler.Commands |> List.find (fun (name, _) -> name = "force-rebuild") |> snd
+
+        // Start immediately so the assertion observes the callback after it has either
+        // posted its intent and suspended, or incorrectly returned from the IPC thread.
+        let reply =
+            PluginCommand.invoke command commandCtx handler.Init [||]
+            |> Async.StartImmediateAsTask
+
+        Assert.Equal(1, posted.Count)
+        Assert.False(reply.IsCompleted, "force-rebuild acknowledged before its owner applied the intent")
+        Assert.Equal(originalKey, cacheKeyFn fileEvent)
+
+        let! _ =
+            handler.Update Unchecked.defaultof<_> handler.Init (Custom posted.[0])
+            |> Async.StartAsTask
+
+        let! response = reply.WaitAsync(TimeSpan.FromSeconds 2.0)
+        use json = JsonDocument.Parse response
+        Assert.Equal("ok", json.RootElement.GetProperty("status").GetString())
+        Assert.True(json.RootElement.GetProperty("forced").GetBoolean())
+        Assert.True((cacheKeyFn fileEvent).IsNone, "acknowledged rebuild must bypass the next cache lookup")
+    }
 
 [<Fact(Timeout = 15000)>]
 let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
@@ -2098,11 +2145,7 @@ let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () 
     let before = cacheKeyFn fileEvt
     test <@ before.IsSome @>
 
-    handler.Commands
-    |> List.find (fun (name, _) -> name = "force-rebuild")
-    |> snd
-    |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
-    |> ignore
+    forceRebuildThroughOwner handler
 
     // `None` is the framework's "skip the cache, run Update" bypass — i.e. a REAL build.
     let after = cacheKeyFn fileEvt
@@ -2114,11 +2157,7 @@ let ``force-rebuild still lets the fresh build's result be cached`` () =
     // permanently uncacheable, turning a correctness fix into a standing perf regression.
     let handler, cacheKeyFn = warmedWithKeyFn ()
 
-    handler.Commands
-    |> List.find (fun (name, _) -> name = "force-rebuild")
-    |> snd
-    |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
-    |> ignore
+    forceRebuildThroughOwner handler
 
     let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
 
@@ -2494,11 +2533,7 @@ let ``force-rebuild reaches a dependency-gated lookup`` () =
         let before = cacheKeyFn depEvt
         test <@ before.IsSome @>
 
-        handler.Commands
-        |> List.find (fun (name, _) -> name = "force-rebuild")
-        |> snd
-        |> fun run -> run Unchecked.defaultof<_> Unchecked.defaultof<_> [||] |> Async.RunSynchronously
-        |> ignore
+        forceRebuildThroughOwner handler
 
         let after = cacheKeyFn depEvt
         test <@ after.IsNone @>)

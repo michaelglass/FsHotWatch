@@ -1,0 +1,212 @@
+{
+  "scope": "the tracked issue owner-applied scope and rebuild command increment; not full issue verification",
+  "runs": [
+    {
+      "runId": "703cc5f8e5f5497c9b592a5e2d110124",
+      "summary": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788870750561,
+        "stop": 1788870750742
+      },
+      "regressions": [
+        {
+          "name": "FsHotWatch.Tests.BuildPluginTests.force-rebuild replies only after the owner applies its intent",
+          "status": "failed",
+          "duration": 167,
+          "suite": "59b9bd37-64ee-4c60-8fa6-ba1f0b2e4656",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/BuildPluginTests.fs",
+          "line": 2089,
+          "message": "Assert.Equal() Failure: Values differ\nExpected: 1\nActual:   0",
+          "trace": "   at FsHotWatch.Tests.BuildPluginTests.force-rebuild replies only after the owner applies its intent@2092.MoveNext() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/BuildPluginTests.fs:line 2115\n--- End of stack trace from previous location ---",
+          "extra": {
+            "id": "45935f1b-ae60-41ff-a261-18dde88dd719",
+            "collection": "7307e51a-d318-4d1b-82c1-207a82e1aba7",
+            "type": "FsHotWatch.Tests.BuildPluginTests",
+            "method": "force-rebuild replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Rebuild"
+              ]
+            },
+            "exception": "Xunit.Sdk.EqualException"
+          }
+        }
+      ]
+    },
+    {
+      "runId": "69886022115c4c86aafdf9599d9ed7aa",
+      "summary": {
+        "tests": 2,
+        "passed": 0,
+        "failed": 2,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788870793537,
+        "stop": 1788870793636
+      },
+      "regressions": [
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent(scope: \\\"full\\\")",
+          "status": "failed",
+          "duration": 85,
+          "suite": "f52b165f-9d62-40a1-b54f-de9ece516594",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+          "line": 93,
+          "message": "Assert.Equal() Failure: Values differ\nExpected: 1\nActual:   0",
+          "trace": "   at FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent@98.MoveNext() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs:line 120\n--- End of stack trace from previous location ---",
+          "extra": {
+            "id": "36f4d036-c67e-4c50-b574-9630c6e8aca0",
+            "collection": "604ef117-e535-49eb-bd0f-656655f8c677",
+            "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+            "method": "set-scope replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Scope"
+              ]
+            },
+            "exception": "Xunit.Sdk.EqualException"
+          }
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent(scope: \\\"impact\\\")",
+          "status": "failed",
+          "duration": 1,
+          "suite": "f52b165f-9d62-40a1-b54f-de9ece516594",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+          "line": 93,
+          "message": "Assert.Equal() Failure: Values differ\nExpected: 1\nActual:   0",
+          "trace": "   at FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent@98.MoveNext() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs:line 120\n--- End of stack trace from previous location ---",
+          "extra": {
+            "id": "e599877c-239e-4163-9c94-f26761177159",
+            "collection": "604ef117-e535-49eb-bd0f-656655f8c677",
+            "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+            "method": "set-scope replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Scope"
+              ]
+            },
+            "exception": "Xunit.Sdk.EqualException"
+          }
+        }
+      ]
+    },
+    {
+      "runId": "cfd51bbdea0f4c77936aa354fd0d0951",
+      "summary": {
+        "tests": 111,
+        "passed": 111,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788871053130,
+        "stop": 1788871074079
+      },
+      "regressions": [
+        {
+          "name": "FsHotWatch.Tests.BuildPluginTests.force-rebuild replies only after the owner applies its intent",
+          "status": "passed",
+          "duration": 59,
+          "suite": "43b77cc3-608e-42c6-a9cc-83e1562903a9",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/BuildPluginTests.fs",
+          "line": 2095,
+          "extra": {
+            "id": "b3059e57-a210-4e6c-9a26-3a95ecbd372a",
+            "collection": "40d78cce-92f0-4b8d-9dc0-11476bebee4e",
+            "type": "FsHotWatch.Tests.BuildPluginTests",
+            "method": "force-rebuild replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Rebuild"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "runId": "d6d91eae69ad468fb252507982df6383",
+      "summary": {
+        "tests": 91,
+        "passed": 91,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788871143478,
+        "stop": 1788871144255
+      },
+      "regressions": [
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent(scope: \\\"full\\\")",
+          "status": "passed",
+          "duration": 11,
+          "suite": "c27ce19e-6d0a-49e2-90b2-3888b07c73df",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+          "line": 93,
+          "extra": {
+            "id": "420e817f-909f-45b0-8d9c-8bf4f9dbfa62",
+            "collection": "d39dd6eb-7d2c-4713-b9fd-cdea34d893e0",
+            "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+            "method": "set-scope replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Scope"
+              ]
+            }
+          }
+        },
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.set-scope replies only after the owner applies its intent(scope: \\\"impact\\\")",
+          "status": "passed",
+          "duration": 1,
+          "suite": "c27ce19e-6d0a-49e2-90b2-3888b07c73df",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+          "line": 93,
+          "extra": {
+            "id": "2191b674-c488-4749-a5fa-25b64ec383a5",
+            "collection": "d39dd6eb-7d2c-4713-b9fd-cdea34d893e0",
+            "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+            "method": "set-scope replies only after the owner applies its intent",
+            "traits": {
+              "OwnerCommand": [
+                "Scope"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sourceSha256": {
+    "src/FsHotWatch.Build/BuildPlugin.fs": "c2cd7c7937de883216daa55b7d14f719945f8bc17542b7c0a4448f0fbb674b95",
+    "src/FsHotWatch.TestPrune/TestPrunePlugin.fs": "e2eaa70cc770aad25ced86c83cf805a93d7cf612d5ca68e267b2be022f145c59",
+    "tests/FsHotWatch.Tests/BuildPluginTests.fs": "58e5c2052fb115d75044985953a91778cc60b2cb1e38560cb8a10ca2607fb43c",
+    "tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs": "e0961145bc547dfad5a44a30f420d0c0bcbffada08234986726fd34553cca3c4"
+  },
+  "compile": {
+    "session": 15190,
+    "exitCode": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/private/tmp/owner-command-formatted-compile.log"
+  },
+  "limitations": [
+    "Full PluginCore/WorkLedger and nonblocking snapshot observation migration remains unfinished.",
+    "Scope and rebuild closure flags now receive command writes on the owner; they have not yet been replaced by immutable published domain state.",
+    "Replies attest application of the current closure mutation; final immutable publication must precede operation acknowledgement in the integrated owner design.",
+    "One green-attempt returned exit3 without tests because formatting made build output stale; recompiling formatted source preceded the recorded passing runs.",
+    "Full CI, integration, consumer qualification and merge/QA have not been completed."
+  ]
+}

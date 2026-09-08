@@ -1,0 +1,69 @@
+{
+  "scope": "ownership conservation regression red before accounting replacement",
+  "runId": "0db5d55eecfb42b8943fa353083a1bec",
+  "summary": {
+    "tests": 2,
+    "passed": 0,
+    "failed": 2,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788876512546,
+    "stop": 1788876512806
+  },
+  "tests": [
+    {
+      "name": "FsHotWatch.Tests.PluginFrameworkTests.exclusive ownership survives shared completion processing(blockedStage: \\\"handoff\\\")",
+      "status": "failed",
+      "duration": 192,
+      "suite": "8ae2ef57-b844-4407-85bc-b0f79c005dbb",
+      "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+      "line": 183,
+      "message": "Swensen.Unquote.AssertionFailedException : Test failed:\n\nsecondClaim = SlotBusy\nClaimed = SlotBusy\nfalse\n",
+      "trace": "   at FsHotWatch.Tests.PluginFrameworkTests.exclusive ownership survives shared completion processing(String blockedStage) in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs:line 226\n   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)\n   at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(Object obj, Span`1 copyOfArgs, BindingFlags invokeAttr)",
+      "extra": {
+        "id": "5ffc5a96-b193-475b-8ea8-5da90d484114",
+        "collection": "f18186c1-743a-4043-95c0-e1fbeee80f81",
+        "type": "FsHotWatch.Tests.PluginFrameworkTests",
+        "method": "exclusive ownership survives shared completion processing",
+        "traits": {
+          "WorkOwner": [
+            "Conservation"
+          ]
+        },
+        "exception": "Swensen.Unquote.AssertionFailedException"
+      }
+    },
+    {
+      "name": "FsHotWatch.Tests.PluginFrameworkTests.exclusive ownership survives shared completion processing(blockedStage: \\\"classification\\\")",
+      "status": "failed",
+      "duration": 52,
+      "suite": "8ae2ef57-b844-4407-85bc-b0f79c005dbb",
+      "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+      "line": 183,
+      "message": "Swensen.Unquote.AssertionFailedException : Test failed:\n\nsecondClaim = SlotBusy\nClaimed = SlotBusy\nfalse\n",
+      "trace": "   at FsHotWatch.Tests.PluginFrameworkTests.exclusive ownership survives shared completion processing(String blockedStage) in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs:line 226\n   at InvokeStub_PluginFrameworkTests.exclusive ownership survives shared completion processing(Object, Span`1)\n   at System.Reflection.MethodBaseInvoker.InvokeWithOneArg(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)",
+      "extra": {
+        "id": "8eeb274f-b171-4cce-832e-7aa337ae8db1",
+        "collection": "f18186c1-743a-4043-95c0-e1fbeee80f81",
+        "type": "FsHotWatch.Tests.PluginFrameworkTests",
+        "method": "exclusive ownership survives shared completion processing",
+        "traits": {
+          "WorkOwner": [
+            "Conservation"
+          ]
+        },
+        "exception": "Swensen.Unquote.AssertionFailedException"
+      }
+    }
+  ],
+  "compile": {
+    "session": 72458,
+    "exitCode": 0,
+    "warnings": 0,
+    "errors": 0
+  },
+  "expectedFailure": "secondClaim = SlotBusy; actual Claimed while classification or shared-resource handoff remains blocked",
+  "productionFixImplemented": false
+}

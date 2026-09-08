@@ -1,0 +1,71 @@
+{
+  "scope": "owner-side run-tests selection; not full issue acceptance",
+  "command": "mise exec -- dotnet run --project src/FsHotWatch.Cli --no-build -- test-rerun --project FsHotWatch.Tests --filter-class FsHotWatch.Tests.TestPruneRunScopeTests",
+  "red": {
+    "path": ".fshw/test-runs/379398fc41ce41d9bad900337c96966f/FsHotWatch.Tests.ctrf.json",
+    "exit": 1,
+    "results": {
+      "tests": 89,
+      "passed": 87,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788864480875,
+      "stop": 1788864482380
+    }
+  },
+  "green": {
+    "path": ".fshw/test-runs/f31edef7bab647baa42053326bbc836d/FsHotWatch.Tests.ctrf.json",
+    "exit": 0,
+    "summary": {
+      "tests": 89,
+      "passed": 89,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788864676026,
+      "stop": 1788864677098
+    },
+    "regressions": [
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.only-failed resolves current owner failures instead of the command snapshot(snapshotHasFailure: True)",
+        "status": "passed",
+        "duration": 5,
+        "suite": "0873393b-75f8-48a0-ab89-ed6a606fc974",
+        "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+        "line": 1601,
+        "extra": {
+          "id": "76cd4e11-061b-4770-97e2-062e9fa2fce2",
+          "collection": "fc8bbe06-0c12-4ef5-84eb-bae7907501ff",
+          "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+          "method": "only-failed resolves current owner failures instead of the command snapshot"
+        }
+      },
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.only-failed resolves current owner failures instead of the command snapshot(snapshotHasFailure: False)",
+        "status": "passed",
+        "duration": 0,
+        "suite": "0873393b-75f8-48a0-ab89-ed6a606fc974",
+        "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/TestPruneRunScopeTests.fs",
+        "line": 1601,
+        "extra": {
+          "id": "c19940be-0e95-4c8d-860f-b388c6dbc8f5",
+          "collection": "fc8bbe06-0c12-4ef5-84eb-bae7907501ff",
+          "type": "FsHotWatch.Tests.TestPruneRunScopeTests",
+          "method": "only-failed resolves current owner failures instead of the command snapshot"
+        }
+      }
+    ]
+  },
+  "compile": {
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/private/tmp/owner-selection-green-compile.log"
+  },
+  "remaining": "Snapshot command API, PluginCore/WorkLedger, supervision, full CI and consumer qualification remain incomplete. Formatter command reported 0 of 0 files and is not formatting evidence."
+}

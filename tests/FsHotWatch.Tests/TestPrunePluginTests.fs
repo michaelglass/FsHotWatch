@@ -2381,7 +2381,9 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check comment-only source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result ->
+            env.Host.EmitFileCheckedTracked(result)
+            |> List.iter (fun receipt -> receipt.Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         waitForTerminalStatus env.Host "test-prune" 30000
 
@@ -2397,7 +2399,9 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             |> Async.RunSynchronously
         with
         | None -> Assert.Fail("FCS failed to check AST-changed source")
-        | Some result -> env.Host.EmitFileChecked(result)
+        | Some result ->
+            env.Host.EmitFileCheckedTracked(result)
+            |> List.iter (fun receipt -> receipt.Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         waitForTerminalStatus env.Host "test-prune" 30000
 

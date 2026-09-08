@@ -244,6 +244,7 @@ let internal createFormatCheckWith
                   let files = state.Unformatted |> Set.toList |> String.concat ", "
                   return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
               } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey =
         // Content key: merkle of (file path, file source) for each file in the

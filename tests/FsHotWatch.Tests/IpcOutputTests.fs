@@ -1336,11 +1336,14 @@ let ``an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass
 
     test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false mixedNoOp = 3 @>
 
-    // Every all-non-executing combination, not just the one that was reported.
+    // An explicit execution error is known failure (1), even when no project
+    // produced counts. Only incomplete/deferred evidence without a known failure
+    // uses 3. This agrees with the timed-out legacy payload below and the mixed
+    // passed/errored case; none of these may become a success.
     let deferredAndErrored =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"errored","output":""},{"project":"B","status":"deferred","output":""}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 3 @>
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 1 @>
 
     // POSITIVE CONTROL: the refusal is derived from "nothing executed", not from "some
     // project was not `passed`". One project that really ran keeps the run a pass.

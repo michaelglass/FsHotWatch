@@ -1,0 +1,81 @@
+{
+  "scope": "local exclusive startup and cleanup failure increment; not full ticket acceptance",
+  "runs": [
+    {
+      "runId": "6f791d7425b444c3803cb9955c1fa6e1",
+      "summary": {
+        "tests": 50,
+        "passed": 50,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788879288155,
+        "stop": 1788879294247
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary exclusive launch failure uses the host launcher and retires ownership",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared cleanup terminalizes the run without publishing success",
+          "status": "passed",
+          "message": null
+        }
+      ]
+    },
+    {
+      "runId": "c8e6aae79c9b45c7835e76ea3aa61ec1",
+      "summary": {
+        "tests": 2,
+        "passed": 0,
+        "failed": 2,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788879083957,
+        "stop": 1788879084091
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary exclusive launch failure uses the host launcher and retires ownership",
+          "status": "failed",
+          "message": "Assert.Equal() Failure: Values differ\nExpected: 1\nActual:   0"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared cleanup terminalizes the run without publishing success",
+          "status": "failed",
+          "message": "cleanup failure must resolve local ownership"
+        }
+      ]
+    }
+  ],
+  "compile": {
+    "command": "mise run compile",
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/private/tmp/supervision-formatted-compile.log"
+  },
+  "testLog": "/private/tmp/supervision-framework-final.log",
+  "noTestsAttempt": {
+    "session": 54363,
+    "exit": 3,
+    "reason": "Formatter changed PluginFramework.fs after compilation; recompiled before final run"
+  },
+  "sourceSha256": {
+    "src/FsHotWatch/PluginFramework.fs": "8f6e05cbe40f29853acbfa7491269ed81139ba6a9412b756599d41fe30ac184d",
+    "tests/FsHotWatch.Tests/PluginFrameworkTests.fs": "870355d100330df7a80c16b5682ee9d5d917e7f9a7f49d6262bd5296c945eb73"
+  },
+  "remaining": [
+    "Shared startup failure callback and scheduler handoff acknowledgement",
+    "Bounded common supervision for scans, batches, exclusive work and preprocessors",
+    "Owner/executor failure and shutdown receipt terminalization",
+    "Host-wide atomic accounting and validated evidence separated from UI status",
+    "Full CI and integration acceptance"
+  ]
+}

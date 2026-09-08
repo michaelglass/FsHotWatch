@@ -710,6 +710,8 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                                   else
                                       """{"scope":"none","noTestsReason":"already-verified"}"""
                           } ]
+                    |> List.map (fun (name, callback) ->
+                        name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   CacheKey = None
                   Teardown = None }
@@ -987,6 +989,8 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                                   + BaselineFixtures.replyFragment
                                   + "}"
                           } ]
+                    |> List.map (fun (name, callback) ->
+                        name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   CacheKey = None
                   Teardown = None }
@@ -1052,6 +1056,7 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
               Commands =
                 [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
                   fun _ctx _state (_args: string array) -> async { return failwith "SQLITE_BUSY: database is locked" } ]
+                |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
               CacheKey = None
               Teardown = None }
@@ -1210,6 +1215,7 @@ let private hostWith (commands: (string * (string array -> string)) list) : FsHo
           Commands =
             commands
             |> List.map (fun (name, f) -> name, (fun _ctx _state (args: string array) -> async { return f args }))
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
           CacheKey = None
           Teardown = None }

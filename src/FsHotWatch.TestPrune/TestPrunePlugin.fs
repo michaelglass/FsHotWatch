@@ -1674,8 +1674,14 @@ module CheckReach =
         | Ok exactFailures -> classify wouldHaveRun exactFailures, measure wouldHaveRun exactFailures
         | Error reason -> ReachUnknown reason, RecallNotMeasurable reason
 
+/// State-dependent selection is resolved by the owner when it admits the request.
+type RunTestsSelection =
+    { OnlyFailed: bool
+      Projects: Set<string> option }
+
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
+    | ScopeRequested of fullSuite: bool * reply: Tasks.TaskCompletionSource<string>
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
     | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     | TestHostUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
@@ -1688,7 +1694,10 @@ type TestPruneMsg =
     /// verdict wait and exit 0 while the test process is still alive. `reply` carries
     /// the results JSON back to the awaiting command; every completion path must
     /// resolve it.
-    | RunTestsRequested of configs: TestConfig list * filter: string option * reply: Tasks.TaskCompletionSource<string>
+    | RunTestsRequested of
+        selection: RunTestsSelection *
+        filter: string option *
+        reply: Tasks.TaskCompletionSource<string>
 
 /// Build the degenerate Started→Aborted lifecycle a faulted run posts back so the
 /// synchronous `TestsFinished` handler drives the plugin to a NON-green terminal status.
@@ -6127,7 +6136,7 @@ let internal createWithLaunchDeadline
 
     let commands =
         [ "affected-tests",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   // Compute on demand from state.ChangedSymbols against current DB
                   // state. ChangedSymbols accumulates across FileChecked events and
@@ -6148,14 +6157,14 @@ let internal createWithLaunchDeadline
                              ``method`` = t.TestMethod |})
 
                   return JsonSerializer.Serialize(testsData)
-              }
+              })
 
           "changed-files",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
-              async { return JsonSerializer.Serialize(state.ChangedFiles) }
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
+              async { return JsonSerializer.Serialize(state.ChangedFiles) })
 
           "test-results",
-          fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   if ctx.IsRunning "tests" then
                       return JsonSerializer.Serialize({| status = "running" |})
@@ -6166,10 +6175,10 @@ let internal createWithLaunchDeadline
                       // correct here; inventing "(none)" would claim it was unfiltered.
                       | Some results -> return formatTestResultsJson None Map.empty results
                       | None -> return JsonSerializer.Serialize({| status = "not run" |})
-              }
+              })
 
           "flaky-tests",
-          fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (_args: string array) ->
               async {
                   let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
@@ -6185,7 +6194,7 @@ let internal createWithLaunchDeadline
                              runs = runs |})
 
                   return JsonSerializer.Serialize({| tests = payload |})
-              } ]
+              }) ]
 
     // run-tests / scope commands (only if testConfigs are provided). The scope verbs
     // live behind the same condition on purpose: a repo with no test projects has no suite
@@ -6197,7 +6206,7 @@ let internal createWithLaunchDeadline
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
             @ [ "set-scope",
-                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
+                PluginCommand.Request(fun (ctx: CommandCtx<TestPruneMsg>) (args: string array) ->
                     async {
                         // `fshw confirm` calls this BEFORE triggering its
                         // scan, so the test run the scan provokes is already unfiltered.
@@ -6214,27 +6223,24 @@ let internal createWithLaunchDeadline
                                 "impact"
 
                         match requested with
-                        | "full" ->
-                            Volatile.Write(&fullSuiteScopeRef, true)
-
-                            Logging.info
-                                "test-prune"
-                                "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
-
-                            return JsonSerializer.Serialize({| scope = "full" |})
+                        | "full"
                         | "impact" ->
-                            Volatile.Write(&fullSuiteScopeRef, false)
-                            Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
-                            return JsonSerializer.Serialize({| scope = "impact" |})
+                            let reply =
+                                Tasks.TaskCompletionSource<string>(
+                                    Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                )
+
+                            ctx.Post(ScopeRequested((requested = "full"), reply))
+                            return! reply.Task.WaitAsync(TimeSpan.FromSeconds 30.0) |> Async.AwaitTask
                         | other ->
                             return
                                 JsonSerializer.Serialize(
                                     {| error = $"unknown scope '%s{other}' (expected 'full' or 'impact')" |}
                                 )
-                    }
+                    })
 
                 "test-scope",
-                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+                PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
                     async {
                         // What the last completed run ACTUALLY covered — the evidence a
                         // merge verdict is computed from. Never a restatement of what was
@@ -6371,9 +6377,11 @@ let internal createWithLaunchDeadline
                                            // HAVE covering tests this daemon cannot run, and where.
                                            unrunnableSymbolCount = Map.count (ZeroSelection.unrunnable zero)
                                            unrunnableProjects =
-                                            (ZeroSelection.unrunnable zero |> UnrunnableCoverage.projects |> Set.toArray) |}
+                                            (ZeroSelection.unrunnable zero
+                                             |> UnrunnableCoverage.projects
+                                             |> Set.toArray) |}
                                     )
-                    }
+                    })
 
                 // What `check` WOULD have concluded about the run
                 // `confirm` just widened to full — the sample `confirm` used to destroy.
@@ -6385,7 +6393,7 @@ let internal createWithLaunchDeadline
                 // that has never heard of this command returns the unknown-command
                 // sentinel, which the CLI reads as "no sample" — never as agreement.
                 "check-reach",
-                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (_args: string array) ->
                     async {
                         match Volatile.Read(&checkReachRef) with
                         | None ->
@@ -6467,10 +6475,10 @@ let internal createWithLaunchDeadline
                                            acceptable = recallAcceptable
                                            reason = recallReason |} |}
                                 )
-                    }
+                    })
 
                 "run-tests",
-                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
+                PluginCommand.Request(fun (ctx: CommandCtx<TestPruneMsg>) (args: string array) ->
                     async {
                         // FORCE semantics: `test-rerun` is the explicit "prove it
                         // ran" verb. The run NEVER executes here — it is posted to
@@ -6514,101 +6522,38 @@ let internal createWithLaunchDeadline
                                         v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq |> Some
                                     | false, _ -> None
 
-                                // Resolve configs or produce an error
-                                let lastResults = state.LastResults
+                                let reply =
+                                    Tasks.TaskCompletionSource<string>(
+                                        Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                    )
 
-                                // "Failed" is the OUTSTANDING set, not
-                                // merely the last run's results: after an impact-filtered
-                                // run the failing project is not in `LastResults` at all
-                                // (it wasn't selected), and `--only-failed` would have
-                                // re-run nothing — "no matching test projects" — while a
-                                // red sat there. The outstanding ledger is what still owes
-                                // a re-run, so it is what this verb must re-run.
-                                let outstandingProjects =
-                                    state.OutstandingFailures |> List.map (fun f -> f.Project) |> Set.ofList
+                                ctx.Post(
+                                    RunTestsRequested(
+                                        { OnlyFailed = onlyFailed
+                                          Projects = projectFilter },
+                                        filter,
+                                        reply
+                                    )
+                                )
 
-                                let configsResult =
-                                    if onlyFailed then
-                                        let lastRunFailed =
-                                            match lastResults with
-                                            | Some prev ->
-                                                prev.Results
-                                                |> Map.toList
-                                                |> List.choose (fun (name, r) ->
-                                                    match r with
-                                                    | TestsFailed _
-                                                    | TestsTimedOut _
-                                                    // A deferred project never ran, and an errored one
-                                                    // aborted without a verdict — both are non-green, so
-                                                    // `--only-failed` (rerun non-green projects) must pick
-                                                    // them up.
-                                                    | TestsDeferred _
-                                                    | TestsErrored _ -> Some name
-                                                    | _ -> None)
-                                                |> Set.ofList
-                                            | None -> Set.empty
+                                // Bounded await: the reply resolves
+                                // when the run finishes — behind the test-prune
+                                // mailbox and possibly behind a run already in
+                                // flight — so an unbounded wait here could pin the
+                                // IPC caller for as long as the daemon is wedged.
+                                let! winner =
+                                    Tasks.Task.WhenAny(reply.Task, Tasks.Task.Delay(waitForResultMs))
+                                    |> Async.AwaitTask
 
-                                        let failedNames = Set.union lastRunFailed outstandingProjects
-
-                                        if lastResults.IsNone && Set.isEmpty failedNames then
-                                            Error "no previous results — cannot determine failed projects"
-                                        else
-                                            Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
-                                    else
-                                        match projectFilter with
-                                        | Some names ->
-                                            Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
-                                        | None -> Ok allConfigs
-
-                                match configsResult with
-                                | Error msg -> return JsonSerializer.Serialize({| error = msg |})
-                                | Ok configs when configs.IsEmpty ->
-                                    // Name what was asked for and what exists. A bare
-                                    // "no matching test projects" is unactionable for the
-                                    // one case that actually produces it — a mistyped or
-                                    // renamed `--project` — and the configured names are
-                                    // right here.
-                                    let msg =
-                                        match projectFilter with
-                                        | Some names ->
-                                            let asked = names |> Set.toList |> List.sort |> String.concat ", "
-
-                                            let known =
-                                                allConfigs
-                                                |> List.map (fun c -> c.Project)
-                                                |> List.sort
-                                                |> String.concat ", "
-
-                                            $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
-                                        | None -> "no matching test projects"
-
-                                    return JsonSerializer.Serialize({| error = msg |})
-                                | Ok configs ->
-                                    let reply =
-                                        Tasks.TaskCompletionSource<string>(
-                                            Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                if winner = (reply.Task :> Tasks.Task) then
+                                    return reply.Task.Result
+                                else
+                                    return
+                                        JsonSerializer.Serialize(
+                                            {| status = "busy"
+                                               message =
+                                                $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
                                         )
-
-                                    ctx.Post(RunTestsRequested(configs, filter, reply))
-
-                                    // Bounded await: the reply resolves
-                                    // when the run finishes — behind the test-prune
-                                    // mailbox and possibly behind a run already in
-                                    // flight — so an unbounded wait here could pin the
-                                    // IPC caller for as long as the daemon is wedged.
-                                    let! winner =
-                                        Tasks.Task.WhenAny(reply.Task, Tasks.Task.Delay(waitForResultMs))
-                                        |> Async.AwaitTask
-
-                                    if winner = (reply.Task :> Tasks.Task) then
-                                        return reply.Task.Result
-                                    else
-                                        return
-                                            JsonSerializer.Serialize(
-                                                {| status = "busy"
-                                                   message =
-                                                    $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
-                                            )
                         with ex ->
                             // Command-local faults only (the run itself executes in
                             // the mailbox-launched work, which owns run faults per
@@ -6617,7 +6562,7 @@ let internal createWithLaunchDeadline
                             // was launched.
                             Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
                             return JsonSerializer.Serialize({| error = ex.Message |})
-                    } ]
+                    }) ]
         | _ -> commands
 
     { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
@@ -6626,6 +6571,12 @@ let internal createWithLaunchDeadline
         fun ctx state event ->
             async {
                 match event with
+                | Custom(ScopeRequested(fullSuite, reply)) ->
+                    Volatile.Write(&fullSuiteScopeRef, fullSuite)
+                    let scope = if fullSuite then "full" else "impact"
+                    Logging.info "test-prune" $"Scope set to {scope} for subsequent runs in this daemon session"
+                    reply.TrySetResult(JsonSerializer.Serialize({| scope = scope |})) |> ignore
+                    return state
                 | PluginEvent.FileChecked result ->
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
@@ -8066,21 +8017,92 @@ let internal createWithLaunchDeadline
                             PendingRerun = true
                             EvidenceReceipt = None }
 
-                | Custom(RunTestsRequested(configs, filter, reply)) ->
-                    // Launched from the mailbox so it is serialised with every other
-                    // launch site and holds the `RunExclusive "tests"` slot for its whole
-                    // duration — see the `RunTestsRequested` case for why that matters.
-                    match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
-                    | Claimed -> return { state with EvidenceReceipt = None }
-                    | SlotBusy ->
-                        // A busy slot QUEUES the run, never refuses it: a refusal that
-                        // reads as success is a vacuous green. TestsFinished drains FIFO,
-                        // and the IPC command bounds its own wait on `reply`.
-                        ctx.Log "  ↳ queued run-tests force-run (tests already running)"
+                | Custom(RunTestsRequested(selection, filter, reply)) ->
+                    let allConfigs = testConfigs |> Option.defaultValue []
+                    let onlyFailed = selection.OnlyFailed
+                    let projectFilter = selection.Projects
+                    let lastResults = state.LastResults
 
-                        return
-                            { state with
-                                QueuedCommandRuns = state.QueuedCommandRuns @ [ (configs, filter, reply) ] }
+                    // "Failed" is the OUTSTANDING set, not
+                    // merely the last run's results: after an impact-filtered
+                    // run the failing project is not in `LastResults` at all
+                    // (it wasn't selected), and `--only-failed` would have
+                    // re-run nothing — "no matching test projects" — while a
+                    // red sat there. The outstanding ledger is what still owes
+                    // a re-run, so it is what this verb must re-run.
+                    let outstandingProjects =
+                        state.OutstandingFailures |> List.map (fun f -> f.Project) |> Set.ofList
+
+                    let configsResult =
+                        if onlyFailed then
+                            let lastRunFailed =
+                                match lastResults with
+                                | Some prev ->
+                                    prev.Results
+                                    |> Map.toList
+                                    |> List.choose (fun (name, r) ->
+                                        match r with
+                                        | TestsFailed _
+                                        | TestsTimedOut _
+                                        // A deferred project never ran, and an errored one
+                                        // aborted without a verdict — both are non-green, so
+                                        // `--only-failed` (rerun non-green projects) must pick
+                                        // them up.
+                                        | TestsDeferred _
+                                        | TestsErrored _ -> Some name
+                                        | _ -> None)
+                                    |> Set.ofList
+                                | None -> Set.empty
+
+                            let failedNames = Set.union lastRunFailed outstandingProjects
+
+                            if lastResults.IsNone && Set.isEmpty failedNames then
+                                Error "no previous results — cannot determine failed projects"
+                            else
+                                Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
+                        else
+                            match projectFilter with
+                            | Some names -> Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
+                            | None -> Ok allConfigs
+
+                    match configsResult with
+                    | Error msg ->
+                        reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
+                        return state
+                    | Ok configs when configs.IsEmpty ->
+                        // Name what was asked for and what exists. A bare
+                        // "no matching test projects" is unactionable for the
+                        // one case that actually produces it — a mistyped or
+                        // renamed `--project` — and the configured names are
+                        // right here.
+                        let msg =
+                            match projectFilter with
+                            | Some names ->
+                                let asked = names |> Set.toList |> List.sort |> String.concat ", "
+
+                                let known =
+                                    allConfigs |> List.map (fun c -> c.Project) |> List.sort |> String.concat ", "
+
+                                $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
+                            | None -> "no matching test projects"
+
+                        reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
+                        return state
+                    | Ok configs ->
+                        // Launched from the mailbox so it is serialised with every other
+                        // launch site and holds the `RunExclusive "tests"` slot for its whole
+                        // duration — see the `RunTestsRequested` case for why that matters.
+                        match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
+                        | Claimed -> return { state with EvidenceReceipt = None }
+                        | SlotBusy ->
+                            // A busy slot QUEUES the run, never refuses it: a refusal that
+                            // reads as success is a vacuous green. TestsFinished drains FIFO,
+                            // and the IPC command bounds its own wait on `reply`.
+                            ctx.Log "  ↳ queued run-tests force-run (tests already running)"
+
+                            return
+                                { state with
+                                    QueuedCommandRuns = state.QueuedCommandRuns @ [ (configs, filter, reply) ] }
 
                 | _ -> return state
             }

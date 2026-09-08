@@ -1,0 +1,74 @@
+{
+  "baseRevision": "082954c7da02d757138d6ee6936ac56e4c3c5a7a",
+  "classification": "assertion-red; no production implementation; no full-gate claim",
+  "runs": [
+    {
+      "runId": "64fd2a1fabce4619bad978fa48dba7bc",
+      "reportPath": ".fshw/test-runs/64fd2a1fabce4619bad978fa48dba7bc/FsHotWatch.Tests.ctrf.json",
+      "summary": {
+        "tests": 42,
+        "passed": 41,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788857872037,
+        "stop": 1788857880016
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.read command returns committed snapshot while an update is blocked",
+          "status": "failed",
+          "duration": 2057,
+          "suite": "e1c00ef1-25ea-4d83-8ead-45de53970dd3",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+          "line": 448,
+          "message": "read command waited behind the blocked update instead of reading a snapshot",
+          "trace": "   at FsHotWatch.Tests.PluginFrameworkTests.read command returns committed snapshot while an update is blocked() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs:line 491\n   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)\n   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)",
+          "extra": {
+            "id": "57285b20-e58c-4ce3-aff5-f5a47b0ce26a",
+            "collection": "67a024e1-90e9-42b7-8c83-29a99da5eb8c",
+            "type": "FsHotWatch.Tests.PluginFrameworkTests",
+            "method": "read command returns committed snapshot while an update is blocked",
+            "exception": "Xunit.Sdk.TrueException"
+          }
+        }
+      ]
+    },
+    {
+      "runId": "f0b805a6b3de4e5a99031ae703e819fe",
+      "reportPath": ".fshw/test-runs/f0b805a6b3de4e5a99031ae703e819fe/FsHotWatch.Tests.ctrf.json",
+      "summary": {
+        "tests": 51,
+        "passed": 50,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788857938762,
+        "stop": 1788857944335
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.IpcTests.RPC deadline includes a synchronous callback before its task is returned",
+          "status": "failed",
+          "duration": 2008,
+          "suite": "6746ea9c-419b-4b06-a3db-b0cd49d267f4",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/IpcTests.fs",
+          "line": 1434,
+          "message": "RPC deadline did not cover the synchronous callback before it returned a task",
+          "trace": "   at FsHotWatch.Tests.IpcTests.RPC deadline includes a synchronous callback before its task is returned() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/IpcTests.fs:line 1468\n   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)\n   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)\n   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)\n   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)",
+          "extra": {
+            "id": "9890339e-1475-4462-868c-ae5d5925ea74",
+            "collection": "1bd84c60-d22e-4230-af8e-e52e0ede991a",
+            "type": "FsHotWatch.Tests.IpcTests",
+            "method": "RPC deadline includes a synchronous callback before its task is returned",
+            "exception": "Xunit.Sdk.TrueException"
+          }
+        }
+      ]
+    }
+  ]
+}

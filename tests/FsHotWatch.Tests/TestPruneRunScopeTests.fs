@@ -90,6 +90,43 @@ let private projConfig (project: string) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect }
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("full")>]
+[<InlineData("impact")>]
+[<Trait("OwnerCommand", "Scope")>]
+let ``set-scope replies only after the owner applies its intent`` (scope: string) =
+    task {
+        let handler =
+            create ":memory:" "/tmp" (Some [ projConfig "Acme.Tests" ]) None None None None []
+
+        let posted = ResizeArray<TestPruneMsg>()
+
+        let commandCtx: CommandCtx<TestPruneMsg> =
+            { RepoRoot = "/tmp"
+              Log = ignore
+              Post = posted.Add
+              IsRunning = fun _ -> false
+              ProjectGraph = ProjectGraphAccessor.none }
+
+        let command =
+            handler.Commands |> List.find (fun (name, _) -> name = "set-scope") |> snd
+
+        let args = [| JsonSerializer.Serialize({| scope = scope |}) |]
+
+        let reply =
+            PluginCommand.invoke command commandCtx handler.Init args
+            |> Async.StartImmediateAsTask
+
+        Assert.Equal(1, posted.Count)
+        Assert.False(reply.IsCompleted, "set-scope acknowledged before its owner applied the intent")
+
+        let pluginCtx, _, _ = makeTestPruneRecordingCtx ()
+        let! _ = handler.Update pluginCtx handler.Init (Custom posted.[0]) |> Async.StartAsTask
+        let! response = reply.WaitAsync(TimeSpan.FromSeconds 2.0)
+        use json = JsonDocument.Parse response
+        Assert.Equal(scope, json.RootElement.GetProperty("scope").GetString())
+    }
+
 /// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
 /// launched against.
 let private testsFinishedEvent (results: (string * TestResult) list) (launch: TestRunLaunch) =
@@ -902,7 +939,9 @@ let ``completion publishes real CTRF recall through check-reach IPC`` () =
               IsRunning = fun _ -> false
               ProjectGraph = pluginCtx.ProjectGraph }
 
-        let json = command commandCtx state [||] |> Async.RunSynchronously
+        let json =
+            FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx state [||]
+            |> Async.RunSynchronously
 
         match FsHotWatch.Cli.IpcParsing.parseCheckReach json with
         | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
@@ -1532,7 +1571,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     let report =
-        scopeCommand commandCtx final [||]
+        FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
         |> Async.RunSynchronously
         |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -1585,7 +1624,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     let report =
-        scopeCommand commandCtx final [||]
+        FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
         |> Async.RunSynchronously
         |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
@@ -1595,6 +1634,59 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
     // ...and the narrow drain, whose directory holds the only reports that batch wrote,
     // is no longer invisible. Newest first.
     test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``only-failed resolves current owner failures instead of the command snapshot`` (snapshotHasFailure: bool) =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+    let snapshot =
+        { handler.Init with
+            OutstandingFailures = if snapshotHasFailure then [ redIn "ProjA" None ] else [] }
+
+    // An intervening committed transition changed the outstanding failure set.
+    // The request must carry selection intent into this owner state.
+    let ownerState =
+        { handler.Init with
+            OutstandingFailures = [ redIn "ProjB" None ] }
+
+    let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
+
+    let ownerCtx =
+        { recordingCtx with
+            RunExclusiveShared = fun _ _ _ _ _ -> LocalSlotBusy }
+
+    let mutable admittedState = ownerState
+
+    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+        { RepoRoot = "/tmp"
+          Log = ignore
+          IsRunning = fun _ -> true
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
+          Post =
+            fun message ->
+                admittedState <- handler.Update ownerCtx admittedState (Custom message) |> Async.RunSynchronously
+
+                match message with
+                | RunTestsRequested(_, _, reply) ->
+                    // No worker is launched by this busy-slot fixture. Complete its
+                    // caller after inspecting the real owner's queued selection.
+                    reply.TrySetResult("{\"fixture\":\"queued\"}") |> ignore
+                | _ -> failwith "unexpected command message" }
+
+    let command = handler.Commands |> List.find (fst >> (=) "run-tests") |> snd
+
+    FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx snapshot [| "{\"only-failed\":true}" |]
+    |> Async.RunSynchronously
+    |> ignore
+
+    let queuedProjects =
+        admittedState.QueuedCommandRuns
+        |> List.collect (fun (configs, _, _) -> configs |> List.map (fun config -> config.Project))
+
+    test <@ queuedProjects = [ "ProjB" ] @>
 
 [<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
@@ -1631,7 +1723,14 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
         handler.Update
             ctx
             fullState
-            (Custom(RunTestsRequested([ projConfig "ProjB" ], Some "FullyQualifiedName~ProjBTests", queuedReply)))
+            (Custom(
+                RunTestsRequested(
+                    { OnlyFailed = false
+                      Projects = Some(Set.singleton "ProjB") },
+                    Some "FullyQualifiedName~ProjBTests",
+                    queuedReply
+                )
+            ))
         |> Async.RunSynchronously
 
     test <@ queuedState.EvidenceReceipt.IsSome @>
@@ -1664,7 +1763,17 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
                     SharedClaimed }
 
     let claimedState =
-        handler.Update ctx handler.Init (Custom(RunTestsRequested([ projConfig "ProjA" ], None, reply)))
+        handler.Update
+            ctx
+            handler.Init
+            (Custom(
+                RunTestsRequested(
+                    { OnlyFailed = false
+                      Projects = Some(Set.singleton "ProjA") },
+                    None,
+                    reply
+                )
+            ))
         |> Async.RunSynchronously
 
     test <@ posted.IsSome @>

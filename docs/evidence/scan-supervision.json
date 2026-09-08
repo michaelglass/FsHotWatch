@@ -1,0 +1,16 @@
+{
+  "scope": "Focused scan ownership/observation/shutdown admission controls; full remains incomplete",
+  "redRun": "aa858f87521c432eba4c0ccee29f700",
+  "greenRun": "3e852577b36147b18ec6324dbd903aca",
+  "green": {
+    "tests": 3,
+    "passed": 3,
+    "failed": 0
+  },
+  "log": "/tmp/scan-observation-green.log",
+  "sha256": {
+    "src/FsHotWatch/Daemon.fs": "513c5a29ecf219ac4f1d46a5e826afa2808cbfd6a9cf4404d20d21834efe5f2c",
+    "src/FsHotWatch/SupervisedWork.fs": "21023ef3f204606aedaf6ffbd545f616e20052603d1810ec2fa103da841e50fd",
+    "tests/FsHotWatch.Tests/DaemonTests.fs": "5afd75f9a87d7ef55dfadee963b2f461aae147b95da96d326ea18d683d2cada8"
+  }
+}

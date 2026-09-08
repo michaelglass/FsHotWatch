@@ -1,0 +1,177 @@
+{
+  "scope": "Local owner-managed event receipts and executor fault; not full acceptance",
+  "runs": [
+    {
+      "id": "9f2fdd91c5b34f228e7d8585da1f4ddc",
+      "summary": {
+        "tests": 51,
+        "passed": 51,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788882428433,
+        "stop": 1788882432093
+      },
+      "controls": []
+    },
+    {
+      "id": "26a842f51ab541c79fe7fc68fea30db3",
+      "summary": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788881860307,
+        "stop": 1788881861423
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.executor fault fails accepted event receipts instead of abandoning their waiters",
+          "status": "failed",
+          "message": "Assert.Throws() Failure: Exception type was not an exact match\nExpected: typeof(System.InvalidOperationException)\nActual:   typeof(System.TimeoutException)\n---- System.TimeoutException : The operation has timed out."
+        }
+      ]
+    },
+    {
+      "id": "57bd547386cb45deadb938e705c9572e",
+      "summary": {
+        "tests": 59,
+        "passed": 59,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788882278257,
+        "stop": 1788882284245
+      },
+      "controls": []
+    },
+    {
+      "id": "368baa6f73594035a9a5988f85383b80",
+      "summary": {
+        "tests": 3128,
+        "passed": 3127,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788882321513,
+        "stop": 1788882420139
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.executor fault fails accepted event receipts instead of abandoning their waiters",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.shared startup failure retains local ownership through resource handoff",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.executor fault fails events but preserves workers until their real completion",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.failed queued starter is acknowledged after the tail accepts handoff",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared startup failure mapper still releases both owners",
+          "status": "passed",
+          "message": null
+        }
+      ]
+    },
+    {
+      "id": "84f89ae36bc34833b0be251b427ab399",
+      "summary": {
+        "tests": 55,
+        "passed": 55,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788882196358,
+        "stop": 1788882202416
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.executor fault fails accepted event receipts instead of abandoning their waiters",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.shared startup failure retains local ownership through resource handoff",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.executor fault fails events but preserves workers until their real completion",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.failed queued starter is acknowledged after the tail accepts handoff",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared startup failure mapper still releases both owners",
+          "status": "passed",
+          "message": null
+        }
+      ]
+    }
+  ],
+  "implementation": [
+    "Tracked receipts admitted inside the owner",
+    "Commit publishes domain state and retires exact identity before completing receipt",
+    "Executor fault published in owner snapshot, replacing separate mutable agentFault",
+    "Fault retires event obligations and fails accepted receipts; exclusive work remains until actual cleanup",
+    "Worker completion after executor failure retires without admitting an unprocessable event",
+    "New event admission after fault refuses immediately"
+  ],
+  "pending": [
+    "Host-wide atomic ownership/evidence",
+    "Common bounded supervision for scans/batches/preprocessors",
+    "Full CI and integration"
+  ],
+  "compileLog": "/private/tmp/executor-formatted-compile.log",
+  "sourceSha256": {
+    "src/FsHotWatch/PluginWorkOwner.fs": "6d04ef915e688865358ef53e129b2e893dfe2196e7cf9b88ab636d7002436822",
+    "src/FsHotWatch/PluginFramework.fs": "37ba4dabffec91d44e3725b4b87d4abb81ea53a29b18b98a704b2b4bfd228c3f"
+  },
+  "fixtureCrash": {
+    "session": 25818,
+    "result": "exit3/no tests verified; nested Unquote quotation caused stack overflow in queued handoff control; replaced with direct xUnit assertions; SharedStartup3/3 then passed"
+  },
+  "pendingVerification": {
+    "runId": "a902abc709bc481ba5639cfa51995f5f",
+    "summary": {
+      "tests": 66,
+      "passed": 66,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788882535967,
+      "stop": 1788882557113
+    }
+  },
+  "uniqueTargetedTests": 231,
+  "replyFixtureCorrection": "Keep waitSec=1 and busy/no-verdict assertions; separately await actual worker startup while its obligation remains busy.",
+  "storedOutstandingFailures": []
+}
