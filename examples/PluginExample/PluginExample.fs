@@ -58,6 +58,7 @@ let myPlugin: PluginHandler<MyState, unit> =
                 | _ -> return state
             }
       Commands = [ "my-status", fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = None
       Teardown = None }

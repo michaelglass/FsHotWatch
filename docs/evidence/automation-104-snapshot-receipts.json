@@ -1,0 +1,117 @@
+{
+  "scope": "Intermediate A104 snapshot reads and exact event completion receipts; not full A104/A106 acceptance",
+  "previousSnapshotAssertionRed": "64fd2a1fabce4619bad978fa48dba7bc",
+  "compile": {
+    "session": 82363,
+    "exitCode": 0,
+    "warnings": 0,
+    "errors": 0
+  },
+  "verifiedRuns": [
+    {
+      "runId": "d297d8630fba4c54a27c6de3c05b81a7",
+      "summary": {
+        "tests": 44,
+        "passed": 44,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788875633871,
+        "stop": 1788875639642
+      },
+      "snapshotAndReceiptTests": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.AUTOMATION-104: read command returns committed snapshot while an update is blocked",
+          "status": "passed",
+          "duration": 55,
+          "suite": "bc21a292-1ad1-45ad-93e2-4104b5deb6bc",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+          "line": 468,
+          "extra": {
+            "id": "6a85da48-63e5-4728-9245-52c7100b41e6",
+            "collection": "672517d0-4fc4-447c-a1a0-07282d7b28cd",
+            "type": "FsHotWatch.Tests.PluginFrameworkTests",
+            "method": "AUTOMATION-104: read command returns committed snapshot while an update is blocked"
+          }
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.a completed event receipt cannot acknowledge a different blocked event",
+          "status": "passed",
+          "duration": 2,
+          "suite": "bc21a292-1ad1-45ad-93e2-4104b5deb6bc",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+          "line": 531,
+          "extra": {
+            "id": "9f447ffc-02a8-4cd1-a2f0-3eda05ba8b0b",
+            "collection": "672517d0-4fc4-447c-a1a0-07282d7b28cd",
+            "type": "FsHotWatch.Tests.PluginFrameworkTests",
+            "method": "a completed event receipt cannot acknowledge a different blocked event"
+          }
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.request posts intent without waiting for a state snapshot",
+          "status": "passed",
+          "duration": 3,
+          "suite": "bc21a292-1ad1-45ad-93e2-4104b5deb6bc",
+          "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+          "line": 583,
+          "extra": {
+            "id": "d180451e-ff94-4b4f-8b61-87345410021b",
+            "collection": "672517d0-4fc4-447c-a1a0-07282d7b28cd",
+            "type": "FsHotWatch.Tests.PluginFrameworkTests",
+            "method": "request posts intent without waiting for a state snapshot",
+            "traits": {
+              "A104Command": [
+                "Request"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "runId": "60b86969901843988a228d051cfac212",
+      "summary": {
+        "tests": 59,
+        "passed": 59,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788875751490,
+        "stop": 1788875757840
+      },
+      "snapshotAndReceiptTests": []
+    },
+    {
+      "runId": "5dbe93aeb4ea4ed58fe03d080a5e1656",
+      "summary": {
+        "tests": 51,
+        "passed": 51,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788875849254,
+        "stop": 1788875853279
+      },
+      "snapshotAndReceiptTests": []
+    }
+  ],
+  "sourceSha256": {
+    "src/FsHotWatch/PluginFramework.fs": "a0673accd084b9abc6f734a9be44ee33c1638d7c3387b0bc1fcecc5b4bf5d562",
+    "tests/FsHotWatch.Tests/PluginFrameworkTests.fs": "932f9dbde002599500c9f86c19fdfe8cf22a7690885b210dc45b32080c1d39cd"
+  },
+  "limitations": [
+    "Published state does not yet include a coherent immutable slot/status/evidence core.",
+    "Current CommandReadCtx.IsRunning still reads live slot state.",
+    "Event receipts witness local event publication, not descendant completion or a green verdict.",
+    "Receipts must be integrated with the single WorkLedger identities and terminal failure dispositions.",
+    "Inline async Update, inflightCount, runSlots/statusLock, host generations and quiescence mechanisms remain pending replacement.",
+    "Full CI, integration and consumer qualification have not been run; no merge or QA claim."
+  ]
+}

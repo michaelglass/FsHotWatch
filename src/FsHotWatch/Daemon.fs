@@ -735,38 +735,34 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     /// `ErrorLedger.RaiseFaultForTest` for rationale.
     member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
 
-/// Messages handled by the scan agent. The agent owns ScanState + Generation
-/// in its loop's recursion — readers round-trip via PostAndReply so they never
-/// see a stale snapshot.
-[<NoComparison; NoEquality>]
-type private ScanMsg =
-    | RequestScan of CancellationToken * AsyncReplyChannel<unit>
-    | GetState of AsyncReplyChannel<ScanState>
-    | GetGeneration of AsyncReplyChannel<int64>
-    | SetState of ScanState * AsyncReplyChannel<unit>
-
-/// Internal state managed by the scan agent.
+/// Published scan state; external discovery/checks never run in its writer.
 type private ScanAgentState =
     { ScanState: ScanState
       Generation: int64
       LastFingerprint: Set<string * int64> }
 
-/// Opaque handle to the scan MailboxProcessor. State (ScanState, Generation)
-/// lives inside the loop body; reads are sub-microsecond mailbox round-trips.
 [<NoComparison; NoEquality>]
-type ScanAgent = private ScanAgent of MailboxProcessor<ScanMsg>
+type private ScanRequest =
+    | RunScan
+    | SetScanState of ScanState
 
-let private requestScan (ScanAgent agent) ct =
-    agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
+[<NoComparison; NoEquality>]
+type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanRequest>
 
-let private getScanGeneration (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetGeneration ch)
+let private requestScan (ScanAgent owner) ct =
+    async { do! owner.Submit(RunScan, ct) |> Async.AwaitTask }
 
-let private getScanStatus (ScanAgent agent) =
-    agent.PostAndReply(fun ch -> GetState ch)
+let private getScanGeneration (ScanAgent owner) = owner.State.Generation
+let private getScanStatus (ScanAgent owner) = owner.State.ScanState
 
-let private setScanStatus (ScanAgent agent) state =
-    agent.PostAndReply(fun ch -> SetState(state, ch))
+let private setScanStatus (ScanAgent owner) state =
+    owner
+        .Submit(SetScanState state, CancellationToken.None)
+        .WaitAsync(TimeSpan.FromSeconds 5.0)
+        .GetAwaiter()
+        .GetResult()
+
+let private closeScan (ScanAgent owner) = owner.Close()
 
 /// Centralized failure handler for daemon batch/scan steps. `processBatch` and
 /// `performScan` transitively call FCS, MSBuild, and arbitrary plugin Update
@@ -857,6 +853,11 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
             |> String.concat "; "
 
         $"format refused — %s{reasons}"
+
+[<NoComparison; NoEquality>]
+type private ChangeRequest =
+    { Changes: FileChangeKind list
+      FormatResult: TaskCompletionSource<string> option }
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
@@ -1652,7 +1653,8 @@ type Daemon
         // Taken as a PARAMETER, never constructed here: `createWith` must install
         // it before anything captures an ExecutionContext (see the comment there),
         // and a parameter makes that ordering the only constructible one.
-        processRegistry: ProcessRegistry.Registry
+        processRegistry: ProcessRegistry.Registry,
+        closeChanges: unit -> unit
     ) =
 
     let mutable disposed = false
@@ -1751,6 +1753,8 @@ type Daemon
         member this.Dispose() =
             if not disposed then
                 disposed <- true
+                closeChanges ()
+                closeScan scanAgent
                 // Call directly on the daemon's own registry rather than the
                 // AsyncLocal current one — Dispose may run from a different
                 // async context than the one that installed it.
@@ -2245,9 +2249,9 @@ let private scanKindFor (state: ScanAgentState) =
 let private performScan
     (ctx: BatchContext)
     (scanLeases: ScanActivity.ScanLeases)
-    (scanSignal: ScanSignal)
     (state: ScanAgentState)
     (ct: CancellationToken)
+    (publish: ScanAgentState -> unit)
     =
     let scanBody =
         async {
@@ -2329,6 +2333,7 @@ let private performScan
             let sw = System.Diagnostics.Stopwatch.StartNew()
             let scanStartedAt = System.DateTime.UtcNow
             let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
+            publish { state with ScanState = scanState }
             let dispatchedFiles = ResizeArray<AbsFilePath>()
             // Files whose check never returned Some, even after the bounded
             // scan-retry budget (the silent-truncation race: a scan-side check
@@ -2415,6 +2420,7 @@ let private performScan
                         reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                         completed <- completed + 1
                         scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                        publish { state with ScanState = scanState }
 
                     let! tierOutcome = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
 
@@ -2466,7 +2472,6 @@ let private performScan
                       StartedAt = scanStartedAt
                       CompletedAt = System.DateTime.UtcNow }
 
-            scanSignal.SignalGeneration(newGeneration)
 
             // AUTOMATION-610 — one measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
@@ -2768,70 +2773,61 @@ module Daemon =
                                 tracker
                                 projPath) }
 
-            let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
-                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+            let changeWorker =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    Set.empty,
+                    Ipc.ambientRpcDeadline (),
+                    (fun state (_: ChangeRequest) -> state),
+                    (fun state _ -> state),
+                    ignore,
+                    (fun suppressed request ct _ ->
+                        async {
+                            let! nextSuppressed =
+                                if request.Changes.IsEmpty then
+                                    async.Return suppressed
+                                else
+                                    processBatch { batchCtx with DaemonCt = ref ct } request.Changes suppressed
 
-                let run = host.RunPreprocessors(files)
-                let newSuppressed = Set.union suppressed (Set.ofList run.Modified)
-                replyChannel.Reply(renderFormatAll files run)
-                newSuppressed
+                            match request.FormatResult with
+                            | None -> return nextSuppressed
+                            | Some reply ->
+                                ct.ThrowIfCancellationRequested()
+                                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+                                let run = host.RunPreprocessors(files)
+                                reply.TrySetResult(renderFormatAll files run) |> ignore
+                                return Set.union nextSuppressed (Set.ofList run.Modified)
+                        })
+                )
 
-            let changeAgent =
-                MailboxProcessor<Choice<FileChangeKind, AsyncReplyChannel<string>>>
-                    .Start(
-                        (fun inbox ->
-                            let rec idle (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.Receive()
-
-                                    match msg with
-                                    | Choice2Of2 replyChannel ->
-                                        let newSuppressed = formatAllAndSuppress suppressed replyChannel
-                                        return! idle newSuppressed
-                                    | Choice1Of2 change ->
-                                        let delayMs = delayForChange change
-                                        return! debouncing [ change ] delayMs suppressed
-                                }
-
-                            and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
-                                async {
-                                    let! msg = inbox.TryReceive(delayMs)
-
-                                    match msg with
-                                    | Some(Choice1Of2 change) ->
-                                        let newDelay = max delayMs (delayForChange change)
-                                        return! debouncing (change :: pending) newDelay suppressed
-                                    | Some(Choice2Of2 replyChannel) ->
-                                        // Failure policy lives in `runDaemonStep`.
-                                        match!
-                                            runDaemonStep
-                                                "processChanges (with replyChannel)"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
-                                        with
-                                        | Ok newSuppressed ->
-                                            let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
-                                            return! idle finalSuppressed
-                                        | Result.Error _ ->
-                                            replyChannel.Reply("format failed")
-                                            return! idle suppressed
-                                    | None ->
-                                        // Debounce expired — process the batch.
-                                        match!
-                                            runDaemonStep
-                                                "processChanges"
-                                                (processBatch batchCtx (List.rev pending) suppressed)
-                                        with
-                                        | Ok newSuppressed -> return! idle newSuppressed
-                                        | Result.Error _ -> return! idle suppressed
-                                }
-
-                            idle Set.empty),
-                        cancellationToken = lifetime.Token
-                    )
+            let changeInput =
+                DebouncedWork.Queue(
+                    host.WorkStore,
+                    "changes",
+                    changeWorker,
+                    (fun earlier later ->
+                        { Changes = earlier.Changes @ later.Changes
+                          FormatResult = later.FormatResult })
+                )
 
             let onChange change =
                 Logging.debug "watcher" $"%O{change}"
-                changeAgent.Post(Choice1Of2 change)
+
+                let receipt =
+                    changeInput.Post(
+                        { Changes = [ change ]
+                          FormatResult = None },
+                        TimeSpan.FromMilliseconds(float (delayForChange change))
+                    )
+
+                receipt.ContinueWith(
+                    (fun (failed: Task<unit>) -> Logging.error "changes" $"watcher change failed: {failed.Exception}"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default
+                )
+                |> ignore
 
             // The ONLY place a watcher can come from. A `OneShot` host never reaches
             // the factory, so its verdict cannot depend on native watcher startup.
@@ -2854,49 +2850,47 @@ module Daemon =
             // of every scan, the idle-exit scheduler and heartbeat read it.
             let scanLeases = ScanActivity.ScanLeases.create ()
 
-            let scanMailbox =
-                MailboxProcessor.Start(
-                    (fun inbox ->
-                        let rec loop (state: ScanAgentState) =
-                            async {
-                                let! msg = inbox.Receive()
-
-                                match msg with
-                                | RequestScan(ct, reply) ->
-                                    // Failure policy lives in `runDaemonStep`.
-                                    match!
-                                        runDaemonStep
-                                            "performScan"
-                                            (performScan batchCtx scanLeases scanSignal state ct)
-                                    with
-                                    | Ok newState ->
-                                        reply.Reply(())
-                                        return! loop newState
-                                    | Result.Error _ ->
-                                        reply.Reply(())
-                                        return! loop state
-                                | GetState reply ->
-                                    reply.Reply(state.ScanState)
-                                    return! loop state
-                                | GetGeneration reply ->
-                                    reply.Reply(state.Generation)
-                                    return! loop state
-                                | SetState(newScanState, reply) ->
-                                    reply.Reply(())
-                                    return! loop { state with ScanState = newScanState }
-                            }
-
-                        loop
-                            { ScanState = ScanIdle
-                              Generation = 0L
-                              LastFingerprint = Set.empty }),
-                    cancellationToken = lifetime.Token
+            let scanOwner =
+                SupervisedWork.Queue(
+                    host.WorkStore,
+                    "scan",
+                    { ScanState = ScanIdle
+                      Generation = 0L
+                      LastFingerprint = Set.empty },
+                    Ipc.ambientRpcDeadline (),
+                    (fun state request ->
+                        match request with
+                        | RunScan ->
+                            { state with
+                                ScanState = Scanning(0, 0, DateTime.UtcNow) }
+                        | SetScanState _ -> state),
+                    (fun state _ -> { state with ScanState = ScanIdle }),
+                    (fun state -> scanSignal.SignalGeneration(state.Generation)),
+                    (fun state request ct publish ->
+                        async {
+                            match request with
+                            | SetScanState value -> return { state with ScanState = value }
+                            | RunScan -> return! performScan batchCtx scanLeases state ct publish
+                        })
                 )
 
-            let scanAgentWrapper = ScanAgent scanMailbox
+            let scanAgentWrapper = ScanAgent scanOwner
 
             let formatAllViaAgent () =
-                changeAgent.PostAndAsyncReply(Choice2Of2)
+                async {
+                    let reply =
+                        TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+                    let receipt =
+                        changeInput.Post(
+                            { Changes = []
+                              FormatResult = Some reply },
+                            TimeSpan.Zero
+                        )
+
+                    do! receipt |> Async.AwaitTask
+                    return! reply.Task |> Async.AwaitTask
+                }
 
             new Daemon(
                 host,
@@ -2918,7 +2912,8 @@ module Daemon =
                 opts.IdleExitMin,
                 opts.PressureIdleFloorMin,
                 scanLeases,
-                processRegistry
+                processRegistry,
+                changeInput.Close
             )
         with _ ->
             lifetime.Dispose()
@@ -2973,6 +2968,18 @@ module Daemon =
         (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
         =
         createWithCore checker repoRoot opts (Some loader) mapProjectOptions None FileWatcher.create
+
+    /// Compose the existing loader and watcher seams so a change can be
+    /// delivered deterministically without relying on native filesystem events.
+    let internal createWithWorkspaceLoaderAndWatcher
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (opts: DaemonOptions)
+        (loader: IWorkspaceLoader)
+        (mapProjectOptions: Types.ProjectOptions list -> FSharpProjectOptions list)
+        (watcherFactory: WatcherFactory)
+        =
+        createWithCore checker repoRoot opts (Some loader) mapProjectOptions None watcherFactory
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.

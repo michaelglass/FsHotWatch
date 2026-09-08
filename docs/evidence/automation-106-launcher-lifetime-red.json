@@ -1,0 +1,26 @@
+{
+  "scope": "Executed assertion-red baseline; production correction and full qualification pending",
+  "run": "8bc1b2ca347e45d380cd5492c7c2e5ef",
+  "summary": {
+    "tests": 1,
+    "passed": 0,
+    "failed": 1,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788905622982,
+    "stop": 1788905623380
+  },
+  "failures": [
+    {
+      "name": "FsHotWatch.Tests.LauncherLifetimeTests.production launcher gives its child a process group independent of the caller",
+      "message": "Assert.NotEqual() Failure: Values are equal\nExpected: Not 88978\nActual:       88978",
+      "durationMs": 387
+    }
+  ],
+  "sha256": {
+    "src/FsHotWatch.Cli/Program.fs": "8c07a8449c1fc68bd78e9c59f597badc4a536131cc75a8a0719779580c97f3bd",
+    "tests/FsHotWatch.Tests/LauncherLifetimeTests.fs": "dd2bcaf585ad79520d9188193a74502cef30324a643341841e73410c186ef8d2"
+  }
+}

@@ -4,6 +4,7 @@ open System
 open System.Collections.Concurrent
 open System.Diagnostics
 open System.Threading
+open System.Threading.Tasks
 
 /// Exception classes treated as benign when observing or killing a tracked
 /// Process. HasExited and Kill both throw InvalidOperationException (no process
@@ -51,9 +52,64 @@ type Registry() =
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
 
+    // Admission and the shutdown snapshot are one transition. OS operations
+    // stay outside this lock so a slow kill cannot obstruct another owner.
+    let admission = obj ()
+    let mutable closed = false
+    let teardownBudget = TimeSpan.FromSeconds 5.0
+
+    let terminate (p: Process) =
+        let pid =
+            try
+                p.Id
+            with :? InvalidOperationException ->
+                0
+
+        let recordFailure reason =
+            let leak =
+                { Pid = pid
+                  Description = $"registered child pid {pid}"
+                  Reason = reason
+                  At = DateTime.UtcNow }
+
+            leaks.Enqueue leak
+            Logging.error "process-registry" $"could not establish child termination: {leak.Description}: {reason}"
+
+        let terminating =
+            Task.Run(fun () ->
+                try
+                    if not p.HasExited then
+                        p.Kill(entireProcessTree = true)
+
+                        if not (p.WaitForExit(int teardownBudget.TotalMilliseconds)) then
+                            raise (TimeoutException("Child did not exit after shutdown kill"))
+
+                    Ok()
+                with
+                | :? InvalidOperationException -> Ok() // disposed/already-exited handle
+                | failure -> Result.Error failure)
+
+        try
+            match terminating.WaitAsync(teardownBudget).GetAwaiter().GetResult() with
+            | Ok() -> ()
+            | Result.Error failure -> recordFailure (failure.ToString())
+        with :? TimeoutException ->
+            // The task owns the outstanding kill call; no late fault is dropped
+            // because it returns a Result. Uncertain termination remains data.
+            recordFailure $"Shutdown termination exceeded {teardownBudget}"
+
     member _.Track(p: Process) =
-        pidByProc.TryAdd(p, p.Id) |> ignore
-        live.TryAdd(p.Id, p) |> ignore
+        let accepted =
+            lock admission (fun () ->
+                if closed then
+                    false
+                else
+                    pidByProc.TryAdd(p, p.Id) |> ignore
+                    live.TryAdd(p.Id, p) |> ignore
+                    true)
+
+        if not accepted then
+            terminate p
 
     member _.Untrack(p: Process) =
         match pidByProc.TryRemove(p) with
@@ -82,23 +138,19 @@ type Registry() =
     /// Every tree we failed to account for, oldest first.
     member _.Leaks: LeakedTree list = List.ofSeq leaks
 
-    /// KillAll is a shutdown-only operation. Tracks added concurrently with
-    /// iteration may be missed and silently dropped from `live` by the final
-    /// Clear — accept that for daemon shutdown; do not call from steady-state.
+    /// Close process admission before capturing children. A concurrent Track
+    /// either belongs to this snapshot or observes closure and reaps its child.
     member _.KillAll() : unit =
-        // Tolerating the expected classes (see `isExpectedProcessException`) lets
-        // shutdown proceed across the whole live set.
-        for kv in live do
-            try
-                let p = kv.Value
+        let children =
+            lock admission (fun () ->
+                closed <- true
+                let children = live.Values |> Seq.toArray
+                live.Clear()
+                pidByProc.Clear()
+                children)
 
-                if not p.HasExited then
-                    p.Kill(entireProcessTree = true)
-            with ex when isExpectedProcessException ex ->
-                ()
-
-        live.Clear()
-        pidByProc.Clear()
+        for child in children do
+            terminate child
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we

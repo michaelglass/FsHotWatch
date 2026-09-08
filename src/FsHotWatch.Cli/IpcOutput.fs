@@ -341,6 +341,7 @@ let renderIpcResult
                         let passedCount = countOf "passed"
                         let failedCount = countOf "failed"
                         let timedOutCount = countOf "timed-out"
+                        let erroredCount = countOf "errored"
                         let noMatchCount = countOf "no-tests-matched"
 
                         let otherCount =
@@ -352,7 +353,7 @@ let renderIpcResult
                         // "✓ Tests passed" and exited 0 while the daemon's own terminal
                         // status for the same run was `failedNow` + `CompleteWithTimeout`.
                         // The CLI and the daemon may not disagree about a red.
-                        let hasFailed = failedCount > 0 || timedOutCount > 0
+                        let hasFailed = failedCount > 0 || timedOutCount > 0 || erroredCount > 0
 
                         // Which wire statuses mean "a test actually executed". Listed
                         // POSITIVELY and closed: an unrecognised status (a daemon newer
@@ -482,11 +483,13 @@ let renderIpcResult
                         if hasFailed then
                             if failedCount > 0 then
                                 UI.fail "Tests failed"
-                            else
-                                // Reached only via `timedOutCount`. Worded so the cause is
+                            elif timedOutCount > 0 then
+                                // Worded so the cause is
                                 // not mistaken for an assertion failure — a killed run
                                 // usually means a wedged host or a too-tight budget.
                                 UI.fail $"%d{timedOutCount} test project(s) were KILLED at their timeout — not a pass"
+                            else
+                                UI.fail $"%d{erroredCount} test project(s) failed to execute — not a pass"
 
                             1
                         elif parsedCoverage = Understood NoProjectsSelected then
@@ -534,8 +537,16 @@ let renderIpcResult
                             3
                         else
                             match parsedCoverage with
-                            // Scope is irrelevant to the exit code — this asks only
-                            // whether anything was verified, so both breadths pass.
+                            // A passing project cannot supply missing evidence for a
+                            // deferred or unrecognized sibling. Filtered zero-match
+                            // siblings are accounted for separately and remain valid.
+                            | Understood(Ran _)
+                            | RanPerCounts when otherCount > 0 ->
+                                UI.fail
+                                    $"Verification incomplete — %d{otherCount} test project(s) did not produce a usable result (not a pass)"
+
+                                reportSearch ()
+                                3
                             | Understood(Ran _)
                             | RanPerCounts ->
                                 UI.success "Tests passed"

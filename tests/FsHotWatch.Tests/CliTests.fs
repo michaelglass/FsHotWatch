@@ -716,11 +716,12 @@ let ``CLI command proxying works against running daemon`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "greet",
-              fun _ctx _state args ->
+              fun _ctx _state (args: string array) ->
                   async {
                       let name = if args.Length > 0 then args.[0] else "world"
                       return $"hello {name}"
                   } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           Teardown = None }
@@ -2642,6 +2643,37 @@ let ``a passing run does NOT print the search evidence`` () =
     test <@ exitCode = 0 @>
     test <@ not (stderr.Contains("Searched:")) @>
     test <@ not (stderr.Contains("Filter:")) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("errored", 1)>]
+[<InlineData("deferred", 3)>]
+[<InlineData("future-unknown-status", 3)>]
+[<Trait("A106Completeness", "MixedOutcome")>]
+let ``a passing project cannot hide another selected project's missing result`` (status: string, expectedExit: int) =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Integration","status":"OUTCOME","output":"runner did not produce a report","counts":null}]}"""
+            .Replace("OUTCOME", status)
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    Assert.Equal(expectedExit, exitCode)
+    Assert.DoesNotContain("Tests passed", stderr)
+    Assert.Contains("Integration", stderr)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A106Completeness", "MixedOutcome")>]
+let ``filtered zero-match siblings do not invalidate an actual passing selection`` () =
+    let json =
+        """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"Database","status":"passed","output":"","counts":{"total":1,"succeeded":1,"failed":0,"skipped":0,"other":0}},{"project":"Unrelated","status":"no-tests-matched","output":"","counts":{"total":0,"succeeded":0,"failed":0,"skipped":0,"other":0}}]}"""
+
+    let stderr, exitCode =
+        captureBothStreams (fun () ->
+            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+
+    Assert.Equal(0, exitCode)
+    Assert.Contains("Tests passed", stderr)
 
 // --- AUTOMATION-272 criterion 3: the CLI states per-project test counts ---
 //

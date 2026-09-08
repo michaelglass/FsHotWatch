@@ -1,0 +1,48 @@
+{
+  "scope": "A104/A106 shared startup handoff verified in framework class; full tickets incomplete",
+  "red": {
+    "runId": "1ee568785b724d478bd1ddab200973e1",
+    "summary": {
+      "tests": 2,
+      "passed": 0,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788879571573,
+      "stop": 1788879571817
+    },
+    "controls": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.shared startup failure retains local ownership through resource handoff",
+        "status": "failed",
+        "message": "startup failure still owns the slot until handoff finishes"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared startup failure mapper still releases both owners",
+        "status": "failed",
+        "message": "throwing failure mapper must not strand the local owner"
+      }
+    ]
+  },
+  "implementation": "SharedRunStart carries a failed-start acknowledgement, invoked only after shared resource handoff. Cleanup and failure mapper exceptions resolve the local run as failure.",
+  "verification": {
+    "compile": "75868 compile stage exit0, zero warnings/errors",
+    "test": "75868 exit3; no tests ran because formatter edited PluginFramework.fs after compile",
+    "next": "Full CI/integration and remaining host-wide supervision acceptance",
+    "final": {
+      "runId": "84f89ae36bc34833b0be251b427ab399",
+      "class": "PluginFrameworkTests",
+      "passed": 55,
+      "failed": 0,
+      "includes": "Three SharedStartup controls; full local owner fault controls",
+      "log": "/private/tmp/a104-executor-framework-final.log"
+    }
+  },
+  "notComplete": [
+    "Host-wide aggregate ledger and validated evidence",
+    "Common bounded supervisor and executor shutdown recovery",
+    "Full CI and integration"
+  ]
+}

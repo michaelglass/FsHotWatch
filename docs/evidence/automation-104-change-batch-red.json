@@ -1,0 +1,31 @@
+{
+  "scope": "Executed assertion-red baseline; production correction and full qualification pending",
+  "run": "f002c7c76002462c803f8bfe8bca6dcd",
+  "summary": {
+    "tests": 2,
+    "passed": 0,
+    "failed": 2,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788905536884,
+    "stop": 1788905537440
+  },
+  "failures": [
+    {
+      "name": "FsHotWatch.Tests.DaemonTests.watcher change remains owned through debounce and blocked rediscovery(waitForDiscovery: False)",
+      "message": "accepted watcher change must remain owned before any plugin receives work",
+      "durationMs": 335
+    },
+    {
+      "name": "FsHotWatch.Tests.DaemonTests.watcher change remains owned through debounce and blocked rediscovery(waitForDiscovery: True)",
+      "message": "accepted watcher change must remain owned before any plugin receives work",
+      "durationMs": 207
+    }
+  ],
+  "sha256": {
+    "src/FsHotWatch/Daemon.fs": "bb73fd6484207a1c5aed485cf16cb1f1f680ff32bb6eef25ab133be26cf7973f",
+    "tests/FsHotWatch.Tests/DaemonTests.fs": "3d464a9e3fe9e13925b02248f9fa133dd63f1b9c80b361cc33b6525b8e09dea9"
+  }
+}

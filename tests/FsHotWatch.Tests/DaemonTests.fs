@@ -1059,6 +1059,149 @@ let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` 
     test <@ status = "incomplete: 65 files checked, 5 unchecked in 15.5s" @>
     test <@ status.ToLowerInvariant().Contains("unchecked") @>
 
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "ScanObservation")>]
+let ``blocked scan discovery remains owned and observable`` (readStatus: bool) =
+    withTempDir "daemon-scan-owner" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Blocked.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = BlockingWorkspaceLoader([])
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ -> [])
+
+        let scan = Async.StartAsTask(daemon.ScanAll())
+
+        let mutable observation: System.Threading.Tasks.Task<ScanState * int64> option =
+            None
+
+        try
+            Assert.True(loader.Entered.Wait(TimeSpan.FromSeconds 10.0), "scan must enter controlled discovery")
+
+            if readStatus then
+                let reading =
+                    System.Threading.Tasks.Task.Run(fun () -> daemon.GetScanState(), daemon.GetScanGeneration())
+
+                observation <- Some reading
+                Assert.True(reading.Wait(TimeSpan.FromSeconds 5.0), "scan observation must not wait for the loader")
+                let state, generation = reading.GetAwaiter().GetResult()
+
+                match state with
+                | Scanning _ -> ()
+                | other -> failwithf "Expected published active scan while discovery is blocked, got %A" other
+
+                Assert.Equal(0L, generation)
+            else
+                Assert.True(daemon.Host.AnyPluginBusy(), "admitted scan must remain in the host work ledger")
+                Assert.Contains("scan", daemon.Host.BusyPluginNames())
+        finally
+            loader.Resume()
+            scan.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+            observation
+            |> Option.iter (fun reading ->
+                reading.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult() |> ignore)
+
+        Assert.Equal(1L, daemon.GetScanGeneration())
+        Assert.False(daemon.Host.AnyPluginBusy(), "settled scan must release its own identity"))
+
+[<Theory(Timeout = 30000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "ChangeBatchOwnership")>]
+let ``watcher change remains owned through debounce and blocked rediscovery`` (waitForDiscovery: bool) =
+    withTempDir "daemon-change-owner" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Blocked.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = BlockingWorkspaceLoader([])
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                nullChecker
+                tmpDir
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> [])
+                watcher
+
+        let deliver = callback.Value |> Option.get
+
+        try
+            deliver SolutionChanged
+
+            if waitForDiscovery then
+                Assert.True(loader.Entered.Wait(TimeSpan.FromSeconds 5.0), "change must enter controlled discovery")
+
+            Assert.True(
+                daemon.Host.AnyPluginBusy(),
+                "accepted watcher change must remain owned before any plugin receives work"
+            )
+
+            Assert.Contains("changes", daemon.Host.BusyPluginNames())
+        finally
+            loader.Resume()
+            // A single controlled change and inert watcher make this completed
+            // phase an exact witness for the real processBatch callback's exit.
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () ->
+                        daemon.Host.Phases.Snapshot(DateTime.UtcNow)
+                        |> List.exists (fun phase -> phase.Scope = "daemon.check" && phase.Detail <> Some "in flight")),
+                    TimeSpan.FromSeconds 10.0
+                ),
+                "controlled batch must drain before fixture disposal"
+            ))
+
+[<Fact(Timeout = 20000)>]
+[<Trait("A104Owner", "ScanObservation")>]
+let ``disposed daemon rejects scan admission instead of abandoning its receipt`` () =
+    withTempDir "daemon-scan-after-dispose" (fun tmpDir ->
+        use daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+
+        (daemon :> IDisposable).Dispose()
+        use requestLifetime = new CancellationTokenSource()
+
+        let request =
+            Async.StartAsTask(daemon.ScanAll(), cancellationToken = requestLifetime.Token)
+
+        try
+            Assert.Throws<ObjectDisposedException>(fun () ->
+                request.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+            |> ignore
+        finally
+            // On the old implementation the dead mailbox cannot reply. Cancel
+            // this fixture's caller and drain it so the assertion leaves no waiter.
+            requestLifetime.Cancel()
+
+            try
+                request.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+            with
+            | :? OperationCanceledException -> ()
+            | :? ObjectDisposedException -> ())
+
 // Pins the invariant the agent migration must preserve: once ScanAll's
 // reply lands, the scan state is observable as ScanComplete (not stale ScanIdle)
 // and the generation has advanced. With the wrapper-with-volatile-fields

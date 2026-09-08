@@ -52,7 +52,9 @@ let ``plugin registers command`` () =
         { Name = PluginName.create "cmd-test"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _ctx _state _args -> async { return "hello" } ]
+          Commands =
+            [ "greet", fun _ctx _state _args -> async { return "hello" } ]
+            |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           Teardown = None }
@@ -182,6 +184,52 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | Some(BuildFailed _) -> true
             | _ -> false
         @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "HostPreprocessor")>]
+let ``host owns preprocessor work until its outcome is published`` (refuse: bool) =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    host.RegisterPreprocessor(
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "owned-preprocessor"
+
+            member _.Process files _ =
+                entered.Set()
+                Assert.True(release.Wait(10000), "fixture must release the preprocessor")
+
+                if refuse then
+                    Result.Error "controlled refusal"
+                else
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Evidence = "controlled pass" }
+
+            member _.Dispose() = () }
+    )
+
+    let work =
+        System.Threading.Tasks.Task.Run(fun () -> host.RunPreprocessors([ "src/Lib.fs" ]))
+
+    try
+        Assert.True(entered.Wait(5000), "preprocessor must reach the controlled work")
+        Assert.True(host.AnyPluginBusy(), "preprocessor work must prevent host rest")
+        Assert.Contains("owned-preprocessor", host.BusyPluginNames())
+    finally
+        release.Set()
+        let result = work.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+        if refuse then
+            Assert.Equal<(string * string) list>([ "owned-preprocessor", "controlled refusal" ], result.Refused)
+        else
+            Assert.Equal<string list>([ "controlled pass" ], result.Evidence)
+
+    Assert.False(host.AnyPluginBusy(), "published preprocessor outcome retires its obligation")
 
 [<Fact(Timeout = 15000)>]
 let ``preprocessor runs before events are dispatched`` () =

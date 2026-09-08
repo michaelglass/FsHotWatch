@@ -217,17 +217,26 @@ type PluginHost
     let setPluginStatus (name: PluginFramework.PluginName) status =
         setStatus (PluginFramework.PluginName.value name) status
 
+    let workStore = PluginWorkOwner.Store()
     let registeredPlugins = ResizeArray<PluginFramework.RegisteredPlugin>()
 
     /// Dispatch an event to all registered plugins (filtering is built into each plugin's Dispatch).
-    let dispatchToAll (event: PluginFramework.PluginDispatchEvent) =
+    let dispatchTrackedToAll (event: PluginFramework.PluginDispatchEvent) =
         // Mark host activity so quiescence-based waiters don't return prematurely
         // between an event being emitted and its downstream plugin handlers
         // actually processing the event from their mailboxes.
         touchActivity ()
 
-        for p in registeredPlugins do
-            p.Dispatch event
+        let dispatch = workStore.BeginOperation("dispatch")
+
+        try
+            registeredPlugins
+            |> Seq.choose (fun plugin -> plugin.DispatchTracked event)
+            |> Seq.toList
+        finally
+            workStore.EndOperation dispatch
+
+    let dispatchToAll event = dispatchTrackedToAll event |> ignore
 
     /// Install the read-only project-graph accessor exposed to every plugin via
     /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over its
@@ -287,7 +296,7 @@ type PluginHost
               ClaimOrQueueSharedRun = fun key start -> sharedRunScheduler.ClaimOrQueue(key, start)
               ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state) }
 
-        let plugin = PluginFramework.registerHandler services handler
+        let plugin = PluginFramework.registerHandlerWithOwner workStore services handler
 
         if registeredPlugins |> Seq.exists (fun p -> p.Name = plugin.Name) then
             Logging.warn
@@ -309,56 +318,67 @@ type PluginHost
     /// could not run (`Error`) or threw is a FAILED status carrying the reason, so it can
     /// never be read as "nothing needed rewriting" (AUTOMATION-447).
     member _.RunPreprocessors(files: string list) : PreprocessorsRun =
-        let mutable modifiedFiles = []
-        let mutable lines = []
-        let mutable evidence = []
-        let mutable refused = []
+        let batch = workStore.BeginOperation("preprocessors")
 
-        for preprocessor in preprocessors do
-            let startedAt = System.DateTime.UtcNow
-            setStatus preprocessor.Name (Running(since = startedAt))
+        try
+            let mutable modifiedFiles = []
+            let mutable lines = []
+            let mutable evidence = []
+            let mutable refused = []
 
-            // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
-            try
-                match preprocessor.Process files repoRoot with
-                | Result.Ok result ->
-                    modifiedFiles <- result.Modified @ modifiedFiles
-                    let finishedAt = System.DateTime.UtcNow
+            for preprocessor in preprocessors do
+                let operation = workStore.BeginOperation(preprocessor.Name)
 
-                    let summary =
-                        $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
+                try
+                    let startedAt = System.DateTime.UtcNow
+                    setStatus preprocessor.Name (Running(since = startedAt))
 
-                    lines <- summary :: lines
-                    evidence <- result.Evidence :: evidence
+                    // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
+                    try
+                        match preprocessor.Process files repoRoot with
+                        | Result.Ok result ->
+                            modifiedFiles <- result.Modified @ modifiedFiles
+                            let finishedAt = System.DateTime.UtcNow
 
-                    setStatus
-                        preprocessor.Name
-                        (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
-                | Result.Error reason ->
-                    let finishedAt = System.DateTime.UtcNow
-                    let summary = $"%s{preprocessor.Name} refused: %s{reason}"
-                    refused <- (preprocessor.Name, reason) :: refused
-                    Logging.error preprocessor.Name summary
+                            let summary =
+                                $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
 
-                    setStatus
-                        preprocessor.Name
-                        (Failed(reason, finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
-            with ex ->
-                let finishedAt = System.DateTime.UtcNow
-                refused <- (preprocessor.Name, ex.Message) :: refused
+                            lines <- summary :: lines
+                            evidence <- result.Evidence :: evidence
 
-                setStatus
-                    preprocessor.Name
-                    (Failed(
-                        ex.ToString(),
-                        finishedAt,
-                        RunVerdict.create $"preprocessor failed: %s{ex.Message}" (finishedAt - startedAt)
-                    ))
+                            setStatus
+                                preprocessor.Name
+                                (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                        | Result.Error reason ->
+                            let finishedAt = System.DateTime.UtcNow
+                            let summary = $"%s{preprocessor.Name} refused: %s{reason}"
+                            refused <- (preprocessor.Name, reason) :: refused
+                            Logging.error preprocessor.Name summary
 
-        { Modified = modifiedFiles |> List.distinct
-          Lines = List.rev lines
-          Evidence = List.rev evidence
-          Refused = List.rev refused }
+                            setStatus
+                                preprocessor.Name
+                                (Failed(reason, finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                    with ex ->
+                        let finishedAt = System.DateTime.UtcNow
+                        refused <- (preprocessor.Name, ex.Message) :: refused
+
+                        setStatus
+                            preprocessor.Name
+                            (Failed(
+                                ex.ToString(),
+                                finishedAt,
+                                RunVerdict.create $"preprocessor failed: %s{ex.Message}" (finishedAt - startedAt)
+                            ))
+
+                finally
+                    workStore.EndOperation operation
+
+            { Modified = modifiedFiles |> List.distinct
+              Lines = List.rev lines
+              Evidence = List.rev evidence
+              Refused = List.rev refused }
+        finally
+            workStore.EndOperation batch
 
     /// Emit a file change event to all registered plugins.
     ///
@@ -478,12 +498,17 @@ type PluginHost
     /// Side effect on the live coverage set: a FULL check result adds the file to
     /// `checkedFiles`. A ParseOnly/aborted check does NOT count as checked — the
     /// file stays unchecked until a full check succeeds.
-    member _.EmitFileChecked(result: FileCheckResult) =
+    member _.EmitFileCheckedTracked(result: FileCheckResult) =
         match result.CheckResults with
         | FullCheck _ -> checkedFiles[result.File] <- ()
         | ParseOnly -> ()
 
-        dispatchToAll (PluginFramework.DispatchFileChecked result)
+        dispatchTrackedToAll (PluginFramework.DispatchFileChecked result)
+
+    /// Emit without waiting for recipient commits. Use the tracked variant when
+    /// the caller needs each recipient's exact event completion witness.
+    member this.EmitFileChecked(result: FileCheckResult) =
+        this.EmitFileCheckedTracked(result) |> ignore
 
     /// True if `file` currently holds a valid FULL type-check result (i.e. a
     /// `FullCheck` was emitted for it via `EmitFileChecked` and it hasn't been
@@ -499,8 +524,12 @@ type PluginHost
     /// Emit a batch-checked event to all registered plugins. Fired by the
     /// daemon once after a defined cohort of `FileChecked` events has finished
     /// (boot scan or in-session debounce batch).
-    member _.EmitBatchChecked(batch: BatchChecked) =
-        dispatchToAll (PluginFramework.DispatchBatchChecked batch)
+    member _.EmitBatchCheckedTracked(batch: BatchChecked) =
+        dispatchTrackedToAll (PluginFramework.DispatchBatchChecked batch)
+
+    /// Emit a cohort without waiting for recipient commits.
+    member this.EmitBatchChecked(batch: BatchChecked) =
+        this.EmitBatchCheckedTracked(batch) |> ignore
 
     /// Emit the start of a test run to all registered plugins.
     member _.EmitTestRunStarted(started: TestRunStarted) =
@@ -559,8 +588,7 @@ type PluginHost
     /// catches both the "event posted but handler hasn't reported Running yet"
     /// gap and the "handler returned but its background run is still
     /// executing" gap (AUTOMATION-95/99).
-    member _.AnyPluginBusy() : bool =
-        registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
+    member _.AnyPluginBusy() : bool = workStore.Snapshot.IsBusy
 
     /// WHICH plugins report work in flight. Same predicate as `AnyPluginBusy`,
     /// but naming the offenders, so a `WaitForComplete` that times out on the busy
@@ -568,28 +596,20 @@ type PluginHost
     /// failures into one sentence. Kept separate rather than folded into one
     /// accessor because `AnyPluginBusy` is polled every 50ms and must not
     /// allocate a list to answer a boolean.
-    member _.BusyPluginNames() : string list =
-        registeredPlugins
-        |> Seq.filter (fun p -> p.IsBusy())
-        |> Seq.map (fun p -> PluginFramework.PluginName.value p.Name)
-        |> List.ofSeq
+    member _.BusyPluginNames() : string list = workStore.Snapshot.BusyNames
 
     /// Total events every plugin has FINISHED handling. The stall detector
     /// compares this across polls: if it moved, work is being done, whatever the
     /// busy set looks like. Busy-set identity cannot answer that — one plugin
     /// draining a long backlog keeps the very same set for the whole drain.
-    member _.CompletedDispatches() : int64 =
-        registeredPlugins |> Seq.sumBy (fun p -> p.CompletedDispatches())
+    member _.CompletedDispatches() : int64 = workStore.Snapshot.CompletedEvents
 
     /// Plugins whose message loop has died, with the fault that killed it.
     ///
-    /// Such a plugin reports busy forever — the in-flight count is incremented
-    /// at post time and only the loop decrements it — so without this the wait
-    /// can only infer death from silence. Empty in every healthy daemon.
-    member _.FaultedPlugins() : (string * exn) list =
-        registeredPlugins
-        |> Seq.choose (fun p -> p.Fault() |> Option.map (fun ex -> PluginFramework.PluginName.value p.Name, ex))
-        |> List.ofSeq
+    /// Failed event receipts are resolved, while actual background workers remain
+    /// owned until cleanup. The recorded fault survives an empty work ledger,
+    /// so callers must not interpret no busy work as a healthy executor.
+    member _.FaultedPlugins() : (string * exn) list = workStore.Snapshot.Faults
 
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)
@@ -629,6 +649,8 @@ type PluginHost
     member _.GetHistory(pluginName: string) : RunRecord list = activity.GetHistory(pluginName)
 
     /// AUTOMATION-555 (rework). The daemon's phase ledger — see `DaemonPhases`.
+    member internal _.WorkStore = workStore
+
     member _.Phases: DaemonPhases.Ledger = phases
 
     /// Get all errors grouped by file path.

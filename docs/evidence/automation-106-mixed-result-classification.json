@@ -1,0 +1,58 @@
+{
+  "scope": "A106 mixed-result CLI classification; intermediate verified correction, not full ticket completion",
+  "observed_incident": "QA A294 run2da472d0965c496485dc4e70f796bdad reported selected Integration errored/no CTRF plus Database passed, but CLI returned0/Tests passed. QA introduced the Integration pool error and reverted it; reporting must still classify it truthfully.",
+  "red": {
+    "run": "3be6205710b548f8b60458f16448ee2e",
+    "summary": {
+      "tests": 4,
+      "passed": 1,
+      "failed": 3,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788887128893,
+      "stop": 1788887128950
+    },
+    "failures": [
+      {
+        "name": "FsHotWatch.Tests.CliTests.a passing project cannot hide another selected project's missing result(status: \\\"deferred\\\", expectedExit: 3)",
+        "message": "Assert.Equal() Failure: Values differ\nExpected: 3\nActual:   0"
+      },
+      {
+        "name": "FsHotWatch.Tests.CliTests.a passing project cannot hide another selected project's missing result(status: \\\"future-unknown-status\\\", expectedExit: 3)",
+        "message": "Assert.Equal() Failure: Values differ\nExpected: 3\nActual:   0"
+      },
+      {
+        "name": "FsHotWatch.Tests.CliTests.a passing project cannot hide another selected project's missing result(status: \\\"errored\\\", expectedExit: 1)",
+        "message": "Assert.Equal() Failure: Values differ\nExpected: 1\nActual:   0"
+      }
+    ]
+  },
+  "green": {
+    "run": "f59d7c6a894640319292953adcefb915",
+    "summary": {
+      "tests": 157,
+      "passed": 157,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788887224843,
+      "stop": 1788887229955
+    },
+    "failures": []
+  },
+  "behavior": [
+    "errored selected project returns1 even alongside passing projects",
+    "deferred or unknown selected project refuses3 rather than accepting partial positive coverage",
+    "genuine filtered zero-match siblings retain legitimate success"
+  ],
+  "compile": "Session93819 compile0 before actualred; session2606 compile0 and CLI157/157 exit0. First36509 compilefailed2 unqualified new scan fixture RunMode references, corrected before execution; not an assertionred.",
+  "scope_limits": "Only fullCLIclass verified for this correction; fullCI/integration/consumerqualification still outstanding. Three separately prepared scan controls now fail as expected and remain pending implementation.",
+  "source_sha256": {
+    "src/FsHotWatch.Cli/IpcOutput.fs": "375aaa34f5c31008331200e6219c0a7e0c567edce69fde52d58d3fe60b99be0a",
+    "tests/FsHotWatch.Tests/CliTests.fs": "273e73b224392bc1bd17bbe26d09305732169bbfc6956ac3089135ed35b4862f"
+  }
+}
