@@ -249,11 +249,7 @@ let internal waitForVerdictUnlessDiscoveryFailed
 /// number returned by Ionide/MSBuild into the project graph; `Registered` is the
 /// later FCS pipeline count. Keeping both prevents a registration defect from
 /// being mislabeled as the AUTOMATION-290 loader failure.
-type internal DiscoverySnapshot =
-    { Discovered: int
-      Loaded: int
-      OptionsMapped: int
-      Registered: int }
+type internal DiscoverySnapshot = ProjectModel.Counts
 
 /// Serializes every clear/load/map/register transaction and publishes only one
 /// immutable, completed outcome. `InProgress` deliberately hides the preceding
@@ -299,6 +295,17 @@ type internal DiscoveryCoordinator() =
             else
                 None)
 
+    /// Read the published model state without waiting for a slow loader. The
+    /// completed epoch stays hidden while any clear/load transaction is pending.
+    member _.Observation =
+        lock stateGate (fun () ->
+            if pendingAttempts > 0 then
+                ProjectModel.Observation.Rediscovering generation
+            else
+                match completed with
+                | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
+                | None -> ProjectModel.Observation.Unobserved)
+
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
@@ -308,6 +315,27 @@ type internal DiscoveryCoordinator() =
         }
 
     member _.WaitForStableAdmission() = waitForStableAdmission ()
+
+    /// Copy the scan inputs while no writer can clear or repopulate the model.
+    /// The callback must only copy state: build settlement and FCS checks run after
+    /// this short lease is released, against those immutable inputs.
+    member _.Capture<'T>(read: int64 * DiscoverySnapshot option -> 'T) : Async<'T> =
+        async {
+            let! _ = waitForStableAdmission () |> Async.AwaitTask
+            let! ct = Async.CancellationToken
+            do! admission.WaitAsync(ct) |> Async.AwaitTask
+
+            try
+                let epoch =
+                    lock stateGate (fun () ->
+                        match completed with
+                        | Some(generation, snapshot) -> generation, Some snapshot
+                        | None -> generation, None)
+
+                return read epoch
+            finally
+                admission.Release() |> ignore
+        }
 
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
@@ -1703,6 +1731,8 @@ type Daemon
     /// attempt has completed or one is currently between clear and completion.
     member internal _.DiscoverySnapshot() : DiscoverySnapshot option = discovery.Completed
 
+    member internal _.ProjectModelObservation() : ProjectModel.Observation = discovery.Observation
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -1726,8 +1756,14 @@ type Daemon
             return
                 { Generation = generation
                   Failure =
-                    completed
-                    |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded) }
+                    match completed with
+                    | None -> ProjectModel.failure ProjectModel.Observation.Unobserved
+                    | Some snapshot ->
+                        // Keep the established loader-failure diagnosis; all later
+                        // zero-model stages have their own typed observation.
+                        match totalDiscoveryFailure snapshot.Discovered snapshot.Loaded with
+                        | Some reason -> Some reason
+                        | None -> ProjectModel.ofCompleted generation snapshot |> ProjectModel.failure }
         }
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
@@ -2293,7 +2329,25 @@ let private performScan
                 if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
                     lastFingerprint <- currentFingerprint
 
-            let registeredProjects = pipeline.GetRegisteredProjects()
+            // A fingerprint hit skips OUR discovery, not a concurrent writer's.
+            // Capture membership, dependency tiers and options together before that
+            // writer can clear any of them; never revisit the live graph mid-scan.
+            let! _, registeredProjects, registeredFiles, scanTiers =
+                ctx.Discovery.Capture(fun epoch ->
+                    let projects = pipeline.GetRegisteredProjects()
+                    let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
+                    let tiers =
+                        graph.GetParallelTiers()
+                        |> List.map (
+                            List.map (fun project ->
+                                project,
+                                graph.GetSourceFiles(project) |> List.map AbsFilePath.value,
+                                pipeline.GetProjectOptions(AbsProjectPath.value project))
+                        )
+
+                    epoch, projects, files, tiers)
+
 
             // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
             //
@@ -2310,8 +2364,6 @@ let private performScan
             // `.fsproj` byte-identical — a glob-matched file — never reaches it.
             // Checking existence here is the backstop that does not depend on how the
             // rename happened to touch the project files.
-            let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
             let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
             if not vanished.IsEmpty then
@@ -2366,7 +2418,7 @@ let private performScan
                 let filesToCheckSet = Set.ofList files
 
                 // Check files in parallel tiers based on project dependency graph
-                let tiers = graph.GetParallelTiers()
+                let tiers = scanTiers
 
                 // Bounded retry budget for cancelled/aborted/failed scan checks.
                 // The common case (a single processBatch race per file) converges
@@ -2382,19 +2434,15 @@ let private performScan
                     let tierThunks =
                         System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-                    for proj in tier do
+                    for proj, capturedFiles, capturedOptions in tier do
                         let projPath = AbsProjectPath.value proj
+                        let projFiles = capturedFiles |> List.filter filesToCheckSet.Contains
 
-                        let projFiles =
-                            graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+                        skippedCount <- skippedCount + (capturedFiles.Length - projFiles.Length)
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
-                            match pipeline.GetProjectOptions(projPath) with
+                            match capturedOptions with
                             | Some options ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
@@ -2402,7 +2450,9 @@ let private performScan
                             | None ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
-                                    tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
+                                    // Missing captured options is missing evidence. Do
+                                    // not borrow a different epoch's live registration.
+                                    tierThunks[absFile] <- async { return None }
                         else
                             skippedCount <- skippedCount + projFiles.Length
 

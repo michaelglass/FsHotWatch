@@ -821,6 +821,49 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected discovery failure to replace the seeded green, got %A" other)
 
+[<Theory(Timeout = 60000)>]
+[<InlineData(false, "mapping-failed")>]
+[<InlineData(true, "registration-failed")>]
+let ``run-once publishes a versioned unavailable model after successful loading``
+    (mappingProducedOptions: bool, expectedReason: string) =
+    withProjectOnlyRepo "runonce-unavailable-model" (fun repoRoot ->
+        let projectPath = FsHotWatch.Discovery.findFsprojFiles repoRoot |> List.exactlyOne
+        let loader = ControlledWorkspaceLoader([ [ minimalWorkspaceProject projectPath ] ])
+        loader.Resume(0)
+        let createDaemon root =
+            Daemon.createWithWorkspaceLoader
+                (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                root
+                { Daemon.DaemonOptions.defaults with RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ ->
+                    if mappingProducedOptions then [ makeProjectOptions "\u0000invalid.fsproj" [] [] ]
+                    else [])
+        let runScan (daemon: Daemon) =
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            daemon.Host.GetAllStatuses()
+        let ex =
+            Assert.Throws<ConfigError>(fun () ->
+                FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                    runScan
+                    (fun _ -> "")
+                    FsHotWatch.Cli.CheckVerdict.InnerLoop
+                    false
+                    createDaemon
+                    repoRoot
+                    (noTestProjectsConfig ())
+                    None
+                |> ignore)
+        test <@ ex.Message.Contains("PROJECT MODEL UNAVAILABLE") @>
+        use document = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(FsHotWatch.Cli.Verdict.path repoRoot))
+        let model = document.RootElement.GetProperty("projectModel")
+        test <@ model.GetProperty("schema").GetString() = "fshw-project-model-v1" @>
+        test <@ model.GetProperty("status").GetString() = "unavailable" @>
+        test <@ model.GetProperty("reasonCode").GetString() = expectedReason @>
+        test <@ model.GetProperty("generation").GetInt64() = 1L @>
+        test <@ model.GetProperty("counts").GetProperty("registered").GetInt32() = 0 @>
+        test <@ document.RootElement.GetProperty("outcome").GetProperty("kind").GetString() = "incomplete" @>)
+
 [<Fact(Timeout = 60000)>]
 let ``run-once waits for an initial discovery still inside the real loader`` () =
     withProjectOnlyRepo "runonce-in-progress-discovery" (fun repoRoot ->
