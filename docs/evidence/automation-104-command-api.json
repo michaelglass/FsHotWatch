@@ -1,0 +1,150 @@
+{
+  "scope": "Typed observation/request command API and removal of request state prefetch. Not full A104/A106 acceptance.",
+  "red": {
+    "runId": "2bc1081fc1ca4c68964a04c856e9bd9c",
+    "summary": {
+      "tests": 1,
+      "passed": 0,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788868931430,
+      "stop": 1788868933513
+    },
+    "tests": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.request posts intent without waiting for a state snapshot",
+        "status": "failed",
+        "duration": 2064,
+        "suite": "a3b62647-07d4-404b-b38a-6a9f9250e8d5",
+        "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+        "line": 510,
+        "message": "request waited for a state snapshot before posting intent",
+        "trace": "   at FsHotWatch.Tests.PluginFrameworkTests.request posts intent without waiting for a state snapshot() in /Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs:line 555\n   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)\n   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)",
+        "extra": {
+          "id": "0c07356b-4c33-4375-be9a-29b943eedcf8",
+          "collection": "f6ec20ec-7267-42fe-990a-039555ba5079",
+          "type": "FsHotWatch.Tests.PluginFrameworkTests",
+          "method": "request posts intent without waiting for a state snapshot",
+          "traits": {
+            "A104Command": [
+              "Request"
+            ]
+          },
+          "exception": "Xunit.Sdk.TrueException"
+        }
+      }
+    ]
+  },
+  "green": {
+    "runId": "74603412856b4aedae654745a4d9b2ce",
+    "summary": {
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788869079353,
+      "stop": 1788869079446
+    },
+    "tests": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.request posts intent without waiting for a state snapshot",
+        "status": "passed",
+        "duration": 73,
+        "suite": "ca32f348-3d8f-4359-8b55-793463bf291e",
+        "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/PluginFrameworkTests.fs",
+        "line": 510,
+        "extra": {
+          "id": "93f1608a-0828-457c-91cb-62f6643e62cc",
+          "collection": "f3a40b27-7c7c-4a4a-8936-c21bede0e12c",
+          "type": "FsHotWatch.Tests.PluginFrameworkTests",
+          "method": "request posts intent without waiting for a state snapshot",
+          "traits": {
+            "A104Command": [
+              "Request"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "neighborClasses": {
+    "AnalyzersPluginTests": {
+      "runId": "505b71f1cd9d4ecabb8602f806c4f412",
+      "summary": {
+        "tests": 48,
+        "passed": 48,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788869451115,
+        "stop": 1788869454358
+      }
+    },
+    "BuildPluginTests": {
+      "runId": "93438bf3511643c79e601c97e803a0b3",
+      "summary": {
+        "tests": 110,
+        "passed": 110,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788869312594,
+        "stop": 1788869333512
+      }
+    },
+    "TestPruneRunScopeTests": {
+      "runId": "baeced14d48848299edb4631c1a15dd2",
+      "summary": {
+        "tests": 89,
+        "passed": 89,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788869199723,
+        "stop": 1788869200786
+      }
+    },
+    "IpcTests": {
+      "runId": "aac5bfb54d264b818ecd84148d571bb0",
+      "summary": {
+        "tests": 51,
+        "passed": 51,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788869171450,
+        "stop": 1788869175795
+      }
+    }
+  },
+  "compile": {
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/private/tmp/a104-command-request-green-compile.log"
+  },
+  "frameworkSourceSha256": "a99ba855a9d23948b9b2c86604b9d90e946f0adadea024e3e4f619492ec2cfa6",
+  "limitations": [
+    "Observation commands still await owner state; existing snapshot-read regression remains unresolved.",
+    "PluginCore/WorkLedger, coherent status/evidence publication, owner-side scope/rebuild requests and full supervision migration remain unfinished.",
+    "No full CI, consumer qualification, merge, release or QA claim."
+  ],
+  "nonTestAttempts": [
+    "Initial request trait run exited3 because formatter edits made binaries stale; no test executed.",
+    "A command containing repeated --filter-class flags was rejected before execution; the four classes were then run sequentially."
+  ]
+}

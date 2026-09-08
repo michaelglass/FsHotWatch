@@ -1,0 +1,32 @@
+{
+  "scope": "Seven focused supervisor controls only; full A104/A106, CI, integration and consumer qualification remain incomplete",
+  "run": "aa08088266464074b11fdf1116f3e882",
+  "summary": {
+    "tests": 7,
+    "passed": 7,
+    "failed": 0
+  },
+  "compile": {
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "/tmp/a106-supervisor-formatted-compile.log"
+  },
+  "testClient": {
+    "session": 72708,
+    "exit": 0,
+    "log": "/tmp/a106-supervisor-controls-formatted.log"
+  },
+  "priorAttempt": {
+    "session": 38693,
+    "exit": 3,
+    "testsExecuted": 0,
+    "reason": "Startup formatting changed source after compilation; stale binaries refused"
+  },
+  "sha256": {
+    "src/FsHotWatch/PluginWorkOwner.fs": "c3413fff086e8948e3396fbb9500d1cc2b51c4fce68bd8f4213075875074d044",
+    "src/FsHotWatch/SupervisedWork.fs": "21023ef3f204606aedaf6ffbd545f616e20052603d1810ec2fa103da841e50fd",
+    "src/FsHotWatch/Daemon.fs": "513c5a29ecf219ac4f1d46a5e826afa2808cbfd6a9cf4404d20d21834efe5f2c",
+    "tests/FsHotWatch.Tests/SupervisedWorkTests.fs": "dc3ce41705694813deb6c09a344b30f83e8aaacab8abe356c3133a985446d1fa"
+  }
+}

@@ -570,6 +570,7 @@ let internal createWithSlowHook
                              diagnostics = totalDiags |}
                       )
               } ]
+        |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key (file source + analyzer identity + fcs-signature).

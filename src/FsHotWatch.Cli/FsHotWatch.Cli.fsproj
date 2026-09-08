@@ -55,6 +55,7 @@
         <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
+        <Compile Include="DetachedLaunch.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

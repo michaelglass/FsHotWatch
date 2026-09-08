@@ -1,0 +1,605 @@
+{
+  "scope": "Focused controls only; no full CI, integration, consumer qualification or outer-group termination survival claim",
+  "compile": {
+    "session": 22700,
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "previousFailure": "81596: FS0041 TrySetException ambiguity fixed with explicit Result<unit,exn>"
+  },
+  "runs": {
+    "batch": {
+      "run_id": "3ddc81f4dfc94ead8aa39fe1076235d8",
+      "summary": {
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788907427961,
+        "stop": 1788907428488
+      },
+      "tests": [
+        {
+          "name": "FsHotWatch.Tests.DaemonTests.watcher change remains owned through debounce and blocked rediscovery(waitForDiscovery: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DaemonTests.watcher change remains owned through debounce and blocked rediscovery(waitForDiscovery: True)",
+          "status": "passed"
+        }
+      ]
+    },
+    "debounce": {
+      "run_id": "fde6880b6dff4a77a04ac1ad068ab9e4",
+      "summary": {
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788907550101,
+        "stop": 1788907550177
+      },
+      "tests": [
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.close rejects debounce input and retains a live supervised cohort",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.failed debounce scheduler settles its own pending receipt and records failure",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.obsolete scheduler failure cannot reject its coalesced successor",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.worker admission rejection settles the original cohort and permits later work",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.flush coalesces preceding input and keeps subsequent cohorts ordered",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.DebouncedWorkTests.failed coalescing leaves the accepted pending input intact",
+          "status": "passed"
+        }
+      ]
+    },
+    "supervisor": {
+      "run_id": "619f5f317d3743e9874864023765a29f",
+      "summary": {
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788907654222,
+        "stop": 1788907659325
+      },
+      "tests": [
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.completion notification stays owned and remains covered by its deadline",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.deadline records failure without retiring a noncooperative callback",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.closing admission rejects queued work but retains a live callback until cleanup",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.worker uses its owner's process registry rather than the request caller's",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.handoff transition failure settles accepted receipts and closes admission",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.queued successor is owned before predecessor receipt completes",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.SupervisedWorkTests.admission after caller timeout still launches and settles its work",
+          "status": "passed"
+        }
+      ]
+    },
+    "launcher": {
+      "run_id": "45d25b8e79234d03a57dcc29d8277e24",
+      "summary": {
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788907694225,
+        "stop": 1788907695189
+      },
+      "tests": [
+        {
+          "name": "FsHotWatch.Tests.LauncherLifetimeTests.production launcher gives its child a process group independent of the caller(fileStem: \\\"owned '$child`\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.LauncherLifetimeTests.production launcher gives its child a process group independent of the caller(fileStem: \\\"owned-child\\\")",
+          "status": "passed"
+        }
+      ]
+    },
+    "output_contract": {
+      "run_id": "289e9172d744455cadf2d1ab02db4bc6",
+      "summary": {
+        "tests": 98,
+        "passed": 98,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788907742075,
+        "stop": 1788907746581
+      },
+      "tests": [
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse excludes info-only files from count",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.daemon command retains executed evidence across a same-tree quiet convergence read(failSecondRead: True)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.daemon command retains executed evidence across a same-tree quiet convergence read(failSecondRead: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.pollAndRender returns exit 2 when the verdict deadline is breached",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"red\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"unreadable\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"missing\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"incomplete\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"filtered\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence replaces every prior that is not an applicable full-suite green(kind: \\\"different-producer\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult reads the coverage token when the daemon sends one",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.redCausesOf reports NOTHING on a clean ledger",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a confirm with no projection on offer says nothing was compared, and a check records no comparison at all",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.daemon check and confirm overwrite green on discovery failure before diagnostics or convergence(confirmation: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.daemon check and confirm overwrite green on discovery failure before diagnostics or convergence(confirmation: True)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.refusing unknown tokens is NOT a blanket \u2014 a known ran token is still a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with GetDiagnostics format count 0 returns 0",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a status that is not even an object is a FAILURE, not idle",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a confirm that already has full-suite evidence does NOT run the suite twice",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a check whose daemon ran the tests TWICE publishes a verdict covering BOTH run directories",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse shows warnings but hides info in same file",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a tree that moves mid-check exits 2 AND records incomplete \u2014 the file and the process agree",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.pollAndRender surfaces a clean verdict once the test-prune run passes",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.parsePluginStatuses accepts object-valued entries with status field",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an executed-looking scope without a run id is not retainable evidence(fullSuite: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an executed-looking scope without a run id is not retainable evidence(fullSuite: True)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a project KILLED at its timeout is a failure, not a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a memory fault BEFORE the run settles is NOT claimed as a lost result",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.parseDiagnosticsResponse extracts files with entries",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.retained test evidence cannot hide a later plugin failure",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.parsePluginStatuses rejects bare-string values and returns empty",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.ordinary outcomes do not inspect prior confirmation evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a running status whose since cannot be parsed is a FAILURE, not idle",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with plain text returns 0",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a later filtered run cannot downgrade same-tree full-suite evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.exitCodeFromResponse returns 0 for count 0",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isMemoryExhaustion recognises memory exhaustion on EITHER side of the wire",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isDaemonShutdownDuringWait recognises transport + shutdown faults",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isVerdictWaitTimeout recognises the daemon's deadline breach",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.redCausesOf names the ledger SOURCE, so an fcs diagnostic stops being invisible",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence never preserves a full-suite green from a different tree",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a confirm that did NOT escalate records the PROJECTED sample, not a bare \\\"nothing compared\\\"",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse with errors shows count summary",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.exitCodeFromResponse without noWarnFail fails on warnings",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an escalating confirm records the impact-scoped reading it escalated away from",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.parseDiagnosticsResponse extracts statuses",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult trusts a coverage token that ran, over an empty-looking payload",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with noTestsMatched run returns 3 \u2014 refuses to green without evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.only already-verified can reuse prior evidence(kind: \\\"unknown-reason\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.only already-verified can reuse prior evidence(kind: \\\"changes-uncovered\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.only already-verified can reuse prior evidence(kind: \\\"unreadable\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.only already-verified can reuse prior evidence(kind: \\\"unstated\\\")",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an OLDER daemon sending no coverage field still cannot report a no-op as a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.the same drive over a tree that HOLDS STILL is green \u2014 0 in both renderings",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a later executed report wholly replaces the prior report",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a confirm with no full-suite evidence FORCES the run and then goes green",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse hides info-severity entries",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an UNRECOGNIZED coverage token is refused, not read as a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult reads coverage=all-zero-match as a refusal, not a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with test results JSON containing arrays does not crash",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isMemoryExhaustion ignores unrelated faults",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a status tag this build does not recognize is a FAILURE, not idle",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.same-tree already-verified retains the executed report atomically",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.impossible filtered project counts are not retainable executed evidence(ran: 0, total: 3)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.impossible filtered project counts are not retainable executed evidence(ran: -1, total: 3)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.impossible filtered project counts are not retainable executed evidence(ran: 4, total: 3)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with an EMPTY projects array returns 3, never \\\"Tests passed\\\"",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.already-verified on a changed tree cannot reuse executed evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with test results JSON with failed project returns 1",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a genuinely zero-test command remains no evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a recognized idle status is still idle \u2014 the fail-closed rule does not swallow the healthy case",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with GetDiagnostics format count > 0 returns 1",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a zero-test convergence result preserves a prior applicable full-suite green",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.an UNKNOWN per-project status does not count as having executed",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.parseDiagnosticsResponse extracts count",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.pollAndRender returns exit 7 and PUBLISHES when the result is lost after the run settled",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a later full-suite run upgrades same-tree filtered evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.pollAndRender returns exit 2 when the daemon drops mid-wait",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with busy status NEVER returns 0 \u2014 no run, no green",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse with errors shows file and message",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.formatDiagnosticsResponse with no errors shows clean message",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.exitCodeFromResponse returns 1 for errors",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a plugin element with NO status field is a FAILURE, not idle",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with error field returns 1",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.a garbage coverage token is refused too \u2014 it is not a whitelist of known-bad values",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.the retired bare \\\"ran\\\" token is refused, not read as a pass",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.positive bounded filtered project counts are retainable executed evidence",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult still returns 0 for a genuine pass \u2014 the guard is not a blanket",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.exitCodeFromResponse with noWarnFail ignores warnings",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isDaemonShutdownDuringWait ignores unrelated faults",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.exitCodeFromResponse ignores info-severity entries",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.run attribution takes every run the daemon completed after the baseline, oldest first, once each",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with status failed returns 1",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.renderIpcResult with status passed returns 0",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.isVerdictWaitTimeout ignores unrelated faults",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.IpcOutputTests.the inner loop NEVER forces a full suite",
+          "status": "passed"
+        }
+      ]
+    }
+  },
+  "source_sha256": {
+    "src/FsHotWatch/DebouncedWork.fs": "54cd2396b864b6ff9b7ccc7cd9342d7cc518061bee36f72459a77b3782258a56",
+    "src/FsHotWatch/SupervisedWork.fs": "0adc9772e40fa00f724924101f2f6800c979d354b070b6277381ac9c5d26d90a",
+    "src/FsHotWatch/Daemon.fs": "7896a073e624caabebb5697423e62ca25e1ceaadf2d1c81cc3fa4fc216ab7afd",
+    "src/FsHotWatch.Cli/DetachedLaunch.fs": "a471eb853d05336a54571ddf1083ebe840b1971e9fb59bf608f85e30e33ba857",
+    "src/FsHotWatch.Cli/Program.fs": "6304ea56012f2bb9e112b7b2bd718255b10dae6986941455250bbb20a400d435",
+    "tests/FsHotWatch.Tests/DebouncedWorkTests.fs": "b8b513c09c7be153c52beed8345e03a19e0700e489b1e452443aad76a4b8ed09",
+    "tests/FsHotWatch.Tests/LauncherLifetimeTests.fs": "50bfadc41846250883be8f424a2dc959c078116fdf5279ce4da532c3f681c861",
+    "tests/FsHotWatch.Tests/IpcOutputTests.fs": "2cb2555b4359c85a01c4d3ff66c1a141baae68197ed52a66f508a800ab572f58"
+  },
+  "nonpassing_attempts": [
+    {
+      "session": 38356,
+      "exit": 3,
+      "classification": "No tests executed; formatter changed source after compile, freshness refusal"
+    },
+    {
+      "run": "2129e795b89244dd9be436180eb72897",
+      "passed": 3157,
+      "failed": 1,
+      "classification": "Legacy errored+deferred test expected incomplete(3), implementation correctly returned known execution failure(1). Assertion corrected; entire 98-test output class reran green."
+    }
+  ],
+  "automatic_unit_baseline": {
+    "run_id": "030adfb2246f4659879fdb0c70aecba7",
+    "summary": {
+      "tests": 3158,
+      "passed": 3158,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788907766022,
+      "stop": 1788907857504
+    },
+    "scope": "All configured unit tests; explicit integration exclusion remains, not full CI"
+  },
+  "drained_queued_unit_run": {
+    "run_id": "27995775aef449eaa76a79628888aa66",
+    "summary": {
+      "tests": 3158,
+      "passed": 3158,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788907878814,
+      "stop": 1788907973401
+    },
+    "note": "Already queued automatic rerun drained; no new manual suite command"
+  }
+}

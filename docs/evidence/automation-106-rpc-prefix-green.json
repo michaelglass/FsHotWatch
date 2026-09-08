@@ -1,0 +1,40 @@
+{
+  "classification": "targeted class green; full A104/A106 acceptance incomplete",
+  "runId": "4c5e444713354db0a46f4543453060b7",
+  "summary": {
+    "tests": 51,
+    "passed": 51,
+    "failed": 0,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788859103785,
+    "stop": 1788859107463
+  },
+  "regression": [
+    {
+      "name": "FsHotWatch.Tests.IpcTests.AUTOMATION-106: RPC deadline includes a synchronous callback before its task is returned",
+      "status": "passed",
+      "duration": 100,
+      "suite": "15db48cf-c0b6-4f2f-94ba-811005c4b646",
+      "filePath": "/Users/michaelglass/Developer/opensource/FsHotWatch/.workspaces/a104-a106-work-ledger/tests/FsHotWatch.Tests/IpcTests.fs",
+      "line": 1434,
+      "extra": {
+        "id": "00424e73-0383-4086-86dd-f60f7389bbf6",
+        "collection": "8bf0b9fa-bccb-4201-a60d-28335f833920",
+        "type": "FsHotWatch.Tests.IpcTests",
+        "method": "AUTOMATION-106: RPC deadline includes a synchronous callback before its task is returned"
+      }
+    }
+  ],
+  "sourceSha256": "67001e2320b90668eea644573f349db887fd531552383be8ad63c14c157790c2",
+  "compile": {
+    "session": 35097,
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0,
+    "elapsedSeconds": 27.52
+  },
+  "classSession": 56655
+}

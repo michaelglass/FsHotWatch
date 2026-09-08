@@ -560,11 +560,9 @@ let ``AUTOMATION-228: a rerun queued for debt the active run clears preserves th
         host.EmitBuildCompleted(BuildSucceeded)
         waitUntil (fun () -> File.Exists started) 10000
 
-        // Re-observe the same debt while its covering run is active. RunCommand is a
-        // mailbox barrier: when it returns, the preceding BatchChecked has set
-        // PendingRerun, so releasing the runner cannot race the setup.
-        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        // The cohort receipt commits PendingRerun before the runner is released.
+        host.EmitBatchCheckedTracked(fakeBatchChecked [ "Lib.fs" ])
+        |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
         File.WriteAllText(release, "")
         waitForQuiescent host 20000
@@ -658,15 +656,13 @@ let fooTest () = assert (foo 1 = 2)
         | Some result -> host.EmitFileChecked(result)
         | None -> failwith "cold-scan changed-file check failed"
 
-        host.EmitBatchChecked(
+        host.EmitBatchCheckedTracked(
             { fakeBatchChecked [ libFile ] with
                 Trigger = trigger }
         )
+        |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
-        // The command is deliberately held until the cohort seal is observed. A fixed
-        // sleep made this test assert scheduler speed on loaded Linux runners: the full
-        // run could finish before CheckFile, turning BootScan into a real second run.
-        host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously |> ignore
+        // Each recipient has committed this exact cohort while the full run is held.
         File.WriteAllText(release, "")
 
         waitForQuiescent host 20000
@@ -2000,6 +1996,10 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
             test <@ json.IsSome @>
             test <@ json.Value.Contains("\"busy\"") @>
             test <@ not (json.Value.Contains("\"projects\"")) @>
+            // The reply deadline also covers queued/preparation time. It is not
+            // evidence that the runner reached its marker within that same second.
+            test <@ host.AnyPluginBusy() @>
+            waitUntil (fun () -> File.Exists started) 10000
             test <@ File.Exists started @>
         finally
             // Let the daemon-side run finish so the temp dir can be cleaned.

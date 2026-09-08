@@ -223,11 +223,14 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
         task {
             try
-                let work = f ()
                 let d = seamDeadline ()
 
                 use timeoutCts = new CancellationTokenSource()
                 let expiry = Task.Delay(d, timeoutCts.Token)
+                // The callback can block before returning its Task. Schedule that
+                // prefix too, after the deadline starts, so it cannot pin the RPC
+                // caller outside the bound. Task.Run unwraps the returned task.
+                let work = Task.Run<'a>(Func<Task<'a>>(f))
                 let! winner = Task.WhenAny(work :> Task, expiry)
 
                 if obj.ReferenceEquals(winner, expiry) then

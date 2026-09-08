@@ -858,6 +858,24 @@ let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
 
     registry.KillAll()
 
+[<Fact(Timeout = 15000)>]
+[<Trait("A106Supervision", "LateProcessAdmission")>]
+let ``a process registering after shutdown cannot escape its owning registry`` () =
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    registry.KillAll()
+    // This is a fresh fixture child, never a shared daemon or an existing PID.
+    // The helper reaps it even when the old registry fails the assertion.
+    withTrackedSleep 30 (fun child ->
+        Assert.False(child.HasExited)
+        registry.Track child
+
+        Assert.True(
+            child.WaitForExit(5000),
+            "shutdown must reap a child that registers after process admission closed"
+        )
+
+        Assert.Empty(registry.Snapshot()))
+
 // AUTOMATION-454 — shutdown must NAME what it is walking away from.
 //
 // The error at the moment of the failed teardown reaches whoever happens to be reading
