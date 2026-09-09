@@ -661,7 +661,7 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
         if FsHotWatch.Ipc.isUnknownCommandReply reply then
             FsHotWatch.Logging.warn
                 "cli-confirm"
-                $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a merge \
+                $"the daemon has no `%s{TestScopeCommand}` command — it has no test projects configured, so a full-suite \
                    verdict cannot be earned from it. `fshw confirm` will report NO VERDICT."
 
             IpcParsing.TestRunReport.noTestSuite
