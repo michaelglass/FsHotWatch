@@ -283,7 +283,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
-    match handler.CacheKey with
+    match handler.CacheKey |> Option.map (fun key -> key handler.Init) with
     | None -> failwith "expected LintPlugin to provide a CacheKey"
     | Some keyFn ->
         let a = keyFn (FileChecked(mkResult "/src/Foo.fs" "let x = 1"))
@@ -296,7 +296,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
 let ``LintPlugin cache key is None for non-FileChecked events`` () =
     let handler = FsHotWatch.Lint.LintPlugin.create None None None None
 
-    match handler.CacheKey with
+    match handler.CacheKey |> Option.map (fun key -> key handler.Init) with
     | None -> failwith "expected LintPlugin to provide a CacheKey"
     | Some keyFn ->
         let result = keyFn (FileChanged(SourceChanged [ "/src/Foo.fs" ]))
@@ -317,14 +317,14 @@ let ``LintPlugin cache key reflects config file content`` () =
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
-        match handler1.CacheKey with
+        match handler1.CacheKey |> Option.map (fun key -> key handler1.Init) with
         | None -> failwith "expected CacheKey"
         | Some k1 ->
             let key1 = k1 (FileChecked(mkResult "let x = 1"))
             System.IO.File.WriteAllText(configPath, "{\"rules\":\"v2\"}")
             let handler2 = FsHotWatch.Lint.LintPlugin.create None (Some configPath) None None
 
-            match handler2.CacheKey with
+            match handler2.CacheKey |> Option.map (fun key -> key handler2.Init) with
             | None -> failwith "expected CacheKey"
             | Some k2 ->
                 let key2 = k2 (FileChecked(mkResult "let x = 1"))
@@ -344,7 +344,7 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
-    match handler.CacheKey with
+    match handler.CacheKey |> Option.map (fun key -> key handler.Init) with
     | None -> failwith "expected CacheKey"
     | Some keyFn ->
         let parseOnly = keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" ParseOnly))
@@ -375,8 +375,8 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
 
     let evt = FileChecked(mkResult ())
 
-    let k1 = h1.CacheKey |> Option.bind (fun f -> f evt)
-    let k2 = h2.CacheKey |> Option.bind (fun f -> f evt)
+    let k1 = h1.CacheKey |> Option.bind (fun f -> f h1.Init evt)
+    let k2 = h2.CacheKey |> Option.bind (fun f -> f h2.Init evt)
     test <@ k1.IsSome @>
     test <@ k1 <> k2 @>
 
@@ -440,7 +440,8 @@ let ``plugin skips Update on cache hit and replays errors`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
-          CacheKey = Some(fun _ -> Some(hash "commit-abc"))
+          CacheKey = Some(fun _state _ -> Some(hash "commit-abc"))
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -477,7 +478,8 @@ let ``plugin stores result on cache miss then hits on second event`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
-          CacheKey = Some(fun _ -> Some(hash "commit-xyz"))
+          CacheKey = Some(fun _state _ -> Some(hash "commit-xyz"))
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -512,7 +514,8 @@ let ``plugin runs Update when cache key changes`` () =
                 }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
-          CacheKey = Some(fun _ -> Some(hash currentCommit))
+          CacheKey = Some(fun _state _ -> Some(hash currentCommit))
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1533,10 +1536,11 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           // A is a cache MISS (drives the run); B is a HIT (drives the replay).
           CacheKey =
-            Some(fun event ->
+            Some(fun _state event ->
                 match event with
                 | FileChecked r when (AbsFilePath.value r.File).EndsWith("B.fs") -> Some(hash "k-B")
                 | _ -> None)
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1635,7 +1639,8 @@ let ``cache replay of a whole-run entry reports the original verdict marked as c
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-          CacheKey = Some(fun _ -> Some(hash "k-V"))
+          CacheKey = Some(fun _state _ -> Some(hash "k-V"))
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1679,7 +1684,8 @@ let ``cache replay does not stack the cached marker on an already-marked verdict
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-          CacheKey = Some(fun _ -> Some(hash "k-M"))
+          CacheKey = Some(fun _state _ -> Some(hash "k-M"))
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)

@@ -611,7 +611,8 @@ let internal createWithSlowHook
                 )
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state -> cacheKey)
+      PrepareCommit = None
       Teardown =
         Some(fun () ->
             // Cancellation is cooperative. Do not dispose tokens/semaphores while

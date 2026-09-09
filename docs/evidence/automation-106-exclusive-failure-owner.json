@@ -1,0 +1,116 @@
+{
+  "scope": "A104/A106 retain exclusive failure in immutable owner",
+  "actualRed": {
+    "runId": "bf40bf12c4fc4b3f9e0d2c820b42266b",
+    "sha256": "57a67a115023749a084076699900a9a9b649f02bfde10458ff768aa92838ff05",
+    "summary": {
+      "tests": 3181,
+      "passed": 3174,
+      "failed": 7,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788921420664,
+      "stop": 1788921509237
+    },
+    "controls": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared cleanup terminalizes the run without publishing success",
+        "status": "failed",
+        "message": "failed cleanup must retain failure in the owner snapshot"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary exclusive launch failure uses the host launcher and retires ownership",
+        "status": "failed",
+        "message": "failed launch must retain failure in the owner snapshot"
+      }
+    ]
+  },
+  "correction": "FailRun requires original exception and stores typed RunFailure with retirement. runOne retains a Result outcome; failed launch, work, and shared cleanup preserve evidence separately from executor death. Ordinary event success cannot erase it; prepared recovery can supersede it. Tests now assert exception identity and retention after ordinary successful dispatch.",
+  "status": "Corrected unit controls and full integration pass. Five debt/private-verdict unit failures remain. Full CI, common deadline/restart policy, private evidence and consumer qualification unfinished. Debt migration remains unapplied pending approval.",
+  "correctedUnitRun": {
+    "runId": "d6a3512f39de4e7fbca78eef9678c341",
+    "sha256": "3bbe5f9fd8cfc3d08a528b3782f19987e7f89c48e508e4f0b1834bfdf14900c2",
+    "summary": {
+      "tests": 3181,
+      "passed": 3176,
+      "failed": 5,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788921572379,
+      "stop": 1788921668077
+    },
+    "controls": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared cleanup terminalizes the run without publishing success",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary exclusive launch failure uses the host launcher and retires ownership",
+        "status": "passed"
+      }
+    ]
+  },
+  "secondCorrectedUnitRun": {
+    "runId": "f49f93c5b7214ea1a8353071280733b9",
+    "sha256": "d69342d614ec63ae1c42a7b4947c9aeb23b2b9a942f67fdade744c8d2ed5999a",
+    "summary": {
+      "tests": 3181,
+      "passed": 3176,
+      "failed": 5,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788921698679,
+      "stop": 1788921798879
+    },
+    "controls": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.throwing shared cleanup terminalizes the run without publishing success",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary exclusive launch failure uses the host launcher and retires ownership",
+        "status": "passed"
+      }
+    ]
+  },
+  "integrationFollowup": {
+    "command": "mise run test-integration",
+    "session": 59532,
+    "exitCode": 0,
+    "total": 72,
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 47.75,
+    "log": "/private/tmp/a106-failure-owner-integration.log",
+    "sha256": "db824cf97c53b049a5653e8140e84121a16385ab62132bfabafb429600080b3f"
+  },
+  "finalQueuedUnitRun": {
+    "runId": "9d90a365af9b42328683ec7655e25697",
+    "sha256": "fa9a2078b7c028aee825fb7c1aee4258f2a8d7af166ed32e4d195ce16b8dfc15",
+    "summary": {
+      "tests": 3181,
+      "passed": 3176,
+      "failed": 5,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788921959775,
+      "stop": 1788922051152
+    }
+  },
+  "sourceHashesAtVerification": {
+    "src/FsHotWatch/PluginWorkOwner.fs": "77bcbfc5877d3d9befa1d59284e7ef62ce60b24d38807e81881872bfe03e138a",
+    "src/FsHotWatch/PluginFramework.fs": "e070c76521a8377f9c4123090b315f8a239f19a9ef7e5d4e964bfc54c3abd9a2",
+    "src/FsHotWatch/ProcessRegistry.fs": "ee4ff909b16a406c8fb3bf1b8661f72e77a37f5450abacfe862591261312b691",
+    "tests/FsHotWatch.Tests/PluginFrameworkTests.fs": "9ee9c73961e76be4cf95ec2ea30b05ca0c34a30ed140c04cf3905a0f0ab79f08",
+    "tests/FsHotWatch.IntegrationTests/SupervisedProcessTests.fs": "f9911f7e23d040586130cc9d4ead2fc9049f5e62c6287428b2088f62ae45f9c3"
+  }
+}

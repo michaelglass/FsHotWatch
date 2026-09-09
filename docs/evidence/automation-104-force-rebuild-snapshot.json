@@ -1,0 +1,51 @@
+{
+  "status": "force-rebuild snapshot correction green; only private earned-verdict regression fails full unit run",
+  "red": {
+    "runId": "b0d3588db0224fb192796104ee23b1e2",
+    "reportSha256": "69c75793af7e1d877bbb3b62436732086b6bc1eb75c1fe4dae77455e55ec02c5",
+    "summary": {
+      "tests": 3167,
+      "passed": 3165,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788917189608,
+      "stop": 1788917280071
+    },
+    "failures": [
+      {
+        "name": "FsHotWatch.Tests.BuildPluginTests.force rebuild belongs to the returned owner state rather than older snapshots",
+        "message": "Assert.Equal() Failure: Values differ\nExpected: Some(ContentHash \\\"b19952ef51cf87841b028da1a82a6b632b27a62add8469d7b60dd0267bafc5c9\\\")\nActual:   null"
+      },
+      {
+        "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+        "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+      }
+    ]
+  },
+  "limits": [
+    "No full CI, refreshed daemon or consumer qualification",
+    "Private earned-verdict migration remains unfinished"
+  ],
+  "corrected": {
+    "runId": "c7f79858e6b746169f0d0bbfabfcfab8",
+    "reportSha256": "a262961f779313c43afd78db97de8c8d5fe6a5887dc413cbc980afaebf46bca9",
+    "summary": {
+      "tests": 3167,
+      "passed": 3166,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788917381879,
+      "stop": 1788917471932
+    },
+    "failures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains"
+    ]
+  },
+  "sourceSha256": "88eed51589de7f07dedaf6c4da92fc4b6a596bcfc55339ef5d6028d578591d7d"
+}

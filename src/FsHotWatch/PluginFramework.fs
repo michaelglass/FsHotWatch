@@ -316,6 +316,11 @@ module PluginSubscriptions =
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
+type PreparedCommit = { Finalize: Async<unit> }
+
+/// A handler's proposal is published only after preparation succeeds; its event
+/// remains owned until finalization and any cache write have completed.
+[<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
     {
         /// The display name of this plugin.
@@ -324,15 +329,17 @@ type PluginHandler<'State, 'Msg> =
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
         Update: PluginCtx<'Msg> -> 'State -> PluginEvent<'Msg> -> Async<'State>
+        PrepareCommit: ('State -> 'State -> Async<PreparedCommit>) option
         /// Named IPC commands. Observations cannot post work; requests cannot
         /// inspect plugin state and must post state-dependent intent to its owner.
         Commands: (string * PluginCommand<'State, 'Msg>) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
+        /// Cache decisions consume the same committed state as Update; no mirrored state is required.
         /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
         /// `None` → skip cache and run Update — overloaded across "uncacheable event",
         /// "cold-start bypass", and "outputs missing"; plugins document which at the call site.
-        CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
+        CacheKey: ('State -> PluginEvent<'Msg> -> ContentHash option) option
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
     }
@@ -393,7 +400,7 @@ type RegisteredPlugin =
         /// What the handler subscribed to — so the host can tell which plugins a
         /// re-fired `FileChanged` would reach (`PluginHost.RerunPlugin`).
         Subscriptions: PluginSubscriptions
-        /// The fault that killed this plugin's message loop, if one did.
+        /// The latest owned event, persistence, or executor failure, if one exists.
         ///
         /// Published in the same owner snapshot as work obligations. A fault
         /// fails accepted event receipts but preserves live exclusive workers
@@ -473,6 +480,20 @@ let internal registerHandlerWithOwner
 
     let workOwner =
         PluginWorkOwner.Owner(handler.Init, store, PluginName.value handler.Name)
+
+    // Dispatch may arrive from a short-lived scan/batch scope. An exclusive
+    // worker belongs to this registered plugin and can outlive that trigger.
+    let ownerContext = System.Threading.ExecutionContext.Capture()
+
+    let startOwned operation =
+        if isNull ownerContext then
+            services.StartAsync operation
+        else
+            System.Threading.ExecutionContext.Run(
+                ownerContext.CreateCopy(),
+                System.Threading.ContextCallback(fun _ -> services.StartAsync operation),
+                null
+            )
 
     let anyRunSlotBusy () = workOwner.Snapshot.HasExclusiveRun
 
@@ -566,77 +587,93 @@ let internal registerHandlerWithOwner
         (startedAt: DateTime)
         (w: Async<'Msg>)
         =
-        async {
-            let mutable completion: 'Msg voption = ValueNone
+        ProcessRegistry.withChildScopeAsync System.Threading.CancellationToken.None (fun settleChildren ->
+            async {
+                let mutable completion: Result<'Msg, exn> option = None
 
-            // The work async is plugin-supplied — a third-party-extension
-            // boundary that may raise anything. The broad catch keeps the
-            // `completion` value assignable: without it the `finally` still runs
-            // (resolving the exclusive obligation) but `completion` stays unset and the
-            // agent waits forever for a result. Logged as ex.ToString() so the
-            // type and stack trace survive for diagnosing the offending plugin.
-            try
-                try
-                    let! msg = w
-                    completion <- ValueSome msg
-                with ex ->
-                    error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
-
-                    // A faulted exclusive run must never STRAND the plugin in a
-                    // non-terminal status. No completion message is posted on this
-                    // path (`completion` stays ValueNone below) and `runExclusive`
-                    // reported Running at the claim, so without a forced terminal
-                    // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
-                    // report false — `WaitForComplete` then blocks on a plugin that
-                    // will never complete, and idle-exit fires mid-wait. The
-                    // framework knows when this run started (it claimed the slot),
-                    // so the verdict carries a measured elapsed.
-                    reportBypassingGuard (
-                        PluginStatus.Failed(
-                            $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
-                            DateTime.UtcNow,
-                            RunVerdict.create
-                                $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
-                                (DateTime.UtcNow - startedAt)
-                        )
-                    )
-            finally
+                // The work async is plugin-supplied — a third-party-extension
+                // boundary that may raise anything. The broad catch keeps the
+                // `completion` value assignable: without it the `finally` still runs
+                // (resolving the exclusive obligation) but `completion` stays unset and the
+                // agent waits forever for a result. Logged as ex.ToString() so the
+                // type and stack trace survive for diagnosing the offending plugin.
                 try
                     try
-                        // The exclusive obligation survives classification and handoff.
-                        // Only the atomic transfer below frees its slot.
-                        sharedRun
-                        |> Option.iter (fun (sharedKey, classify) ->
-                            let resourceState =
-                                match completion with
-                                | ValueSome message ->
-                                    try
-                                        classify message
-                                    with ex ->
-                                        error
-                                            (PluginName.value handler.Name)
-                                            $"RunExclusiveShared '%s{key}' classifier failed: %s{ex.ToString()}"
+                        let! msg =
+                            async {
+                                try
+                                    return! w
+                                finally
+                                    settleChildren ()
+                            }
 
-                                        Invalid $"%s{PluginName.value handler.Name} shared result classifier faulted"
-                                | ValueNone -> Invalid $"%s{PluginName.value handler.Name} shared work faulted"
-
-                            services.ReleaseSharedRun sharedKey resourceState)
+                        completion <- Some(Result.Ok msg)
                     with ex ->
-                        // Cleanup is part of the admitted operation. Its failure
-                        // invalidates the result, so no successful fold is posted.
-                        completion <- ValueNone
-                        reportRunFailure key startedAt "cleanup failed" ex
+                        completion <- Some(Result.Error ex)
+                        error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
+
+                        // A faulted exclusive run must never STRAND the plugin in a
+                        // non-terminal status. No completion message is posted on this
+                        // path (`completion` retains the failure below) and `runExclusive`
+                        // reported Running at the claim, so without a forced terminal
+                        // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
+                        // report false — `WaitForComplete` then blocks on a plugin that
+                        // will never complete, and idle-exit fires mid-wait. The
+                        // framework knows when this run started (it claimed the slot),
+                        // so the verdict carries a measured elapsed.
+                        reportBypassingGuard (
+                            PluginStatus.Failed(
+                                $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
+                                DateTime.UtcNow,
+                                RunVerdict.create
+                                    $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
+                                    (DateTime.UtcNow - startedAt)
+                            )
+                        )
                 finally
-                    match completion with
-                    | ValueSome message ->
-                        match workOwner.CompleteRun identity with
-                        | None -> ()
-                        | Some eventIdentity ->
-                            match agentRef with
-                            | Some agent -> agent.Post(Custom message, eventIdentity)
-                            | None -> invalidOp "Plugin executor is unavailable after work admission"
-                    | ValueNone -> workOwner.FailRun identity
-        }
+                    try
+                        try
+                            // The exclusive obligation survives classification and handoff.
+                            // Only the atomic transfer below frees its slot.
+                            sharedRun
+                            |> Option.iter (fun (sharedKey, classify) ->
+                                let resourceState =
+                                    match completion with
+                                    | Some(Result.Ok message) ->
+                                        try
+                                            classify message
+                                        with ex ->
+                                            error
+                                                (PluginName.value handler.Name)
+                                                $"RunExclusiveShared '%s{key}' classifier failed: %s{ex.ToString()}"
+
+                                            Invalid
+                                                $"%s{PluginName.value handler.Name} shared result classifier faulted"
+                                    | Some(Result.Error _)
+                                    | None -> Invalid $"%s{PluginName.value handler.Name} shared work faulted"
+
+                                services.ReleaseSharedRun sharedKey resourceState)
+                        with ex ->
+                            // Cleanup is part of the admitted operation. Its failure
+                            // invalidates the result, so no successful fold is posted.
+                            completion <- Some(Result.Error ex)
+                            reportRunFailure key startedAt "cleanup failed" ex
+                    finally
+                        match completion with
+                        | Some(Result.Ok message) ->
+                            match workOwner.CompleteRun identity with
+                            | None -> ()
+                            | Some eventIdentity ->
+                                match agentRef with
+                                | Some agent -> agent.Post(Custom message, eventIdentity)
+                                | None -> invalidOp "Plugin executor is unavailable after work admission"
+                        | Some(Result.Error failure) -> workOwner.FailRun(identity, failure)
+                        | None ->
+                            workOwner.FailRun(
+                                identity,
+                                InvalidOperationException("Exclusive work ended without an outcome")
+                            )
+            })
 
     let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
         // The owner admits the exclusive obligation before its UI report.
@@ -652,12 +689,12 @@ let internal registerHandlerWithOwner
         match claimedAt with
         | Some(identity, startedAt) ->
             try
-                services.StartAsync(runOne key identity None startedAt work)
+                startOwned (runOne key identity None startedAt work)
             with ex ->
                 try
                     reportRunFailure key startedAt "failed to start" ex
                 finally
-                    workOwner.FailRun identity
+                    workOwner.FailRun(identity, ex)
 
             Claimed
         | None ->
@@ -702,7 +739,7 @@ let internal registerHandlerWithOwner
                                 return failureMessage ex
                         }
 
-                    services.StartAsync(runOne key identity (Some(sharedKey, classify)) startedAt guardedWork)
+                    startOwned (runOne key identity (Some(sharedKey, classify)) startedAt guardedWork)
                     SharedStarted
                 with ex ->
                     SharedStartFailed(fun released ->
@@ -726,7 +763,7 @@ let internal registerHandlerWithOwner
                             try
                                 reportRunFailure key startedAt "startup completion failed" failure
                             finally
-                                workOwner.FailRun identity)
+                                workOwner.FailRun(identity, failure))
 
             match services.ClaimOrQueueSharedRun sharedKey start with
             | Some resourceState ->
@@ -1044,13 +1081,11 @@ let internal registerHandlerWithOwner
 
                     let safeUpdate pluginCtx state event =
                         async {
-                            let handlerStarted = DateTime.UtcNow
-
                             try
-                                return! handler.Update pluginCtx state event
+                                let! candidate = handler.Update pluginCtx state event
+                                return Result.Ok candidate
                             with ex ->
-                                reportForcedFailure "Plugin handler" handlerStarted ex
-                                return state
+                                return Result.Error ex
                         }
 
                     /// Run Update with a capturing context that records side effects, then store in cache if terminal.
@@ -1153,7 +1188,7 @@ let internal registerHandlerWithOwner
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
 
-                                let! nextState = safeUpdate capturingCtx state event
+                                let! attempted = safeUpdate capturingCtx state event
 
                                 // Only cache when the status reached a terminal state AND
                                 // the handler did not launch a new run in the same window
@@ -1176,80 +1211,105 @@ let internal registerHandlerWithOwner
                                     | Some(Failed(err, _, v)), None -> Some(TaskCache.CachedRunFailed(err, v))
                                     | (Some(Idle | Running _) | None), _ -> None
 
-                                match cachedStatus with
-                                | Some status when not launchedRunInWindow ->
-                                    let result: TaskCache.TaskCacheResult =
-                                        { CacheKey = cacheKey
-                                          Errors = capturedErrors |> Seq.toList
-                                          Status = status
-                                          EmittedEvents = capturedEvents |> Seq.toList }
+                                let cacheWrite =
+                                    match attempted, cachedStatus with
+                                    | Result.Ok _, Some status when not launchedRunInWindow ->
+                                        let result: TaskCache.TaskCacheResult =
+                                            { CacheKey = cacheKey
+                                              Errors = capturedErrors |> Seq.toList
+                                              Status = status
+                                              EmittedEvents = capturedEvents |> Seq.toList }
 
-                                    cache.Set compKey cacheKey result
-                                | _ -> ()
+                                        Some(fun () -> cache.Set compKey cacheKey result)
+                                    | _ -> None
 
-                                return nextState
-                            | _ -> return! safeUpdate ctx state event
+                                return attempted |> Result.map (fun candidate -> candidate, cacheWrite)
+                            | _ ->
+                                let! attempted = safeUpdate ctx state event
+                                return attempted |> Result.map (fun candidate -> candidate, None)
                         }
 
                     let rec loop state =
                         async {
                             let! (event, identity) = inbox.Receive()
-
-                            // Cache/replay faults retain the current domain state and
-                            // publish failure before the exact event obligation settles.
                             let dispatchStarted = DateTime.UtcNow
 
-                            let! nextState =
+                            let! attempted =
                                 async {
-                                    let! committed =
-                                        async {
-                                            try
-                                                // Computed ONCE per dispatched event — see `tryReplayCache`.
-                                                let cacheKeyOpt =
-                                                    match handler.CacheKey with
-                                                    | Some cacheKeyFn -> cacheKeyFn event
-                                                    | None -> None
+                                    try
+                                        let cacheKeyOpt = handler.CacheKey |> Option.bind (fun key -> key state event)
+                                        // Custom messages deliver actual work and cannot replay an older fold.
+                                        let replayKeyOpt =
+                                            match event with
+                                            | Custom _ -> None
+                                            | _ -> cacheKeyOpt
 
-                                                // A `Custom` message is a cache WRITER, never a cache READER.
-                                                //
-                                                // Every other event is an OBSERVATION whose payload is what the
-                                                // key is computed FROM, so same key ⇒ same input ⇒ the cached
-                                                // result IS the result. A `Custom` message is the plugin's own
-                                                // post — the delivery of work already done — and its payload is
-                                                // NOT in the key: TestPrune's `cacheKeyFor` reads the
-                                                // `TestRunCompleted` it carries only far enough to decide whether
-                                                // the result is CACHEABLE, never far enough to IDENTIFY it, so two
-                                                // different runs collide on one key. A hit here is a collision,
-                                                // and serving it skips the handler — the only thing that folds the
-                                                // finished run into the plugin's state.
-                                                //
-                                                // The WRITE below keeps the real key: a Custom window is how the
-                                                // entry the next `BuildCompleted` hits gets minted at all.
-                                                let replayKeyOpt =
-                                                    match event with
-                                                    | Custom _ -> None
-                                                    | _ -> cacheKeyOpt
+                                        if tryReplayCache event replayKeyOpt then
+                                            return Result.Ok(state, None, false)
+                                        else
+                                            let! result = runAndCache event state cacheKeyOpt
 
-                                                if tryReplayCache event replayKeyOpt then
-                                                    return state
-                                                else
-                                                    return! runAndCache event state cacheKeyOpt
-                                            with ex ->
-                                                // Not `safeUpdate`'s net: that one wraps
-                                                // `handler.Update` alone, while this catches the
-                                                // dispatch machinery AROUND it — the cache-key
-                                                // thunks and the replay lookup.
-                                                reportForcedFailure
-                                                    "Dispatch (cache key or cache replay)"
-                                                    dispatchStarted
-                                                    ex
-
-                                                return state
-                                        }
-
-                                    workOwner.CommitEvent(identity, committed)
-                                    return committed
+                                            return
+                                                result |> Result.map (fun (candidate, write) -> candidate, write, true)
+                                    with ex ->
+                                        return Result.Error ex
                                 }
+
+                            let! committed =
+                                async {
+                                    match attempted with
+                                    | Result.Error failure ->
+                                        return Result.Error(state, PluginWorkOwner.UpdateFailure failure)
+                                    | Result.Ok(candidate, cacheWrite, updated) ->
+                                        match handler.PrepareCommit with
+                                        | Some prepare when updated ->
+                                            try
+                                                // External preparation never runs inside the Store writer.
+                                                let! prepared = prepare state candidate
+                                                workOwner.PublishEventState(identity, candidate)
+
+                                                try
+                                                    do! prepared.Finalize
+                                                    cacheWrite |> Option.iter (fun write -> write ())
+                                                    workOwner.SettleEvent(identity, preparedCommit = true)
+                                                    return Result.Ok candidate
+                                                with ex ->
+                                                    return Result.Error(candidate, PluginWorkOwner.CommitFailure ex)
+                                            with ex ->
+                                                return Result.Error(state, PluginWorkOwner.CommitFailure ex)
+                                        | _ ->
+                                            try
+                                                workOwner.PublishEventState(identity, candidate)
+
+                                                try
+                                                    cacheWrite |> Option.iter (fun write -> write ())
+                                                    workOwner.SettleEvent(identity)
+                                                    return Result.Ok candidate
+                                                with ex ->
+                                                    return Result.Error(candidate, PluginWorkOwner.UpdateFailure ex)
+                                            with ex ->
+                                                return Result.Error(state, PluginWorkOwner.UpdateFailure ex)
+                                }
+
+                            // Settle failure once, outside the effect catches. Diagnostic failure
+                            // cannot retry retirement of an identity whose receipt already failed.
+                            let nextState =
+                                match committed with
+                                | Result.Ok candidate -> candidate
+                                | Result.Error(retained, failure) ->
+                                    try
+                                        try
+                                            reportForcedFailure "Plugin event" dispatchStarted failure.Exception
+                                        with reportingFailure ->
+                                            error
+                                                (PluginName.value handler.Name)
+                                                $"Failure reporting also failed: %s{reportingFailure.ToString()}"
+                                    finally
+                                        // Reporting is part of the original event. Publish
+                                        // its failure only after that attempt, exactly once.
+                                        workOwner.FailEvent(identity, failure)
+
+                                    retained
 
                             return! loop nextState
                         }

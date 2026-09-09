@@ -630,8 +630,11 @@ let ``format check clears errors when file becomes formatted`` () =
 // ---------------------------------------------------------------------------
 
 let private cacheKeyOf (dir: string) =
-    (createFormatCheck dir None).CacheKey
+    let handler = createFormatCheck dir None
+
+    handler.CacheKey
     |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+    |> fun key -> key handler.Init
 
 [<Fact(Timeout = 15000)>]
 let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =

@@ -308,7 +308,8 @@ let internal createFormatCheckWith
                 | _ -> None
             | _ -> None
 
-        Some(cacheKey repoRoot)
+        Some(fun _state -> cacheKey repoRoot)
+      PrepareCommit = None
       Teardown = None }
 
 /// Read-only format check plugin (reports unformatted files without modifying them).

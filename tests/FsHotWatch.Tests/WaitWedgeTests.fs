@@ -37,6 +37,7 @@ let private stuckHandler (name: string) (release: ManualResetEventSlim) =
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 [<Fact(Timeout = 60_000)>]
@@ -97,7 +98,8 @@ let private throwingCacheKeyHandler (name: string) =
       Update = fun _ctx state _event -> async { return state }
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-      CacheKey = Some(fun _event -> failwith "cache-key computation failed")
+      CacheKey = Some(fun _state _event -> failwith "cache-key computation failed")
+      PrepareCommit = None
       Teardown = None }
 
 [<Fact(Timeout = 60_000)>]
@@ -181,10 +183,11 @@ let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
           Subscriptions = Set.ofList [ SubscribeBuildCompleted; SubscribeFileChanged ]
           // Throws for FileChanged only, so the run can be established first.
           CacheKey =
-            Some(fun event ->
+            Some(fun _state event ->
                 match event with
                 | FileChanged _ -> failwith "cache-key computation failed"
                 | _ -> None)
+          PrepareCommit = None
           Teardown = None }
 
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
@@ -254,6 +257,7 @@ let private slowDrainingHandler (name: string) =
       Commands = []
       Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 [<Fact(Timeout = 60_000)>]
@@ -302,9 +306,11 @@ let ``a plugin whose loop died fails the wait immediately, naming it`` () =
     host.EmitBuildCompleted(BuildSucceeded)
     test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
 
-    // The dispatch fault is handled and the loop survives, so nothing is
-    // faulted and the wait must still be able to resolve normally.
+    // The failed event remains evidence, while its executor is still alive.
     test <@ host.FaultedPlugins() |> List.isEmpty @>
+    let name, failure = host.FailedWork() |> List.exactlyOne
+    test <@ name = "faulting-plugin" @>
+    test <@ failure.Message = "cache-key computation failed" @>
 
 [<Fact(Timeout = 60_000)>]
 let ``CompletedDispatches counts events finished, not events posted`` () =

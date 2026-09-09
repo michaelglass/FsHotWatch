@@ -1,0 +1,219 @@
+{
+  "scope": "A104/A106 exact event commit lifecycle",
+  "actualRedRun": "912b419ef99746d68c4ddd31bf66d062",
+  "firstCorrectedRun": {
+    "runId": "8c59f70ea17845ca933fa8dd593d5d9a",
+    "sha256": "bcfc5488f5a2b7897155407cdabb77c7420c9793dbbbba367a98841bcbb7bdfa",
+    "summary": {
+      "tests": 3181,
+      "passed": 3170,
+      "failed": 11,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788919648978,
+      "stop": 1788919742742
+    },
+    "controls": [
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: False)",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: True)",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.prepared publication retains its event until exact finalization",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.terminal reported by an update that later fails cannot prepare or populate cache",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.event receipt and cache wait for durable finalization after candidate publication",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary cache write sees published candidate while its event is still owned",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.a failed update cannot acknowledge its event as committed",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.commit failure survives ordinary success without stranding a live worker",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.PluginFrameworkTests.failed diagnostic reporting cannot retire an event twice or kill its executor",
+        "status": "passed"
+      }
+    ],
+    "failures": [
+      "FsHotWatch.Tests.FileCommandPluginTests.command captures stdout output",
+      "FsHotWatch.Tests.RunOnceOutputTests.the verdict file can NEVER say green while a plugin says fail",
+      "FsHotWatch.Tests.RunOnceOutputTests.check --run-once goes RED on a plugin that FAILED without writing a diagnostic",
+      "FsHotWatch.Tests.WaitWedgeTests.a plugin whose loop died fails the wait immediately, naming it",
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+      "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"disk\\\")",
+      "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"cache\\\")",
+      "FsHotWatch.Tests.TestPruneRunScopeTests.a retained owner cannot learn a full suite baseline earned by a later completion",
+      "FsHotWatch.Tests.TestPruneRunScopeTests.a successful completion discharges only its returned pending debt snapshot",
+      "FsHotWatch.Tests.PluginFrameworkTests.handler that throws records ex.ToString() (full type+stack) in Failed status, not just ex.Message",
+      "FsHotWatch.Tests.PluginFrameworkTests.handler that throws after ReportStatus(Running) still transitions status to Failed"
+    ]
+  },
+  "followup": "Both followup full unit reports verify all nine commit lifecycle controls and the host failure projections. Failure reporting retains event ownership until diagnostics finish; receipt retirement runs exactly once in finally. Build/stdout fixture observations now wait for owner retirement. Five unresolved failures remain: four debt controls and private earned verdict.",
+  "limits": "PrepareCommit remains None for TestPrune; production debt migration is unapplied pending explicit approval following automatic review rejection. Common supervision/deadline qualification for commit hooks, full CI, consumer qualification and private earned verdict remain unfinished. Unit/integration reports do not establish an exact-tree full gate or deployed runtime claim.",
+  "verifiedFollowupRuns": [
+    {
+      "runId": "6ccf2e62fccd460292510bea3460db3b",
+      "sha256": "a74d7a9adc60007003237fc02b6122b602605c2ef0566af34119b3866d2dff97",
+      "summary": {
+        "tests": 3181,
+        "passed": 3176,
+        "failed": 5,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788920277890,
+        "stop": 1788920372041
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: True)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.prepared publication retains its event until exact finalization",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.terminal reported by an update that later fails cannot prepare or populate cache",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.event receipt and cache wait for durable finalization after candidate publication",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary cache write sees published candidate while its event is still owned",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.a failed update cannot acknowledge its event as committed",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.commit failure survives ordinary success without stranding a live worker",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.failed diagnostic reporting cannot retire an event twice or kill its executor",
+          "status": "passed"
+        }
+      ],
+      "failures": [
+        "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"disk\\\")",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"cache\\\")",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a retained owner cannot learn a full suite baseline earned by a later completion",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a successful completion discharges only its returned pending debt snapshot"
+      ]
+    },
+    {
+      "runId": "f8a74509c3114b0c82a05b33a1a0e456",
+      "sha256": "b03bf7fc00b098817ab5370abdb4887eac0f4f5a2774e53e477ca7c71b127bdf",
+      "summary": {
+        "tests": 3181,
+        "passed": 3176,
+        "failed": 5,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788920392426,
+        "stop": 1788920480441
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: False)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.durable commit failures fault the actual receipt and retain the appropriate publication(failFinalize: True)",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.prepared publication retains its event until exact finalization",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.terminal reported by an update that later fails cannot prepare or populate cache",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.event receipt and cache wait for durable finalization after candidate publication",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.ordinary cache write sees published candidate while its event is still owned",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.a failed update cannot acknowledge its event as committed",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.commit failure survives ordinary success without stranding a live worker",
+          "status": "passed"
+        },
+        {
+          "name": "FsHotWatch.Tests.PluginFrameworkTests.failed diagnostic reporting cannot retire an event twice or kill its executor",
+          "status": "passed"
+        }
+      ],
+      "failures": [
+        "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"disk\\\")",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a failed completion fold cannot discharge committed pending debt(observer: \\\"cache\\\")",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a retained owner cannot learn a full suite baseline earned by a later completion",
+        "FsHotWatch.Tests.TestPruneRunScopeTests.a successful completion discharges only its returned pending debt snapshot"
+      ]
+    }
+  ],
+  "sourceHashesAtEvidenceCapture": {
+    "src/FsHotWatch/PluginFramework.fs": "edd055e987271f9ca18b28eaeb7064c28b79c7ebf685cf8ae888411d6db766d9",
+    "src/FsHotWatch/PluginWorkOwner.fs": "ee59609504aa101adf5a4ada12abd91461cedac9272f7c3840bc3291c6e11976",
+    "src/FsHotWatch/PluginHost.fs": "79c7c5be87607b6fd8ac656f299a976255529d69da6721933e976bb53db49cb6",
+    "src/FsHotWatch/Daemon.fs": "d832e3545ad0365535a8872be1dddb4e39594a7ee2591c49baca5b769527c091",
+    "src/FsHotWatch/SupervisedWork.fs": "d35312e4b38bbaba484a09d367fb4cac32ce03f8e5a00771a87b75b58efdb879",
+    "src/FsHotWatch/DebouncedWork.fs": "a2abcfcdc4a020f1c6eacb2ff61c79745b887db3878377893438f9807e1630ba"
+  },
+  "integrationFollowup": {
+    "command": "mise run test-integration",
+    "session": 86524,
+    "exitCode": 0,
+    "total": 70,
+    "passed": 70,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 53.51,
+    "log": "/private/tmp/a104-framework-integration.log",
+    "logSha256": "b98bf8d992098a71f18df62ed3182481af074d04ff49f54312ab7fa7ba3329ef"
+  },
+  "documentationFollowup": {
+    "command": "mise run sync-docs-check",
+    "exitCode": 0,
+    "changes": "Synchronized both compiled examples, corrected CacheKey committed-state signature, documented PrepareCommit publication/failure semantics and incomplete deadline qualification."
+  }
+}
