@@ -699,6 +699,30 @@ let ``an unearned full-suite verdict reports missing evidence without prescribin
     | other -> failwith $"an unearned full-suite verdict must remain incomplete, got %A{other}"
 
 [<Fact>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``console scope refusal describes evidence without prescribing merge policy`` () =
+    let text =
+        Verdict.CheckProse.explainOutcome None (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        |> Option.get
+
+    test <@ text.Contains "NO VERDICT" @>
+    test <@ text.Contains "not the full suite" @>
+    test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``console zero-test refusal does not misidentify check as confirm`` () =
+    let text =
+        Verdict.CheckProse.explainOutcome
+            None
+            (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
+        |> Option.get
+
+    test <@ text.Contains "NO VERDICT" @>
+    test <@ not (text.Contains("Confirm:", StringComparison.OrdinalIgnoreCase)) @>
+    test <@ not (text.Contains("merge", StringComparison.OrdinalIgnoreCase)) @>
+
+[<Fact>]
 let ``every check outcome maps to a file outcome — and only Clean is green`` () =
     test
         <@ BaselineFixtures.isGreen (Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)) @>
