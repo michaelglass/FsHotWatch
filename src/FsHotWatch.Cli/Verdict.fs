@@ -899,7 +899,7 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
                an absence of evidence."
     | CheckVerdict.CheckOutcome.UnearnedScope scope ->
         Incomplete
-            $"the tests that ran were %s{TestScope.describe scope}, not the full suite — a merge verdict needs the whole suite"
+            $"the tests that ran were %s{TestScope.describe scope}, not the full suite — the requested full-suite evidence was not earned"
     // AUTOMATION-303. `incomplete`, never `red`: the structured outcome is what a deploy
     // preflight reads, and "the daemon is stale" must route to retry-after-stop, not to
     // "tests failed". The prose is `CheckProse`'s single copy — the same words the two
