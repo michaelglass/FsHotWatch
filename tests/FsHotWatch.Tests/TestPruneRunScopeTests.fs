@@ -2085,7 +2085,7 @@ let ``adding a compile item moves the BuildCompleted cache key`` () =
             create (Path.Combine(tmpDir, "tp.db")) tmpDir None None None None None []
 
         let keyOf () =
-            handler.CacheKey.Value(BuildCompleted BuildSucceeded)
+            handler.CacheKey.Value handler.Init (BuildCompleted BuildSucceeded)
 
         let before = keyOf ()
         test <@ before.IsSome @>
@@ -2859,3 +2859,223 @@ let ``failuresOf still carries the whole output when NO test could be named`` ()
 
     let entry = (failuresOf Map.empty results |> List.exactlyOne).Entry
     test <@ entry.Detail = Some output @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("test-scope")>]
+[<InlineData("check-reach")>]
+[<Trait("SnapshotEvidence", "CompletionSnapshot")>]
+let ``completion observations remain bound to their supplied owner snapshot`` (commandName: string) =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let command = handler.Commands |> List.find (fst >> (=) commandName) |> snd
+
+    let commandCtx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = root
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = ctx.ProjectGraph }
+
+    let read state =
+        let json =
+            PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
+
+        use document = JsonDocument.Parse(json)
+        let field = if commandName = "test-scope" then "runIds" else "runId"
+        document.RootElement.GetProperty(field).GetRawText()
+
+    let complete state =
+        handler.Update ctx state (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    let first = complete handler.Init
+    let firstReading = read first
+    let second = complete first
+    let secondReading = read second
+    Assert.NotEqual<string>(firstReading, secondReading)
+    Assert.Equal(firstReading, read first)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "UncommittedCacheEvidence")>]
+let ``a failed completion fold cannot clear the committed cache refusal`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+    let red =
+        handler.Update
+            ctx
+            handler.Init
+            (testsFinishedEvent
+                [ "ProjA", TestsFailed("failed ProjA.Tests.case (1ms)", false, TimeSpan.Zero) ]
+                (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    Assert.NotEmpty(red.OutstandingFailures)
+    Assert.True((handler.CacheKey.Value red (BuildCompleted BuildSucceeded)).IsNone)
+    let refusal = InvalidOperationException("fixture refuses completion publication")
+
+    let refusingCtx =
+        { ctx with
+            ReportStatus = fun _ -> raise refusal }
+
+    let observed =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            handler.Update refusingCtx red (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+            |> Async.RunSynchronously
+            |> ignore)
+
+    Assert.Same(refusal, observed)
+    Assert.NotEmpty(red.OutstandingFailures)
+
+    Assert.True(
+        (handler.CacheKey.Value red (BuildCompleted BuildSucceeded)).IsNone,
+        "an uncommitted passing fold must not make the still-red owner cacheable"
+    )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "ChangedSymbolsCacheSnapshot")>]
+let ``test cache hashes the changed symbols of its supplied owner snapshot`` () =
+    let handler = create ":memory:" (isolatedRoot ()) None None None None None []
+    let key = handler.CacheKey.Value
+    let event = BuildCompleted BuildSucceeded
+    let initial = key handler.Init event
+    Assert.True(initial.IsSome, "positive control: analysis-only cache key exists")
+
+    let changed =
+        { handler.Init with
+            ChangedSymbols = [ "Library.changed" ] }
+
+    let changedKey = key changed event
+    Assert.True(changedKey.IsSome)
+    Assert.NotEqual<ContentHash option>(initial, changedKey)
+    Assert.Equal<ContentHash option>(initial, key handler.Init event)
+
+let private pendingDebtOwnerFixture () =
+    let root = isolatedRoot ()
+    let symbol = "Library.changed"
+    PendingVerification.save root (Set.singleton symbol)
+
+    let handler =
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    // Earn actual session coverage without claiming this symbol was launched.
+    let prior =
+        handler.Update ctx handler.Init (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    Assert.NotEmpty(RunCoverage.coveredProjects prior.LastCoverage)
+    Assert.True((handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone)
+
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Contains(symbol, queue)
+    | other -> Assert.Fail($"positive control: readable symbol debt, got {other}")
+
+    let launch =
+        { fullSuiteLaunch [ "ProjA" ] with
+            Symbols = Set.singleton symbol
+            CoveringProjectsBySymbol = Map.ofList [ symbol, Set.singleton "ProjA" ] }
+
+    root, symbol, handler, ctx, prior, launch
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("cache")>]
+[<InlineData("disk")>]
+[<Trait("SnapshotEvidence", "UncommittedPendingDebt")>]
+let ``a failed completion fold cannot discharge committed pending debt`` (observer: string) =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let refusal = InvalidOperationException("fixture refuses pending debt publication")
+
+    let refusingCtx =
+        { ctx with
+            ReportStatus = fun _ -> raise refusal }
+
+    let observed =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            handler.Update refusingCtx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+            |> Async.RunSynchronously
+            |> ignore)
+
+    Assert.Same(refusal, observed)
+
+    if observer = "cache" then
+        Assert.True(
+            (handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone,
+            "the retained owner still owes the symbol after a failed completion fold"
+        )
+    else
+        let restartStillOwes =
+            match PendingVerification.load root with
+            | PendingVerification.LoadedQueue.Unreadable _ -> true
+            | PendingVerification.LoadedQueue.Loaded queue ->
+                Set.contains symbol queue || File.Exists(runtimeCoverageRecoveryPath root)
+
+        Assert.True(
+            restartStillOwes,
+            "restart must retain symbol debt or durable unknown debt after failed publication"
+        )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "PendingDebtSnapshot")>]
+let ``a successful completion discharges only its returned pending debt snapshot`` () =
+    let _, _, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+
+    let completed =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    Assert.True(
+        (handler.CacheKey.Value completed (BuildCompleted BuildSucceeded)).IsSome,
+        "positive control: the completed owner has paid the launched debt"
+    )
+
+    Assert.True(
+        (handler.CacheKey.Value prior (BuildCompleted BuildSucceeded)).IsNone,
+        "retained snapshots must not learn a later queue discharge"
+    )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "BaselineSnapshot")>]
+let ``a retained owner cannot learn a full suite baseline earned by a later completion`` () =
+    let root = isolatedRoot ()
+
+    let handler =
+        create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
+
+    let ctx, _, _ = makeTestPruneRecordingCtx ()
+    let command = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let commandCtx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = root
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = ctx.ProjectGraph }
+
+    let read state =
+        use document =
+            JsonDocument.Parse(PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
+
+        document.RootElement.GetProperty("baseline").GetRawText(),
+        document.RootElement.GetProperty("baselineAbsent").GetRawText()
+
+    let initial = read handler.Init
+    Assert.Equal("null", fst initial)
+    Assert.NotEqual<string>("null", snd initial)
+
+    let completed =
+        handler.Update ctx handler.Init (testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ]))
+        |> Async.RunSynchronously
+
+    let current = read completed
+    Assert.NotEqual<string>("null", fst current)
+    Assert.Equal("null", snd current)
+    Assert.Equal(initial, read handler.Init)

@@ -359,6 +359,7 @@ let private sharedWakeHandlerWithClassifier
       Commands = []
       Subscriptions = Set.singleton SubscribeFileChanged
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 let private sharedWakeHandler name workFor =
@@ -457,11 +458,78 @@ let ``executor fault fails accepted event receipts instead of abandoning their w
 // Failure acknowledgement does not assert that unrelated background work
 // stopped; it only resolves this accepted event's exact waiter.
 
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("ProcessSupervision", "PluginOwnerContext")>]
+let ``exclusive workers retain their registered owner context instead of a triggering scope`` shared =
+    let ambient = System.Threading.AsyncLocal<string>()
+    ambient.Value <- "registered owner"
+    let mutable captured: PluginCtx<SharedWakeMsg> option = None
+
+    let observed =
+        System.Threading.Tasks.TaskCompletionSource<string>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let original =
+        sharedWakeHandler "owner-context" (fun _ -> async { return SharedFinished })
+
+    let handler =
+        { original with
+            Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ -> captured <- Some ctx
+                        | _ -> ()
+
+                        return state
+                    } }
+
+    let registration = registerDefault handler
+
+    try
+        dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+        let ctx = captured.Value
+        ambient.Value <- "short-lived triggering scope"
+
+        let work =
+            async {
+                observed.TrySetResult(ambient.Value) |> ignore
+                return SharedFinished
+            }
+
+        if shared then
+            Assert.Equal(
+                SharedClaimed,
+                ctx.RunExclusiveShared "work" "resource" (fun _ -> work) (fun _ -> Ready) (fun ex ->
+                    SharedFailed ex.Message)
+            )
+        else
+            Assert.Equal(Claimed, ctx.RunExclusive "work" work)
+
+        let actual =
+            observed.Task.WaitAsync(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+        Assert.True(
+            System.Threading.SpinWait.SpinUntil(
+                (fun () -> not (registration.IsBusy())),
+                System.TimeSpan.FromSeconds 5.0
+            ),
+            "the worker and result fold must actually drain"
+        )
+
+        Assert.Equal("registered owner", actual)
+    finally
+        ambient.Value <- null
+
 [<Fact(Timeout = 15000)>]
 [<Trait("WorkOwner", "Supervision")>]
 let ``ordinary exclusive launch failure uses the host launcher and retires ownership`` () =
     let mutable capturedCtx: PluginCtx<SharedWakeMsg> option = None
     let mutable launchCount = 0
+    let failure = System.InvalidOperationException("ordinary launch fault")
     let statuses = System.Collections.Concurrent.ConcurrentBag<PluginStatus>()
 
     let services =
@@ -469,7 +537,7 @@ let ``ordinary exclusive launch failure uses the host launcher and retires owner
             StartAsync =
                 fun _ ->
                     launchCount <- launchCount + 1
-                    raise (System.InvalidOperationException("ordinary launch fault"))
+                    raise failure
             ReportStatus = fun _ status -> statuses.Add(status) }
 
     let original =
@@ -488,6 +556,10 @@ let ``ordinary exclusive launch failure uses the host launcher and retires owner
     test <@ claim = Claimed @>
     Assert.Equal(1, launchCount)
     Assert.False(registration.IsBusy(), "failed startup must resolve its admitted obligation")
+    Assert.True(registration.Fault().IsSome, "failed launch must retain failure in the owner snapshot")
+    Assert.Same(failure, registration.Fault().Value)
+    dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+    Assert.Same(failure, registration.Fault().Value)
 
     Assert.Contains(
         statuses,
@@ -503,13 +575,14 @@ let ``throwing shared cleanup terminalizes the run without publishing success`` 
     let launched =
         System.Threading.Tasks.TaskCompletionSource<System.Threading.Tasks.Task<unit>>()
 
+    let failure = System.InvalidOperationException("shared cleanup fault")
     let statuses = System.Collections.Concurrent.ConcurrentBag<PluginStatus>()
 
     let services =
         { defaultServices with
             StartAsync = fun work -> launched.SetResult(Async.StartAsTask(work))
             ReportStatus = fun _ status -> statuses.Add(status)
-            ReleaseSharedRun = fun _ _ -> raise (System.InvalidOperationException("shared cleanup fault")) }
+            ReleaseSharedRun = fun _ _ -> raise failure }
 
     let registration =
         registerHandler services (sharedWakeHandler "cleanup-failure" (fun _ -> async { return SharedFinished }))
@@ -527,6 +600,8 @@ let ``throwing shared cleanup terminalizes the run without publishing success`` 
         ()
 
     Assert.False(registration.IsBusy(), "cleanup failure must resolve local ownership")
+    Assert.True(registration.Fault().IsSome, "failed cleanup must retain failure in the owner snapshot")
+    Assert.Same(failure, registration.Fault().Value)
 
     Assert.Contains(
         statuses,
@@ -672,7 +747,8 @@ let ``shared start failure posts the typed failure and releases its accounting``
                 | _ -> false))
         5000
 
-    test <@ not (registration.IsBusy()) @>
+    // Reported failure precedes retirement of its typed completion event.
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
 
     test
         <@
@@ -840,6 +916,7 @@ let ``registered plugin dispatches FileChanged`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -868,6 +945,7 @@ let ``registered plugin skips unsubscribed events`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -920,6 +998,7 @@ let ``commands query agent state`` () =
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let _reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -967,6 +1046,7 @@ let ``read command returns committed snapshot while an update is blocked`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let registration =
@@ -1019,6 +1099,7 @@ let ``a completed event receipt cannot acknowledge a different blocked event`` (
           Commands = [ "count", PluginCommand.Observe(fun _ state _ -> async { return string state }) ]
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let registration =
@@ -1080,6 +1161,7 @@ let ``request posts intent without waiting for a state snapshot`` () =
                   }) ]
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let registration =
@@ -1132,6 +1214,7 @@ let ``Custom messages work for self-posting`` () =
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -1174,6 +1257,7 @@ let ``handler errors are recovered`` () =
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -1212,6 +1296,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -1234,7 +1319,8 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
     // schema-drifted DB) used to leave the plugin displaying Running forever with no work
     // dispatched. The framework catches the throw and forces Failed.
     let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
-    let mutable registeredCmd: CommandHandler option = None
+    let failure = System.InvalidOperationException("simulated DB schema drift")
+    let failedStatus = System.Threading.Tasks.TaskCompletionSource<unit>()
 
     let handler: PluginHandler<unit, unit> =
         { Name = PluginName.create "throwing-handler"
@@ -1245,7 +1331,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                     match event with
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(System.DateTime.UtcNow))
-                        failwith "simulated DB schema drift"
+                        raise failure
                         return state
                     | _ -> return state
                 }
@@ -1254,20 +1340,32 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
         registerHandler
             { defaultServices with
-                ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
+                ReportStatus =
+                    fun _ status ->
+                        reportedStatuses.Enqueue(status)
+
+                        match status with
+                        | Failed _ -> failedStatus.TrySetResult(()) |> ignore
+                        | _ -> () }
             handler
 
-    dispatchAndAwait reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+    let receipt =
+        reg
+            .DispatchTracked(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+            .Value.Wait(System.TimeSpan.FromSeconds 5.0)
 
-    // Drains the agent: the command queues behind the failing FileChanged, so awaiting it
-    // guarantees both statuses have been recorded by the time we read.
-    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
+    let observed =
+        Assert.Throws<System.InvalidOperationException>(fun () -> receipt.GetAwaiter().GetResult())
+
+    Assert.Same(failure, observed)
+    Assert.True(failedStatus.Task.Wait(5000), "the actual failure must reach the status sink")
+
 
     let statuses = reportedStatuses.ToArray() |> List.ofArray
 
@@ -1304,7 +1402,8 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
     // The user-visible Failed status must carry the full exception, or the user has to grep
     // daemon.log to work out which throw site fired.
     let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
-    let mutable registeredCmd: CommandHandler option = None
+    let failure = System.InvalidOperationException("kaboom-distinctive-msg")
+    let failedStatus = System.Threading.Tasks.TaskCompletionSource<unit>()
 
     let handler: PluginHandler<unit, unit> =
         { Name = PluginName.create "throwing-detail-handler"
@@ -1313,7 +1412,7 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
             fun _ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> raise (System.InvalidOperationException("kaboom-distinctive-msg"))
+                    | FileChanged _ -> raise failure
                     | _ -> return state
                 }
           Commands =
@@ -1321,17 +1420,31 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
         registerHandler
             { defaultServices with
-                ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
+                ReportStatus =
+                    fun _ status ->
+                        reportedStatuses.Enqueue(status)
+
+                        match status with
+                        | Failed _ -> failedStatus.TrySetResult(()) |> ignore
+                        | _ -> () }
             handler
 
-    dispatchAndAwait reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
-    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
+    let receipt =
+        reg
+            .DispatchTracked(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+            .Value.Wait(System.TimeSpan.FromSeconds 5.0)
+
+    let observed =
+        Assert.Throws<System.InvalidOperationException>(fun () -> receipt.GetAwaiter().GetResult())
+
+    Assert.Same(failure, observed)
+    Assert.True(failedStatus.Task.Wait(5000), "the actual failure must reach the status sink")
 
     let statuses = reportedStatuses.ToArray() |> List.ofArray
 
@@ -1396,7 +1509,8 @@ let ``pre-populated cache replays on the very first dispatch`` () =
                 [ "drain", fun _ctx _state _args -> async { return "ok" } ]
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              CacheKey = Some(fun _state _ -> Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg =
@@ -1440,9 +1554,10 @@ let ``cache key is computed exactly once per dispatched event on a cache miss`` 
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey =
-                Some(fun _ ->
+                Some(fun _state _ ->
                     System.Threading.Interlocked.Increment(keyCalls) |> ignore
                     Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg =
@@ -1484,9 +1599,10 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey =
-                Some(fun _ ->
+                Some(fun _state _ ->
                     System.Threading.Interlocked.Increment(keyCalls) |> ignore
                     Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg =
@@ -1547,6 +1663,7 @@ let ``RunExclusive does not start a second run while the first holds the slot`` 
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -1661,7 +1778,8 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                 [ "drain", fun _ _ _ -> async { return "ok" } ]
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              CacheKey = Some(fun _state _ -> Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -1726,7 +1844,8 @@ let ``cache replay synthesizes a matching start for a completion captured after 
                 [ "drain", fun _ _ _ -> async { return "ok" } ]
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              CacheKey = Some(fun _state _ -> Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -1792,6 +1911,7 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -1863,6 +1983,7 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -1913,6 +2034,7 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -1955,6 +2077,7 @@ let ``plugin subscribing to BatchChecked receives event`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeBatchChecked ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -2005,6 +2128,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -2073,6 +2197,7 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2187,6 +2312,7 @@ let ``RunExclusive reports Running at the claim — the framework owns the start
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2249,6 +2375,7 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerDefault handler
@@ -2309,6 +2436,7 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2407,7 +2535,8 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          CacheKey = Some(fun _state _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2488,7 +2617,8 @@ let ``cache path: a handler that LAUNCHES a run does not cache the terminal it r
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          CacheKey = Some(fun _state _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2537,7 +2667,8 @@ let ``cache path: RunExclusive still refuses a second claim and says so`` () =
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          CacheKey = Some(fun _state _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2582,7 +2713,8 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          CacheKey = Some(fun _state _ -> Some(ContentHash.create "k"))
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2655,7 +2787,8 @@ let ``cache path: only an EARNED terminal is written — every other shape is sk
                 }
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
-          CacheKey = Some keyFor
+          CacheKey = Some(fun _state -> keyFor)
+          PrepareCommit = None
           Teardown = None }
 
     let reg =
@@ -2788,6 +2921,7 @@ let private runRig (raceTheClaim: PluginCtx<RigMsg> -> RegisteredPlugin -> Async
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let reg = registerHandler services handler
@@ -2931,7 +3065,8 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
                       }) ]
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Request callback)
               Subscriptions = Set.empty
-              CacheKey = Some(fun _ -> Some cacheKey)
+              CacheKey = Some(fun _state _ -> Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let reg =
@@ -3055,7 +3190,8 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
                     }
               Commands = []
               Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
+              CacheKey = Some(fun _state _ -> Some cacheKey)
+              PrepareCommit = None
               Teardown = None }
 
         let run (useCache: TaskCache.ITaskCache) =
@@ -3106,3 +3242,375 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
         test <@ cached = cold @>
     }
     |> Async.RunSynchronously
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "FailedUpdateReceipt")>]
+let ``a failed update cannot acknowledge its event as committed`` () =
+    let failure = System.InvalidOperationException("fixture update refused publication")
+    let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "failed-commit-receipt"
+          Init = 17
+          Update =
+            fun _ _ _ ->
+                async {
+                    entered.TrySetResult(()) |> ignore
+                    return raise failure
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+
+    let registration = registerDefault handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchFileChanged(SourceChanged [ "/tmp/repo/Commit.fs" ]))
+        |> Option.defaultWith (fun () -> failwith "subscribed event must be admitted")
+
+    let settled = receipt.Wait(System.TimeSpan.FromSeconds 5.0)
+    Assert.True(entered.Task.Wait(5000), "actual update must enter before observing its receipt")
+
+    let winner =
+        System.Threading.Tasks.Task.WhenAny(settled, System.Threading.Tasks.Task.Delay(5000)).GetAwaiter().GetResult()
+
+    Assert.Same(settled, winner)
+
+    let observed =
+        Assert.Throws<System.InvalidOperationException>(fun () -> settled.GetAwaiter().GetResult())
+
+    Assert.Same(failure, observed)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "PreparedCommitIdentity")>]
+let ``prepared publication retains its event until exact finalization`` () =
+    let owner = PluginWorkOwner.Owner(4)
+    let identity, receipt = owner.AdmitTrackedEvent()
+    let other = owner.AdmitEvent()
+    let prior = owner.Snapshot
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> owner.SettleEvent(identity))
+    |> ignore
+
+    owner.PublishEventState(identity, 9)
+    Assert.Equal(9, owner.Snapshot.State)
+    Assert.Equal(4, prior.State)
+    Assert.True(owner.Snapshot.IsBusy)
+    Assert.False(receipt.IsCompleted)
+    Assert.Equal(0L, owner.Snapshot.CompletedEvents)
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> owner.PublishEventState(identity, 99))
+    |> ignore
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> owner.SettleEvent(other))
+    |> ignore
+
+    owner.SettleEvent(identity)
+    receipt.GetAwaiter().GetResult()
+    Assert.True(owner.Snapshot.IsBusy, "the unrelated event remains owned")
+    owner.CommitEvent(other, 10)
+    Assert.False(owner.Snapshot.IsBusy)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "CommitFailureOwnership")>]
+let ``commit failure survives ordinary success without stranding a live worker`` () =
+    let owner = PluginWorkOwner.Owner(1)
+    let identity, receipt = owner.AdmitTrackedEvent()
+    let worker, _ = owner.TryClaim("worker").Value
+    let failure = System.IO.IOException("durable finalization failed")
+    owner.PublishEventState(identity, 2)
+    owner.FailEvent(identity, PluginWorkOwner.CommitFailure failure)
+    Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
+    Assert.Same(failure, owner.Snapshot.Fault.Value)
+    Assert.True(owner.Snapshot.IsRunning "worker")
+    let completion = owner.TransferToCompletion(worker)
+    owner.CommitEvent(completion, 3)
+    Assert.Same(failure, owner.Snapshot.Fault.Value)
+    Assert.Equal(3, owner.Snapshot.State)
+    let recovery = owner.AdmitEvent()
+    owner.PublishEventState(recovery, 4)
+    owner.SettleEvent(recovery, preparedCommit = true)
+    Assert.True(owner.Snapshot.Fault.IsNone)
+    Assert.Equal(4, owner.Snapshot.State)
+
+[<Fact(Timeout = 20000)>]
+[<Trait("WorkOwner", "PreparedCommitLifecycle")>]
+let ``event receipt and cache wait for durable finalization after candidate publication`` () =
+    let signal () =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let preparing, prepared, finalizing, finalized =
+        signal (), signal (), signal (), signal ()
+
+    let mutable readCommand: CommandHandler option = None
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let name = PluginName.create "durable-commit"
+    let key = ContentHash.create "durable-commit-key"
+
+    let handler: PluginHandler<int, unit> =
+        { Name = name
+          Init = 4
+          Update =
+            fun ctx state _ ->
+                async {
+                    ctx.ReportStatus(PluginStatus.completedNow "candidate" System.TimeSpan.Zero)
+                    return state + 1
+                }
+          PrepareCommit =
+            Some(fun prior candidate ->
+                async {
+                    Assert.Equal(4, prior)
+                    Assert.Equal(5, candidate)
+                    preparing.TrySetResult(()) |> ignore
+                    do! prepared.Task |> Async.AwaitTask
+
+                    return
+                        { Finalize =
+                            async {
+                                finalizing.TrySetResult(()) |> ignore
+                                do! finalized.Task |> Async.AwaitTask
+                            } }
+                })
+          Commands = [ "read", PluginCommand.Observe(fun _ state _ -> async { return string state }) ]
+          Subscriptions = Set.singleton SubscribeBuildCompleted
+          CacheKey = Some(fun _ _ -> Some key)
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache
+                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+            handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 15.0)
+
+    let read () =
+        readCommand.Value [||] |> Async.RunSynchronously
+
+    let composite: TaskCache.CompositeKey =
+        { Plugin = PluginName.value name
+          File = None }
+
+    try
+        Assert.True(preparing.Task.Wait(5000), "actual prepare must enter")
+        Assert.Equal("4", read ())
+        Assert.True(registration.IsBusy())
+        Assert.False(receipt.IsCompleted)
+        Assert.True((cache.TryGet composite key).IsNone)
+        prepared.TrySetResult(()) |> ignore
+        Assert.True(finalizing.Task.Wait(5000), "actual finalizer must enter")
+        Assert.Equal("5", read ())
+        Assert.True(registration.IsBusy())
+        Assert.False(receipt.IsCompleted)
+        Assert.True((cache.TryGet composite key).IsNone)
+    finally
+        prepared.TrySetResult(()) |> ignore
+        finalized.TrySetResult(()) |> ignore
+        receipt.GetAwaiter().GetResult()
+
+    Assert.False(registration.IsBusy())
+    Assert.Equal(1L, registration.CompletedDispatches())
+    Assert.True((cache.TryGet composite key).IsSome, "successful hosted commit must persist its cache candidate")
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("WorkOwner", "PreparedCommitFailure")>]
+let ``durable commit failures fault the actual receipt and retain the appropriate publication`` (failFinalize: bool) =
+    let failure = System.IO.IOException("fixture durable write refused")
+    let mutable readCommand: CommandHandler option = None
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "durable-failure"
+          Init = 4
+          Update = fun _ state _ -> async { return state + 1 }
+          PrepareCommit =
+            Some(fun _ _ ->
+                async {
+                    if not failFinalize then
+                        return raise failure
+                    else
+                        return { Finalize = async { return raise failure } }
+                })
+          Commands = [ "read", PluginCommand.Observe(fun _ state _ -> async { return string state }) ]
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let registration =
+        registerWith handler (Some(fun (_, command) -> readCommand <- Some command))
+
+    let receipt =
+        registration
+            .DispatchTracked(DispatchFileChanged(SourceChanged [ "/tmp/repo/Commit.fs" ]))
+            .Value.Wait(System.TimeSpan.FromSeconds 5.0)
+
+    let winner =
+        System.Threading.Tasks.Task.WhenAny(receipt, System.Threading.Tasks.Task.Delay(5000)).GetAwaiter().GetResult()
+
+    Assert.Same(receipt, winner)
+    Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.Equal((if failFinalize then "5" else "4"), readCommand.Value [||] |> Async.RunSynchronously)
+    Assert.Equal(0L, registration.CompletedDispatches())
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "CacheCommitOwnership")>]
+let ``ordinary cache write sees published candidate while its event is still owned`` () =
+    let inner = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let writing = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let release = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let cache =
+        { new TaskCache.ITaskCache with
+            member _.TryGet composite key = inner.TryGet composite key
+            member _.Lookup composite key = inner.Lookup composite key
+
+            member _.Set composite key value =
+                writing.TrySetResult(()) |> ignore
+                release.Task.GetAwaiter().GetResult()
+                inner.Set composite key value
+
+            member _.Clear() = inner.Clear()
+            member _.ClearPlugin name = inner.ClearPlugin name
+            member _.ClearFile file = inner.ClearFile file
+            member _.ClearPluginFile name file = inner.ClearPluginFile name file }
+
+    let mutable readCommand: CommandHandler option = None
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "ordinary-cache-commit"
+          Init = 1
+          Update =
+            fun ctx state _ ->
+                async {
+                    ctx.ReportStatus(PluginStatus.completedNow "completed" System.TimeSpan.Zero)
+                    return state + 1
+                }
+          PrepareCommit = None
+          Commands = [ "read", PluginCommand.Observe(fun _ state _ -> async { return string state }) ]
+          Subscriptions = Set.singleton SubscribeBuildCompleted
+          CacheKey = Some(fun _ _ -> Some(ContentHash.create "ordinary-key"))
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache
+                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+            handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 10.0)
+
+    try
+        Assert.True(writing.Task.Wait(5000), "actual cache write must enter")
+        Assert.Equal("2", readCommand.Value [||] |> Async.RunSynchronously)
+        Assert.True(registration.IsBusy())
+        Assert.False(receipt.IsCompleted)
+        Assert.Equal(0L, registration.CompletedDispatches())
+    finally
+        release.TrySetResult(()) |> ignore
+        receipt.GetAwaiter().GetResult()
+
+    Assert.Equal(1L, registration.CompletedDispatches())
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "FailureReporting")>]
+let ``failed diagnostic reporting cannot retire an event twice or kill its executor`` () =
+    let failure = System.InvalidOperationException("original update failed")
+    let reported = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "failure-reporting"
+          Init = 0
+          Update =
+            fun _ state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "/fail" ]) -> return raise failure
+                    | _ -> return state + 1
+                }
+          PrepareCommit = None
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                ReportStatus =
+                    fun _ _ ->
+                        reported.TrySetResult(()) |> ignore
+                        raise (System.IO.IOException("diagnostic sink failed")) }
+            handler
+
+    let first =
+        registration
+            .DispatchTracked(DispatchFileChanged(SourceChanged [ "/fail" ]))
+            .Value.Wait(System.TimeSpan.FromSeconds 5.0)
+
+    Assert.Same(failure, Assert.Throws<System.InvalidOperationException>(fun () -> first.GetAwaiter().GetResult()))
+    Assert.True(reported.Task.Wait(5000), "failure reporting must actually be attempted")
+    dispatchAndAwait registration (DispatchFileChanged(SourceChanged [ "/succeed" ]))
+    Assert.Equal(1L, registration.CompletedDispatches())
+    Assert.True(registration.Fault().IsNone, "genuine successful work supersedes the failed update")
+
+[<Fact(Timeout = 15000)>]
+[<Trait("WorkOwner", "FailedUpdateEffects")>]
+let ``terminal reported by an update that later fails cannot prepare or populate cache`` () =
+    let failure =
+        System.InvalidOperationException("candidate rejected after terminal notification")
+
+    let preparation = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let key = ContentHash.create "failed-update-effects"
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "failed-update-effects"
+          Init = 0
+          Update =
+            fun ctx _ _ ->
+                async {
+                    ctx.ReportStatus(PluginStatus.completedNow "uncommitted candidate" System.TimeSpan.Zero)
+                    return raise failure
+                }
+          PrepareCommit =
+            Some(fun _ _ ->
+                async {
+                    preparation.TrySetResult(()) |> ignore
+                    return { Finalize = async.Return() }
+                })
+          Commands = []
+          Subscriptions = Set.singleton SubscribeBuildCompleted
+          CacheKey = Some(fun _ _ -> Some key)
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache }
+            handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 5.0)
+
+    Assert.Same(failure, Assert.Throws<System.InvalidOperationException>(fun () -> receipt.GetAwaiter().GetResult()))
+    Assert.False(preparation.Task.IsCompleted)
+
+    Assert.True(
+        (cache.TryGet
+            { Plugin = "failed-update-effects"
+              File = None }
+            key)
+            .IsNone
+    )
+
+    Assert.Equal(0L, registration.CompletedDispatches())

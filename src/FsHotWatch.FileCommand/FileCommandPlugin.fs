@@ -444,5 +444,6 @@ let create
             | FileChanged _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
             | _ -> None
 
-        Some cacheKey
+        Some(fun _state -> cacheKey)
+      PrepareCommit = None
       Teardown = None }

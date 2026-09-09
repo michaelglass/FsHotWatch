@@ -609,7 +609,13 @@ type PluginHost
     /// Failed event receipts are resolved, while actual background workers remain
     /// owned until cleanup. The recorded fault survives an empty work ledger,
     /// so callers must not interpret no busy work as a healthy executor.
-    member _.FaultedPlugins() : (string * exn) list = workStore.Snapshot.Faults
+    member _.FaultedPlugins() : (string * exn) list = workStore.Snapshot.ExecutorFaults
+
+    /// Every failed owned event/commit remains visible, even when its executor
+    /// survives and can process genuine recovery work.
+    member _.FailedWork() : (string * exn) list = workStore.Snapshot.Faults
+
+    member _.FailedOperations() : (string * exn) list = workStore.Snapshot.OperationFaults
 
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)

@@ -59,6 +59,8 @@ type BuildState =
         /// owed, but MSBuild must not rewrite those outputs until every active run
         /// has emitted its matching completion boundary.
         ActiveTestRuns: Set<Guid>
+        /// A requested real build remains owed until a build outcome is committed.
+        ForceRebuild: bool
     }
 
 /// Internal message posted from the async build runner back to the plugin's
@@ -497,13 +499,6 @@ let createWith
     /// Set by the `force-rebuild` command, which `confirm` issues. Consumed by
     /// `cacheKey` on the LOOKUP (a `FileChanged`) and cleared once a build has
     /// actually completed, so the fresh result still gets stored normally.
-    let forceRebuild = ref false
-
-    // Cache lookup happens before Update and receives the event but not BuildState.
-    // Mirror only the active-run set so a FileChanged observed while a test host owns
-    // the output DLLs cannot bypass Update by replaying a cached BuildCompleted.
-    // Both reads and writes happen on this plugin's serialized mailbox.
-    let activeTestRunsForCache: Set<Guid> ref = ref Set.empty
 
     let testProjectNameSet = testProjectNames |> Set.ofList
 
@@ -877,7 +872,8 @@ let createWith
         { LastBuild = idle
           PendingFiles = []
           SatisfiedDeps = Set.empty
-          ActiveTestRuns = Set.empty }
+          ActiveTestRuns = Set.empty
+          ForceRebuild = false }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -1006,7 +1002,8 @@ let createWith
             { LastBuild = idle
               PendingFiles = []
               SatisfiedDeps = Set.empty
-              ActiveTestRuns = Set.empty }
+              ActiveTestRuns = Set.empty
+              ForceRebuild = false }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1023,11 +1020,13 @@ let createWith
         | Some template ->
             { (startTemplateBuild ctx idle template files) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns }
+                ActiveTestRuns = state.ActiveTestRuns
+                ForceRebuild = state.ForceRebuild }
         | None ->
             { (startBuild ctx idle) with
                 SatisfiedDeps = state.SatisfiedDeps
-                ActiveTestRuns = state.ActiveTestRuns }
+                ActiveTestRuns = state.ActiveTestRuns
+                ForceRebuild = state.ForceRebuild }
 
     let handleProjectChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1036,7 +1035,8 @@ let createWith
         =
         { (startBuild ctx idle) with
             SatisfiedDeps = state.SatisfiedDeps
-            ActiveTestRuns = state.ActiveTestRuns }
+            ActiveTestRuns = state.ActiveTestRuns
+            ForceRebuild = state.ForceRebuild }
 
     let launchPending (ctx: PluginCtx<BuildMsg>) (state: BuildState) =
         if
@@ -1070,21 +1070,19 @@ let createWith
         { LastBuild = Lifecycle.create None
           PendingFiles = []
           SatisfiedDeps = Set.empty
-          ActiveTestRuns = Set.empty }
+          ActiveTestRuns = Set.empty
+          ForceRebuild = false }
       Update =
         fun ctx state event ->
             async {
                 match event with
                 | Custom(ForceRebuildRequested reply) ->
-                    forceRebuild.Value <- true
-
                     reply.TrySetResult(JsonSerializer.Serialize({| status = "ok"; forced = true |}))
                     |> ignore
 
-                    return state
+                    return { state with ForceRebuild = true }
                 | TestRunStarted started ->
                     let activeTestRuns = Set.add started.RunId state.ActiveTestRuns
-                    activeTestRunsForCache.Value <- activeTestRuns
 
                     return
                         { state with
@@ -1092,7 +1090,6 @@ let createWith
 
                 | TestRunCompleted completed ->
                     let activeTestRuns = Set.remove completed.RunId state.ActiveTestRuns
-                    activeTestRunsForCache.Value <- activeTestRuns
 
                     let updated =
                         { state with
@@ -1160,7 +1157,6 @@ let createWith
                     // it, so a lookup that never reached a build (a suppressed or
                     // superseded dispatch) cannot silently spend the request and
                     // leave the artifacts stale anyway.
-                    forceRebuild.Value <- false
 
                     // The completion message arrives carrying the pre-build idle
                     // lifecycle; advance it through Running ▸ Completed for
@@ -1219,6 +1215,7 @@ let createWith
                     let completedState =
                         { state with
                             LastBuild = idle
+                            ForceRebuild = false
                             SatisfiedDeps =
                                 if state.PendingFiles.IsEmpty then
                                     Set.empty
@@ -1299,7 +1296,7 @@ let createWith
         let merkleKey () =
             Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
-        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
+        let cacheKey (state: BuildState) (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
             // THE STORE, and the only event that is one. A `Custom BuildDone` is this
             // plugin's own post — the delivery of a build that HAS run — and the
@@ -1326,11 +1323,10 @@ let createWith
             // While `forceRebuild` is set the LOOKUP must miss so a real build runs.
             // `None` is the framework's documented "outputs missing" bypass — skip the
             // cache, run Update.
-            | FileChanged _ when not activeTestRunsForCache.Value.IsEmpty -> None
-            | CommandCompleted result when depNames.Contains result.Name && not activeTestRunsForCache.Value.IsEmpty ->
-                None
-            | FileChanged _ when forceRebuild.Value -> None
-            | CommandCompleted result when depNames.Contains result.Name && forceRebuild.Value -> None
+            | FileChanged _ when not state.ActiveTestRuns.IsEmpty -> None
+            | CommandCompleted result when depNames.Contains result.Name && not state.ActiveTestRuns.IsEmpty -> None
+            | FileChanged _ when state.ForceRebuild -> None
+            | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild -> None
 
             // Re-verify the ARTIFACTS at cache-replay time, not only after a real
             // build.
@@ -1405,6 +1401,7 @@ let createWith
       // dispatch of a brand-new daemon can and does replay a stored build. The gate
       // above is the only thing standing between a stored verdict and a `bin/` that
       // never earned it.
+      PrepareCommit = None
       Teardown = None }
 
 /// The ordinary enforcing constructor. `createWith` retains its former boolean only

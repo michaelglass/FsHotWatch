@@ -4,7 +4,6 @@ open System
 open System.Diagnostics
 open System.IO
 open Xunit
-open Swensen.Unquote
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
@@ -26,7 +25,8 @@ open FsHotWatch.Tests.TestHelpers
 /// Spawns a long-lived child the way `ProcessHelper.runProcess` does
 /// (`Process.Start` then `ProcessRegistry.track`), from whatever context the
 /// daemon runs preprocessors in.
-type private ChildSpawningPreprocessor() =
+type private ChildSpawningPreprocessor
+    (entered: System.Threading.ManualResetEventSlim, release: System.Threading.ManualResetEventSlim) =
     let spawned = ResizeArray<Process>()
 
     member _.Spawned = spawned |> List.ofSeq
@@ -41,6 +41,8 @@ type private ChildSpawningPreprocessor() =
                 let p = Process.Start(psi)
                 FsHotWatch.ProcessRegistry.track p
                 spawned.Add p
+                entered.Set()
+                Assert.True(release.Wait(TimeSpan.FromSeconds 20.0), "fixture preprocessor must be released")
 
             Ok
                 { FsHotWatch.Plugin.PreprocessResult.Modified = changedFiles
@@ -50,7 +52,7 @@ type private ChildSpawningPreprocessor() =
         member _.Dispose() = ()
 
 [<Fact(Timeout = 60000)>]
-let ``a child spawned by a daemon-dispatched plugin is tracked and reaped on shutdown`` () =
+let ``a child spawned by active daemon work is tracked and reaped on shutdown`` () =
     withTempDir "reaping" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let checker = sharedChecker.Value
@@ -75,33 +77,59 @@ let ``a child spawned by a daemon-dispatched plugin is tracked and reaped on shu
         // runs preprocessors — from the scan mailbox's context.
         daemon.RegisterProject(Path.Combine(tmpDir, "Test.fsproj"), options)
 
-        let preprocessor = ChildSpawningPreprocessor()
+        use entered = new System.Threading.ManualResetEventSlim(false)
+        use release = new System.Threading.ManualResetEventSlim(false)
+        let preprocessor = ChildSpawningPreprocessor(entered, release)
         daemon.RegisterPreprocessor(preprocessor)
 
-        // Dispatch through the daemon's OWN scan machinery — not the test thread.
-        Async.RunSynchronously(daemon.ScanAll(), timeout = 40000)
+        // Hold the actual preprocessor open: operation completion now reaps
+        // children itself, so shutdown ownership must be observed while active.
+        let scan = Async.StartAsTask(daemon.ScanAll())
 
-        let child =
-            match preprocessor.Spawned with
-            | [ p ] -> p
-            | other -> failwith $"expected exactly one spawned child, got %d{other.Length}"
+        try
+            Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "daemon preprocessor must start its child")
+            let child = Assert.Single(preprocessor.Spawned)
+            Assert.False(child.HasExited)
+            Assert.Contains(child, daemon.ProcessRegistry.Snapshot())
 
-        test <@ not child.HasExited @>
+            (daemon :> IDisposable).Dispose()
+            Assert.True(child.WaitForExit(5000), "daemon shutdown must reap the active operation child")
+        finally
+            release.Set()
 
-        // The assertion that fails on the old ordering: without a registry in the
-        // spawning context the daemon could not reap the child even in principle.
-        let tracked = daemon.ProcessRegistry.Snapshot() |> List.map (fun p -> p.Id)
-        test <@ List.contains child.Id tracked @>
+            try
+                (daemon :> IDisposable).Dispose()
+            finally
+                try
+                    let settled =
+                        System.Threading.Tasks.Task
+                            .WhenAny(
+                                [| scan :> System.Threading.Tasks.Task
+                                   System.Threading.Tasks.Task.Delay(10000) |]
+                            )
+                            .GetAwaiter()
+                            .GetResult()
 
-        // Shutdown (the same path `fshw stop` and the wedge self-heal take) reaps it.
-        (daemon :> IDisposable).Dispose()
+                    Assert.True(
+                        obj.ReferenceEquals(scan, settled),
+                        "the original scan task must settle after fixture release"
+                    )
 
-        let deadline = DateTime.UtcNow.AddSeconds 10.0
+                    try
+                        scan.GetAwaiter().GetResult()
+                    with
+                    | :? OperationCanceledException -> ()
+                    | :? AggregateException as failure when
+                        failure.Flatten().InnerExceptions
+                        |> Seq.forall (fun inner -> inner :? OperationCanceledException)
+                        ->
+                        ()
+                finally
+                    for child in preprocessor.Spawned do
+                        try
+                            if not child.HasExited then
+                                child.Kill(entireProcessTree = true)
 
-        while not child.HasExited && DateTime.UtcNow < deadline do
-            System.Threading.Thread.Sleep 100
-
-        test <@ child.HasExited @>
-
-        if not child.HasExited then
-            child.Kill())
+                            Assert.True(child.WaitForExit(5000), "fixture-owned child must be reaped")
+                        finally
+                            child.Dispose())

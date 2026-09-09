@@ -1230,6 +1230,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let handler =
@@ -1275,6 +1276,7 @@ let ``BuildPlugin fails with false command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
@@ -1685,6 +1687,7 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     // A slow build command so the second emit certainly arrives mid-build.
@@ -2063,6 +2066,7 @@ let ``concurrent FileChanged events run two builds sequentially`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
@@ -2164,6 +2168,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -2247,6 +2252,7 @@ let private makeControllablePlugin (name: string) =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     {| Handler = handler
@@ -2420,6 +2426,7 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChecked ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let checker =
@@ -2507,6 +2514,7 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let cts = new CancellationTokenSource()
@@ -2708,6 +2716,7 @@ let private fileCheckCounter (name: string) (targetCanonical: string) =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     ((fun () -> count.Value), handler)

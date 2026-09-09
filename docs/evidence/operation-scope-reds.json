@@ -1,0 +1,202 @@
+{
+  "status": "operation deadline integration green; owner-context regressions reproduced and green; complete qualification pending",
+  "verifiedParent": "kpwtzqrl 6c20b2d8",
+  "sourceHashes": {
+    "src/FsHotWatch/ProcessRegistry.fs": "acbb306d3bbd47a416a3361bacb58862c31863403616b725f0ebe754dc2b9b05",
+    "src/FsHotWatch/SupervisedWork.fs": "0adc9772e40fa00f724924101f2f6800c979d354b070b6277381ac9c5d26d90a",
+    "tests/FsHotWatch.IntegrationTests/SupervisedProcessTests.fs": "aefb1b8c4fdda27bf142dc1064e76bc1ce984bc4d608d8fcd3023c2799a592d2",
+    "tests/FsHotWatch.IntegrationTests/LauncherGroupSurvivalTests.fs": "88ad04412f1e74ae8d067aeb675b91035bdd649b26016eccf832d274185f970e",
+    "tests/Fixtures/LauncherLifetimeFixture/Program.fs": "4b0b2cc22982780cee17861b2438d57ad260774582af2ffc302f0e8506b278f4",
+    "tests/FsHotWatch.Tests/VerdictEvidenceTests.fs": "bcf23c20504ddc2d4154f0ddebcb548b908ac9dd62a2433a520fbb9e11260776",
+    "tests/FsHotWatch.Tests/SupervisedWorkTests.fs": "6e9c3caacd485d328000c42a85981e3fdc33f8ebfb69bd1bd774317230ec8061"
+  },
+  "compile": {
+    "session": 76278,
+    "exit": 0,
+    "warnings": 0,
+    "errors": 0
+  },
+  "integration": [
+    {
+      "trait": "ProcessSupervision=OwnedProcessDeadline",
+      "session": 46189,
+      "exit": 2,
+      "total": 1,
+      "failed": 1,
+      "message": "deadline must terminate the supervised operation child; child still alive after seven seconds"
+    },
+    {
+      "trait": "ProcessSupervision=LauncherGroupSurvival",
+      "session": 99801,
+      "exit": 0,
+      "total": 1,
+      "passed": 1
+    }
+  ],
+  "unitRuns": [
+    {
+      "runId": "af5cc4d0055c4d0f8fa91eaddeba317a",
+      "reportSha256": "c3128c6478b326bd4247a653e0cd58eeafb1e1da01c437b55f77e35128c9126f",
+      "summary": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788912101908,
+        "stop": 1788912102192
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+        }
+      ]
+    },
+    {
+      "runId": "b2ca07fe51e149b6b79e0c0dd530e8a1",
+      "reportSha256": "46c6cfc522ff350bebb4dd313810355239b93487d602a667246f602d9b9fa317",
+      "summary": {
+        "tests": 7,
+        "passed": 7,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788912160298,
+        "stop": 1788912165401
+      },
+      "failures": []
+    },
+    {
+      "runId": "590d680f20fe4695bf554526802105a2",
+      "reportSha256": "cb1832c1f17567c46529236957434511b6c78d818230d2c095e852a647f527ce",
+      "summary": {
+        "tests": 3159,
+        "passed": 3158,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788912197186,
+        "stop": 1788912284733
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+        }
+      ]
+    },
+    {
+      "runId": "8da0d1210f984cd2943bb109fec5c8e0",
+      "reportSha256": "999c2a1a31b6c75ed501f21d54fdb85625fd13fa5c33cd8247cb3739fcf1260c",
+      "summary": {
+        "tests": 3159,
+        "passed": 3158,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788912303079,
+        "stop": 1788912396320
+      },
+      "failures": [
+        {
+          "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+          "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "No full CI or consumer qualification",
+    "Original sourceHashes identify the reproduced-regression parent, not the corrected production bytes"
+  ],
+  "correctionVerification": {
+    "compile": {
+      "session": 74623,
+      "exit": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    "deadlineIntegration": {
+      "session": 59819,
+      "exit": 0,
+      "total": 1,
+      "passed": 1
+    },
+    "ownerContextRed": {
+      "session": 10974,
+      "runId": "111964b8938544bb8e3b42df66585bde",
+      "total": 2,
+      "failed": 2
+    },
+    "ownerContextGreenFullRun": "65360ed562d24d6b835461d5ef2412f7",
+    "latestCompleteFullRun": "abdb77a165e044ba85ce573b94de7a95",
+    "latestFullSummary": {
+      "total": 3161,
+      "passed": 3160,
+      "failed": 1
+    },
+    "remainingFailures": [
+      "VerdictEvidence deliberate regression: no private earned verdict yet"
+    ],
+    "limits": [
+      "No full CI or consumer qualification",
+      "Daemon runtime reload and full integration qualification remain pending"
+    ],
+    "sourceHashes": {
+      "src/FsHotWatch/ProcessRegistry.fs": "0d3c272158ef02cb620abffae1f90f42a23e823188371d516f40fe3240f58638",
+      "src/FsHotWatch/SupervisedWork.fs": "2fbb1402cb45ba5995f6f35679e9ce856c9b3d60f9fb649eac68a03089c11c94",
+      "src/FsHotWatch/PluginFramework.fs": "681fb8723634d5b5b7d8a1e872ade78cf74435d1c5dbfcccb392378be545bbd8",
+      "tests/FsHotWatch.Tests/SupervisedWorkTests.fs": "0a6ca2f2583f201c89e04c4e1d5408f372e4bc0d04dd0a5785384ad011ce8074",
+      "tests/FsHotWatch.Tests/PluginFrameworkTests.fs": "3092b139049ca47dcc4dbb7c7c54092311954d2f82a7c79c660fa747a1d57488",
+      "tests/FsHotWatch.Tests/ProcessReapingTests.fs": "7577eb42f05e990d19e3c80d3cac18dce916d37e579fb97516881f37e9a2a24d",
+      "tests/FsHotWatch.Tests/FormatIgnoreTests.fs": "0b2b950db7cdfadf82637ec5c020422926315f4d1318bceeb0819bd17c8c75e1"
+    }
+  },
+  "disposedHandleReview": {
+    "actualRed": {
+      "session": 40227,
+      "exit": 2,
+      "total": 1,
+      "failed": 1,
+      "message": "successful retirement must establish that the tracked child exited"
+    },
+    "intermediateControlCorrection": {
+      "session": 60772,
+      "exit": 2,
+      "message": "Production correctly faulted and recorded the original child PID; the control incorrectly expected rollback despite its identity failure-state handler. It now supplies an explicit -1 failure state and asserts that policy."
+    },
+    "compile": {
+      "session": 4676,
+      "exit": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    "fullIntegration": {
+      "session": 89435,
+      "exit": 0,
+      "total": 70,
+      "passed": 70,
+      "failed": 0,
+      "skipped": 0
+    },
+    "sourceHashes": {
+      "src/FsHotWatch/ProcessRegistry.fs": "9ea7f1f97c87d9d8564594909d5e89fcfea34b236da8b164e918d9835e2ac6ed",
+      "tests/FsHotWatch.IntegrationTests/SupervisedProcessTests.fs": "e9416500adff1a0e825c95a129e3853e21ffefbce95439b7b10f2bd8d1042064",
+      ".fshw.json": "8d7bf2235754d3acbd354f7d2de933251ae00b153caec593fd7bfbd81dc18a51"
+    },
+    "limits": [
+      "Latest process helper unit verification is pending",
+      "Private earned-verdict regression remains unresolved",
+      "No full CI or consumer qualification"
+    ]
+  }
+}

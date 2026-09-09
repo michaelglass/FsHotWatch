@@ -15,6 +15,9 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- decideBuildOutcome: pure parse/decide logic ---
 
+let private initialCacheKey (handler: FsHotWatch.PluginFramework.PluginHandler<'State, 'Msg>) =
+    handler.CacheKey.Value handler.Init
+
 [<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome success with clean output yields BuildPassed and no entries`` () =
     let output = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
@@ -384,6 +387,10 @@ let ``build plugin emits BuildCompleted on successful build`` () =
 let ``file changes observed during a test host defer the build until that run completes`` () =
     withTempDir "build-during-test-host" (fun tmpDir ->
         let marker = System.IO.Path.Combine(tmpDir, "build-ran")
+        let entered = System.IO.Path.Combine(tmpDir, "test-entered")
+        let release = System.IO.Path.Combine(tmpDir, "release-test")
+        let script = System.IO.Path.Combine(tmpDir, "held-test.sh")
+        System.IO.File.WriteAllText(script, $"touch '{entered}'\nwhile [ ! -e '{release}' ]; do sleep 0.02; done\n")
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let tests =
@@ -392,13 +399,13 @@ let ``file changes observed during a test host defer the build until that run co
                 tmpDir
                 (Some
                     [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
-                        Command = "sleep"
-                        Args = "1"
+                        Command = "sh"
+                        Args = $"\"{script}\""
                         Group = "default"
                         Environment = []
                         FilterTemplate = None
                         ClassJoin = " "
-                        TimeoutSec = None
+                        TimeoutSec = Some 10
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
                 None
                 None
@@ -407,6 +414,14 @@ let ``file changes observed during a test host defer the build until that run co
                 []
 
         let build = BuildPlugin.create "touch" marker [] (ProjectGraph()) [] None [] None
+
+        let build =
+            { build with
+                Commands =
+                    ("fixture-pending-build-files",
+                     PluginCommand.Observe(fun _ state _ -> async { return string state.PendingFiles.Length }))
+                    :: build.Commands }
+
         let mutable liveRun: Guid option = None
 
         let lifecycleRecorder: PluginHandler<unit, unit> =
@@ -424,6 +439,7 @@ let ``file changes observed during a test host defer the build until that run co
               Commands = []
               Subscriptions = Set.singleton SubscribeTestRunStarted
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         host.RegisterHandler(lifecycleRecorder)
@@ -432,13 +448,20 @@ let ``file changes observed during a test host defer the build until that run co
 
         let runTask = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
 
-        waitUntil (fun () -> liveRun.IsSome) 5000
+        try
+            waitUntil (fun () -> liveRun.IsSome && System.IO.File.Exists entered) 5000
+            Assert.False(runTask.IsCompleted, "the actual test host must remain held")
+            host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
 
-        host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Source.fs") ])
-        System.Threading.Thread.Sleep(250)
-        test <@ not (System.IO.File.Exists marker) @>
+            waitUntil
+                (fun () -> host.RunCommand("fixture-pending-build-files", [||]) |> Async.RunSynchronously = Some "1")
+                5000
 
-        runTask.GetAwaiter().GetResult() |> ignore
+            test <@ not (System.IO.File.Exists marker) @>
+        finally
+            System.IO.File.WriteAllText(release, "release")
+            Assert.True(runTask.Wait(10000), "the original run must settle after releasing its fixture")
+            runTask.GetAwaiter().GetResult() |> ignore
 
         waitUntil (fun () -> System.IO.File.Exists marker) 5000)
 
@@ -665,6 +688,7 @@ let ``queued template build preserves changes for a second project root`` () =
               Commands = []
               Subscriptions = Set.singleton SubscribeTestRunStarted
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let tests =
@@ -1178,7 +1202,7 @@ let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`
 
     let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "build"; File = None }
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = (handler.CacheKey.Value handler.Init)
     // The lookup happens at FileChanged time in production, and the entry is stored under
     // the same merkle key from either site — they share the input set.
     let computedKey = cacheKeyFn (FileChanged(SourceChanged [ "src/Lib.fs" ]))
@@ -1212,7 +1236,7 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     // a later FileChanged, so both must compute identical keys for the cache to hit.
     let handler = warmedHandler "echo" "ok" []
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn = (handler.CacheKey.Value handler.Init)
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 
     let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], System.TimeSpan.Zero))
@@ -1230,7 +1254,7 @@ let ``BuildPlugin test lifecycle events cannot read or replay the build cache`` 
     // test run and feeds the same lifecycle event back into this plugin forever.
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
 
-    let cacheKey = handler.CacheKey.Value
+    let cacheKey = (handler.CacheKey.Value handler.Init)
     let runId = Guid.NewGuid()
 
     let started: TestRunStarted =
@@ -1252,7 +1276,7 @@ let ``BuildPlugin cache reads are limited to genuine build-trigger events`` () =
     let handler =
         BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [ "codegen" ] None
 
-    let cacheKey = handler.CacheKey.Value
+    let cacheKey = (handler.CacheKey.Value handler.Init)
 
     let command name outcome =
         CommandCompleted { Name = name; Outcome = outcome }
@@ -1302,6 +1326,7 @@ let ``cached build lifecycle still defers one source change until the test run c
               Commands = []
               Subscriptions = Set.singleton SubscribeBuildCompleted
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
@@ -2055,6 +2080,7 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         host.EmitFileChanged(SourceChanged [ srcPath ])
 
         waitForTerminalStatus host "build" 20000
+        waitUntil (fun () -> not (host.AnyPluginBusy())) 5000
 
         let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
@@ -2081,16 +2107,40 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
 // trusts.
 // ---------------------------------------------------------------------------
 
-/// Drive a direct command fixture through a real registered owner.
+/// Read the actual committed state of this fixture's registered owner.
+let private registerBuildSnapshot (host: PluginHost) (handler: PluginHandler<BuildState, BuildMsg>) =
+    let mutable observed = handler.Init
+
+    let observe =
+        PluginCommand.Observe(fun _ state _ ->
+            async {
+                observed <- state
+                return "observed"
+            })
+
+    host.RegisterHandler
+        { handler with
+            Commands = ("fixture-build-snapshot", observe) :: handler.Commands }
+
+    fun () ->
+        let result =
+            host.RunCommand("fixture-build-snapshot", [||]) |> Async.RunSynchronously
+
+        Assert.Equal(Some "observed", result)
+        observed
+
+/// Drive the real owner request and return the resulting committed state.
 let private forceRebuildThroughOwner handler =
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
-    host.RegisterHandler handler
+    let snapshot = registerBuildSnapshot host handler
     host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
+    waitUntil (fun () -> not (host.AnyPluginBusy())) 5000
+    snapshot ()
 
 /// A handler warmed through one real build, plus its cache-key function.
 let private warmedWithKeyFn () =
     let handler = warmedHandler "echo" "ok" []
-    handler, handler.CacheKey.Value
+    handler, (handler.CacheKey.Value handler.Init)
 
 [<Fact(Timeout = 15000)>]
 [<Trait("OwnerCommand", "Rebuild")>]
@@ -2122,7 +2172,7 @@ let ``force-rebuild replies only after the owner applies its intent`` () =
         Assert.False(reply.IsCompleted, "force-rebuild acknowledged before its owner applied the intent")
         Assert.Equal(originalKey, cacheKeyFn fileEvent)
 
-        let! _ =
+        let! forced =
             handler.Update Unchecked.defaultof<_> handler.Init (Custom posted.[0])
             |> Async.StartAsTask
 
@@ -2130,7 +2180,11 @@ let ``force-rebuild replies only after the owner applies its intent`` () =
         use json = JsonDocument.Parse response
         Assert.Equal("ok", json.RootElement.GetProperty("status").GetString())
         Assert.True(json.RootElement.GetProperty("forced").GetBoolean())
-        Assert.True((cacheKeyFn fileEvent).IsNone, "acknowledged rebuild must bypass the next cache lookup")
+
+        Assert.True(
+            (handler.CacheKey.Value forced fileEvent).IsNone,
+            "acknowledged rebuild must bypass the next cache lookup"
+        )
     }
 
 [<Fact(Timeout = 15000)>]
@@ -2145,10 +2199,10 @@ let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () 
     let before = cacheKeyFn fileEvt
     test <@ before.IsSome @>
 
-    forceRebuildThroughOwner handler
+    let forced = forceRebuildThroughOwner handler
 
     // `None` is the framework's "skip the cache, run Update" bypass — i.e. a REAL build.
-    let after = cacheKeyFn fileEvt
+    let after = handler.CacheKey.Value forced fileEvt
     test <@ after.IsNone @>
 
 [<Fact(Timeout = 15000)>]
@@ -2157,7 +2211,8 @@ let ``force-rebuild still lets the fresh build's result be cached`` () =
     // permanently uncacheable, turning a correctness fix into a standing perf regression.
     let handler, cacheKeyFn = warmedWithKeyFn ()
 
-    forceRebuildThroughOwner handler
+    let forced = forceRebuildThroughOwner handler
+    let cacheKeyFn = handler.CacheKey.Value forced
 
     let buildDoneEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
 
@@ -2172,11 +2227,13 @@ let ``force-rebuild is spent by a completed build, not by the lookup alone`` () 
     // request and leave the artifacts stale — the same deadlock, one run later.
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
-    host.RegisterHandler(handler)
+    let snapshot = registerBuildSnapshot host handler
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     waitForTerminalStatus host "build" 5000
 
-    let cacheKeyFn = handler.CacheKey.Value
+    let cacheKeyFn event =
+        handler.CacheKey.Value (snapshot ()) event
+
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
 
     host.RunCommand("force-rebuild", [||]) |> Async.RunSynchronously |> ignore
@@ -2285,7 +2342,7 @@ let ``a source touched after the build bypasses the cache, though the merkle can
     // had and the stale outputs replayed as a pass.
     withOneProjectGraph "replay-stale" (fun (graph, srcPath, dllPath) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
         let fileEvt = FileChanged(SourceChanged [ srcPath ])
         let storeEvt = Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero))
 
@@ -2315,7 +2372,7 @@ let ``a checkout with no build output at all bypasses the cache`` () =
     // projects (cached)" was being asserted about outputs that had never existed here.
     withOneProjectGraph "replay-missing" (fun (graph, srcPath, dllPath) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
         let fileEvt = FileChanged(SourceChanged [ srcPath ])
 
         // POSITIVE CONTROL: served while the DLL is there. Bound outside the quotation —
@@ -2334,7 +2391,7 @@ let ``stale artifacts suppress the cache LOOKUP only, never the STORE`` () =
     // itself forever in the inner loop.
     withOneProjectGraph "replay-store" (fun (graph, srcPath, dllPath) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
 
         let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
         System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
@@ -2410,7 +2467,7 @@ let ``legacy production wiring refuses a missing build output`` () =
     // THE PRODUCTION WEDGE. First `check` in a brand-new `jj workspace add`: sources
     // byte-identical to the workspace whose entry it hits, no `bin/` at all.
     withOneProjectGraph "replay-reportonly-missing" (fun (graph, srcPath, dllPath) ->
-        let cacheKeyFn = (legacyProductionPlugin graph).CacheKey.Value
+        let cacheKeyFn = (initialCacheKey (legacyProductionPlugin graph))
         let fileEvt = FileChanged(SourceChanged [ srcPath ])
 
         // POSITIVE CONTROL: served while the DLL is there, in this same mode. Without
@@ -2433,7 +2490,7 @@ let ``production wiring refuses an mtime-stale cache replay`` () =
         let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
         System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
 
-        let production = ((legacyProductionPlugin graph).CacheKey.Value) fileEvt
+        let production = ((initialCacheKey (legacyProductionPlugin graph))) fileEvt
         test <@ production.IsNone @>)
 
 [<Fact(Timeout = 30000)>]
@@ -2504,7 +2561,7 @@ let ``a dependency-gated lookup re-verifies the artifacts too, not just a FileCh
         // `dependsOn` is what moves the build-starting event from `FileChanged` to
         // `CommandCompleted` — the configuration under which the gate was blind.
         let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
         let depEvt = depSatisfied "fmt"
 
         // POSITIVE CONTROL: with the outputs fresh this very event IS served from the
@@ -2527,15 +2584,15 @@ let ``force-rebuild reaches a dependency-gated lookup`` () =
     // `dependsOn` repo the lookup that decides whether a build runs never read it.
     withOneProjectGraph "replay-dep-force" (fun (graph, _, _) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
         let depEvt = depSatisfied "fmt"
 
         let before = cacheKeyFn depEvt
         test <@ before.IsSome @>
 
-        forceRebuildThroughOwner handler
+        let forced = forceRebuildThroughOwner handler
 
-        let after = cacheKeyFn depEvt
+        let after = handler.CacheKey.Value forced depEvt
         test <@ after.IsNone @>)
 
 [<Fact(Timeout = 15000)>]
@@ -2545,7 +2602,7 @@ let ``a dependency-gated build still stores its result`` () =
     // scratch forever — a correctness fix paying for itself every single run.
     withOneProjectGraph "replay-dep-store" (fun (graph, srcPath, dllPath) ->
         let handler = BuildPlugin.create "true" "" [] graph [] None [ "fmt" ] None
-        let cacheKeyFn = handler.CacheKey.Value
+        let cacheKeyFn = (handler.CacheKey.Value handler.Init)
 
         let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
         System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMinutes 1.0)
@@ -2643,7 +2700,10 @@ let ``a tree the gate cannot examine is reported, not refused`` () =
         test <@ (artifactCoverageGap graph).IsSome @>
 
         let handler = BuildPlugin.create "true" "" [] graph [] None [] None
-        let served = handler.CacheKey.Value(FileChanged(SourceChanged [ srcPath ]))
+
+        let served =
+            (handler.CacheKey.Value handler.Init) (FileChanged(SourceChanged [ srcPath ]))
+
         test <@ served.IsSome @>)
 
 [<Fact(Timeout = 15000)>]
@@ -2817,7 +2877,7 @@ let ``a dependency copy the build still owes bypasses the cache`` () =
     // ever made the copy. Both sides correct, neither moving.
     withProducerConsumerGraph "replay-copy-pending" false (fun (graph, srcPath, _copy) ->
         let cacheKeyFn =
-            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+            (initialCacheKey (BuildPlugin.create "true" "" [] graph [] None [] None))
 
         let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ wedged.IsNone @>)
@@ -2829,7 +2889,7 @@ let ``a settled dependency copy still serves the cache`` () =
     // turning every check in every repo into a full rebuild.
     withProducerConsumerGraph "replay-copy-settled" true (fun (graph, srcPath, _copy) ->
         let cacheKeyFn =
-            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+            (initialCacheKey (BuildPlugin.create "true" "" [] graph [] None [] None))
 
         let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ served.IsSome @>)
@@ -2837,7 +2897,7 @@ let ``a settled dependency copy still serves the cache`` () =
 [<Fact(Timeout = 15000)>]
 let ``legacy production wiring refuses a dependency copy the build still owes`` () =
     withProducerConsumerGraph "replay-copy-reportonly" false (fun (graph, srcPath, _copy) ->
-        let cacheKeyFn = (legacyProductionPlugin graph).CacheKey.Value
+        let cacheKeyFn = (initialCacheKey (legacyProductionPlugin graph))
         let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ wedged.IsNone @>)
 
@@ -2847,7 +2907,7 @@ let ``legacy production wiring serves a settled dependency copy`` () =
     // the compatibility path could have become rebuild-every-time and every test above would
     // still pass.
     withProducerConsumerGraph "replay-copy-reportonly-ok" true (fun (graph, srcPath, _copy) ->
-        let cacheKeyFn = (legacyProductionPlugin graph).CacheKey.Value
+        let cacheKeyFn = (initialCacheKey (legacyProductionPlugin graph))
         let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ served.IsSome @>)
 
@@ -2857,7 +2917,7 @@ let ``a pending dependency copy suppresses the cache LOOKUP only, never the STOR
     // the store too would make every recovered build permanently uncacheable.
     withProducerConsumerGraph "replay-copy-store" false (fun (graph, srcPath, _copy) ->
         let cacheKeyFn =
-            (BuildPlugin.create "true" "" [] graph [] None [] None).CacheKey.Value
+            (initialCacheKey (BuildPlugin.create "true" "" [] graph [] None [] None))
 
         let lookupKey = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         let storeKey = cacheKeyFn (Custom(BuildDone(BuildPassed "x", [], TimeSpan.Zero)))
@@ -2934,3 +2994,40 @@ let ``a build that settles the copy restores an ordinary cached replay`` () =
             waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 15000
 
         test <@ replayed @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "BuildCacheSnapshot")>]
+let ``build cache decisions honor the supplied active-test snapshot`` () =
+    withOneProjectGraph "build-cache-state" (fun (graph, source, _dll) ->
+        let handler = legacyProductionPlugin graph
+        let event = FileChanged(SourceChanged [ source ])
+        let key = handler.CacheKey.Value
+        Assert.True((key handler.Init event).IsSome, "positive control: complete idle outputs can replay")
+
+        let active =
+            { handler.Init with
+                ActiveTestRuns = Set.singleton (Guid.NewGuid()) }
+
+        Assert.True((key active event).IsNone, "the supplied owner state must prevent replay while tests own outputs")
+        Assert.True((key handler.Init event).IsSome, "reading active state must not mutate the retained idle snapshot"))
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "ForceRebuildSnapshot")>]
+let ``force rebuild belongs to the returned owner state rather than older snapshots`` () =
+    let handler, key = warmedWithKeyFn ()
+    let event = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let original = key event
+    Assert.True(original.IsSome)
+
+    let reply =
+        System.Threading.Tasks.TaskCompletionSource<string>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let forced =
+        handler.Update Unchecked.defaultof<_> handler.Init (Custom(ForceRebuildRequested reply))
+        |> Async.RunSynchronously
+
+    Assert.True(reply.Task.IsCompletedSuccessfully, "the original owner request must have completed")
+    Assert.True((handler.CacheKey.Value forced event).IsNone)
+    Assert.Equal<ContentHash option>(original, handler.CacheKey.Value handler.Init event)

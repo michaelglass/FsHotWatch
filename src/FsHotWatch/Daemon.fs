@@ -925,19 +925,22 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         if hasSolution then
             ctx.Host.EmitFileChanged(SolutionChanged)
 
-        if not projFilesChanged.IsEmpty || hasSolution then
-            // Generated obj/ files (MSBuild's AssemblyInfo / AssemblyAttributes)
-            // are in the ProjectGraph (it stores the raw ProjInfo SourceFiles)
-            // but the CheckPipeline filters them out of its options, so feeding
-            // them to FCS yields a spurious "not part of the project" error.
-            // The pipeline's source list is authoritative for what's checkable.
-            let checkableFilesOf (projects: AbsProjectPath list) =
-                projects
-                |> List.collect ctx.Graph.GetSourceFiles
-                |> List.map AbsFilePath.value
-                |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
-                |> List.distinct
+        // Discovery keeps raw MSBuild sources in the graph, including generated
+        // obj/bin files that the pipeline deliberately excludes. Both project
+        // refresh and ordinary source dependency fanout must schedule the inputs
+        // belonging to the options that FCS will actually check.
+        let checkableFilesOf (projects: AbsProjectPath list) =
+            projects
+            |> List.collect (fun project ->
+                match ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project) with
+                | Some options -> options.SourceFiles |> Array.toList
+                | None ->
+                    ctx.Graph.GetSourceFiles project
+                    |> List.map AbsFilePath.value
+                    |> List.filter (fun file -> not (PathFilter.isGeneratedPath file)))
+            |> List.distinct
 
+        if not projFilesChanged.IsEmpty || hasSolution then
             // Decide scoped vs. full. Scoped applies only when every changed
             // path maps to a known project (no `.props`, no new project, no
             // solution edit) AND a scoped FCS invalidator is wired.
@@ -1054,8 +1057,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
                 |> List.distinct
                 |> List.filter (fun p -> not (Set.contains p changedProjectSet))
-                |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
-                |> List.map AbsFilePath.value
+                |> checkableFilesOf
 
             let allFilesToCheck =
                 (allSourceFiles @ dependentProjectFiles)
@@ -1427,6 +1429,15 @@ let internal waitForAllTerminalCore
     let mutable lastProgressAt = System.DateTime.UtcNow
 
     let checkForWedgedPlugin () =
+        // A supervised operation can fail without its executor dying. Retain
+        // that failure boundary while naming the actual failed work.
+        match host.FailedOperations() with
+        | (name, failure) :: _ ->
+            raise (
+                System.TimeoutException($"WaitForComplete: owned operation '{name}' failed: {failure.Message}", failure)
+            )
+        | [] -> ()
+
         // A plugin whose message loop died reports work in flight forever, so
         // waiting on it can only time out. This is the cheapest check and the only
         // certain one — no threshold, no inference from silence. Everything below

@@ -1,0 +1,64 @@
+{
+  "status": "both snapshot controls green in compiled full run; additional UI-before-fold test correction pending",
+  "redRun": "3118503f4fe44288bda405481d4ada01",
+  "reportSha256": "cbb5fcd8277624ac635135133a94972a8ebc1d2e337c630aea325f474d287609",
+  "summary": {
+    "tests": 3163,
+    "passed": 3160,
+    "failed": 3,
+    "pending": 0,
+    "skipped": 0,
+    "other": 0,
+    "suites": 1,
+    "start": 1788915434858,
+    "stop": 1788915519240
+  },
+  "failures": [
+    {
+      "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+      "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+    },
+    {
+      "name": "FsHotWatch.Tests.TestPruneRunScopeTests.completion observations remain bound to their supplied owner snapshot(commandName: \\\"check-reach\\\")",
+      "message": "Assert.Equal() Failure: Strings differ\n            \u2193 (pos 1)\nExpected: \\\"\\\"9c4b18824834443a9472ecd4cc6b26f7\\\"\\\"\nActual:   \\\"\\\"fff2ec1c7a8b489289f878ffb0811683\\\"\\\"\n            \u2191 (pos 1)"
+    },
+    {
+      "name": "FsHotWatch.Tests.TestPruneRunScopeTests.completion observations remain bound to their supplied owner snapshot(commandName: \\\"test-scope\\\")",
+      "message": "Assert.Equal() Failure: Strings differ\n             \u2193 (pos 2)\nExpected: \\\"[\\\"9691a153d63744369f977f1823bea0eb\\\"]\\\"\nActual:   \\\"[\\\"52743a4e821942419ffeaf7d51dd74b6\\\",\\\"9691a153d6374\\\"\u00b7\u00b7\u00b7\n             \u2191 (pos 2)"
+    }
+  ],
+  "limits": [
+    "Private earned-verdict minting and remaining closure state migration are incomplete",
+    "No full CI or consumer qualification"
+  ],
+  "correctedRun": {
+    "runId": "fdecbb9ac3154e4e822d4d2b78720bc3",
+    "reportSha256": "2c1a919f12d51195c1ec010dc56dcb27d0f96262f3a0a455953acf4e1fddb2d7",
+    "summary": {
+      "tests": 3163,
+      "passed": 3161,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788915555275,
+      "stop": 1788915644864
+    },
+    "snapshotControls": [
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.completion observations remain bound to their supplied owner snapshot(commandName: \\\"check-reach\\\")",
+        "status": "passed"
+      },
+      {
+        "name": "FsHotWatch.Tests.TestPruneRunScopeTests.completion observations remain bound to their supplied owner snapshot(commandName: \\\"test-scope\\\")",
+        "status": "passed"
+      }
+    ],
+    "remainingFailures": [
+      "FsHotWatch.Tests.FileCommandPluginTests.status command returns false when command failed",
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains"
+    ]
+  },
+  "correctedSourceSha256": "705ad72a6fd925d4216987abccbdf6b3748b11fd18ba2b36f094471999cf89d9"
+}

@@ -40,9 +40,11 @@ let private writePin (dir: string) (version: string) =
     )
 
 let private formatKeyOf (dir: string) (files: string list) =
-    (FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck dir None).CacheKey
+    let handler = FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck dir None
+
+    handler.CacheKey
     |> Option.defaultWith (fun () -> failwith "format-check must declare a CacheKey")
-    |> fun key -> key (FileChanged(SourceChanged files))
+    |> fun key -> key handler.Init (FileChanged(SourceChanged files))
 
 // ---------------------------------------------------------------------------
 // format-check — the plugin whose cold-workspace cost the ticket measures
@@ -135,9 +137,9 @@ let private lintKeyOf (repoRoot: string) (file: string) (source: string) =
             Source = source }
 
     (handler.CacheKey
-     |> Option.defaultWith (fun () -> failwith "lint must declare a CacheKey")) (
-        FileChecked checkResult
-    )
+     |> Option.defaultWith (fun () -> failwith "lint must declare a CacheKey"))
+        handler.Init
+        (FileChecked checkResult)
 
 [<Fact(Timeout = 15000)>]
 let ``lint key is identical in a second checkout with identical content`` () =
@@ -171,7 +173,7 @@ let ``lint key differs across checkouts when the lint configuration differs`` ()
         let handler =
             FsHotWatch.Lint.LintPlugin.create (Some root) (Some configPath) None None
 
-        (handler.CacheKey.Value) (FileChecked(fakeFileCheckResult (Path.Combine(root, "src", "A.fs"))))
+        ((handler.CacheKey.Value handler.Init)) (FileChecked(fakeFileCheckResult (Path.Combine(root, "src", "A.fs"))))
 
     withTwinCheckouts "lint-config" (fun _ -> ()) (fun a b ->
         let same =

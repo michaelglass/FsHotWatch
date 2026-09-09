@@ -217,5 +217,6 @@ let create
               } ]
         |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
-      CacheKey = Some cacheKey
+      CacheKey = Some(fun _state -> cacheKey)
+      PrepareCommit = None
       Teardown = None }

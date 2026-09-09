@@ -1334,8 +1334,17 @@ type TestEvidenceReceipt =
       Seeds: string list
       ZeroSelection: ZeroSelection }
 
+/// Pending verification evidence belongs to the same immutable publication as
+/// run results. Migration consumers must read this value, never closure mirrors.
+type VerificationDebt =
+    { PendingQueue: PendingVerification.Queue
+      RecoveryOutstanding: bool
+      Baseline: FullSuiteBaseline.Baseline option
+      RuntimeObligations: RuntimeCoverageObligations }
+
 type TestPruneState =
     {
+        Debt: VerificationDebt
         PendingAnalysis: Map<string, AnalysisResult list>
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
@@ -1349,6 +1358,10 @@ type TestPruneState =
         /// `test-scope` so the verdict can DECLARE which reports are this run's,
         /// instead of inferring membership from mtimes. `None` until a run completes.
         LastRunId: Guid option
+        /// Completion projections belong to this immutable owner publication.
+        /// Retained readers must not observe a later run through closure-local refs.
+        CompletedRuns: Guid list
+        CheckReach: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option
         /// The seed symbols that SELECTED the last completed run — i.e. the change
         /// that caused those tests to run. Empty for an unfiltered run (nothing
         /// selected it; everything ran) and until a run completes.
@@ -4787,7 +4800,7 @@ let internal createWithLaunchDeadline
     // run passed (or it has no covering test). See PendingVerification.fs.
     //
     // Held in a closure-local mutable cell + Volatile for the same reason
-    // changedSymbolsRef/freshnessRef are — read/written from multiple threads
+    // freshnessRef is — read/written from multiple threads
     // (mailbox + cache intercept).
     let loadedQueue = PendingVerification.load repoRoot
 
@@ -5060,60 +5073,6 @@ let internal createWithLaunchDeadline
             let updated = Set.difference pendingQueueRef symbols
             Volatile.Write(&pendingQueueRef, updated)
             persistQueue " after commit"
-
-    /// The reds no covering run has passed since, mirrored out of the
-    /// mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on another
-    /// thread, and so cannot read the state. Same closure-local + `Volatile` shape as
-    /// `pendingQueueRef`/`changedSymbolsRef`, for the same reason.
-    ///
-    /// Non-empty ⇒ no cache participation at all; see `cacheKeyFor`.
-    let mutable outstandingFailuresRef: OutstandingFailure list = loadedFailures
-
-    /// What the runs in THIS PROCESS have actually covered, mirrored out
-    /// of the mailbox state for the CACHE-KEY intercept — same closure-local + `Volatile`
-    /// shape as `outstandingFailuresRef`, and for the same reason.
-    ///
-    /// EMPTY ⇒ this process holds NO test evidence, and no cache participation on
-    /// `BuildCompleted`; see `cacheKeyFor`. An ABORTED run leaves it empty (its launch
-    /// selection is empty), which is right: a run that never executed establishes nothing.
-    let mutable sessionCoverageRef: RunCoverage = RunCoverage.none
-
-    /// The last completed run's check-vs-confirm projection: which run it
-    /// belongs to, the selection `check` WOULD have used, and whether that selection
-    /// reached a failure the run saw.
-    ///
-    /// A ref rather than a `TestPruneState` field on purpose. The completion handler
-    /// returns state through five branches (queued force-run, rerun-drain, flush-failed,
-    /// stale-rerun, idle) and a record copy that one branch forgot would silently serve
-    /// the PREVIOUS run's projection under this run's id — which is the one failure mode
-    /// a sample recorded for comparison must not have. Written ONCE, before the branches.
-    ///
-    /// `None` until a run completes: nothing has been projected, and the CLI must read
-    /// that as "no sample", never as "they agreed".
-    let mutable checkReachRef: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option =
-        None
-
-    /// Every run this daemon session has COMPLETED, newest first — the
-    /// ledger `test-scope` reports so a check can name every batch it ran instead of
-    /// only the last.
-    ///
-    /// One check provokes several runs: the impact-selected batch, the rerun a mid-run
-    /// change queues behind it, `confirm`'s forced full suite, the drain of a queued
-    /// `run-tests`. Each writes its own `.fshw/test-runs/<runId>/`. The CLI cannot
-    /// enumerate them from the filesystem without inferring membership from mtimes —
-    /// which is precisely what the run directory exists to avoid — so the daemon that
-    /// ran them DECLARES them.
-    ///
-    /// A ref rather than a `TestPruneState` field for the same reason `checkReachRef` is
-    /// one: the completion handler returns state through five branches, and a record
-    /// copy one of them forgot would drop a batch — which is the exact failure this
-    /// ledger exists to end, reintroduced one layer down. Written ONCE, before the
-    /// branches.
-    ///
-    /// Bounded at `SessionRunLedger`. A check that runs more batches than that would be
-    /// under-reported by the oldest ones, which is worse than the truth and much better
-    /// than naming one.
-    let mutable completedRunsRef: Guid list = []
 
     let expectedRuntimeCoverageProjects =
         match testConfigs, coveragePaths with
@@ -5524,18 +5483,13 @@ let internal createWithLaunchDeadline
             ChangedSymbolsAllUncovered = allChangesUncovered
             LastSeeds = seedsThatSelectedTests }
 
-    // Mutable snapshot of ChangedSymbols for the cache key function.
-    // Updated from the Update handler so the cache intercept (which runs
-    // before Update) sees the symbols accumulated from prior FileChecked events.
-    let mutable changedSymbolsRef: string list = []
-
     // Per-file FCS freshness sidecar, loaded once at plugin construction from
     // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
     // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
     // files' stored symbols are trustworthy enough to run detectChanges against.
     //
-    // Closure-local mutable cell + Volatile for the same reason `changedSymbolsRef` is:
-    // the Update handler and the cache intercept read/write it from different threads.
+    // Freshness persistence still has a separate mutable owner; its migration
+    // must preserve durable analysis identity across restarts.
     let mutable freshnessRef: FileFreshness.Store = FileFreshness.load repoRoot
 
     /// The clock `storedRowsExist: bool` did not have. Rows written
@@ -5563,13 +5517,20 @@ let internal createWithLaunchDeadline
     // the already-advanced analysis snapshot → "nothing changed" → zero tests run → false
     // green.
     let initialState =
-        { PendingAnalysis = Map.empty
+        { Debt =
+            { PendingQueue = pendingQueueRef
+              RecoveryOutstanding = ledgerRecoveryOutstandingRef
+              Baseline = fullSuiteBaselineRef
+              RuntimeObligations = runtimeObligationsRef }
+          PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
           ChangedSymbols = pendingQueueRef |> Set.toList
           ChangedFiles = []
           LastResults = None
           LastRunId = None
+          CompletedRuns = []
+          CheckReach = None
           LastSeeds = []
           PendingRerun = false
           BootScanDebtDuringFullRun = Set.empty
@@ -5586,9 +5547,6 @@ let internal createWithLaunchDeadline
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None }
 
-    // Keep the cache-key snapshot consistent with the seeded queue from the
-    // very first event (the cache intercept runs before any Update handler).
-    Volatile.Write(&changedSymbolsRef, initialState.ChangedSymbols)
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
@@ -6287,9 +6245,7 @@ let internal createWithLaunchDeadline
                         // daemon, and a baseline that came back silent would hand the
                         // check its predecessor's runs.
                         let runIds =
-                            Volatile.Read(&completedRunsRef)
-                            |> List.map (fun id -> id.ToString("N"))
-                            |> List.toArray
+                            state.CompletedRuns |> List.map (fun id -> id.ToString("N")) |> List.toArray
 
                         // The full-suite baseline this ledger's greens are
                         // relative to, on EVERY branch — a `running` reply still names the
@@ -6393,9 +6349,9 @@ let internal createWithLaunchDeadline
                 // that has never heard of this command returns the unknown-command
                 // sentinel, which the CLI reads as "no sample" — never as agreement.
                 "check-reach",
-                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (_args: string array) ->
+                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
                     async {
-                        match Volatile.Read(&checkReachRef) with
+                        match state.CheckReach with
                         | None ->
                             return
                                 JsonSerializer.Serialize(
@@ -6567,6 +6523,7 @@ let internal createWithLaunchDeadline
 
     { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
       Init = initialState
+      PrepareCommit = None
       Update =
         fun ctx state event ->
             async {
@@ -6857,7 +6814,6 @@ let internal createWithLaunchDeadline
                                     UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles }
 
                             // Keep the mutable snapshot in sync for the cache key function
-                            Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
 
                             // Stamp the freshness sidecar with the result of THIS check.
                             // After analysis, not at the top, so a failed `analyzeSourceFromResults`
@@ -6883,7 +6839,7 @@ let internal createWithLaunchDeadline
                             // clears the outstanding failure.
                             let analysisFinished = DateTime.UtcNow
 
-                            if List.isEmpty (Volatile.Read(&outstandingFailuresRef)) then
+                            if List.isEmpty (state.OutstandingFailures) then
                                 ctx.ReportStatus(
                                     Completed(
                                         analysisFinished,
@@ -6934,7 +6890,6 @@ let internal createWithLaunchDeadline
                         tryRepairSchemaDrift ex
                         return state
                     | Ok flushedState ->
-                        Volatile.Write(&changedSymbolsRef, flushedState.ChangedSymbols)
 
                         // ── DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are
@@ -7187,18 +7142,6 @@ let internal createWithLaunchDeadline
                     // TestRunCompleted (FileCommandPlugin) must see it on a hit.
                     ctx.EmitTestRunCompleted completed
 
-                    // This run joins the session ledger HERE, before the
-                    // branch explosion below, so no return path can drop it. A run that
-                    // completed is a run whose directory a reader may need, whatever the
-                    // handler goes on to decide about its results.
-                    Volatile.Write(
-                        &completedRunsRef,
-                        completed.RunId
-                        :: (Volatile.Read(&completedRunsRef)
-                            |> List.filter (fun id -> id <> completed.RunId)
-                            |> List.truncate (SessionRunLedger - 1))
-                    )
-
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
                     let testResults: TestResults =
@@ -7235,15 +7178,6 @@ let internal createWithLaunchDeadline
                         failedTestsOfRun repoRoot completed.RunId testResults
                         |> CheckReach.classifyEvidence launch.WouldHaveRun
 
-                    // Classified HERE, against THIS run's failures and the
-                    // selection retained at its launch, and written before the branch
-                    // explosion below so no return path can drop it. Nothing extra runs
-                    // and nothing is re-read: both inputs are already in hand.
-                    Volatile.Write(
-                        &checkReachRef,
-                        Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
-                    )
-
                     let carriedFailures =
                         OutstandingFailure.carriedOver runnableProjects coverage passedTests state.OutstandingFailures
 
@@ -7270,14 +7204,7 @@ let internal createWithLaunchDeadline
                     // outstanding set. There is no wholesale clear a filtered run can
                     // reach for.
                     reportOutstanding ctx unanalyzable outstandingFailures
-                    Volatile.Write(&outstandingFailuresRef, outstandingFailures)
                     persistFailures outstandingFailures
-
-                    // THIS is the moment the process acquires test
-                    // evidence — a run completed and we know what it covered. Until it
-                    // happens, the cache key intercept refuses to let a cached
-                    // BuildCompleted assert a result this process never ran.
-                    Volatile.Write(&sessionCoverageRef, coverage)
 
                     // Carried into EVERY return branch below (rerun-drain, queued
                     // force-run, idle) by rebinding here — a branch that forgot would
@@ -7304,6 +7231,13 @@ let internal createWithLaunchDeadline
                     let state =
                         { state with
                             OutstandingFailures = outstandingFailures
+                            CompletedRuns =
+                                completed.RunId
+                                :: (state.CompletedRuns
+                                    |> List.filter (fun id -> id <> completed.RunId)
+                                    |> List.truncate (SessionRunLedger - 1))
+                            CheckReach =
+                                Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
                             EvidenceReceipt = Some evidenceReceipt
@@ -7837,7 +7771,6 @@ let internal createWithLaunchDeadline
                     //   3. idle.
                     match state.QueuedCommandRuns with
                     | (queuedConfigs, queuedFilter, queuedReply) :: laterRuns ->
-                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
                         recordRunOutcome testResults
 
                         let dequeuedState =
@@ -7909,7 +7842,6 @@ let internal createWithLaunchDeadline
                                     AffectedTests = Analyzed [] }
                         | Ok rerunState ->
                             recordRunOutcome testResults
-                            Volatile.Write(&changedSymbolsRef, rerunState.ChangedSymbols)
 
                             // Consume the deferred dependency-fanout: a build that
                             // landed mid-run stashed its changed test projects here
@@ -7977,7 +7909,6 @@ let internal createWithLaunchDeadline
                         // durable queue (post-commit) is the source of truth and is
                         // mirrored into the cache-key snapshot so a non-empty queue
                         // keeps a cached green from replaying (see CacheKey below).
-                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
                         recordRunOutcome testResults
 
                         return
@@ -8112,7 +8043,7 @@ let internal createWithLaunchDeadline
             // BatchChecked is the cohort-complete flush signal: it fires after the last
             // FileChecked of a batch and before any subsequent BuildCompleted racing the
             // same change, so by the time the agent processes it every FileChecked update
-            // has been folded in and `changedSymbolsRef` agrees with `state.ChangedSymbols`.
+            // has been folded into the state the cache key and Update both receive.
             //
             // BuildCompleted is subscribed UNCONDITIONALLY so the freshness-stamp gate
             // works even when the plugin is analysis-only: with no testConfigs the handler
@@ -8125,9 +8056,9 @@ let internal createWithLaunchDeadline
         // dependencies are structural rather than a convention. The thunks are this
         // closure's live state; `cacheKeyFor` decides which arm forces which — and
         // `FileChecked`, the per-file probe, forces none.
-        let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
+        let cacheKey (state: TestPruneState) (event: PluginEvent<TestPruneMsg>) : ContentHash option =
             let changedSymbolsHash () =
-                Volatile.Read(&changedSymbolsRef)
+                state.ChangedSymbols
                 |> List.distinct
                 |> List.sort
                 |> String.concat "|"
@@ -8176,7 +8107,7 @@ let internal createWithLaunchDeadline
             // no cache participation while a red no covering run has
             // passed is outstanding.
             let hasOutstandingFailures () =
-                not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
+                not (List.isEmpty (state.OutstandingFailures))
 
             // no cache participation on BuildCompleted until a run in
             // THIS process has covered something.
@@ -8187,7 +8118,7 @@ let internal createWithLaunchDeadline
             // cache to guard an assertion it never makes.
             let sessionHasTestEvidence () =
                 Set.isEmpty runnableProjects
-                || not (Set.isEmpty (RunCoverage.coveredProjects (Volatile.Read(&sessionCoverageRef))))
+                || not (Set.isEmpty (RunCoverage.coveredProjects (state.LastCoverage)))
 
             // A full-repo walk of the project files, so it is a thunk
             // like the rest: `FileChecked` fires once per file on every scan and must

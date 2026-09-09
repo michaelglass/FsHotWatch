@@ -714,6 +714,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                         name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   CacheKey = None
+                  PrepareCommit = None
                   Teardown = None }
 
             daemon.Host.RegisterHandler(handler)
@@ -993,6 +994,7 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
                         name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
                   Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
                   CacheKey = None
+                  PrepareCommit = None
                   Teardown = None }
 
             daemon.Host.RegisterHandler(handler)
@@ -1059,6 +1061,7 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
                 |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
               Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.Host.RegisterHandler(handler)
@@ -1139,6 +1142,7 @@ let private crashingHandler () : FsHotWatch.PluginFramework.PluginHandler<unit, 
       Commands = []
       Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 /// A run-once driver whose daemon carries a plugin handed an event it will crash on. The
@@ -1218,6 +1222,7 @@ let private hostWith (commands: (string * (string array -> string)) list) : FsHo
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)

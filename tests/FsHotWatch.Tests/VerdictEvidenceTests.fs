@@ -38,6 +38,7 @@ let ``a reported terminal status cannot mint evidence after its event drains`` (
           Commands = []
           Subscriptions = Set.singleton SubscribeFileChanged
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler handler

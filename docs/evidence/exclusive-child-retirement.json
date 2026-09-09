@@ -1,0 +1,61 @@
+{
+  "scope": "exclusive child cleanup before completion transfer",
+  "actualRed": {
+    "session": 59285,
+    "exitCode": 2,
+    "tests": 1,
+    "failed": 1,
+    "message": "exclusive retirement must establish termination of its tracked child"
+  },
+  "targetedGreen": {
+    "session": 28881,
+    "exitCode": 0,
+    "tests": 1,
+    "passed": 1
+  },
+  "fullIntegration": {
+    "session": 58986,
+    "exitCode": 0,
+    "tests": 72,
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 54.28
+  },
+  "logs": {
+    "red": {
+      "path": "/private/tmp/exclusive-child-red.log",
+      "sha256": "3bde275118248d1a185b5bbc6a54a244deaaf6b2f9899bf8139b3863c195670b"
+    },
+    "targetedGreen": {
+      "path": "/private/tmp/exclusive-child-green.log",
+      "sha256": "9f9583d24a7163e3841cfddff4d4b0fa402b8be5b2047d1785145ed827924f30"
+    },
+    "integration": {
+      "path": "/private/tmp/exclusive-child-integration.log",
+      "sha256": "24ff196c7a2c85f444ac27ae6e5beca35ea600db39e662f1d1d12bd52efc23fe"
+    }
+  },
+  "sourceHashes": {
+    "src/FsHotWatch/ProcessRegistry.fs": "ee4ff909b16a406c8fb3bf1b8661f72e77a37f5450abacfe862591261312b691",
+    "src/FsHotWatch/PluginFramework.fs": "a5b643b1c1a42650bbe9eb9feaad4f7b3b4833759a54edb035a05ed8a30471bd",
+    "tests/FsHotWatch.IntegrationTests/SupervisedProcessTests.fs": "2fcb50e5adf4d75eb11d57c15c11acacb45cee310b329a87f014e432d138d31e"
+  },
+  "unitFollowup": {
+    "runId": "a61dc061d5544b2eb00b658feed40737",
+    "sha256": "91d712a00b479df2b2bc7e9c2b487928898e64ae396e50a69f9e203247e8cd93",
+    "summary": {
+      "tests": 3181,
+      "passed": 3176,
+      "failed": 5,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788921303707,
+      "stop": 1788921393969
+    },
+    "result": "Lint owner-rest correction passes; five remaining debt/private-verdict failures. This predates the separate RunFailure ownership correction."
+  },
+  "limits": "Common finite-deadline/restart/onKill supervision remains unfinished for exclusive/update/commit/preprocessor work. Debt production migration approval still pending; untouched. Full CI and consumer qualification required."
+}

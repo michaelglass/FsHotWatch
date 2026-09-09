@@ -55,6 +55,7 @@ let ``server responds to GetStatus`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -90,6 +91,7 @@ let ``server responds to RunCommand`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -123,6 +125,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -192,6 +195,7 @@ let ``RunCommand with plugin that returns a result`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -261,6 +265,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-p" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -437,6 +442,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
     )
 
@@ -510,6 +516,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
             |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -548,6 +555,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -970,6 +978,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1014,6 +1023,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1065,6 +1075,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -1273,6 +1284,7 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          PrepareCommit = None
           Teardown = None }
 
     host.RegisterHandler(handler)

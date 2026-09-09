@@ -294,6 +294,8 @@ let ``warnings command reflects warning count after lint with warnings`` () =
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/A.fs")
 
     waitForTerminalStatus host "lint" 15000
+    // The command reads committed state; a UI report can precede its owning fold.
+    waitUntil (fun () -> not (host.AnyPluginBusy())) 5000
 
     let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
     test <@ cmdResult.IsSome @>
@@ -316,7 +318,9 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
 
     let file = "/tmp/test/LintReplay.fs"
     let checkResult = fakeFileCheckResult file
-    let cacheKey = (handler.CacheKey.Value(FileChecked checkResult)).Value
+
+    let cacheKey =
+        ((handler.CacheKey.Value handler.Init) (FileChecked checkResult)).Value
 
     // Three live warnings for this file replay into the ledger.
     let findings =

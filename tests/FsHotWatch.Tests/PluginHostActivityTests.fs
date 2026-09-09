@@ -33,6 +33,7 @@ let private makeCtxAwareHandlerWithVerdict
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
@@ -147,6 +148,7 @@ let private failWithoutRunning (name: string) (error: string) (verdict: RunVerdi
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 
 [<Fact(Timeout = 15000)>]
