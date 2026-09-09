@@ -77,7 +77,7 @@ type Queue<'State, 'Request>
             | Running _
             | Finishing _ -> true
           Completed = core.Completed
-          Fault = core.Failure }
+          Failure = core.Failure |> Option.map PluginWorkOwner.OperationFailure }
 
     let rowId =
         store.Register(
@@ -185,7 +185,7 @@ type Queue<'State, 'Request>
         request.Receipt.TrySetException(failure) |> ignore
 
     let rec start (request: Request<'Request>, state: 'State) =
-        let finish outcome =
+        let finish outcome beforeRetire =
             let delivered =
                 mutate (fun core ->
                     match core.Phase with
@@ -215,6 +215,14 @@ type Queue<'State, 'Request>
                     | Result.Error _ -> delivered
                 with failure ->
                     Logging.error name $"work completion notification failed: {failure}"
+                    Result.Error failure
+
+            let notified =
+                try
+                    beforeRetire ()
+                    notified
+                with failure ->
+                    Logging.error name $"work child teardown failed: {failure}"
                     Result.Error failure
 
             let next, delivered =
@@ -278,27 +286,31 @@ type Queue<'State, 'Request>
                     match outcome with
                     | Result.Error failure ->
                         Logging.error name $"deadline scheduling failed: {failure}"
-                        finish (Result.Error failure)
+                        finish (Result.Error failure) ignore
                     | Ok timer ->
                         use timer = timer
 
-                        let outcome =
-                            try
-                                request.Cancellation.Token.ThrowIfCancellationRequested()
-                                // The runner itself is never canceled early: its lifetime
-                                // covers the callback, notification and real cleanup.
-                                let state =
-                                    work state request.Value request.Cancellation.Token (publish request.Id)
-                                    |> fun operation ->
-                                        Async.RunSynchronously(operation, cancellationToken = CancellationToken.None)
+                        ProcessRegistry.withChildScope request.Cancellation.Token (fun settleChildren ->
+                            let outcome =
+                                try
+                                    request.Cancellation.Token.ThrowIfCancellationRequested()
+                                    // The runner itself is never canceled early: its lifetime
+                                    // covers the callback, notification and real cleanup.
+                                    let state =
+                                        work state request.Value request.Cancellation.Token (publish request.Id)
+                                        |> fun operation ->
+                                            Async.RunSynchronously(
+                                                operation,
+                                                cancellationToken = CancellationToken.None
+                                            )
 
-                                request.Cancellation.Token.ThrowIfCancellationRequested()
-                                Ok state
-                            with failure ->
-                                Logging.error name $"supervised work failed: {failure}"
-                                Result.Error failure
+                                    request.Cancellation.Token.ThrowIfCancellationRequested()
+                                    Ok state
+                                with failure ->
+                                    Logging.error name $"supervised work failed: {failure}"
+                                    Result.Error failure
 
-                        finish outcome)
+                            finish outcome settleChildren))
 
             running.ContinueWith(
                 (fun (task: Task) ->
@@ -318,7 +330,7 @@ type Queue<'State, 'Request>
             Logging.error name $"supervised work failed to start: {failure}"
 
             try
-                finish (Result.Error failure)
+                finish (Result.Error failure) ignore
             with transitionFailure ->
                 failExecutor request transitionFailure
 

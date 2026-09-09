@@ -81,6 +81,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
       Init = None
       Subscriptions = Set.singleton SubscribeTestRunCompleted
       CacheKey = None
+      PrepareCommit = None
       Teardown = None
       Commands =
         [ "coverage-ratchet",

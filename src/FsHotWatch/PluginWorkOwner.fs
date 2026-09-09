@@ -11,6 +11,7 @@ type WorkId = private WorkId of Guid
 [<NoComparison; NoEquality>]
 type private WorkKind =
     | Event of TaskCompletionSource<unit> option
+    | Committing of TaskCompletionSource<unit> option
     | Exclusive of string
 
 /// Working cannot contain zero obligations. Construction stays inside this module.
@@ -20,14 +21,36 @@ type private WorkPhase =
     | Working of first: (WorkId * WorkKind) * rest: Map<WorkId, WorkKind>
 
 [<NoComparison; NoEquality>]
+type OwnerFailure =
+    | UpdateFailure of exn
+    | CommitFailure of exn
+    | RunFailure of exn
+    | OperationFailure of exn
+    | ExecutorFailure of exn
+
+    member this.Exception =
+        match this with
+        | UpdateFailure failure
+        | CommitFailure failure
+        | RunFailure failure
+        | OperationFailure failure
+        | ExecutorFailure failure -> failure
+
+[<NoComparison; NoEquality>]
 type Snapshot<'State> =
     private
         { Domain: 'State
           Phase: WorkPhase
           Completed: int64
-          ExecutorFault: exn option }
+          Failure: OwnerFailure option }
 
-    member this.Fault = this.ExecutorFault
+    member this.Fault = this.Failure |> Option.map (fun failure -> failure.Exception)
+
+    member this.ExecutorFault =
+        match this.Failure with
+        | Some(ExecutorFailure failure) -> Some failure
+        | _ -> None
+
     member this.State = this.Domain
     member this.CompletedEvents = this.Completed
 
@@ -39,7 +62,8 @@ type Snapshot<'State> =
     member this.IsRunning key =
         let matches =
             function
-            | Event _ -> false
+            | Event _
+            | Committing _ -> false
             | Exclusive candidate -> candidate = key
 
         match this.Phase with
@@ -49,7 +73,8 @@ type Snapshot<'State> =
     member this.HasExclusiveRun =
         let isExclusive =
             function
-            | Event _ -> false
+            | Event _
+            | Committing _ -> false
             | Exclusive _ -> true
 
         match this.Phase with
@@ -80,7 +105,14 @@ type Row =
       Value: obj
       Busy: bool
       Completed: int64
-      Fault: exn option }
+      Failure: OwnerFailure option }
+
+    member this.Fault = this.Failure |> Option.map (fun failure -> failure.Exception)
+
+    member this.ExecutorFault =
+        match this.Failure with
+        | Some(ExecutorFailure failure) -> Some failure
+        | _ -> None
 
 [<NoComparison; NoEquality>]
 type HostSnapshot =
@@ -106,6 +138,19 @@ type HostSnapshot =
         this.Rows
         |> Map.toList
         |> List.choose (fun (_, row) -> row.Fault |> Option.map (fun ex -> row.Name, ex))
+
+    member this.ExecutorFaults =
+        this.Rows
+        |> Map.toList
+        |> List.choose (fun (_, row) -> row.ExecutorFault |> Option.map (fun ex -> row.Name, ex))
+
+    member this.OperationFaults =
+        this.Rows
+        |> Map.toList
+        |> List.choose (fun (_, row) ->
+            match row.Failure with
+            | Some(OperationFailure failure) -> Some(row.Name, failure)
+            | _ -> None)
 
 [<NoComparison; NoEquality>]
 type private Mutation = Mutate of (HostSnapshot -> HostSnapshot * obj) * TaskCompletionSource<obj>
@@ -215,7 +260,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
           Value = box snapshot
           Busy = snapshot.IsBusy
           Completed = snapshot.CompletedEvents
-          Fault = snapshot.Fault }
+          Failure = snapshot.Failure }
 
     let id =
         store.Register(
@@ -223,7 +268,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 { Domain = initialState
                   Phase = Resting
                   Completed = 0L
-                  ExecutorFault = None }
+                  Failure = None }
         )
 
     let mutate (change: Snapshot<'State> -> Snapshot<'State> * 'Result) : 'Result =
@@ -285,10 +330,101 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 { snapshot with
                     Domain = state
                     Phase = phase work
-                    Completed = snapshot.Completed + 1L },
+                    Completed = snapshot.Completed + 1L
+                    Failure =
+                        match snapshot.Failure with
+                        | Some(UpdateFailure _) -> None
+                        | other -> other },
                 receipt)
 
         receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
+
+    /// Publish a prepared candidate without settling its original event obligation.
+    member _.PublishEventState(id: WorkId, state: 'State) =
+        mutate (fun snapshot ->
+            requireKind
+                id
+                (function
+                | Event _ -> true
+                | _ -> false)
+                snapshot
+
+            let receipt =
+                match Map.find id (entries snapshot.Phase) with
+                | Event receipt -> receipt
+                | _ -> invalidOp "Expected event obligation"
+
+            { snapshot with
+                Domain = state
+                Phase = entries snapshot.Phase |> Map.add id (Committing receipt) |> phase },
+            ())
+
+    /// Only the exact prepared event can acknowledge successful finalization.
+    member _.SettleEvent(id: WorkId, ?preparedCommit: bool) =
+        let preparedCommit = defaultArg preparedCommit false
+
+        let receipt =
+            mutate (fun snapshot ->
+                requireKind
+                    id
+                    (function
+                    | Committing _ -> true
+                    | _ -> false)
+                    snapshot
+
+                let receipt =
+                    match Map.find id (entries snapshot.Phase) with
+                    | Committing receipt -> receipt
+                    | _ -> invalidOp "Expected prepared event obligation"
+
+                { snapshot with
+                    Phase = entries snapshot.Phase |> Map.remove id |> phase
+                    Completed = snapshot.Completed + 1L
+                    Failure =
+                        match snapshot.Failure with
+                        | Some(UpdateFailure _) -> None
+                        | Some(CommitFailure _)
+                        | Some(RunFailure _) when preparedCommit -> None
+                        | other -> other },
+                receipt)
+
+        receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
+
+    /// A failed fold cannot acknowledge success or discard unrelated live workers.
+    member _.FailEvent(id: WorkId, failure: OwnerFailure) =
+        match failure with
+        | ExecutorFailure _ -> invalidArg "failure" "Use FaultExecutor for executor termination"
+        | _ -> ()
+
+        let receipt =
+            mutate (fun snapshot ->
+                requireKind
+                    id
+                    (function
+                    | Event _
+                    | Committing _ -> true
+                    | _ -> false)
+                    snapshot
+
+                let receipt =
+                    match Map.find id (entries snapshot.Phase) with
+                    | Event receipt
+                    | Committing receipt -> receipt
+                    | _ -> invalidOp "Expected event obligation"
+
+                let retainedFailure =
+                    match snapshot.Failure, failure with
+                    | Some(CommitFailure _ as prior), UpdateFailure _
+                    | Some(RunFailure _ as prior), UpdateFailure _ -> prior
+                    | _ -> failure
+
+                { snapshot with
+                    Phase = entries snapshot.Phase |> Map.remove id |> phase
+                    Failure = Some retainedFailure },
+                receipt)
+
+        receipt
+        |> Option.iter (fun completion -> completion.TrySetException(failure.Exception) |> ignore)
 
     /// Transfer to a result fold only while its executor can accept it. A stopped
     /// executor cannot consume a result; the worker still retires only after cleanup.
@@ -298,7 +434,8 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 id
                 (function
                 | Exclusive _ -> true
-                | Event _ -> false)
+                | Event _
+                | Committing _ -> false)
                 snapshot
 
             let remaining = entries snapshot.Phase |> Map.remove id
@@ -329,27 +466,35 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                             (fun (remaining, receipts) id kind ->
                                 match kind with
                                 | Exclusive _ -> Map.add id kind remaining, receipts
-                                | Event None -> remaining, receipts
-                                | Event(Some receipt) -> remaining, receipt :: receipts)
+                                | Event None
+                                | Committing None -> remaining, receipts
+                                | Event(Some receipt)
+                                | Committing(Some receipt) -> remaining, receipt :: receipts)
                             (Map.empty, [])
 
                     { snapshot with
                         Phase = phase remaining
-                        ExecutorFault = Some failure },
+                        Failure = Some(ExecutorFailure failure) },
                     (failure, receipts))
 
         for receipt in receipts do
             receipt.TrySetException(failure) |> ignore
 
-    member _.FailRun(id: WorkId) =
+    member _.FailRun(id: WorkId, failure: exn) =
         mutate (fun snapshot ->
             requireKind
                 id
                 (function
                 | Exclusive _ -> true
-                | Event _ -> false)
+                | Event _
+                | Committing _ -> false)
                 snapshot
 
             { snapshot with
-                Phase = entries snapshot.Phase |> Map.remove id |> phase },
+                Phase = entries snapshot.Phase |> Map.remove id |> phase
+                Failure =
+                    match snapshot.Failure with
+                    | Some(ExecutorFailure _ as prior)
+                    | Some(CommitFailure _ as prior) -> Some prior
+                    | _ -> Some(RunFailure failure) },
             ())

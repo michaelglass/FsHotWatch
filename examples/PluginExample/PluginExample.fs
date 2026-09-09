@@ -61,6 +61,7 @@ let myPlugin: PluginHandler<MyState, unit> =
         |> List.map (fun (name, callback) -> name, FsHotWatch.PluginFramework.PluginCommand.Observe callback)
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 // sync:plugin-example:end
 
@@ -152,5 +153,6 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
       Commands = []
       Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
       CacheKey = None
+      PrepareCommit = None
       Teardown = None }
 // sync:test-verdict-example:end

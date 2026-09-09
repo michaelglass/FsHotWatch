@@ -363,6 +363,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -400,6 +401,7 @@ let ``daemon dispatches file change events to plugins`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -449,6 +451,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -520,6 +523,7 @@ let ``daemon handles ProjectChanged events`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -579,6 +583,7 @@ let ``daemon handles SolutionChanged events`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -768,6 +773,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
               Commands = []
               Subscriptions = PluginSubscriptions.none
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -1242,6 +1248,7 @@ let ``RunOnce completes and returns plugin statuses`` () =
               Commands = []
               Subscriptions = PluginSubscriptions.none
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -2100,3 +2107,179 @@ let ``a forced scan records daemon.scan and daemon.startup phases on the ledger`
                 task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
             with :? AggregateException ->
                 ())
+
+[<Fact(Timeout = 45000)>]
+[<Trait("A104Owner", "GeneratedFanout")>]
+let ``source dependency fanout checks authored files without scheduling generated inputs`` () =
+    withTempDir "daemon-generated-fanout" (fun root ->
+        let checker = sharedChecker.Value
+
+        let projects =
+            [ "A"; "B"; "C" ]
+            |> List.map (fun name ->
+                let directory = Path.Combine(root, "src", name)
+                Directory.CreateDirectory directory |> ignore
+                let project = Path.Combine(directory, name + ".fsproj")
+                let source = Path.Combine(directory, name + ".fs")
+                File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+                File.WriteAllText(source, $"module {name}\nlet value = 1\n")
+                // The injected loader supplies resolved FCS options. Give these
+                // synthetic projects matching fresh restore metadata so this
+                // scheduling control reaches FCS without launching a restore.
+                let assets = FsHotWatch.DepsFreshness.assetsPath project
+                Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+                File.WriteAllText(assets, "{}")
+
+                Assert.Equal(
+                    FsHotWatch.DepsFreshness.Fresh,
+                    FsHotWatch.DepsFreshness.detectProjectFreshness root project
+                )
+
+                project, source)
+
+        let cProject, cSource = projects[2]
+
+        let generated =
+            [ "obj"; "bin" ]
+            |> List.map (fun directory ->
+                let path = Path.Combine(root, "src", "C", directory, "Debug", "Generated.fs")
+                Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+                File.WriteAllText(path, "module Generated\nlet generated = 1\n")
+                Assert.True(File.Exists path)
+                path)
+
+        let loaded =
+            projects
+            |> List.map (fun (project, source) ->
+                { minimalLoadedProject project with
+                    SourceFiles = source :: (if project = cProject then generated else []) })
+
+        let options =
+            loaded
+            |> List.map (fun project ->
+                let source = project.SourceFiles.Head
+
+                let options, _ =
+                    checker.GetProjectOptionsFromScript(
+                        source,
+                        FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source)
+                    )
+                    |> Async.RunSynchronously
+
+                { options with
+                    ProjectFileName = project.ProjectFileName
+                    SourceFiles = List.toArray project.SourceFiles })
+
+        let loader = BlockingWorkspaceLoader loaded
+        loader.Resume()
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                root
+                Daemon.DaemonOptions.defaults
+                loader
+                (fun _ -> options)
+                watcher
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        let aProject, aSource = projects[0]
+        let bProject, bSource = projects[1]
+
+        daemon.Graph.RegisterProject(
+            AbsProjectPath.create bProject,
+            [ AbsFilePath.create bSource ],
+            [ AbsProjectPath.create aProject ]
+        )
+
+        daemon.Graph.RegisterProject(
+            AbsProjectPath.create cProject,
+            (cSource :: generated) |> List.map AbsFilePath.create,
+            [ AbsProjectPath.create bProject ]
+        )
+
+        Assert.Contains(
+            AbsProjectPath.create cProject,
+            daemon.Graph.GetTransitiveDependents(AbsProjectPath.create aProject)
+        )
+
+        let registered = daemon.Pipeline.GetProjectOptions(cProject) |> Option.get
+
+        for path in generated do
+            Assert.Contains(AbsFilePath.create path, daemon.Graph.GetSourceFiles(AbsProjectPath.create cProject))
+            Assert.DoesNotContain(path, registered.SourceFiles)
+
+        let changed =
+            System.Threading.Tasks.TaskCompletionSource<string list>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        let checkedC =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        let cohort =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "fanout-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged files) -> changed.TrySetResult(files) |> ignore
+                        | FileChecked result when result.File = AbsFilePath.create cSource ->
+                            checkedC.TrySetResult(()) |> ignore
+                        | BatchChecked _ -> cohort.TrySetResult(()) |> ignore
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let deliver = callback.Value |> Option.get
+
+        try
+            deliver (SourceChanged [ aSource ])
+
+            let admitted =
+                changed.Task.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult()
+
+            System.Threading.Tasks.Task
+                .WhenAll(checkedC.Task, cohort.Task)
+                .WaitAsync(TimeSpan.FromSeconds 15.0)
+                .GetAwaiter()
+                .GetResult()
+            |> ignore
+
+            Assert.Contains(aSource, admitted)
+            Assert.Contains(cSource, admitted)
+
+            for path in generated do
+                Assert.DoesNotContain(path, admitted)
+        finally
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () ->
+                        daemon.Host.Phases.Snapshot(DateTime.UtcNow)
+                        |> List.exists (fun phase -> phase.Scope = "daemon.check" && phase.Detail <> Some "in flight")),
+                    TimeSpan.FromSeconds 15.0
+                ),
+                "the original watcher batch must drain before disposal"
+            ))

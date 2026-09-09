@@ -1,0 +1,60 @@
+{
+  "scope": "A104/A106 generated-input dependency fanout",
+  "actualRed": {
+    "runId": "e63af25cece944efadb603cb90558bb3",
+    "reportSha256": "8502bd289331d4301dfe1da0fcbeb8c7b6ea78a19ff246f71d7b3b2c5ef80e6e",
+    "summary": {
+      "tests": 3168,
+      "passed": 3166,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788918014432,
+      "stop": 1788918101475
+    },
+    "failures": [
+      {
+        "name": "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains",
+        "message": "Assert.Throws() Failure: No exception was thrown\nExpected: typeof(System.TimeoutException)"
+      },
+      {
+        "name": "FsHotWatch.Tests.DaemonTests.source dependency fanout checks authored files without scheduling generated inputs",
+        "message": "Assert.DoesNotContain() Failure: Item found in collection\n                                                                                                                                                                                        \u2193 (pos 3)\nCollection: [\\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7, \\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7, \\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7, \\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7, \\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7]\nFound:      \\\"/var/folders/vz/5257m1lj09zdyfbvz7s_nhlr0000gn/T/f\\\"\u00b7\u00b7\u00b7"
+      }
+    ]
+  },
+  "fixtureCorrection": "The first control timed out at the restore gate because synthetic projects had no assets. Added fresh fixture metadata and asserted freshness; the recorded actual red reached real FCS checks and failed DoesNotContain after the transitive authored file and batch were observed.",
+  "correction": "Project refresh and ordinary source dependency fanout share checkableFilesOf, using registered Pipeline SourceFiles or generated-filtered graph fallback.",
+  "verification": "Actual red corrected in full unit project: 3168 total, 3167 passed, 1 outstanding VerdictEvidence failure, 0 skipped. Backend compilation succeeded. No full CI, updated integration, consumer qualification, or daemon runtime reload claim.",
+  "correctedRun": {
+    "runId": "5ec2afa1ec6a4e9eb7f1b6d98eb62566",
+    "reportSha256": "d1e19abe1e93b448b3300ffa2836f3ddbb798477e4f429a733c582e6c5008cff",
+    "summary": {
+      "tests": 3168,
+      "passed": 3167,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788918250987,
+      "stop": 1788918335465
+    },
+    "control": [
+      {
+        "name": "FsHotWatch.Tests.DaemonTests.source dependency fanout checks authored files without scheduling generated inputs",
+        "status": "passed",
+        "duration": 621
+      }
+    ],
+    "remainingFailures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains"
+    ]
+  },
+  "sourceSha256": {
+    "src/FsHotWatch/Daemon.fs": "8dfcdee0c36198860e318ac766f7acc3bcf0c85f71495ad09b5ac79d6c955cb4",
+    "tests/FsHotWatch.Tests/DaemonTests.fs": "93241551306429b4ff1ccca25e6e8702a47f3a1ac8128e748245b922950a573a"
+  }
+}

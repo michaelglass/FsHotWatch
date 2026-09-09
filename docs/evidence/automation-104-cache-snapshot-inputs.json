@@ -1,0 +1,80 @@
+{
+  "status": "both cache snapshot controls red-to-green; only private earned-verdict regression fails full unit run",
+  "runs": [
+    {
+      "runId": "4d017f2cb3ea42d18be387aef1922d67",
+      "reportSha256": "e54a48e6d5d11a36957d2dbe691911ef66a9716d30575d1c9e09aeca7df3c52b",
+      "summary": {
+        "tests": 3165,
+        "passed": 3163,
+        "failed": 2,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788916559725,
+        "stop": 1788916646900
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.BuildPluginTests.build cache decisions honor the supplied active-test snapshot",
+          "status": "failed",
+          "message": "the supplied owner state must prevent replay while tests own outputs"
+        }
+      ]
+    },
+    {
+      "runId": "e3dd30f01ea94996892b60228ed1a20b",
+      "reportSha256": "87607c95afc50e60ce955cffd47235982d871a50d14f40ffc67f7e388d05baf2",
+      "summary": {
+        "tests": 3166,
+        "passed": 3164,
+        "failed": 2,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+        "suites": 1,
+        "start": 1788916683961,
+        "stop": 1788916772274
+      },
+      "controls": [
+        {
+          "name": "FsHotWatch.Tests.TestPruneRunScopeTests.test cache hashes the changed symbols of its supplied owner snapshot",
+          "status": "failed",
+          "message": "Assert.NotEqual() Failure: Values are equal\nExpected: Not Some(ContentHash \\\"a66024a636249a81456bc985dd6e96ac00995b665b661f4cd90cfd8236f58c90\\\")\nActual:       Some(ContentHash \\\"a66024a636249a81456bc985dd6e96ac00995b665b661f4cd90cfd8236f58c90\\\")"
+        },
+        {
+          "name": "FsHotWatch.Tests.BuildPluginTests.build cache decisions honor the supplied active-test snapshot",
+          "status": "passed",
+          "message": null
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "No private earned-verdict constructor yet",
+    "No full CI or consumer qualification"
+  ],
+  "sourceHashes": {
+    "src/FsHotWatch.Build/BuildPlugin.fs": "e4ff9d731a5ce690c82de90ad2e737d1aeb06a146f3827694d9ade37ea4c12e1",
+    "src/FsHotWatch.TestPrune/TestPrunePlugin.fs": "2a809b30a568db39123c2a604721a0a8e944455bd50330ee45e949dec690b83c"
+  },
+  "latestFullRun": {
+    "runId": "0a55e867af604d6d8dade6026ce12dc9",
+    "reportSha256": "1d256fba09a7402ddc802dc26089c90af32e6bd97a47a562d75dbbe5a8a70498",
+    "summary": {
+      "tests": 3166,
+      "passed": 3165,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1788916804272,
+      "stop": 1788916893457
+    },
+    "failures": [
+      "FsHotWatch.Tests.VerdictEvidenceTests.a reported terminal status cannot mint evidence after its event drains"
+    ]
+  }
+}

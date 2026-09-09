@@ -62,7 +62,7 @@ let private runCheck (dir: string) (runner: Runner) (file: string) : string =
     waitUntil
         (fun () ->
             match host.GetStatus("format-check") with
-            | Some(Completed _) -> true
+            | Some(Completed _) -> not (host.AnyPluginBusy())
             | _ -> false)
         5000
 

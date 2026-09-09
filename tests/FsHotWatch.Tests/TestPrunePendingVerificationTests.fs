@@ -202,6 +202,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
               Commands = []
               Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
               CacheKey = None
+              PrepareCommit = None
               Teardown = None }
 
         host.RegisterHandler(lifecycleRecorder)

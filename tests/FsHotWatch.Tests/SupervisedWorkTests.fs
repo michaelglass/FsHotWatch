@@ -173,6 +173,11 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
         Assert.True(store.Snapshot.IsBusy)
         Assert.False(active.IsCompleted)
         Assert.IsType<TimeoutException>(snd store.Snapshot.Faults.Head) |> ignore
+
+        Assert.IsType<TimeoutException>(snd store.Snapshot.OperationFaults.Head)
+        |> ignore
+
+        Assert.Empty(store.Snapshot.ExecutorFaults)
         release.Set()
         Assert.Throws<TimeoutException>(fun () -> awaitResult active) |> ignore
         Assert.False(store.Snapshot.IsBusy)
@@ -295,7 +300,7 @@ let ``handoff transition failure settles accepted receipts and closes admission`
         queue.Close()
 
 [<Fact(Timeout = 15000)>]
-let ``worker uses its owner's process registry rather than the request caller's`` () =
+let ``worker scope charges teardown failures to its owner rather than the request caller`` () =
     let store = PluginWorkOwner.Store()
     let ownerRegistry = ProcessRegistry.Registry()
     let callerRegistry = ProcessRegistry.Registry()
@@ -320,14 +325,25 @@ let ``worker uses its owner's process registry rather than the request caller's`
             (fun state (_: unit) -> state),
             (fun state _ -> state),
             ignore,
-            (fun _ _ _ _ -> async { return ProcessRegistry.leaked () |> List.map (fun leak -> leak.Description) })
+            (fun _ _ _ _ ->
+                async {
+                    ProcessRegistry.reportLeak 0 "operation" "fixture teardown failure"
+                    return []
+                })
         )
 
     use _callerScope = ProcessRegistry.install callerRegistry
 
     try
-        queue.Submit((), CancellationToken.None) |> awaitResult
-        Assert.Equal<string list>([ "owner" ], queue.State)
+        Assert.Throws<InvalidOperationException>(fun () -> queue.Submit((), CancellationToken.None) |> awaitResult)
+        |> ignore
+
+        Assert.Equal<string list>(
+            [ "owner"; "operation" ],
+            ownerRegistry.Leaks |> List.map (fun leak -> leak.Description)
+        )
+
+        Assert.Empty(queue.State)
         Assert.Equal<string list>([ "caller" ], ProcessRegistry.leaked () |> List.map (fun leak -> leak.Description))
     finally
         queue.Close()
@@ -342,7 +358,7 @@ let ``admission after caller timeout still launches and settles its work`` () =
               Value = box ()
               Busy = false
               Completed = 0L
-              Fault = None }
+              Failure = None }
         )
 
     use entered = new ManualResetEventSlim(false)
