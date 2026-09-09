@@ -88,6 +88,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
 
     FsHotWatch.Cli.Verdict.create
         FsHotWatch.Cli.Verdict.Check
+        FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
         (BaselineFixtures.reportOf (FullSuite 1))
         tree
         (Some [])
@@ -95,6 +96,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
         0
         [ { Name = "test-prune"
             Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+            Provenance = FsHotWatch.Events.RunProvenance.Observed
             ElapsedMs = Some 5L
             Summary = Some "tests passed" } ]
         []
@@ -857,6 +859,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
         let verdict =
             FsHotWatch.Cli.Verdict.create
                 FsHotWatch.Cli.Verdict.Confirm
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 (BaselineFixtures.reportOf (FullSuite 1))
                 ({ Hash = tree.Hash
                    FileCount = tree.FileCount
@@ -869,6 +872,7 @@ let ``confirm StillApplies fast-path does NOT fire the run-level hooks`` () =
                 0
                 ([ { Name = "test-prune"
                      Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Ok
+                     Provenance = FsHotWatch.Events.RunProvenance.Observed
                      ElapsedMs = Some 1000L
                      Summary = Some "ok" } ]
                 : FsHotWatch.Cli.Verdict.PluginVerdict list)

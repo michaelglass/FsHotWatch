@@ -1110,8 +1110,9 @@ let ``a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — t
           LastRun =
             Some
                 { StartedAt = DateTime.UtcNow
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Elapsed = TimeSpan.Zero
-                  Outcome = FsHotWatch.Events.VerifiedNothing "0 test project(s) ran, no test executed"
+                  Outcome = FsHotWatch.Events.RunOutcome.VerifiedNothing "0 test project(s) ran, no test executed"
                   Summary = Some "NOTHING VERIFIED: 0 test project(s) ran, no test executed"
                   ActivityTail = [] }
           Diagnostics = DiagnosticCounts.empty }

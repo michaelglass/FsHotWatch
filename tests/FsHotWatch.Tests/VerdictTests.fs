@@ -107,6 +107,7 @@ type private Spec =
 let private build (s: Spec) : Verdict.Verdict =
     Verdict.create
         s.Command
+        FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
         { Scope = s.Scope
           RunId = s.RunId
           SessionRuns = []
@@ -136,6 +137,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Plugins =
         [ { Name = "test-prune"
             Outcome = Verdict.PluginOutcome.Ok
+            Provenance = FsHotWatch.Events.RunProvenance.Observed
             ElapsedMs = Some 211_000L
             Summary = Some "6 passed, 0 failed in 6 projects" } ]
       Suites = []
@@ -1568,6 +1570,7 @@ let private status (view: StatusView) (elapsed: TimeSpan) (outcome: RunOutcome) 
       LastRun =
         Some
             { StartedAt = DateTime.UtcNow
+              Provenance = FsHotWatch.Events.RunProvenance.Observed
               Elapsed = elapsed
               Outcome = outcome
               Summary = summary
@@ -1712,6 +1715,7 @@ let ``every plugin outcome round-trips — and an unrecognized one is FAIL, not 
                     Plugins =
                         [ { Name = "p"
                             Outcome = outcome
+                            Provenance = FsHotWatch.Events.RunProvenance.Observed
                             ElapsedMs = Some 5L
                             Summary = None } ] }
 
@@ -1761,7 +1765,7 @@ let ``a verdict file that says GREEN while a plugin says FAIL is not a verdict �
             File.WriteAllText(
                 Verdict.path root,
                 $$"""{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1} },
-                    "plugins":[{"name":"p","outcome":"{{pluginOutcome}}"}]}"""
+                    "plugins":[{"name":"p","outcome":"{{pluginOutcome}}","replayed":false}]}"""
             )
 
             Verdict.read root
@@ -1890,6 +1894,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 root
                 []
                 mode
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 (BaselineFixtures.reportOf scope)
                 Verdict.NoReading
@@ -1997,6 +2002,7 @@ let private publishConfirm
         root
         []
         CheckVerdict.Confirmation
+        FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
         false
         (BaselineFixtures.reportOf finalScope)
         (match impactScoped with
@@ -2087,6 +2093,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
                 root
                 []
                 CheckVerdict.InnerLoop
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 (BaselineFixtures.reportOf (FullSuite 6))
                 Verdict.NoReading
@@ -2560,7 +2567,7 @@ let ``a verified-nothing plugin verdict is worded from the case when the record 
         status
             (StatusView.Completed DateTime.UtcNow)
             (TimeSpan.FromSeconds 1.0)
-            (Events.VerifiedNothing "no project was selected")
+            (Events.RunOutcome.VerifiedNothing "no project was selected")
             None
 
     match Verdict.pluginVerdicts true DateTime.UtcNow (Map.ofList [ "test-prune", wordless ]) with
@@ -2790,7 +2797,7 @@ let ``a plugin with no elapsedMs is NOT a zero-length run — it is an unmeasure
         writeRaw
             root
             """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
-                "plugins":[{"name":"test-prune","outcome":"ok"}]}"""
+                "plugins":[{"name":"test-prune","outcome":"ok","replayed":false}]}"""
 
         match Verdict.read root with
         | Verdict.Reading.Found v ->
@@ -2806,7 +2813,7 @@ let ``a genuinely instantaneous run is still MEASURED — Some 0L, not None`` ()
         writeRaw
             root
             """{"schema":"fshw-verdict-v1","treeHash":"sha256:x","outcome":{"kind":"green","baseline":{"kind":"full-suite-run","runId":"b0000000110040008000000000000110","earnedAt":"2026-09-06T12:00:00.0000000Z","projects":1}},
-                "plugins":[{"name":"build","outcome":"ok","elapsedMs":0}]}"""
+                "plugins":[{"name":"build","outcome":"ok","elapsedMs":0,"replayed":false}]}"""
 
         match Verdict.read root with
         | Verdict.Reading.Found v -> test <@ v.Plugins.Head.ElapsedMs = Some 0L @>
@@ -3387,6 +3394,7 @@ let ``a red run with every suite green NAMES the failing plugin — the test tab
                 Plugins =
                     [ { Name = "analyzers"
                         Outcome = Verdict.PluginOutcome.Fail
+                        Provenance = FsHotWatch.Events.RunProvenance.Observed
                         ElapsedMs = Some 13L
                         Summary = Some "analyzed 1164 files, 3 findings (3 errors, 0 warnings)" } ]
                 Suites = allSuitesGreen }
@@ -3812,6 +3820,7 @@ let private redCheckWithCauses (pluginSummary: string) =
         Plugins =
             [ { Name = "coverage-count-gate"
                 Outcome = Verdict.PluginOutcome.Fail
+                Provenance = FsHotWatch.Events.RunProvenance.Observed
                 ElapsedMs = Some 12L
                 Summary = Some pluginSummary } ]
         RedCauses = [ fcsCause "coverage count gate: FAILED — 1 file(s) below floor" ] }
@@ -5716,6 +5725,7 @@ let ``create refuses a no-test-suite green beside a scope that says tests ran`` 
     let attempt () =
         Verdict.create
             spec.Command
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
             (BaselineFixtures.reportOf spec.Scope)
             spec.Tree
             spec.Excluded

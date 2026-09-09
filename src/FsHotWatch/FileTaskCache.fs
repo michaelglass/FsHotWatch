@@ -42,6 +42,10 @@ let private serializeVerdict (obj: JsonObject) (verdict: RunVerdict) =
     obj["summary"] <- verdict.Summary
     obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
 
+    match verdict.NotEvaluatedReason with
+    | Some reason -> obj["notEvaluated"] <- reason
+    | None -> ()
+
     match verdict.NothingVerified with
     | Some detail -> obj["nothingVerified"] <- detail
     | None -> ()
@@ -80,9 +84,10 @@ let private serializeStatus (status: CachedStatus) =
 let private deserializeVerdict (obj: JsonObject) : RunVerdict =
     let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
 
-    match obj["nothingVerified"] with
-    | null -> RunVerdict.create (obj["summary"].GetValue<string>()) elapsed
-    | detail -> RunVerdict.verifiedNothing (detail.GetValue<string>()) elapsed
+    match obj["notEvaluated"], obj["nothingVerified"] with
+    | reason, _ when not (isNull reason) -> RunVerdict.notEvaluated (reason.GetValue<string>()) elapsed
+    | _, null -> RunVerdict.create (obj["summary"].GetValue<string>()) elapsed
+    | _, detail -> RunVerdict.verifiedNothing (detail.GetValue<string>()) elapsed
 
 let private deserializeStatus (obj: JsonObject) : CachedStatus =
     match obj["type"].GetValue<string>() with
@@ -257,6 +262,10 @@ let private serializeCachedEvent (evt: CachedEvent) =
         | CommandFailed output ->
             obj["succeeded"] <- false
             obj["output"] <- output
+        | CommandNotEvaluated output ->
+            obj["succeeded"] <- false
+            obj["notEvaluated"] <- true
+            obj["output"] <- output
 
     obj
 
@@ -321,7 +330,9 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         let output = obj["output"].GetValue<string>()
 
         let outcome =
-            if obj["succeeded"].GetValue<bool>() then
+            if obj.ContainsKey("notEvaluated") && obj["notEvaluated"].GetValue<bool>() then
+                CommandNotEvaluated output
+            elif obj["succeeded"].GetValue<bool>() then
                 CommandSucceeded output
             else
                 CommandFailed output

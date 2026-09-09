@@ -70,6 +70,7 @@ let private runSummary (lastRun: RunRecord) : string =
     | _, Some s -> s
     | CompletedRun, None -> ""
     | FailedRun err, None -> summariseError err
+    | NotEvaluated reason, None -> summariseError reason
     | TimedOut reason, None -> summariseError reason
     | VerifiedNothing detail, None -> RunSummary.nothingVerified detail
 
@@ -125,6 +126,12 @@ let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStat
     | StatusView.Completed _ when
         DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
         || ParsedPluginStatus.verifiedNothing parsed
+        || (parsed.LastRun
+            |> Option.exists (fun r ->
+                r.Provenance = RunProvenance.Unknown
+                || (match r.Outcome with
+                    | NotEvaluated _ -> true
+                    | _ -> false)))
         ->
         Glyph.warn
     | StatusView.Completed _ -> Glyph.check
@@ -494,6 +501,7 @@ module private Agent =
                     $"timed out: %s{summary}"
 
             $"%s{name}: %s{tokenOf state} summary=\"%s{display}\""
+        | State.NotEvaluated
         | State.Fail
         | State.Warn ->
             match summaryFor parsed |> Option.map escapeSummary with

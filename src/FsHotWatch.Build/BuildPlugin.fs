@@ -1092,7 +1092,8 @@ let createWith
                 // --- CommandCompleted: track dependency satisfaction ---
                 | CommandCompleted result when depNames.Contains(result.Name) ->
                     match result.Outcome with
-                    | FsHotWatch.Events.CommandFailed _ ->
+                    | FsHotWatch.Events.CommandFailed _
+                    | FsHotWatch.Events.CommandNotEvaluated _ ->
                         ctx.ReportStatus(
                             PluginStatus.failedNow
                                 $"dependency failed: %s{result.Name}"
@@ -1373,7 +1374,8 @@ let createWith
                     | stale ->
                         info "build" (replayBypassDiagnostic stale)
                         None
-                | CommandFailed _ -> None
+                | CommandFailed _
+                | CommandNotEvaluated _ -> None
 
             // Test lifecycle events exist only to maintain ActiveTestRuns. They must
             // reach Update; replaying a cached BuildCompleted here launches another

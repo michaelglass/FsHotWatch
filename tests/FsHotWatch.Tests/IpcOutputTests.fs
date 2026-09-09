@@ -1617,6 +1617,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               LastRun =
                 Some
                     { StartedAt = System.DateTime.UtcNow.AddSeconds(-30.0)
+                      Provenance = FsHotWatch.Events.RunProvenance.Observed
                       Elapsed = System.TimeSpan.FromSeconds 25.0
                       Outcome = CompletedRun
                       Summary = Some "21 passed, 0 failed in 7 projects"
@@ -1628,6 +1629,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 repoRoot
                 []
                 CheckVerdict.Confirmation
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 fullRun
                 Verdict.NoReading
@@ -1685,6 +1687,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified))
                 Verdict.NoReading
@@ -1737,6 +1740,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
             repoRoot
             []
             CheckVerdict.Confirmation
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
             false
             (BaselineFixtures.reportOf (FullSuite 1))
             Verdict.NoReading
@@ -1753,6 +1757,7 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified))
                 Verdict.NoReading
@@ -1776,6 +1781,7 @@ let private publishPrior (repoRoot: string) (kind: string) =
             repoRoot
             []
             CheckVerdict.InnerLoop
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
             false
             (BaselineFixtures.reportOf scope)
             Verdict.NoReading
@@ -1842,6 +1848,7 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
+                FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
                 false
                 (BaselineFixtures.reportOf noTests)
                 Verdict.NoReading
@@ -1889,6 +1896,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             repoRoot
             []
             mode
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
             false
             (BaselineFixtures.reportOf (FullSuite 1))
             Verdict.NoReading

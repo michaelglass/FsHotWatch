@@ -886,13 +886,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // the rendering never passes a replay off as a fresh
                                 // run. Idempotent: a re-cached replay doesn't stack
                                 // suffixes.
-                                let cachedSuffix = " (cached)"
-
-                                let markCached (v: RunVerdict) =
-                                    if v.Summary.EndsWith(cachedSuffix, System.StringComparison.Ordinal) then
-                                        v
-                                    else
-                                        RunVerdict.create (v.Summary + cachedSuffix) v.Elapsed
+                                let markCached = RunVerdict.asReplayed
 
                                 // What the replayed verdict may say is bounded by the
                                 // entry's scope:
@@ -1154,6 +1148,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                                 let cachedStatus =
                                     match capturedStatus, compKey.File with
+                                    | Some(Completed(_, v)), _ when v.NotEvaluatedReason.IsSome -> None
                                     | Some(Completed(_, v)), Some _ -> Some(TaskCache.CachedFileCompleted v.Elapsed)
                                     | Some(Failed(err, _, v)), Some _ ->
                                         Some(TaskCache.CachedFileFailed(err, v.Elapsed))

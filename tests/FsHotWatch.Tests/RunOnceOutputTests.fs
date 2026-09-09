@@ -767,6 +767,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             repoRoot
             []
             FsHotWatch.Cli.CheckVerdict.InnerLoop
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
             false
             (BaselineFixtures.reportOf (FsHotWatch.Cli.IpcParsing.FullSuite 1))
             FsHotWatch.Cli.Verdict.NoReading
@@ -1532,3 +1533,107 @@ let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in bo
         let v = verdictOnDisk repoRoot
         test <@ v.ExitCode = 0 @>
         test <@ BaselineFixtures.isGreen (v.Outcome) @>)
+
+[<Theory(Timeout = 60000)>]
+[<InlineData(false, false)>]
+[<InlineData(false, true)>]
+[<InlineData(true, false)>]
+[<InlineData(true, true)>]
+let ``run-once coverage failure records independent FCS completeness from its final reading`` incomplete reread =
+    withProjectOnlyRepo "runonce-completeness" (fun repoRoot ->
+        let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
+        let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
+        System.IO.File.WriteAllText(sourcePath, "module Library\n")
+        System.IO.File.WriteAllText(
+            projectPath,
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup><ItemGroup><Compile Include="Library.fs" /></ItemGroup></Project>"""
+        )
+
+        let createDaemon root =
+            let daemon =
+                Daemon.createWith
+                    (Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>)
+                    root
+                    Daemon.DaemonOptions.defaults
+
+            let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+                { Name = FsHotWatch.PluginFramework.PluginName.create "coverage-count-gate"
+                  Init = ()
+                  Update = fun _ctx state _event -> async { return state }
+                  Commands =
+                    [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
+                      fun _ctx _state _args ->
+                          async {
+                              return
+                                  """{"scope":"full","ranProjects":1,"totalProjects":1"""
+                                  + BaselineFixtures.replyFragment
+                                  + "}"
+                          }
+                      "fail-coverage",
+                      fun ctx _state _args ->
+                          async {
+                              ctx.ReportStatus(
+                                  FsHotWatch.Events.PluginStatus.failedNow
+                                      "coverage floor fell"
+                                      "coverage floor fell"
+                                      TimeSpan.Zero
+                              )
+                              return "coverage failure recorded"
+                          } ]
+                  Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+                  CacheKey = None
+                  Teardown = None }
+
+            daemon.Host.RegisterHandler(handler)
+            daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+            daemon.RegisterProject(projectPath, makeProjectOptions projectPath [ sourcePath ] [])
+            daemon.Host.EmitFileChanged(SourceChanged [ sourcePath ])
+            daemon
+
+        let mutable scanCount = 0
+
+        let runScan (daemon: Daemon) =
+            scanCount <- scanCount + 1
+
+            if not reread || scanCount > 1 then
+                if not incomplete then
+                    daemon.Host.EmitFileChecked(
+                        { File = AbsFilePath.create sourcePath
+                          Source = ""
+                          ParseResults = Unchecked.defaultof<_>
+                          CheckResults = FullCheck(Unchecked.defaultof<_>)
+                          ProjectOptions = Unchecked.defaultof<_>
+                          Version = 0L }
+                    )
+
+                daemon.Host.RunCommand("fail-coverage", [||]) |> Async.RunSynchronously |> ignore
+
+            daemon.Host.GetAllStatuses()
+
+        let code =
+            FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
+                runScan
+                (fun _ -> "")
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+                false
+                createDaemon
+                repoRoot
+                (noTestProjectsConfig ())
+                None
+
+        test <@ scanCount = (if reread then 2 else 1) @>
+        test <@ code = 1 @>
+
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.Outcome = FsHotWatch.Cli.Verdict.Red @>
+            let coverage = verdict.Plugins |> List.find (fun p -> p.Name = "coverage-count-gate")
+            test <@ coverage.Outcome = FsHotWatch.Cli.Verdict.PluginOutcome.Fail @>
+
+            match verdict.VerificationCompleteness with
+            | FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.Complete -> test <@ not incomplete @>
+            | FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.Incomplete reason ->
+                test <@ incomplete @>
+                test <@ not (String.IsNullOrWhiteSpace reason) @>
+            | other -> failwithf "the final in-process reading must be recorded, got %A" other
+        | other -> failwithf "expected readable RED, got %A" other)

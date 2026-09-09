@@ -149,9 +149,9 @@ type PluginHost
                         match status with
                         | Completed(at, verdict) ->
                             let outcome = RunOutcome.ofCompletedVerdict verdict
-                            activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at)
+                            activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at, verdict.Provenance)
                         | Failed(err, at, verdict) ->
-                            activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
+                            activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at, verdict.Provenance)
                         | Idle
                         | Running _ -> ()
 

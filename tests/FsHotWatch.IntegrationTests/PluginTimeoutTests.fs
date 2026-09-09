@@ -52,6 +52,7 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
             "10"
             "/tmp"
             (Some 1)
+            None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
