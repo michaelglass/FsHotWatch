@@ -86,6 +86,9 @@
     <Compile Include="RunClaimTests.fs" />
     <Compile Include="VerdictTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
+    <Compile Include="A481OutcomeContractTests.fs" />
+    <Compile Include="A481VerificationCompletenessTests.fs" />
+    <Compile Include="A481PublicationFailureTests.fs" />
     <Compile Include="ProgressRendererTests.fs" />
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />

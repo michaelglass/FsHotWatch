@@ -26,6 +26,7 @@ let private makeSubtask (key: string) (label: string) (agoSec: float) : Subtask 
 
 let private completedRun (ago: TimeSpan) (elapsed: TimeSpan) (summary: string option) : RunRecord =
     { StartedAt = now - ago
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Elapsed = elapsed
       Outcome = CompletedRun
       Summary = summary
@@ -33,6 +34,7 @@ let private completedRun (ago: TimeSpan) (elapsed: TimeSpan) (summary: string op
 
 let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunRecord =
     { StartedAt = now - ago
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Elapsed = elapsed
       Outcome = FailedRun error
       Summary = None
@@ -40,6 +42,7 @@ let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunR
 
 let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : RunRecord =
     { StartedAt = now - ago
+      Provenance = FsHotWatch.Events.RunProvenance.Observed
       Elapsed = elapsed
       Outcome = TimedOut reason
       Summary = None
@@ -321,6 +324,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
           LastRun =
             Some
                 { StartedAt = startedAt
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Elapsed = TimeSpan.FromSeconds 6.4
                   Outcome = FailedRun err
                   Summary = None
@@ -348,6 +352,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
           LastRun =
             Some
                 { StartedAt = startedAt
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Elapsed = TimeSpan.FromSeconds 3.2
                   Outcome = CompletedRun
                   Summary = Some "built 4 projects"
@@ -372,6 +377,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
           LastRun =
             Some
                 { StartedAt = startedAt
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Elapsed = TimeSpan.FromSeconds 1.0
                   Outcome = CompletedRun
                   Summary = Some "ok"

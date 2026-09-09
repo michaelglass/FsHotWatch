@@ -390,20 +390,13 @@ module CheckInputs =
 /// NOT ignore the two evidence questions: `NoTestsRun` ("we tested nothing") and
 /// `ScopeUnreadable` ("we could not find out whether we tested anything") are refused in
 /// both modes.
-let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
+/// Independent of failures: did the verification prerequisites finish?
+/// The ordinary verdict uses these same branches after its failure precedence.
+let private nonFailureVerdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
     let coverage = inputs.Coverage
     let testScope = inputs.Scope
 
-    // AUTOMATION-303. Checked BEFORE `FailuresFound` and nowhere else, because it is a
-    // REFINEMENT of it: this branch is only reachable when the run does have failures,
-    // and it asks the narrower question the red never asked — are any of them about this
-    // tree? A `false` here falls straight through to the red, so the ONLY way to leave
-    // `FailuresFound` is to prove every failure unattributable.
-    if CheckInputs.onlyUnattributableFailures inputs then
-        CheckOutcome.StaleDaemonState inputs.UnattributableDiagnostics
-    elif CheckInputs.hasFailures inputs then
-        CheckOutcome.FailuresFound
-    elif RunnerAbort.isAborted inputs.RunnerAborted then
+    if RunnerAbort.isAborted inputs.RunnerAborted then
         // AUTOMATION-294. No real failure, but a test host was KILLED mid-run, so its
         // tests did not finish. Non-green, but "could not complete", never a red.
         //
@@ -480,6 +473,34 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             | Confirmation, (ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.UnearnedScope testScope
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
+
+/// Whether verification finished, separately from whether its checks passed.
+/// A failed coverage check can coexist with complete verification; a failed check
+/// must never conceal an unchecked file, deferred build or aborted test host.
+[<RequireQualifiedAccess>]
+type VerificationCompleteness =
+    | NotRecorded
+    | Complete
+    | Incomplete of reason: string
+
+module VerificationCompleteness =
+    let ofInputs (mode: CheckMode) (inputs: CheckInputs) : VerificationCompleteness =
+        match nonFailureVerdict mode inputs with
+        | CheckOutcome.Clean _ -> VerificationCompleteness.Complete
+        | other -> VerificationCompleteness.Incomplete(sprintf "verification did not finish: %A" other)
+
+let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
+    // AUTOMATION-303. Checked BEFORE `FailuresFound` and nowhere else, because it is a
+    // REFINEMENT of it: this branch is only reachable when the run does have failures,
+    // and it asks the narrower question the red never asked — are any of them about this
+    // tree? A `false` here falls straight through to the red, so the ONLY way to leave
+    // `FailuresFound` is to prove every failure unattributable.
+    if CheckInputs.onlyUnattributableFailures inputs then
+        CheckOutcome.StaleDaemonState inputs.UnattributableDiagnostics
+    elif CheckInputs.hasFailures inputs then
+        CheckOutcome.FailuresFound
+    else
+        nonFailureVerdict mode inputs
 
 /// Must `confirm` go and PRODUCE the evidence it is about to demand?
 ///

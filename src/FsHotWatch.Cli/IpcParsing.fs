@@ -343,6 +343,9 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
         | Some "verifiedNothing" ->
             let detail = tryGetStringProp el "detail" |> Option.defaultValue ""
             Some(VerifiedNothing detail)
+        | Some "notEvaluated" ->
+            let reason = tryGetStringProp el "reason" |> Option.defaultValue "evaluation was declined"
+            Some(NotEvaluated reason)
         | _ -> None
 
 /// Parse a lastRun.outcome field (tagged-object shape).
@@ -390,6 +393,12 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
             let summary = tryGetStringProp r "summary"
 
+            let provenance =
+                match r.TryGetProperty("replayed") with
+                | true, value when value.ValueKind = JsonValueKind.True -> RunProvenance.Replayed
+                | true, value when value.ValueKind = JsonValueKind.False -> RunProvenance.Observed
+                | _ -> RunProvenance.Unknown
+
             let tail =
                 match r.TryGetProperty("activityTail") with
                 | true, arr when arr.ValueKind = JsonValueKind.Array ->
@@ -400,6 +409,7 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
                 { StartedAt = startedAt
                   Elapsed = TimeSpan.FromMilliseconds(float elapsedMs)
                   Outcome = outcome
+                  Provenance = provenance
                   Summary = summary
                   ActivityTail = tail }
         | _ -> None

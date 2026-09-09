@@ -354,6 +354,8 @@ let private runOnceAndVerdictIn
         ///
         /// The in-process half of "one verdict, two transports" (the daemon's half is
         /// `IpcOutput.checkInputs`). It OBSERVES; it decides nothing.
+        let finalCompleteness = ref CheckVerdict.VerificationCompleteness.NotRecorded
+
         let reread () : CheckVerdict.CheckInputs =
             // A watcher may begin project rediscovery after the preceding scan/settle.
             // Never grade the transient cleared graph/pipeline as complete: await the
@@ -362,14 +364,18 @@ let private runOnceAndVerdictIn
             finalStatuses.Value <- snapshotHost daemon.Host (daemon.Host.GetAllStatuses())
             let run = readTestRun daemon.Host |> observeTestRun
 
-            { PluginStatuses = finalStatuses.Value
-              FailingDiagnostics = failingCount daemon noWarnFail pluginName
-              UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
-              WaitingOnBuild = waitingOnBuild daemon pluginName
-              RunnerAborted = runnerAborted daemon pluginName
-              Coverage = liveCoverage daemon
-              Scope = run.Scope
-              Baseline = run.Baseline }
+            let inputs: CheckVerdict.CheckInputs =
+                { PluginStatuses = finalStatuses.Value
+                  FailingDiagnostics = failingCount daemon noWarnFail pluginName
+                  UnattributableDiagnostics = unattributableCount daemon noWarnFail pluginName
+                  WaitingOnBuild = waitingOnBuild daemon pluginName
+                  RunnerAborted = runnerAborted daemon pluginName
+                  Coverage = liveCoverage daemon
+                  Scope = run.Scope
+                  Baseline = run.Baseline }
+
+            finalCompleteness.Value <- CheckVerdict.VerificationCompleteness.ofInputs checkMode inputs
+            inputs
 
         /// The convergence re-scan: scan again and settle. In-process, a re-`RunOnce`
         /// IS the re-scan.
@@ -473,6 +479,7 @@ let private runOnceAndVerdictIn
                 repoRoot
                 config.Exclude
                 checkMode
+                finalCompleteness.Value
                 noWarnFail
                 finalRun.Value
                 checkScoped

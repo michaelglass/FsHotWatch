@@ -1282,6 +1282,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
             { stripConfig defaults with
                 FileCommands =
                     [ {| PluginName = "coverage-ratchet"
+                         NotEvaluatedExitCode = None
                          Pattern = Some "*.ratchet.json"
                          AfterTests = None
                          Command = "echo"
@@ -1347,6 +1348,7 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
             { stripConfig defaults with
                 FileCommands =
                     [ {| PluginName = "post-test-hook"
+                         NotEvaluatedExitCode = None
                          Pattern = None
                          AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
                          Command = "echo"
@@ -1413,12 +1415,14 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                        DependsOn = [] |}
             FileCommands =
                 [ {| PluginName = "a"
+                     NotEvaluatedExitCode = None
                      Pattern = Some "*.md"
                      AfterTests = None
                      Command = "echo"
                      Args = ""
                      TimeoutSec = None |}
                   {| PluginName = "b"
+                     NotEvaluatedExitCode = None
                      Pattern = Some "*.fsx"
                      AfterTests = None
                      Command = "echo"

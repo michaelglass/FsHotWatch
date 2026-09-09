@@ -69,6 +69,7 @@ type CommandResult =
     | NeverRun
     | Succeeded of output: string
     | CommandFailed of output: string
+    | NotEvaluated of output: string
 
 type FileCommandState =
     {
@@ -225,8 +226,14 @@ let create
     (args: string)
     (repoRoot: string)
     (timeoutSec: int option)
+    (notEvaluatedExitCode: int option)
     : PluginHandler<FileCommandState, unit> =
     let nameStr = PluginName.value name
+
+    match notEvaluatedExitCode with
+    | Some code when code <= 0 || code > 255 ->
+        invalidArg (nameof notEvaluatedExitCode) "not-evaluated exit code must be between 1 and 255"
+    | _ -> ()
 
     let cmdTimeout =
         match timeoutSec with
@@ -268,19 +275,29 @@ let create
                                 // `output` (rendered) rather than the raw capture: an
                                 // incomplete drain is named in the text a human reads.
                                 | ProcessOutcome.Succeeded _ -> Succeeded output
+                                | ProcessOutcome.Failed(code, _) when Some code = notEvaluatedExitCode ->
+                                    NotEvaluated output
                                 | _ -> CommandFailed output
 
                             let finishedAt = DateTime.UtcNow
                             let elapsed = finishedAt - runStarted
 
-                            match processResult with
-                            | ProcessOutcome.Succeeded _ ->
+                            match cmdResult, processResult with
+                            | Succeeded _, _ ->
                                 ctx.ClearErrors $"<%s{nameStr}>"
 
                                 ctx.ReportStatus(
                                     Completed(finishedAt, RunVerdict.create $"%s{nameStr}: succeeded" elapsed)
                                 )
-                            | ProcessOutcome.TimedOut(after, _, kill) ->
+                            | NotEvaluated _, _ ->
+                                ctx.ClearErrors $"<%s{nameStr}>"
+                                let reason =
+                                    if String.IsNullOrWhiteSpace output then
+                                        $"%s{nameStr}: evaluation declined with the configured not-evaluated exit code"
+                                    else
+                                        $"%s{nameStr}: not evaluated — %s{output.Trim()}"
+                                ctx.ReportStatus(Completed(finishedAt, RunVerdict.notEvaluated reason elapsed))
+                            | _, ProcessOutcome.TimedOut(after, _, kill) ->
                                 // `output` is `outputOf processResult`, so a failed kill is
                                 // already spelled out in full in the error entry; the verdict
                                 // and summary are one-liners, so they carry the short marker.
@@ -300,7 +317,8 @@ let create
                                             elapsed
                                     )
                                 )
-                            | ProcessOutcome.Failed _ ->
+                            | CommandFailed _, _
+                            | NeverRun, _ ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
 
                                 ctx.ReportStatus(
@@ -314,9 +332,11 @@ let create
                             ctx.EmitCommandCompleted(
                                 { Name = nameStr
                                   Outcome =
-                                    match processResult with
-                                    | ProcessOutcome.Succeeded _ -> FsHotWatch.Events.CommandSucceeded output
-                                    | _ -> FsHotWatch.Events.CommandFailed output }
+                                    match cmdResult with
+                                    | Succeeded _ -> FsHotWatch.Events.CommandSucceeded output
+                                    | NotEvaluated _ -> FsHotWatch.Events.CommandNotEvaluated output
+                                    | CommandFailed _
+                                    | NeverRun -> FsHotWatch.Events.CommandFailed output }
                             )
 
                             return cmdResult
@@ -422,6 +442,8 @@ let create
                   match state.LastResult with
                   | Succeeded _ -> return JsonSerializer.Serialize({| passed = true |})
                   | CommandFailed _ -> return JsonSerializer.Serialize({| passed = false |})
+                  | NotEvaluated output ->
+                      return JsonSerializer.Serialize({| status = "not-evaluated"; reason = output |})
                   | NeverRun -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions = CommandTrigger.subscriptions trigger
@@ -440,7 +462,10 @@ let create
         // task caching, provides the side-effect-at-most-once rule for afterTests.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
-            | FileChanged _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
+            | FileChanged _ ->
+                let salt = computeArgsSalt repoRoot command args
+                let evaluationPolicy = notEvaluatedExitCode |> Option.map string |> Option.defaultValue "none"
+                Some(ContentHash.create (salt + ":not-evaluated=" + evaluationPolicy))
             | _ -> None
 
         Some cacheKey

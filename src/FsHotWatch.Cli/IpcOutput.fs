@@ -871,6 +871,7 @@ let private publishVerdictWithReason
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
+    (verificationCompleteness: CheckVerdict.VerificationCompleteness)
     (noWarnFail: bool)
     (runReport: TestRunReport)
     // AUTOMATION-259. The check-vs-confirm sample this run can offer: an EXECUTED reading
@@ -900,12 +901,22 @@ let private publishVerdictWithReason
     // misses exactly the case the double-hash exists to catch: the file said
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
+    let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
+    let unmeasuredPlugins =
+        plugins |> List.filter (fun p -> p.Outcome = Verdict.PluginOutcome.NotEvaluated || p.Provenance = RunProvenance.Unknown)
+    let unmeasured = not (List.isEmpty unmeasuredPlugins)
+    let fallbackExitCode = if unmeasured then 3 else CheckVerdict.exitCode outcome
+
     try
         // AUTOMATION-533. EVERY batch this check has evidence from, not just the one the
         // daemon's receipt names — see `Verdict.runSuites`.
         let runs = Verdict.runSuites repoRoot runReport
-        let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
+
+        let verificationCompleteness =
+            match terminalIncompleteReason, settledTree with
+            | None, VerifiedTree settled when settled.Hash = atWrite.Hash -> verificationCompleteness
+            | _ -> CheckVerdict.VerificationCompleteness.NotRecorded
 
         let verdictOutcome, exitCode =
             match terminalIncompleteReason, settledTree with
@@ -926,6 +937,13 @@ let private publishVerdictWithReason
             // would invent an answer rather than read one.
             | None, VerifiedTree _
             | None, NeverSettled -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+
+        let verdictOutcome, exitCode =
+            match verdictOutcome with
+            | Verdict.Green _ when unmeasured ->
+                let names = unmeasuredPlugins |> List.map (fun p -> p.Name) |> String.concat ", "
+                Verdict.Incomplete $"required plugin evaluation was declined or its provenance is unknown: %s{names}", 3
+            | _ -> verdictOutcome, exitCode
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -1047,7 +1065,7 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
+            Verdict.create command verificationCompleteness runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1074,8 +1092,10 @@ let private publishVerdictWithReason
         // binary. Comparing the prior tree with `v` additionally binds it to the tree
         // this publisher is about to describe.
         let preservedPrior =
-            priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
-                Verdict.priorConfirmation repoRoot excludePatterns)
+            if unmeasured then None
+            else
+                priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
+                    Verdict.priorConfirmation repoRoot excludePatterns)
 
         match preservedPrior with
         | Some _ -> ()
@@ -1094,10 +1114,10 @@ let private publishVerdictWithReason
     // red: a verdict file we could not save is a reporting failure, not a verdict.
     | :? System.IO.IOException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
-        CheckVerdict.exitCode outcome
+        fallbackExitCode
     | :? System.UnauthorizedAccessException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
-        CheckVerdict.exitCode outcome
+        fallbackExitCode
 
 /// Publish the ordinary check outcome, owned by one explicit CLI invocation. This
 /// stable wrapper keeps the many normal terminal paths unable to accidentally invent
@@ -1107,6 +1127,7 @@ let internal publishVerdictForInvocation
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
+    (verificationCompleteness: CheckVerdict.VerificationCompleteness)
     (noWarnFail: bool)
     (runReport: TestRunReport)
     (checkScoped: Verdict.CheckScopedEvidence)
@@ -1121,6 +1142,7 @@ let internal publishVerdictForInvocation
         repoRoot
         excludePatterns
         checkMode
+        verificationCompleteness
         noWarnFail
         runReport
         checkScoped
@@ -1137,6 +1159,7 @@ let internal publishVerdict
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
+    (verificationCompleteness: CheckVerdict.VerificationCompleteness)
     (noWarnFail: bool)
     (runReport: TestRunReport)
     (checkScoped: Verdict.CheckScopedEvidence)
@@ -1150,6 +1173,7 @@ let internal publishVerdict
         repoRoot
         excludePatterns
         checkMode
+        verificationCompleteness
         noWarnFail
         runReport
         checkScoped
@@ -1175,6 +1199,7 @@ let internal publishTerminalIncompleteForInvocation
         repoRoot
         excludePatterns
         checkMode
+        CheckVerdict.VerificationCompleteness.NotRecorded
         false
         (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
         Verdict.NoReading
@@ -1277,6 +1302,7 @@ let pollAndRenderForInvocation
     // one and each convergence re-read) so the file records what the final verdict was
     // actually based on — never an earlier snapshot, and never a second query that could
     // see a different daemon.
+    let finalCompleteness = ref CheckVerdict.VerificationCompleteness.NotRecorded
     let finalStatuses = ref Map.empty
 
     // AUTOMATION-555 (rework). The daemon's phase ledger, captured from the SAME
@@ -1375,7 +1401,9 @@ let pollAndRenderForInvocation
             finalStatuses.Value <- resp.Statuses
             finalEvidence.Value <- IpcParsing.DaemonEvidence.parse raw
             finalCauses.Value <- redCausesOf noWarnFail resp
-            checkInputs noWarnFail run resp
+            let inputs = checkInputs noWarnFail run resp
+            finalCompleteness.Value <- CheckVerdict.VerificationCompleteness.ofInputs checkMode inputs
+            inputs
 
         let firstRun = getTestRun () |> observeTestRun
 
@@ -1394,6 +1422,7 @@ let pollAndRenderForInvocation
         // below because BOTH branches need it now: one grades it, the other escalates past
         // it — and AUTOMATION-259 records what it said either way.
         let preEscalation = checkInputs noWarnFail firstRun firstResp
+        finalCompleteness.Value <- CheckVerdict.VerificationCompleteness.ofInputs checkMode preEscalation
 
         let initialRead =
             if CheckVerdict.confirmNeedsFullRun checkMode firstRun.Scope then
@@ -1441,6 +1470,7 @@ let pollAndRenderForInvocation
                 repoRoot
                 excludePatterns
                 checkMode
+                finalCompleteness.Value
                 noWarnFail
                 finalRun.Value
                 checkScoped
@@ -1508,6 +1538,7 @@ let pollAndRenderForInvocation
                 repoRoot
                 excludePatterns
                 checkMode
+                CheckVerdict.VerificationCompleteness.NotRecorded
                 noWarnFail
                 finalRun.Value
                 // Same reasoning as the two aborts below: an escalation's EXECUTED
@@ -1540,6 +1571,7 @@ let pollAndRenderForInvocation
                 repoRoot
                 excludePatterns
                 checkMode
+                CheckVerdict.VerificationCompleteness.NotRecorded
                 noWarnFail
                 finalRun.Value
                 // The daemon is gone or wedged — asking it for a projection would hang or
@@ -1571,6 +1603,7 @@ let pollAndRenderForInvocation
                 repoRoot
                 excludePatterns
                 checkMode
+                CheckVerdict.VerificationCompleteness.NotRecorded
                 noWarnFail
                 finalRun.Value
                 // The daemon is gone or wedged — asking it for a projection would hang or

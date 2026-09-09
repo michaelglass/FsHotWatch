@@ -9,6 +9,10 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
+// Existing tests use the default exit policy.
+let private create name trigger command args repoRoot timeout =
+    FsHotWatch.FileCommand.FileCommandPlugin.create name trigger command args repoRoot timeout None
+
 let private fileTrigger (filter: string -> bool) : CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
@@ -1468,3 +1472,161 @@ let ``AUTOMATION-343: a cached file-command replay leaves an out-of-batch findin
 
     test <@ ledgerHasOutOfBatch host "run-scripts" @>
     test <@ cached = cold @>
+
+// AUTOMATION-481: exercise a real command and task-cache replay before projecting
+// the host's status through the production verdict writer. Summary markers below
+// establish that the replay happened; they are not the requested output contract.
+let private provenancePluginJson root (host: PluginHost) =
+    let statuses =
+        FsHotWatch.Cli.RunOnceOutput.snapshotHost host (host.GetAllStatuses())
+
+    let plugins = FsHotWatch.Cli.Verdict.pluginVerdicts true DateTime.UtcNow statuses
+
+    let verdict =
+        FsHotWatch.Cli.Verdict.create
+            FsHotWatch.Cli.Verdict.Check
+            FsHotWatch.Cli.CheckVerdict.VerificationCompleteness.NotRecorded
+            FsHotWatch.Cli.IpcParsing.TestRunReport.noTestSuite
+            (FsHotWatch.TreeHash.compute root [])
+            (Some [])
+            // This fixture makes a plugin-provenance claim, not a test-suite claim.
+            (FsHotWatch.Cli.Verdict.Incomplete "plugin provenance fixture has no test suite")
+            3
+            plugins
+            []
+            FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
+            []
+
+    use document = System.Text.Json.JsonDocument.Parse(FsHotWatch.Cli.Verdict.serialize verdict)
+    let plugin = Assert.Single(document.RootElement.GetProperty("plugins").EnumerateArray())
+    plugin.Clone()
+
+[<Theory(Timeout = 60000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``real cold replay and changed-input plugin results expose structured provenance`` fails =
+    withTempDir "a481-plugin-provenance" (fun root ->
+        let input = System.IO.Path.Combine(root, "input.txt")
+        System.IO.File.WriteAllText(input, "first input")
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
+        let name = "provenance-probe"
+
+        let handler =
+            create
+                (FsHotWatch.PluginFramework.PluginName.create name)
+                (fileTrigger (fun _ -> true))
+                (if fails then "false" else "echo")
+                "input.txt"
+                root
+                (Some 5)
+
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ "input.txt" ])
+        // A terminal can be visible before runAndCache stores its result. The
+        // busy counter is released only after that handler/caching window ends.
+        Assert.True(
+            waitUntilTrue
+                (fun () ->
+                    match host.GetStatus(name) with
+                    | Some(Completed _)
+                    | Some(Failed _) -> not (host.AnyPluginBusy())
+                    | _ -> false)
+                15000,
+            "cold command and cache insertion must finish before observing provenance"
+        )
+        Assert.DoesNotContain("(cached)", terminalSummaryOf host name)
+        let cold = provenancePluginJson root host
+
+        host.EmitFileChanged(SourceChanged [ "input.txt" ])
+        Assert.True(
+            waitUntilTrue
+                (fun () ->
+                    (terminalSummaryOf host name).Contains("(cached)")
+                    && not (host.AnyPluginBusy()))
+                15000,
+            "same-input dispatch must finish an actual cache replay"
+        )
+        let replayed = provenancePluginJson root host
+
+        // Content invalidation is the positive control: a permanent replayed=true
+        // implementation cannot satisfy it, and the output must not depend on success.
+        System.IO.File.WriteAllText(input, "second input")
+        let nextTerminal = beginAwaitNextTerminal host name
+        host.EmitFileChanged(SourceChanged [ "input.txt" ])
+        Assert.True(nextTerminal.Wait(15000), "changed-input dispatch must complete a fresh command")
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 5000, "fresh command must finish storing its result")
+        Assert.DoesNotContain("(cached)", terminalSummaryOf host name)
+        let changed = provenancePluginJson root host
+        let expectedOutcome = if fails then "fail" else "ok"
+
+        // Collect all three real observations before making the new-schema assertion.
+        // The pre-fix serializer compiles but fails here because replayed is absent.
+        for plugin, expectedReplay in [ cold, false; replayed, true; changed, false ] do
+            Assert.Equal(name, plugin.GetProperty("name").GetString())
+            Assert.Equal(expectedOutcome, plugin.GetProperty("outcome").GetString())
+            let mutable field = Unchecked.defaultof<System.Text.Json.JsonElement>
+            Assert.True(plugin.TryGetProperty("replayed", &field), "verdict plugins must expose structured replayed provenance")
+            Assert.Equal(expectedReplay, field.GetBoolean()))
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(true, 3, "not-evaluated")>]
+[<InlineData(true, 0, "ok")>]
+[<InlineData(true, 7, "fail")>]
+[<InlineData(false, 3, "fail")>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``configured decline exit is distinct from pass and ordinary failure in the verdict`` configured exitCode expectedOutcome =
+    withTempDir "a481-decline-command" (fun root ->
+        // Input is real config JSON, so the current parser can compile and ignore
+        // the not-yet-supported field. Its observable result must fail the first
+        // case: the actual exit-3 child currently becomes a failing plugin.
+        let declineField = if configured then ", \"notEvaluatedExitCode\": 3" else ""
+
+        let json =
+            sprintf
+                """{
+  "build": false, "format": false, "lint": false,
+  "fileCommands": [{
+    "name": "decline-probe", "afterTests": true,
+    "command": "sh", "args": "probe.sh", "timeoutSec": 5%s
+  }]
+}"""
+                declineField
+
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, ".fshw.json"), json)
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(root, "probe.sh"),
+            sprintf "printf 'executed' > execution.txt\nprintf 'coverage not measured for this input\\n'\nexit %d\n" exitCode
+        )
+
+        let config = FsHotWatch.Cli.DaemonConfig.loadConfig root
+        use daemon =
+            FsHotWatch.Daemon.Daemon.createWith
+                (Unchecked.defaultof<_>)
+                root
+                FsHotWatch.Daemon.Daemon.DaemonOptions.defaults
+
+        // Register through the production wiring; directly invoking create with
+        // today's argument list would bypass any future config-field plumbing.
+        FsHotWatch.Cli.DaemonConfig.registerPlugins daemon root config
+        let host = daemon.Host
+        emitRunCompleted host [ "TriggerOnly", TestsPassed("trigger", false, TimeSpan.FromSeconds 1.0) ]
+
+        Assert.True(
+            waitUntilTrue
+                (fun () ->
+                    match host.GetStatus("decline-probe") with
+                    | Some(Completed _)
+                    | Some(Failed _) -> not (host.AnyPluginBusy())
+                    | _ -> false)
+                15000,
+            "the configured child command must finish before its verdict is read"
+        )
+
+        // The child writes this marker before exiting: registration without an
+        // executed command cannot satisfy the ordinary-success positive control.
+        Assert.Equal("executed", System.IO.File.ReadAllText(System.IO.Path.Combine(root, "execution.txt")))
+        let plugin = provenancePluginJson root host
+        Assert.Equal("decline-probe", plugin.GetProperty("name").GetString())
+        Assert.Equal(expectedOutcome, plugin.GetProperty("outcome").GetString()))

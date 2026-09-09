@@ -72,6 +72,7 @@ module Invocation =
 [<RequireQualifiedAccess>]
 type PluginOutcome =
     | Ok
+    | NotEvaluated
     | Warn
     | Fail
     | TimedOut
@@ -86,6 +87,7 @@ module PluginOutcome =
     let token (o: PluginOutcome) : string =
         match o with
         | PluginOutcome.Ok -> "ok"
+        | PluginOutcome.NotEvaluated -> "not-evaluated"
         | PluginOutcome.Warn -> "warn"
         | PluginOutcome.Fail -> "fail"
         | PluginOutcome.TimedOut -> "timed-out"
@@ -103,6 +105,7 @@ module PluginOutcome =
         | PluginOutcome.Fail
         | PluginOutcome.TimedOut
         | PluginOutcome.Wedged -> true
+        | PluginOutcome.NotEvaluated
         | PluginOutcome.Ok
         | PluginOutcome.Warn
         | PluginOutcome.Running -> false
@@ -147,6 +150,11 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
             | _ -> false
         | None -> false
 
+    let declined () =
+        match okOrDiag () with
+        | PluginOutcome.Ok -> PluginOutcome.NotEvaluated
+        | other -> other
+
     match parsed.Status with
     | StatusView.Running since ->
         match PluginWedge.classifyRunning (PluginWedge.ambientBound ()) now since with
@@ -166,6 +174,8 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
     //     executed nothing, and an absence of evidence is not a pass.
     // Either way a clean ledger downgrades to `warn`; failing diagnostics still take
     // precedence, so nothing here can hide a red.
+    | StatusView.Completed _ when parsed.LastRun |> Option.exists (fun r -> match r.Outcome with NotEvaluated _ -> true | _ -> false) ->
+        Some(declined ())
     | StatusView.Completed _ when parsed.LastRun.IsNone || ParsedPluginStatus.verifiedNothing parsed ->
         Some(warnUnlessDiagnosed ())
     | StatusView.Completed _ -> Some(okOrDiag ())
@@ -177,6 +187,7 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
             | TimedOut _ -> PluginOutcome.TimedOut
             // The same rule as the `Completed` arm: an idle plugin whose last run
             // verified nothing has no pass to report either.
+            | NotEvaluated _ -> declined ()
             | VerifiedNothing _ -> warnUnlessDiagnosed ()
             | CompletedRun -> okOrDiag ())
 
@@ -188,6 +199,7 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
 type PluginVerdict =
     { Name: string
       Outcome: PluginOutcome
+      Provenance: RunProvenance
       ElapsedMs: int64 option
       Summary: string option }
 
@@ -296,11 +308,7 @@ module TimingSpan =
         (name: string)
         (run: RunRecord)
         : TimingSpan option =
-        let cached =
-            run.Summary
-            |> Option.exists (fun summary -> summary.EndsWith(" (cached)", StringComparison.Ordinal))
-
-        if cached then
+        if run.Provenance <> RunProvenance.Observed then
             None
         else
             clipped invocation observedElapsedMs ("plugin." + name) run.StartedAt run.Elapsed run.Summary
@@ -1271,6 +1279,7 @@ type Verdict =
             /// record, and absent is indistinguishable from none.
             excluded: SolutionScope.Exclusion list option
             outcome: Outcome
+            verificationCompleteness: CheckVerdict.VerificationCompleteness
             exitCode: int
             plugins: PluginVerdict list
             /// AUTOMATION-533. EVERY test run this check produced, and the reports each
@@ -1343,6 +1352,7 @@ type Verdict =
 
     /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
     member this.Outcome = this.outcome
+    member this.VerificationCompleteness = this.verificationCompleteness
 
     /// The exit code the producing command returned. Carried so the file and
     /// the process agree in the record, not just by convention.
@@ -1461,6 +1471,16 @@ let private validate (v: Verdict) : Result<Verdict, string> =
                    that says one thing cold and another beside the log has not recorded a verdict."
         | _ -> Ok v
 
+    let completenessAgreesWithScope () =
+        match v.VerificationCompleteness, v.Command, v.Scope with
+        | CheckVerdict.VerificationCompleteness.Complete, _, (NoTestsRun _ | ScopeUnreadable _) ->
+            Error "complete verification cannot accompany absent or unreadable test evidence"
+        | CheckVerdict.VerificationCompleteness.Complete, Confirm, scope when not (TestScope.isFullSuite scope) ->
+            Error "complete confirmation verification requires full-suite scope"
+        | CheckVerdict.VerificationCompleteness.Incomplete reason, _, _ when String.IsNullOrWhiteSpace reason ->
+            Error "incomplete verification must state a reason"
+        | _ -> Ok v
+
     let outcomeAgreesWithPlugins () =
         match v.Outcome with
         | Incomplete _ -> Ok v
@@ -1468,6 +1488,8 @@ let private validate (v: Verdict) : Result<Verdict, string> =
         | Red -> Ok v
         | Green _ ->
             match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
+            | [] when v.Plugins |> List.exists (fun p -> p.Outcome = PluginOutcome.NotEvaluated || p.Provenance = RunProvenance.Unknown) ->
+                Error "a GREEN verdict cannot contain unmeasured plugin evidence"
             | [] -> Ok v
             | failing ->
                 let named =
@@ -1508,6 +1530,7 @@ let private validate (v: Verdict) : Result<Verdict, string> =
             | _ -> Ok v
 
     scopeAgreesWithCommand ()
+    |> Result.bind (fun _ -> completenessAgreesWithScope ())
     |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
     |> Result.bind (fun _ -> baselineAgreesWithScope v)
     |> Result.bind (fun _ -> divergenceAgreesWithRecord ())
@@ -1547,6 +1570,7 @@ let scopeToRecord (command: Command) (scope: TestScope) : TestScope =
 /// could lie about them.
 let create
     (command: Command)
+    (verificationCompleteness: CheckVerdict.VerificationCompleteness)
     (runReport: TestRunReport)
     (tree: TreeHash.Tree)
     // AUTOMATION-158. The declared, reasoned gaps in this run's scope. REQUIRED
@@ -1583,6 +1607,7 @@ let create
           scope = runReport.Scope
           excluded = excluded
           outcome = outcome
+          verificationCompleteness = verificationCompleteness
           exitCode = exitCode
           plugins = plugins
           runs = runs
@@ -1824,12 +1849,18 @@ let serialize (v: Verdict) : string =
            treeDeclaredCount = v.TreeDeclaredCount
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
            scope = scopeJson v.Excluded v.Scope
+           verificationCompleteness =
+            (match v.VerificationCompleteness with
+             | CheckVerdict.VerificationCompleteness.Complete -> {| kind = "complete" |} :> obj
+             | CheckVerdict.VerificationCompleteness.Incomplete reason -> {| kind = "incomplete"; reason = reason |} :> obj
+             | CheckVerdict.VerificationCompleteness.NotRecorded -> {| kind = "not-recorded" |} :> obj)
            outcome = outcomeJson v.Outcome
            checkComparison = checkComparisonJson v.Excluded v.Comparison
            exitCode = v.ExitCode
            plugins =
             [ for p in v.Plugins ->
                   {| name = p.Name
+                     replayed = p.Provenance |> RunProvenance.replayed |> Option.map box |> Option.defaultValue null
                      outcome = PluginOutcome.token p.Outcome
                      elapsedMs =
                       (match p.ElapsedMs with
@@ -2123,6 +2154,7 @@ let private terminalVerdict
     : Verdict =
     create
         command
+        CheckVerdict.VerificationCompleteness.NotRecorded
         (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
         (TreeHash.compute repoRoot excludePatterns)
         (SolutionScope.readExclusions repoRoot)
@@ -2607,11 +2639,25 @@ let private parseCheckComparison (root: JsonElement) : CheckComparison =
 let private parsePluginOutcome (token: string option) : PluginOutcome =
     match token with
     | Some "ok" -> PluginOutcome.Ok
+    | Some "not-evaluated" -> PluginOutcome.NotEvaluated
     | Some "warn" -> PluginOutcome.Warn
     | Some "running" -> PluginOutcome.Running
     | Some "wedged" -> PluginOutcome.Wedged
     | Some "timed-out" -> PluginOutcome.TimedOut
     | _ -> PluginOutcome.Fail
+
+let private parseVerificationCompleteness (root: JsonElement) =
+    match tryProp root "verificationCompleteness" with
+    | Some value when value.ValueKind = JsonValueKind.Object ->
+        match tryString value "kind" with
+        | Some "complete" -> CheckVerdict.VerificationCompleteness.Complete
+        | Some "incomplete" ->
+            match tryString value "reason" with
+            | Some reason when not (String.IsNullOrWhiteSpace reason) ->
+                CheckVerdict.VerificationCompleteness.Incomplete reason
+            | _ -> CheckVerdict.VerificationCompleteness.NotRecorded
+        | _ -> CheckVerdict.VerificationCompleteness.NotRecorded
+    | _ -> CheckVerdict.VerificationCompleteness.NotRecorded
 
 let private parsePlugins (root: JsonElement) : Result<PluginVerdict list, string> =
     match tryProp root "plugins" with
@@ -2628,6 +2674,11 @@ let private parsePlugins (root: JsonElement) : Result<PluginVerdict list, string
                         Ok(
                             { Name = name
                               Outcome = parsePluginOutcome (tryString el "outcome")
+                              Provenance =
+                                match tryProp el "replayed" with
+                                | Some value when value.ValueKind = JsonValueKind.True -> RunProvenance.Replayed
+                                | Some value when value.ValueKind = JsonValueKind.False -> RunProvenance.Observed
+                                | _ -> RunProvenance.Unknown
                               // Absent (or `null`) = NOT MEASURED. Never 0.
                               ElapsedMs = tryInt64 el "elapsedMs"
                               Summary = tryString el "summary" }
@@ -2819,6 +2870,7 @@ let read (repoRoot: string) : Reading =
                           scope = scope
                           excluded = excluded
                           outcome = outcome
+                          verificationCompleteness = parseVerificationCompleteness root
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins
                           runs = runs
@@ -3069,7 +3121,9 @@ let isFullSuiteGreen (v: Verdict) : bool =
     match v.Outcome with
     | Red
     | Incomplete _ -> false
-    | Green _ -> TestScope.isFullSuite v.Scope
+    | Green _ ->
+        TestScope.isFullSuite v.Scope
+        && (v.Plugins |> List.forall (fun p -> p.Outcome <> PluginOutcome.NotEvaluated && p.Provenance <> RunProvenance.Unknown))
 
 /// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
 /// daemon, sets a scope, or runs a test.
@@ -3224,6 +3278,7 @@ let pluginVerdicts
         |> Option.map (fun outcome ->
             { Name = name
               Outcome = outcome
+              Provenance = parsed.LastRun |> Option.map (fun r -> r.Provenance) |> Option.defaultValue RunProvenance.Unknown
               // No `LastRun` (a plugin still Running, or a synthetic terminal from a
               // cache replay) means NO MEASUREMENT — not a zero-length run.
               ElapsedMs = parsed.LastRun |> Option.map (fun r -> int64 r.Elapsed.TotalMilliseconds)
@@ -3245,6 +3300,7 @@ let pluginVerdicts
                     match r.Summary, r.Outcome with
                     | Some s, _ -> nonEmpty s
                     | None, FailedRun err -> nonEmpty err
+                    | None, NotEvaluated reason -> nonEmpty reason
                     | None, TimedOut reason -> nonEmpty reason
                     | None, VerifiedNothing detail -> nonEmpty (RunSummary.nothingVerified detail)
                     | None, CompletedRun -> None) }))
