@@ -2417,7 +2417,7 @@ module ``Schema forward compatibility`` =
     /// opening the same DB path must NOT nuke it — its new schema likely
     /// contains additive columns the older code doesn't understand but
     /// doesn't need. Nuking would cause data loss across version skew
-    /// (observed with intelligence's build tool pinned to v3.0.2 clobbering
+    /// (observed with a consumer's build tool pinned to v3.0.2 clobbering
     /// a v3.1.0 daemon's DB before every test run).
     ///
     /// Policy: version > SchemaVersion → leave the DB alone; ALTER TABLE

@@ -317,7 +317,7 @@ let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
         // `version > SchemaVersion` means a NEWER process wrote this DB. Older
         // code opening it must not clobber: the newer schema likely has
         // additive columns we don't know about but don't need. Nuking causes
-        // data loss across version skew (e.g. an intelligence-repo build tool
+        // data loss across version skew (e.g. a consumer's build tool
         // pinned to v3.0.2 clobbering a v3.1 daemon's DB before every test run
         // — then the daemon hits "no such column" on the next flush).
         let isIncompatible =

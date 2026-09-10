@@ -34,7 +34,7 @@ type private DeclarationSpan =
 ///      `test_methods`. So a fixture symbol on this path can never make a
 ///      non-test run: it can only widen the set of real tests reached.
 ///
-/// Answering (2) with (1)'s set drops truly-affected tests: in the intelligence
+/// Answering (2) with (1)'s set drops truly-affected tests: in one measured
 /// consumer `IntegrationTestFixture` authenticates via `/login/verify`, and the
 /// reverse-walk through its members reaches 37 test classes / 324 test methods
 /// (of 50 / 520) — every test that logs in. Answering (1) with (2)'s set
@@ -118,7 +118,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         // file-opening `// license header` do the same. Such a route then matches every
         // commented line in the repo and selects the entire suite.
         //
-        // Measured on the intelligence consumer, route `/` matched 4,886 comment openers
+        // Measured on a real consumer, route `/` matched 4,886 comment openers
         // (`// `, `/// `, and their bare-line forms) against 43 real URL literals, and so
         // matched 65 of its 65 integration test files. Requiring a QUOTE for these patterns
         // drops only the comment matches: every quoted literal (`"/"`, `"/?lang=en"`, `'/'`)
@@ -145,7 +145,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     let modulePattern =
         Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
 
-    // attribute blocks, scanned with STRING AWARENESS.
+    // Attribute blocks, scanned with STRING AWARENESS.
     //
     // This was `Regex(@"\[<(.*?)>\]")`, whose own comment conceded that a `>]`
     // inside a string argument closes the block early and accepted it as rare.
@@ -160,7 +160,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // it — a single instance buys a green that never ran.
     //
     // Blast radius measured before changing anything (as the ticket asked): ZERO
-    // live instances in any test corpus, and TWO in `intelligence/src`, e.g. a
+    // live instances in any test corpus, and TWO in a consumer's source, e.g. a
     // `Cmd` help string containing `--wait[=<minutes>]`. So this is a latent trap
     // rather than an active loss — and the pattern is demonstrably one a person
     // writes naturally, which is what makes leaving it unfixed a bet rather than

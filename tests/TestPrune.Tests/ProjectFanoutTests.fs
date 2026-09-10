@@ -191,7 +191,7 @@ module ``diffFingerprints (detecting which projects' fingerprints changed)`` =
 //
 // Bumping CommandTree in Directory.Packages.props (no .fs symbol changes) must,
 // through the real parse → fingerprint → diff → fanout chain, select every test
-// in Build.Tests. Mirrors the intelligence CommandTree 0.6.3 → 0.7.0 regression
+// in Build.Tests. Mirrors a real CommandTree 0.6.3 → 0.7.0 regression
 // (there it is a direct <PackageReference Version>; the CPM variant is exercised
 // here and the direct variant by parsePackageReferences tests).
 // =============================================================================

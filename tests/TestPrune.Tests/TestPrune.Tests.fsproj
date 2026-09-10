@@ -74,7 +74,7 @@
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
     <Compile Include="AnonymousRecordAnalyzerTests.fs" />
-    <!-- impact-selection soundness harness. -->
+    <!-- Impact-selection soundness harness. -->
     <Compile Include="SoundnessHarnessTests.fs" />
     <!-- ADR 0001 drift alarm: assert the AST case->URL composition matches Falco.UnionRoutes'
          canonical Route.enumerate over the synthetic corpus. TEST-ONLY use of Falco.UnionRoutes;

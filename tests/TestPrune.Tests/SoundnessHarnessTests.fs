@@ -38,7 +38,7 @@ module TestPrune.Tests.SoundnessHarnessTests
 //     it emits real F# SOURCE, runs it through `analyzeSource`, and takes its
 //     oracle from the GENERATION PLAN rather than from anything the analyzer
 //     produced. A symbol or edge the analyzer drops therefore shows up as
-//     under-selection — the bug class, which the graph layer
+//     under-selection — the extraction bug class, which the graph layer
 //     cannot reach.
 //
 // See "Not covered yet" at the bottom of this file.
@@ -511,7 +511,7 @@ let ``soundness: the barrier property detects a marker that blocks a seed change
         test <@ Set.isEmpty (Set.difference viaSeed selected) @>
 
 // ---------------------------------------------------------------------------
-// Extraction-inclusive soundness (rework)
+// Extraction-inclusive soundness
 // ---------------------------------------------------------------------------
 //
 // The property above compares a store built from a hand-constructed
@@ -519,7 +519,8 @@ let ``soundness: the barrier property detects a marker that blocks a seed change
 // makes it blind in one specific, important direction: if `analyzeSource` fails
 // to extract a symbol or an edge for some binding form, the edge is missing from
 // the store and equally missing from the oracle, so the two agree and the case
-// passes. Every binding form the tracked issue found broken would sail through it.
+// passes. Every binding form the binding-form audit found broken would sail
+// through it.
 //
 // This section removes that blindness the only way it can be removed: the corpus
 // becomes REAL F# SOURCE, it is analysed by the REAL analyzer, and the oracle is
@@ -782,7 +783,7 @@ module ``Extraction-inclusive soundness`` =
     let ``the extraction harness detects a dropped dependency edge`` () =
         // Proof the property above can FAIL. Without this, a green run is equally
         // consistent with "extraction is sound" and "the comparison never ran" —
-        // which is precisely the criticism that put in QA Failed.
+        // which is precisely the criticism that sent the first harness back.
         //
         // Dropping an edge the analyzer DID extract simulates one it failed to
         // extract: the plan still contains it, so the oracle still expects the
@@ -820,9 +821,9 @@ module ``Extraction-inclusive soundness`` =
 //   through the real analyzer, so it CAN see an extraction miss — but it can only
 //   see one in a form it actually emits, and the generator emits plain
 //   `let f () = g () + 1` module bindings. Operators, active patterns, interface
-//   members, computation expressions and the rest of the shapes the tracked issue
-//   enumerated are not generated, so a defect confined to one of those is still
+//   members, computation expressions and the rest of the shapes the binding-form
+//   audit enumerated are not generated, so a defect confined to one of those is still
 //   invisible. Widening the generator's repertoire is the direct next step, and
-//   it is the step that would have caught outright; it is
+//   it is the step that would have caught those extraction defects outright; it is
 //   listed here rather than claimed, because a harness that overstates its reach
 //   is the exact failure this file exists to avoid.

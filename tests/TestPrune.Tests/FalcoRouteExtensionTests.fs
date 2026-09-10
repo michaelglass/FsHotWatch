@@ -1017,7 +1017,7 @@ module ``URL pattern with path parameters matches correctly`` =
 
 /// The ticket's own quantified reproduction: a route with no literal path text of its
 /// own — the root route `/` — used to match the F# COMMENT token `//`, so every commented
-/// line in the repo read as a reference to it. On the intelligence consumer that was 4,886
+/// line in the repo read as a reference to it. On a real consumer that was 4,886
 /// comment openers against 43 real URL literals, and 65 of 65 integration test files
 /// selected for a one-line landing-page edit.
 ///
@@ -1229,7 +1229,7 @@ type BillingTests() =
                     @>)
 
 
-    // -- a `>]` inside an attribute string must not truncate ---------
+    // -- A `>]` inside an attribute string must not truncate -----------------------
     //
     // `[<Trait("k","v>]"); Fact>]` used to be read as `Trait("k","v` — the scan
     // stopped at the FIRST `>]`, which here sits inside a string literal. `Fact`
@@ -1323,8 +1323,8 @@ type Route =
     /// covering test (under-selection). The extension instead derives
     /// `AdminPages.Settings → /admin/settings` from the route DU's `[<Route(Path=...)>]`
     /// attributes and matches the qualified case reference, resolving down to the SAME URL
-    /// the literal matcher uses. Models the intelligence consumer, where this `Route.link`
-    /// spelling is real (`SystemHealth.fs`).
+    /// the literal matcher uses. Models a real consumer, where this `Route.link`
+    /// spelling occurs in practice.
     [<Fact>]
     let ``test navigating a route only symbolically is selected`` () =
         let testContent =

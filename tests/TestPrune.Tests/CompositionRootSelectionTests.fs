@@ -1,9 +1,9 @@
 module TestPrune.Tests.CompositionRootSelectionTests
 
-// a one-line handler edit must not select the whole integration
+// A one-line handler edit must not select the whole integration
 // suite, and the fix must not buy that by dropping tests.
 //
-// THE SHAPE, measured on the real intelligence graph (2026-08-14, 29 906 symbols):
+// THE SHAPE, measured on a real consumer graph (2026-08-14, 29 906 symbols):
 //
 //     Handlers.AdminJournal.translate          the edited handler
 //       ← RouteEndpoints.productHandler        the match arm naming EVERY handler
@@ -38,7 +38,7 @@ open TestPrune.InMemoryStore
 open TestPrune.Tests.TestHelpers
 
 // ---------------------------------------------------------------------------
-// The fixture graph — the intelligence shape, minimised
+// The fixture graph — the measured shape, minimised
 // ---------------------------------------------------------------------------
 
 [<Literal>]
@@ -51,9 +51,9 @@ let private OtherHandler = "App.Handlers.other"
 [<Literal>]
 let private Dispatch = "App.RouteEndpoints.productHandler"
 
-/// Startup configuration the host applies — the shape. Reached by
-/// the fixture DIRECTLY, not through the dispatch table, which is what lets one
-/// marker serve both tickets.
+/// Startup configuration the host applies — the OTHER shape a marker must serve.
+/// Reached by the fixture DIRECTLY, not through the dispatch table, which is what
+/// lets one marker serve both.
 [<Literal>]
 let private AntiforgeryConfig = "App.Web.AntiforgeryConfig.configure"
 
@@ -196,7 +196,7 @@ module ``a handler edit stops at the composition root`` =
         let affected = selected true [ TranslateHandler ]
 
         // Exactly the Falco-attributed test — 3 → 1 on this graph, which is the
-        // 537 → 4 measured against the real intelligence database.
+        // 537 → 4 measured against a real consumer's database.
         test <@ affected = Set.ofList [ TranslateTest ] @>
 
         // Not vacuous: something WAS selected. A selector that returned nothing
@@ -210,7 +210,7 @@ module ``a handler edit stops at the composition root`` =
         // `OtherHandler` has no route→test edge — the shape of a real browser test
         // that navigates by CLICKING (`page.ClickAsync "#stop-impersonating"`)
         // rather than naming the URL, which Falco cannot attribute. Measured on
-        // intelligence, 3 of 32 handler files are in exactly this position.
+        // a real consumer, 3 of 32 handler files are in exactly this position.
         //
         // Barriering alone would answer "no tests affected" for such an edit: a
         // green gate that verified nothing, which is strictly worse than the
@@ -262,7 +262,7 @@ module ``recall is not regressed`` =
 
     [<Fact>]
     let ``a change TO the composition root still selects every host-booting test`` () =
-        // The asymmetry that reconciles: a
+        // The asymmetry that reconciles narrowing with recall: a
         // barrier REACHED stops the walk, a barrier CHANGED is an ordinary seed.
         // Rewired composition is exactly what host-booting tests verify.
         let affected = selected true [ Dispatch ]
