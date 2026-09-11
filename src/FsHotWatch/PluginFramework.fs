@@ -846,13 +846,17 @@ let internal registerHandlerForOwner
                             // Keep ordinary lint/analyzer failures and successful builds
                             // cacheable; only build-failure authority requires execution.
                             let requiresBuildAttempt (result: TaskCache.TaskCacheResult) =
-                                (result.EmittedEvents |> List.exists (function
-                                    | TaskCache.CachedBuildCompleted(BuildFailed _) -> true
-                                    | _ -> false))
-                                || (pluginName = "build" && (match result.Status with
+                                let emittedFailure =
+                                    result.EmittedEvents
+                                    |> List.exists (function
+                                        | TaskCache.CachedBuildCompleted(BuildFailed _) -> true
+                                        | _ -> false)
+                                let failedStatus =
+                                    match result.Status with
                                     | TaskCache.CachedRunFailed _
                                     | TaskCache.CachedFileFailed _ -> true
-                                    | _ -> false))
+                                    | _ -> false
+                                emittedFailure || (pluginName = "build" && failedStatus)
 
                             let lookupResult =
                                 match cache.Lookup compKey cacheKey with
