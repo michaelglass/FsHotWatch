@@ -539,7 +539,8 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+          Version = 0L
+          ModelGeneration = None }
 
     host.EmitFileChecked(dummyResult)
 
@@ -560,7 +561,8 @@ let private fullCheckResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = FullCheck(Unchecked.defaultof<_>)
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 let private parseOnlyResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
@@ -568,7 +570,8 @@ let private parseOnlyResult (file: string) : FileCheckResult =
       ParseResults = Unchecked.defaultof<_>
       CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+      Version = 0L
+      ModelGeneration = None }
 
 [<Fact(Timeout = 15000)>]
 let ``EmitFileChecked with FullCheck marks the file checked`` () =
