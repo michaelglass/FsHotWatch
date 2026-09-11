@@ -365,25 +365,23 @@ module CheckInputs =
     let hasFailures (inputs: CheckInputs) : bool =
         foundProblems inputs.PluginStatuses inputs.FailingDiagnostics
 
+    /// Terminal declined measurements are current evidence regardless of check scope.
+    let terminalEvaluationDeclines (statuses: Map<string, ParsedPluginStatus>) =
+        statuses
+        |> Map.toList
+        |> List.choose (fun (name, parsed) ->
+            match parsed.Status, parsed.LastRun with
+            | (StatusView.Completed _ | StatusView.Idle), Some { Outcome = FsHotWatch.Events.RunOutcome.NotEvaluated reason } ->
+                Some $"{name}: {reason}"
+            | _ -> None)
+
     /// Filtered checks may report a declined measurement. Full runs and confirmations
     /// must evaluate every participating gate before they can claim completeness.
-    let requiredEvaluationDeclines mode scope (statuses: Map<string, ParsedPluginStatus>) =
-        let required =
-            match mode, scope with
-            | Confirmation, _
-            | _, FullSuite _ -> true
-            | _ -> false
-
-        if not required then
-            []
-        else
-            statuses
-            |> Map.toList
-            |> List.choose (fun (name, parsed) ->
-                match parsed.Status, parsed.LastRun with
-                | (StatusView.Completed _ | StatusView.Idle), Some { Outcome = FsHotWatch.Events.RunOutcome.NotEvaluated reason } ->
-                    Some $"{name}: {reason}"
-                | _ -> None)
+    let requiredEvaluationDeclines mode scope statuses =
+        match mode, scope with
+        | Confirmation, _
+        | _, FullSuite _ -> terminalEvaluationDeclines statuses
+        | _ -> []
 
     /// Are the run's failures ENTIRELY things it cannot attribute to this tree?
     ///

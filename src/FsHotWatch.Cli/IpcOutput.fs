@@ -1181,7 +1181,9 @@ let private publishVerdictWithReason
         let preservedPrior =
             priorVerdictToPreserve outcome v.TreeHash v.TreeHashAlgorithm (fun () ->
                 Verdict.priorConfirmation repoRoot excludePatterns)
-            |> Option.filter (fun _ -> declined.IsEmpty)
+            // A new decline cannot leave an older full claim looking current,
+            // even when this filtered invocation may legitimately decline.
+            |> Option.filter (fun _ -> (CheckVerdict.CheckInputs.terminalEvaluationDeclines statuses).IsEmpty)
             |> Option.filter (fun prior ->
                 match projectModel with
                 | FsHotWatch.ProjectModel.Observation.Available model ->
