@@ -202,17 +202,9 @@ type internal OwnedChild
                 (containment :> IDisposable).Dispose()
                 proc.Dispose())
 
-    interface IDisposable with
-        member this.Dispose() = this.Dispose()
-
-    static member Start(target: ProcessStartInfo, hostDll: string) =
-        OwnedChild.StartCore(target, hostDll, None)
-
+    // Admission is mandatory: the owner must retain cleanup before the target starts.
     static member Start(target: ProcessStartInfo, hostDll: string, register: Action<OwnedChild>) =
         ArgumentNullException.ThrowIfNull register
-        OwnedChild.StartCore(target, hostDll, Some register)
-
-    static member private StartCore(target: ProcessStartInfo, hostDll: string, register: Action<OwnedChild> option) =
         ArgumentNullException.ThrowIfNull target
 
         if target.UseShellExecute || target.ArgumentList.Count <> 0 then
@@ -267,7 +259,7 @@ type internal OwnedChild
             containment <- Some boundary
             let child = new OwnedChild(proc, pipe, controlReader, controlWriter, boundary)
             owned <- Some child
-            register |> Option.iter (fun admission -> admission.Invoke child)
+            register.Invoke child
 
             ChildProtocol.withLock child.Sync (fun () ->
                 if child.Stopped then
@@ -289,9 +281,6 @@ type internal OwnedChild
                             cleanupError
                         )
                     )
-
-                if register.IsNone then
-                    child.Dispose()
             | None ->
                 pipe.Dispose()
 
