@@ -120,7 +120,11 @@
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../FsHotWatch.ProcessOwnership/FsHotWatch.ProcessOwnership.csproj" PrivateAssets="all" />
+    <ProjectReference Include="../FsHotWatch.ProcessOwnership/FsHotWatch.ProcessOwnership.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <Reference Include="FsHotWatch.ProcessOwnership">
+      <HintPath>../FsHotWatch.ProcessOwnership/bin/$(Configuration)/net10.0/FsHotWatch.ProcessOwnership.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
     <ProjectReference Include="../FsHotWatch.ProcessHost/FsHotWatch.ProcessHost.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <Content Include="../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.dll;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.deps.json;../FsHotWatch.ProcessHost/bin/$(Configuration)/net10.0/FsHotWatch.ProcessHost.runtimeconfig.json"
              Link="fshw-process-host/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="true" PackagePath="tools/net10.0/" />
