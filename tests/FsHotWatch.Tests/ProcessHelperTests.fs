@@ -1156,8 +1156,8 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
 // (an MSBuild node, a Playwright driver, a backgrounded `sleep`) still holds the pipe blocks
 // FOREVER. That is the 16h wedge, and every hook / build / fileCommand spawn took this path.
 //
-// RED-BEFORE-GREEN: restore the untimed `Task.WaitAll` on the Exited arm and this test hangs
-// until the xUnit timeout kills it.
+// Spawn-time containment now closes the pipe by reaping the descendant. This live
+// control requires a full drain; pure drain controls above retain timeout classification.
 // ---------------------------------------------------------------------------
 /// The target exits while a grandchild holds stdout. Spawn-time containment must reap
 /// that descendant, closing the inherited pipe so the capture can finish.
