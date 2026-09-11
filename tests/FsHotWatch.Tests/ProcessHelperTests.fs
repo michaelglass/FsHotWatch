@@ -1159,9 +1159,8 @@ let ``runProcess streaming: a progressing run that overruns the overall timeout 
 // RED-BEFORE-GREEN: restore the untimed `Task.WaitAll` on the Exited arm and this test hangs
 // until the xUnit timeout kills it.
 // ---------------------------------------------------------------------------
-/// A child that exits at once while an orphaned grandchild keeps the inherited stdout pipe
-/// open for 30s, so EOF CANNOT arrive inside the 2s drain window — a fully deterministic
-/// drain that cannot finish, and the fixture both tests below stand on.
+/// The target exits while a grandchild holds stdout. Spawn-time containment must reap
+/// that descendant, closing the inherited pipe so the capture can finish.
 let private spawnWithPipeHoldingGrandchild () =
     runProcessBounded "sh" "-c \"( sleep 30 & ) ; echo done\"" (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
 
@@ -1171,15 +1170,11 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
     let outcome = spawnWithPipeHoldingGrandchild ()
     sw.Stop()
 
-    // Classified by the child's EXIT CODE, not by stream EOF — a grandchild holding the pipe
-    // cannot turn a clean exit into a failure. The capture is still marked honestly: we
-    // bailed on a stream that never reached EOF, so it is what we caught, not what the child
-    // said.
+    // The original target's exit receipt remains successful. Its descendant is reaped
+    // before retirement, so inherited streams now reach EOF instead of timing out.
     match outcome with
-    | Succeeded(ProcessOutput.DrainTimedOut(captured, window)) ->
-        Assert.Contains("done", captured)
-        Assert.Equal(TimeSpan.FromSeconds 2.0, window)
-    | other -> Assert.Fail $"expected Succeeded with a DrainTimedOut capture, got %A{other}"
+    | Succeeded(ProcessOutput.Drained captured) -> Assert.Contains("done", captured)
+    | other -> Assert.Fail $"expected Succeeded with a fully drained capture, got %A{other}"
 
     // The grandchild holds the pipe for 30 s; we must be long gone by then.
     Assert.True(
@@ -1197,7 +1192,10 @@ let ``runProcess does not wait for a grandchild that inherited the stdout pipe``
 // ---------------------------------------------------------------------------
 [<Fact(Timeout = 15000)>]
 let ``a drain that could not finish FAILS an output assertion by its true name`` () =
-    let outcome = spawnWithPipeHoldingGrandchild ()
+    // Exercise the output-consumer contract directly. A descendant retaining the
+    // pipe no longer produces this state, because containment now reaps it.
+    let outcome =
+        Succeeded(ProcessOutput.DrainTimedOut("done", TimeSpan.FromSeconds 2.0))
 
     let failure = Assert.Throws<FailException>(fun () -> expectStdout "done" outcome)
 
