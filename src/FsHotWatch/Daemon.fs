@@ -526,8 +526,29 @@ let private discoverAndRegisterProjects
                     // `<AssemblyName>`, which the filename-based inference cannot.
                     graph.RegisterProjectOutput(absProject, proj.TargetPath)
 
-            let fcsOptionsList = mapOptions loaded
+            // Availability belongs to the complete required F# model. A mapped
+            // C# dependency (whose checkable source set is empty) cannot rescue a
+            // missing F# mapping. Counts describe admitted stage outputs: reject
+            // the whole mapping cohort before admitting any options on failure.
+            let projectIdentity = AbsProjectPath.create
+            let isFSharpProject (path: string) =
+                Path.GetExtension(path).Equals(".fsproj", StringComparison.OrdinalIgnoreCase)
+            let requiredFSharpProjects =
+                (fsprojFiles
+                 @ (loaded |> List.map (fun project -> project.ProjectFileName)))
+                |> List.filter (fun path -> isFSharpProject path && not (isExcluded path))
+                |> List.map projectIdentity
+                |> Set.ofList
+            let fcsOptionsList =
+                mapOptions loaded |> List.filter (fun options -> not (isExcluded options.ProjectFileName))
+            let mappedProjects =
+                fcsOptionsList |> List.map (fun options -> projectIdentity options.ProjectFileName) |> Set.ofList
+            let missingMappings = Set.difference requiredFSharpProjects mappedProjects
+            if not missingMappings.IsEmpty then
+                let names = missingMappings |> Seq.map AbsProjectPath.value |> String.concat ", "
+                invalidOp $"Required F# project mapping failed: {names}; no partial options cohort was admitted."
             optionsMappedCount <- fcsOptionsList.Length
+            let mutable registeredFSharpProjects = Set.empty
             sw.Stop()
 
             Logging.info
@@ -552,6 +573,9 @@ let private discoverAndRegisterProjects
                         let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                         pipeline.RegisterProject(absProject, fcsOptions)
                         registeredCount <- registeredCount + 1
+                        let identity = projectIdentity absProject
+                        if Set.contains identity requiredFSharpProjects then
+                            registeredFSharpProjects <- Set.add identity registeredFSharpProjects
                         dumpProjectOptions logDir fcsOptions
                         let refCount = countReferences fcsOptions.OtherOptions
 
@@ -562,6 +586,13 @@ let private discoverAndRegisterProjects
                         Logging.error
                             "discover"
                             $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
+
+            let missingRegistrations = Set.difference requiredFSharpProjects registeredFSharpProjects
+            if not missingRegistrations.IsEmpty then
+                let names = missingRegistrations |> Seq.map AbsProjectPath.value |> String.concat ", "
+                Logging.error "discover" $"Required F# project registration failed: {names}; retiring the partial model."
+                pipeline.PrepareForRediscovery(clearCheckCache = false)
+                registeredCount <- 0
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
