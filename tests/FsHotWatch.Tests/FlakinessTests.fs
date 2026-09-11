@@ -343,12 +343,8 @@ let ``appendRecords expires a test that has not run inside the retention window`
         test <@ history |> Map.containsKey "Current.Test" @>
         test <@ not (history |> Map.containsKey "Ancient.Test") @>)
 
-// this adapter starts at the existing production summary reader to prove
-// the clean-report acceptance defect before switching to the validated boundary.
 let private parseVerdictSummary json =
-    match FsHotWatch.Ctrf.trySummary json with
-    | Some summary -> Ok summary
-    | None -> Error "no report"
+    FsHotWatch.Ctrf.tryVerdictReport json |> Result.map FsHotWatch.Ctrf.VerdictReport.summary
 
 [<Fact>]
 let ``verdict evidence rejects a partial clean report`` () =

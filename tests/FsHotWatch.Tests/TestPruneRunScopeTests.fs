@@ -1683,12 +1683,15 @@ let ``only-failed resolves current owner failures instead of the command snapsho
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let mutable selectedProjects = []
+    let mutable completion = None
     let ownerCtx =
         { recordingCtx with
             RunExclusiveShared = fun _ _ workFor _ _ ->
                 let outcome = workFor Ready |> Async.RunSynchronously
                 match outcome with
-                | TestsFinished(_, completed, _) -> selectedProjects <- completed.Results |> Map.keys |> Seq.toList
+                | CommandTestsFinished(_, completed, _, _, _) ->
+                    selectedProjects <- completed.Results |> Map.keys |> Seq.toList
+                    completion <- Some outcome
                 | other -> Assert.Fail($"expected a completed owned run, got {other}")
                 SharedClaimed }
 
@@ -1699,7 +1702,12 @@ let ``only-failed resolves current owner failures instead of the command snapsho
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
           Post = ignore
           EnqueueExclusiveIntent = fun _ _ message ->
-              handler.Update ownerCtx ownerState (Custom message) |> Async.RunSynchronously |> ignore
+              let admitted = handler.Update ownerCtx ownerState (Custom message) |> Async.RunSynchronously
+              let admission = handler.PrepareCommit.Value ownerState admitted |> Async.RunSynchronously
+              admission.Finalize |> Async.RunSynchronously
+              let candidate = handler.Update ownerCtx admitted (Custom completion.Value) |> Async.RunSynchronously
+              let publication = handler.PrepareCommit.Value admitted candidate |> Async.RunSynchronously
+              publication.Finalize |> Async.RunSynchronously
               System.Threading.Tasks.Task.FromResult(()) }
     let command = handler.Commands |> List.find (fst >> (=) "run-tests") |> snd
     FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx snapshot [| "{\"only-failed\":true}" |]
@@ -1800,7 +1808,10 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     let finalState =
         handler.Update ctx claimedState (Custom posted.Value) |> Async.RunSynchronously
 
-    test <@ reply.Task.Wait 5000 @>
+    Assert.False(reply.Task.IsCompleted)
+    let publication = handler.PrepareCommit.Value claimedState finalState |> Async.RunSynchronously
+    publication.Finalize |> Async.RunSynchronously
+    test <@ reply.Task.IsCompleted @>
     test <@ reply.Task.Result.Contains("test host could not start") @>
     test <@ reply.Task.Result.Contains("host start fault") @>
     test <@ finalState.Earned.IsNone @>
@@ -3322,3 +3333,29 @@ let ``a failed command receipt acknowledges only its published owner outcome`` (
     Assert.False(reply.Task.IsCompleted, "command acknowledged before publication")
     prepared.Finalize |> Async.RunSynchronously
     Assert.Contains("fixture refusal", reply.Task.GetAwaiter().GetResult())
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``full-suite recovery preserves newer runtime obligations and rejects stale model completion`` (modelChanged: bool) =
+    let _, _, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let obligations = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 2L ] ]
+    let prior =
+        { prior with
+            Debt = { prior.Debt with RecoveryOutstanding = true; RuntimeObligations = obligations } }
+    let launch =
+        { launch with
+            ModelGeneration = Some 1L
+            RuntimeProjectsByFile = Map.ofList [ "Library.fs", Map.ofList [ "ProjA", 1L ] ] }
+    let model =
+        FsHotWatch.ProjectModel.ofCompleted (if modelChanged then 2L else 1L)
+            { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 }
+    let ctx = { ctx with ProjectGraph = { ctx.ProjectGraph with ObserveModel = fun () -> model } }
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+    Assert.Equal<Map<string, Map<string, int64>>>(obligations, candidate.Debt.RuntimeObligations)
+    Assert.Equal(modelChanged, candidate.Debt.RecoveryOutstanding)
+    if modelChanged then
+        Assert.True(prior.Debt.Baseline = candidate.Debt.Baseline)
+        Assert.True(candidate.Earned.IsNone)

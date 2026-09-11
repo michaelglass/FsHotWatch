@@ -633,7 +633,8 @@ let ``model receipts accept explicit analysis identity and reject malformed run 
 
     test <@ (parse "null" |> List.exactlyOne).RunId.IsNone @>
     let runId = Guid.NewGuid()
-    test <@ (parse ("\"" + runId.ToString("N") + "\"") |> List.exactlyOne).RunId = Some runId @>
+    let encodedRunId = "\"" + runId.ToString("N") + "\""
+    Assert.Equal<Guid option>(Some runId, (parse encodedRunId |> List.exactlyOne).RunId)
     test <@ (parse "\"00000000000000000000000000000000\"").IsEmpty @>
     test <@ (parse "\"not-a-guid\"").IsEmpty @>
     test <@ (parse "17").IsEmpty @>
