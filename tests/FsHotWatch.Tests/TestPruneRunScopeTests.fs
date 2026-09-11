@@ -1543,103 +1543,122 @@ let ``AUTOMATION-125: the last run's coverage is readable from state (a verdict 
     test <@ RunCoverage.coveredProjects final.LastCoverage = Set.ofList [ "ProjB" ] @>
     test <@ not (RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] final.LastCoverage) @>
 
+let private withReceiptSource body =
+    withTempDir "receipt-source" (fun repoRoot ->
+        let directory = Path.Combine(repoRoot, "src")
+        Directory.CreateDirectory directory |> ignore
+        let source = Path.Combine(directory, "Value.fs")
+        File.WriteAllText(source, "module Value\nlet answer = 1\n")
+        body repoRoot source)
+
+let private bindReceiptTree repoRoot (launch: TestRunLaunch) =
+    let identity = ReceiptInputTree.read repoRoot
+    Assert.True(identity.IsSome, "fixture source tree must be readable")
+    { launch with InputTreeHash = identity }
+
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow drain cannot replace the full-suite receipt exposed to the verdict writer`` () =
-    let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
-    let fullRun =
-        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
 
-    let narrowRun =
-        testsFinishedEvent
-            [ "ProjA", impactSkipped; "ProjB", passed true ]
-            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
 
-    let fullRunId =
-        match fullRun with
-        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
-        | _ -> failwith "expected TestsFinished"
+        let fullRunId =
+            match fullRun with
+            | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+            | _ -> failwith "expected TestsFinished"
 
-    let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
+        let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
 
-    let receipt = final.EvidenceReceipt.Value
-    test <@ receipt.RunId = fullRunId @>
-    test <@ RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] receipt.Coverage @>
+        let receipt = final.EvidenceReceipt.Value
+        test <@ receipt.RunId = fullRunId @>
+        test <@ RunCoverage.coversWholeSuite [ "ProjA"; "ProjB" ] receipt.Coverage @>
 
-    let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+        let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
 
-    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
-        { RepoRoot = "/tmp"
-          Log = ignore
-          Post = ignore
-          IsRunning = fun _ -> false
-          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+        let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+            { RepoRoot = repoRoot
+              Log = ignore
+              Post = ignore
+              IsRunning = fun _ -> false
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
-    let report =
-        FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
-        |> Async.RunSynchronously
-        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+        let report =
+            FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
+            |> Async.RunSynchronously
+            |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
-    test <@ report.RunId = Some fullRunId @>
-    test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
+        test <@ report.RunId = Some fullRunId @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 2 @>
 
-    match lastStatus statuses with
-    | PluginStatus.Completed(_, verdict) -> test <@ verdict.Summary.Contains("2 projects") @>
-    | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}")
+        match lastStatus statuses with
+        | PluginStatus.Completed(_, verdict) -> test <@ verdict.Summary.Contains("2 projects") @>
+        | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``test-scope declares EVERY run the session completed, not only the one the receipt names`` () =
-    // AUTOMATION-533. The receipt deliberately holds ONE run — the full-suite one, which
-    // a later narrow drain may not downgrade (the test above). That is right for grading
-    // and wrong for reporting: both runs wrote a directory, both hold reports, and a
-    // reader looking for their own tests in the receipt's directory alone finds only
-    // what the last batch happened to cover.
-    //
-    // So the reply carries both questions. `runId` is what this verdict was graded from;
-    // `runIds` is everything this session ran, and it is what lets a check name every
-    // batch it produced instead of only the last.
-    let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+    withReceiptSource (fun repoRoot _ ->
+        // AUTOMATION-533. The receipt deliberately holds ONE run — the full-suite one, which
+        // a later narrow drain may not downgrade (the test above). That is right for grading
+        // and wrong for reporting: both runs wrote a directory, both hold reports, and a
+        // reader looking for their own tests in the receipt's directory alone finds only
+        // what the last batch happened to cover.
+        //
+        // So the reply carries both questions. `runId` is what this verdict was graded from;
+        // `runIds` is everything this session ran, and it is what lets a check name every
+        // batch it produced instead of only the last.
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
-    let fullRun =
-        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
 
-    let narrowRun =
-        testsFinishedEvent
-            [ "ProjA", impactSkipped; "ProjB", passed true ]
-            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+        let narrowRun =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped; "ProjB", passed true ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
 
-    let runIdOf event =
-        match event with
-        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
-        | _ -> failwith "expected TestsFinished"
+        let runIdOf event =
+            match event with
+            | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+            | _ -> failwith "expected TestsFinished"
 
-    let fullRunId = runIdOf fullRun
-    let narrowRunId = runIdOf narrowRun
+        let fullRunId = runIdOf fullRun
+        let narrowRunId = runIdOf narrowRun
 
-    let _ctx, _statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
+        let _ctx, _statuses, _ledger, final = driveRuns handler [ fullRun; narrowRun ]
 
-    let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+        let scopeCommand = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
 
-    let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
-        { RepoRoot = "/tmp"
-          Log = ignore
-          Post = ignore
-          IsRunning = fun _ -> false
-          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+        let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+            { RepoRoot = repoRoot
+              Log = ignore
+              Post = ignore
+              IsRunning = fun _ -> false
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
-    let report =
-        FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
-        |> Async.RunSynchronously
-        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+        let report =
+            FsHotWatch.PluginFramework.PluginCommand.invoke scopeCommand commandCtx final [||]
+            |> Async.RunSynchronously
+            |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 
-    // Graded from the full-suite run, as before — this must not have moved.
-    test <@ report.RunId = Some fullRunId @>
+        // Graded from the full-suite run, as before — this must not have moved.
+        test <@ report.RunId = Some fullRunId @>
 
-    // ...and the narrow drain, whose directory holds the only reports that batch wrote,
-    // is no longer invisible. Newest first.
-    test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>
+        // ...and the narrow drain, whose directory holds the only reports that batch wrote,
+        // is no longer invisible. Newest first.
+        test <@ report.SessionRuns = [ narrowRunId; fullRunId ] @>)
 
 [<Theory(Timeout = 15000)>]
 [<InlineData(false)>]
@@ -1849,30 +1868,33 @@ let ``a zero-selection receipt carries the previous seeds captured at launch`` (
 
 [<Fact(Timeout = 20000)>]
 let ``a queued narrow failure remains red while the earlier full-suite receipt is retained`` () =
-    let handler =
-        create ":memory:" (isolatedRoot ()) (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
 
-    let fullRun =
-        testsFinishedEvent [ "ProjA", passed false; "ProjB", passed false ] (fullSuiteLaunch [ "ProjA"; "ProjB" ])
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                (fullSuiteLaunch [ "ProjA"; "ProjB" ] |> bindReceiptTree repoRoot)
 
-    let narrowFailure =
-        testsFinishedEvent
-            [ "ProjA", impactSkipped
-              "ProjB", TestsFailed("boom", true, TimeSpan.FromSeconds 1.0) ]
-            (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
+        let narrowFailure =
+            testsFinishedEvent
+                [ "ProjA", impactSkipped
+                  "ProjB", TestsFailed("boom", true, TimeSpan.FromSeconds 1.0) ]
+                (filteredLaunch [ "ProjB", [ "ProjBTests" ] ] |> bindReceiptTree repoRoot)
 
-    let fullRunId =
-        match fullRun with
-        | Custom(TestsFinished(_, completed, _)) -> completed.RunId
-        | _ -> failwith "expected TestsFinished"
+        let fullRunId =
+            match fullRun with
+            | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+            | _ -> failwith "expected TestsFinished"
 
-    let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowFailure ]
+        let _ctx, statuses, _ledger, final = driveRuns handler [ fullRun; narrowFailure ]
 
-    test <@ final.EvidenceReceipt |> Option.map (fun receipt -> receipt.RunId) = Some fullRunId @>
+        test <@ final.EvidenceReceipt |> Option.map (fun receipt -> receipt.RunId) = Some fullRunId @>
 
-    match lastStatus statuses with
-    | PluginStatus.Failed _ -> ()
-    | other -> Assert.Fail($"the later narrow failure must remain red, got %A{other}")
+        match lastStatus statuses with
+        | PluginStatus.Failed _ -> ()
+        | other -> Assert.Fail($"the later narrow failure must remain red, got %A{other}"))
 
 // `verificationOf` replaces a boolean that could not tell "no project was selected" from
 // "every project matched nothing": for an empty result set it answered `false` to both
@@ -2888,7 +2910,7 @@ let ``completion observations remain bound to their supplied owner snapshot`` (c
 
     let read state =
         let json =
-            PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
+            PluginCommand.invoke PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
 
         use document = JsonDocument.Parse(json)
         let field = if commandName = "test-scope" then "runIds" else "runId"
@@ -3068,7 +3090,7 @@ let ``a retained owner cannot learn a full suite baseline earned by a later comp
 
     let read state =
         use document =
-            JsonDocument.Parse(PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
+            JsonDocument.Parse(PluginCommand.invoke PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
 
         document.RootElement.GetProperty("baseline").GetRawText(),
         document.RootElement.GetProperty("baselineAbsent").GetRawText()
@@ -3157,3 +3179,137 @@ let ``a completed launch cannot discharge a newer revision of the same symbol`` 
         handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] currentLaunch)
         |> Async.RunSynchronously
     Assert.DoesNotContain(symbol, verified.Debt.PendingQueue)
+
+[<Fact>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``receipt identity follows actual source bytes and refuses an unavailable tree`` () =
+    withTempDir "receipt-input-tree" (fun root ->
+        let sourceDir = Path.Combine(root, "src")
+        Directory.CreateDirectory sourceDir |> ignore
+        let source = Path.Combine(sourceDir, "Value.fs")
+        File.WriteAllText(source, "module Value\nlet answer = 1\n")
+        let before = ReceiptInputTree.read root
+        Assert.True(before.IsSome)
+        test <@ ReceiptInputTree.matches before (ReceiptInputTree.read root) @>
+        File.WriteAllText(source, "module Value\nlet answer = 2\n")
+        test <@ not (ReceiptInputTree.matches before (ReceiptInputTree.read root)) @>
+        test <@ not (ReceiptInputTree.matches before None) @>
+        test <@ ReceiptInputTree.read (Path.Combine(root, "absent")) = None @>)
+
+let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPruneMsg>) state =
+    let command = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
+
+    let ctx: CommandCtx<TestPruneMsg> =
+        { RepoRoot = repoRoot
+          Log = ignore
+          Post = ignore
+          IsRunning = fun _ -> false
+          ProjectGraph = ProjectGraphAccessor.none }
+
+    command ctx state [||]
+    |> Async.RunSynchronously
+    |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+
+let private partialReceiptRun repoRoot =
+    // One whole project from a two-project configuration is genuine filtered scope.
+    testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ] |> bindReceiptTree repoRoot)
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``same-input already-verified drain retains a filtered receipt`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+        let ran = partialReceiptRun repoRoot
+
+        let zero =
+            { emptyLaunch with
+                ZeroSelection = ZeroSelection.AlreadyVerified }
+            |> bindReceiptTree repoRoot
+            |> testsFinishedEvent []
+
+        let _, _, _, final = driveRuns handler [ ran; zero ]
+        let report = receiptScope repoRoot handler final
+
+        let runId =
+            match ran with
+            | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+            | _ -> failwith "expected run"
+
+        test <@ report.RunId = Some runId @>
+        test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>)
+
+[<Theory(Timeout = 20000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``source changes before completion or after completion invalidate receipt scope`` beforeCompletion =
+    withReceiptSource (fun repoRoot source ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+        let ran = partialReceiptRun repoRoot
+
+        let change () =
+            File.WriteAllText(source, "module Value\nlet answer = 2\n")
+
+        if beforeCompletion then
+            change ()
+
+        let _, _, _, final = driveRuns handler [ ran ]
+
+        if not beforeCompletion then
+            test <@ (receiptScope repoRoot handler final).Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>
+            change ()
+
+        let report = receiptScope repoRoot handler final
+        test <@ report.RunId.IsNone @>
+
+        match report.Scope with
+        | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
+        | other -> Assert.Fail($"changed bytes retained positive scope: {other}"))
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``an unreadable source cannot expose an earlier passing receipt`` () =
+    withReceiptSource (fun repoRoot source ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+        let _, _, _, final = driveRuns handler [ partialReceiptRun repoRoot ]
+        test <@ (receiptScope repoRoot handler final).Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>
+
+        use locked =
+            new FileStream(source, FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+
+        test <@ ReceiptInputTree.read repoRoot = None @>
+        test <@ (receiptScope repoRoot handler final).RunId.IsNone @>)
+
+[<Fact(Timeout = 20000)>]
+[<Trait("Issue", "AUTOMATION-394")>]
+let ``an aborted same-input run cannot reuse an earlier passing receipt`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ a125Config "ProjA"; a125Config "ProjB" ]) None None None None []
+
+        let ran = partialReceiptRun repoRoot
+
+        let aborted =
+            match testsFinishedEvent [] (emptyLaunch |> bindReceiptTree repoRoot) with
+            | Custom(TestsFinished(started, completed, launch)) ->
+                Custom(
+                    TestsFinished(
+                        started,
+                        { completed with
+                            Outcome = Aborted "owned runner cancelled" },
+                        launch
+                    )
+                )
+            | _ -> failwith "expected run"
+
+        let _, _, _, final = driveRuns handler [ ran; aborted ]
+
+        match (receiptScope repoRoot handler final).Scope with
+        | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
+        | other -> Assert.Fail($"aborted run retained positive scope: {other}"))
