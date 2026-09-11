@@ -424,22 +424,31 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
             mutate (fun snapshot ->
                 snapshot.ExecutorFault |> Option.iter raise
                 let work = entries snapshot.Phase
-                let candidate =
-                    work |> Map.toList |> List.tryPick (fun (id, kind) ->
-                        match kind with
-                        | Exclusive(candidate, pending) when candidate = key -> Some(id, kind, pending)
-                        | _ -> None)
-                    |> Option.orElseWith (fun () ->
-                        work |> Map.toList |> List.tryPick (fun (id, kind) ->
-                            match kind with
-                            | Event(_, Some(candidate, pending))
-                            | Committing(_, Some(candidate, pending)) when candidate = key -> Some(id, kind, pending)
-                            | _ -> None))
+                // A completion can retain older intents while its successor already
+                // runs. Search both queues for replacement before choosing where a
+                // newly accepted intent belongs.
+                let candidates =
+                    [ yield!
+                          work |> Map.toList |> List.choose (fun (id, kind) ->
+                              match kind with
+                              | Exclusive(candidate, pending) when candidate = key -> Some(id, kind, pending)
+                              | _ -> None)
+                      yield!
+                          work |> Map.toList |> List.choose (fun (id, kind) ->
+                              match kind with
+                              | Event(_, Some(candidate, pending))
+                              | Committing(_, Some(candidate, pending)) when candidate = key -> Some(id, kind, pending)
+                              | _ -> None) ]
 
-                let existing =
-                    candidate |> Option.bind (fun (_, _, pending) ->
+                let replacement =
+                    candidates |> List.tryPick (fun ((_, _, pending) as candidate) ->
                         coalescingKey |> Option.bind (fun requested ->
-                            queued pending |> List.tryFind (fun intent -> intent.CoalescingKey = Some requested)))
+                            queued pending
+                            |> List.tryFind (fun intent -> intent.CoalescingKey = Some requested)
+                            |> Option.map (fun intent -> candidate, intent)))
+                let candidate =
+                    replacement |> Option.map fst |> Option.orElseWith (fun () -> List.tryHead candidates)
+                let existing = replacement |> Option.map snd
                 let intent =
                     match existing with
                     | Some prior -> { prior with Deliver = deliver }
@@ -451,7 +460,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
 
                 match candidate with
                 | None ->
-                    { snapshot with Phase = Map.add intent.Id (Event(Some intent.Receipt, None)) work |> phase },
+                    { snapshot with Phase = Map.add intent.Id (Event(Some intent.Receipt, Some(key, Running))) work |> phase },
                     (Some intent, intent.Receipt.Task)
                 | Some(id, kind, pending) ->
                     let next =
@@ -483,8 +492,12 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                         | Some(UpdateFailure _) -> None
                         | other -> other },
                 (receipt, pending))
-        deliverIntents pending
-        receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
+        try
+            deliverIntents pending
+        finally
+            // The predecessor has already committed. Successor delivery cannot
+            // revoke that fact or leave its detached receipt waiting forever.
+            receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
 
     /// Publish a prepared candidate without settling its original event obligation.
     member _.PublishEventState(id: WorkId, state: 'State) =
@@ -532,8 +545,12 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                         | other -> other },
                 (receipt, pending))
 
-        deliverIntents pending
-        receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
+        try
+            deliverIntents pending
+        finally
+            // The predecessor has already committed. Successor delivery cannot
+            // revoke that fact or leave its detached receipt waiting forever.
+            receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
 
     /// A failed fold cannot acknowledge success or discard unrelated live workers.
     member _.FailEvent(id: WorkId, failure: OwnerFailure) =
@@ -564,10 +581,11 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
                     Failure = Some retainedFailure },
                 (receipt, pending))
 
-        deliverIntents pending
-
-        receipt
-        |> Option.iter (fun completion -> completion.TrySetException(failure.Exception) |> ignore)
+        try
+            deliverIntents pending
+        finally
+            receipt
+            |> Option.iter (fun completion -> completion.TrySetException(failure.Exception) |> ignore)
 
     /// Transfer to a result fold only while its executor can accept it. A stopped
     /// executor cannot consume a result; the worker still retires only after cleanup.
