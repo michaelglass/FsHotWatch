@@ -1477,7 +1477,7 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
         { new IDisposable with
             member _.Dispose() =
                 release.TrySetResult(()) |> ignore
-                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
 
     // Hold a real accepted event through cancellation, then drain it during cleanup.
     let handler =
@@ -1507,7 +1507,7 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
-    test <@ host.AnyPluginBusy @>
+    test <@ host.AnyPluginBusy() @>
 
     let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
     test <@ not waitTask.IsCompleted @>

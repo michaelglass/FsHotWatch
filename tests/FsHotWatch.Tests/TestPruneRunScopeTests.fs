@@ -2905,7 +2905,7 @@ let ``completion observations remain bound to their supplied owner snapshot`` (c
 
     let read state =
         let json =
-            PluginCommand.invoke PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
+            PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously
 
         use document = JsonDocument.Parse(json)
         let field = if commandName = "test-scope" then "runIds" else "runId"
@@ -3086,7 +3086,7 @@ let ``a retained owner cannot learn a full suite baseline earned by a later comp
 
     let read state =
         use document =
-            JsonDocument.Parse(PluginCommand.invoke PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
+            JsonDocument.Parse(PluginCommand.invoke command commandCtx state [||] |> Async.RunSynchronously)
 
         document.RootElement.GetProperty("baseline").GetRawText(),
         document.RootElement.GetProperty("baselineAbsent").GetRawText()
@@ -3202,7 +3202,7 @@ let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPr
           IsRunning = fun _ -> false
           ProjectGraph = ProjectGraphAccessor.none }
 
-    command ctx state [||]
+    PluginCommand.invoke command ctx state [||]
     |> Async.RunSynchronously
     |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
 

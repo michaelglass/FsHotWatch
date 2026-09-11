@@ -1041,7 +1041,7 @@ let ``WaitForComplete times out while plugin owns unfinished work`` () =
         { new IDisposable with
             member _.Dispose() =
                 release.TrySetResult(()) |> ignore
-                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1069,7 +1069,7 @@ let ``WaitForComplete times out while plugin owns unfinished work`` () =
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
-    test <@ host.AnyPluginBusy @>
+    test <@ host.AnyPluginBusy() @>
 
     let config =
         { defaultRpcConfig host with
@@ -1100,7 +1100,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
         { new IDisposable with
             member _.Dispose() =
                 release.TrySetResult(()) |> ignore
-                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
+                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1127,7 +1127,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
-    test <@ host.AnyPluginBusy @>
+    test <@ host.AnyPluginBusy() @>
 
     use cts = new CancellationTokenSource()
     let waitEntered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)

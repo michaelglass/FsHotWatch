@@ -768,6 +768,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
     withProjectOnlyRepo "runonce-total-discovery-failure" (fun repoRoot ->
         // Seed the exact dangerous state: a readable green from an earlier run.
         FsHotWatch.Cli.IpcOutput.publishVerdict
+            BaselineFixtures.model
             repoRoot
             []
             FsHotWatch.Cli.CheckVerdict.InnerLoop

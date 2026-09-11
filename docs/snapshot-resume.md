@@ -41,3 +41,37 @@ qualified together with the release: Intelligence's VerdictProvenance,
 SelectionScoreboard and InfraValidation currently reject a different schema.
 No package release, pin bump, main merge or QA transition is justified by source
 preparation or a subset of the integrated unit tests.
+
+## Integrated assertion-red checkpoint (2026-09-11)
+
+The combined owner/debt/model full unit invocation executed 3207 tests: 3190
+passed, 17 failed, zero skipped. `/tmp/integrated-unit-red.log` records both
+mapping/registration RunOnce controls failing because no ConfigError was thrown,
+and the publication control failing inside the loader because Store still held
+Unobserved instead of Rediscovering1. These are actual assertion failures after
+a successful combined compile; they justify the following source correction.
+
+The corrected source publishes the coordinator observation into Store and carries
+it through typed RPC error code523 and verdict-v2 `projectModel`. GetDiagnostics
+projects the current model and authorized earned run IDs from one immutable host
+snapshot; publication joins the graded run ID to that same generation and refuses
+missing/failed receipts. Prior same-tree green preservation requires that same
+current authorization. Same-input narrower completions may authorize an earlier
+receipt only through the private earned-evidence binder, not arbitrary UI status.
+
+A committed plugin owner failure now uses WorkFailedException, distinct from an
+actual timeout. RunOnce may render its recorded plugin failure after ownership is
+empty, preserving the failure verdict instead of escaping before publication.
+These corrections remain source-only until the subsequent combined checks pass.
+
+## Captured cohort invariant
+
+FileCheckResult.ModelGeneration and BatchChecked.ModelGeneration name the discovery
+model which supplied the compiler options. They are independent of source versions
+and the scan sequence counter. The daemon must stamp captured identity, and the
+TestPrune owner must retain debt on an absent or mismatched lineage. A captured scan
+which is invalidated before publication must fail explicitly; finishing FCS against
+old options is not proof about a newly registered model. The tightened preprocessor
+barrier race control establishes this ordering without native watcher timing.
+The data fields are prepared; their producer/consumer migration and the new stale
+assertion-red/green pair are still pending at this checkpoint.
