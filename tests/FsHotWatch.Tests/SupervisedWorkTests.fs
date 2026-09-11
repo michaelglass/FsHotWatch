@@ -908,3 +908,61 @@ let ``an ordinary update cannot overwrite stronger failed verification`` kind =
     |> ignore
 
     owner.CommitEvent(invalid, 2)
+
+[<Theory>]
+[<InlineData(0)>]
+[<InlineData(-1)>]
+[<InlineData(1)>]
+let ``invalid queue deadline admits no owner or worker`` kind =
+    let store = PluginWorkOwner.Store()
+    let deadline = if kind = 1 then TimeSpan.MaxValue else TimeSpan.FromSeconds(float kind)
+    Assert.Throws<ArgumentException>(fun () ->
+        SupervisedWork.Queue(store, "invalid", 0, deadline, (fun state (_: int) -> state), (fun state _ -> state), ignore,
+            (fun state _ _ _ -> async.Return state)) |> ignore) |> ignore
+    Assert.False store.Snapshot.IsBusy
+    Assert.Empty store.Snapshot.Rows
+
+[<Fact(Timeout = 15000)>]
+let ``supervisor constructed without flowing context still settles its actual worker`` () =
+    let store = PluginWorkOwner.Store()
+    let queue =
+        use suppressed = ExecutionContext.SuppressFlow()
+        SupervisedWork.Queue(store, "suppressed", 0, TimeSpan.FromSeconds 5., (fun state (_: int) -> state),
+            (fun state _ -> state), ignore, (fun state request _ _ -> async.Return(state + request)))
+    try
+        queue.Submit(3, CancellationToken.None) |> awaitResult
+        Assert.Equal(3, queue.State)
+        Assert.False store.Snapshot.IsBusy
+    finally
+        queue.Close()
+
+[<Fact(Timeout = 15000)>]
+let ``deadline publication failure still cancels work and late timer callbacks cannot reopen ownership`` () =
+    let mutable expire = ignore
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let mutable cancelled = false
+    let work =
+        SupervisedWork.execute "deadline-report" (TimeSpan.FromSeconds 5.)
+            (fun _ callback -> expire <- callback; { new IDisposable with member _.Dispose() = () })
+            (fun _ -> failwith "diagnostic publication refused") CancellationToken.None
+            (fun token -> async {
+                entered.Set()
+                Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
+                cancelled <- token.IsCancellationRequested
+                return () })
+            (fun outcome cleanup -> cleanup(); outcome)
+        |> Async.StartAsTask
+    try
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.))
+        expire()
+        release.Set()
+        let outcome = work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+        Assert.True cancelled
+        match outcome with
+        | Error failure -> Assert.IsAssignableFrom<OperationCanceledException>(failure) |> ignore
+        | Ok () -> Assert.Fail("deadline cancellation must refuse successful settlement")
+        expire()
+    finally
+        release.Set()
+        work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult() |> ignore

@@ -2606,3 +2606,120 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
                 server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
             with _ ->
                 ())
+
+[<Fact(Timeout = 30000)>]
+let ``CSharp dependency edit remains a build input and rechecks only its FSharp dependents`` () =
+    withTempDir "mixed-language-fanout" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let helperProject = Path.Combine(directory, "Helper.csproj")
+        let appProject = Path.Combine(directory, "App.fsproj")
+        let helperSource = Path.Combine(directory, "Helper.cs")
+        let appSource = Path.Combine(directory, "App.fs")
+        File.WriteAllText(helperSource, "public class Helper {}")
+        File.WriteAllText(appSource, "module App\nlet value = 1\n")
+        for project in [ helperProject; appProject ] do
+            File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+            let assets = FsHotWatch.DepsFreshness.assetsPath project
+            Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+            File.WriteAllText(assets, "{}")
+        let checker = sharedChecker.Value
+        let appOptions, _ =
+            checker.GetProjectOptionsFromScript(
+                appSource, FSharp.Compiler.Text.SourceText.ofString(File.ReadAllText appSource),
+                assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+        let options =
+            [ { appOptions with ProjectFileName = appProject; SourceFiles = [| appSource |] }
+              makeProjectOptions helperProject [ helperSource ] [] ]
+        let loader =
+            BlockingWorkspaceLoader
+                [ { minimalLoadedProject appProject with SourceFiles = [ appSource ] }
+                  { minimalLoadedProject helperProject with SourceFiles = [ helperSource ] } ]
+        loader.Resume()
+        let callback = ref None
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents; Disposables = [] }
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker root Daemon.DaemonOptions.defaults loader (fun _ -> options) watcher
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        daemon.Graph.RegisterProject(
+            AbsProjectPath.create appProject, [ AbsFilePath.create appSource ], [ AbsProjectPath.create helperProject ])
+        Assert.Equal(Some(1L, Set.singleton(AbsFilePath.create appSource)), daemon.Host.WorkSnapshot.ProjectModelFiles)
+        Assert.Contains(AbsFilePath.create helperSource, daemon.Graph.GetSourceFiles(AbsProjectPath.create helperProject))
+        Assert.Contains(AbsProjectPath.create appProject, daemon.Graph.GetTransitiveDependents(AbsProjectPath.create helperProject))
+        let observed = System.Collections.Concurrent.ConcurrentQueue<PluginEvent<unit>>()
+        let sealedBatch =
+            System.Threading.Tasks.TaskCompletionSource<unit>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+        daemon.RegisterHandler
+            { Name = PluginName.create "mixed-language-observer"
+              Init = ()
+              Update = fun _ state event -> async {
+                  observed.Enqueue event
+                  match event with
+                  | BatchChecked _ -> sealedBatch.TrySetResult(()) |> ignore
+                  | _ -> ()
+                  return state }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None; PrepareCommit = None; Teardown = None }
+        let before = FsHotWatch.TreeHash.compute root []
+        File.WriteAllText(helperSource, "public class Helper { public int Changed => 2; }")
+        Assert.NotEqual(before.Hash, (FsHotWatch.TreeHash.compute root []).Hash)
+        (callback.Value |> Option.get) (SourceChanged [ helperSource ])
+        sealedBatch.Task.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult()
+        (waitForAllTerminal daemon.Host (TimeSpan.FromSeconds 5.0) CancellationToken.None).GetAwaiter().GetResult()
+        let events = observed.ToArray() |> Array.toList
+        let changed = events |> List.collect (function FileChanged(SourceChanged files) -> files | _ -> [])
+        Assert.Contains(helperSource, changed)
+        Assert.Contains(appSource, changed)
+        let checkedFiles = events |> List.choose (function FileChecked result -> Some result | _ -> None)
+        let checkedFile = Assert.Single checkedFiles
+        Assert.Equal(AbsFilePath.create appSource, checkedFile.File)
+        match checkedFile.CheckResults with
+        | FullCheck _ -> ()
+        | ParseOnly -> failwith "the FSharp dependent must receive a full FCS result"
+        let cohort = events |> List.choose (function BatchChecked batch -> Some batch | _ -> None) |> List.exactlyOne
+        Assert.Equal<AbsFilePath>([ AbsFilePath.create appSource ], cohort.Files))
+
+[<Fact(Timeout = 20000)>]
+let ``cold scan with only CSharp dependency sources still notifies build without invoking FCS`` () =
+    withTempDir "mixed-cold-scan" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Empty.fsproj")
+        let helperProject = Path.Combine(directory, "Helper.csproj")
+        let source = Path.Combine(directory, "Helper.cs")
+        File.WriteAllText(project, "<Project />")
+        File.WriteAllText(helperProject, "<Project />")
+        File.WriteAllText(source, "public class Helper {}")
+        let loaded =
+            [ minimalLoadedProject project
+              { minimalLoadedProject helperProject with SourceFiles = [ source ] } ]
+        let loader = BlockingWorkspaceLoader loaded
+        loader.Resume()
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker root
+                { Daemon.DaemonOptions.defaults with RunMode = Daemon.RunMode.OneShot }
+                loader (fun _ -> [ makeProjectOptions project [] []; makeProjectOptions helperProject [ source ] [] ])
+        let changed = System.Collections.Concurrent.ConcurrentQueue<string>()
+        daemon.RegisterHandler
+            { Name = PluginName.create "build-input-observer"; Init = ()
+              Update = fun _ state event -> async {
+                  match event with
+                  | FileChanged(SourceChanged files) -> files |> List.iter changed.Enqueue
+                  | _ -> ()
+                  return state }
+              Commands = []; Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None; PrepareCommit = None; Teardown = None }
+        daemon.ScanAll() |> Async.RunSynchronously
+        (waitForAllTerminal daemon.Host (TimeSpan.FromSeconds 5.0) CancellationToken.None).GetAwaiter().GetResult()
+        Assert.Contains(source, changed)
+        Assert.Empty(daemon.Pipeline.GetAllRegisteredFiles())
+        Assert.Equal(Some(1L, Set.empty), daemon.Host.WorkSnapshot.ProjectModelFiles)
+        let before = fingerprintFsprojFiles root []
+        File.SetLastWriteTimeUtc(helperProject, File.GetLastWriteTimeUtc(helperProject).AddSeconds 2.0)
+        Assert.NotEqual(before, fingerprintFsprojFiles root []))

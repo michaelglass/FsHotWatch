@@ -137,6 +137,8 @@ let ``analysis proof refuses missing stale and failed file outcomes and configur
 
         Assert.Empty((proof outcomes).FailureReasons)
         Assert.NotEmpty((proof Map.empty).FailureReasons)
+        let foreign = AnalysisFileEvidence.fromResult { result with File = AbsFilePath.create(Path.Combine(Path.GetDirectoryName(AbsFilePath.value result.File), "Other.fs")) } (Ok())
+        Assert.NotEmpty((proof (Map.ofList [ result.File, foreign ])).FailureReasons)
 
         let stale =
             AnalysisFileEvidence.fromResult
