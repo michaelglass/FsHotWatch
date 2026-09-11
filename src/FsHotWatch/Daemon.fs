@@ -1171,6 +1171,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     { Trigger = InSessionBatch changes
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = nextGen
+                      ModelGeneration = None
                       StartedAt = batchStartedAt
                       CompletedAt = System.DateTime.UtcNow }
 
@@ -2276,6 +2277,7 @@ let private performScan
                     { Trigger = BootScan
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = newGeneration
+                      ModelGeneration = None
                       StartedAt = scanStartedAt
                       CompletedAt = System.DateTime.UtcNow }
 

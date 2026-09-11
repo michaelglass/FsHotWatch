@@ -6379,10 +6379,12 @@ let internal createWithLaunchDeadline
                                 // mailbox and possibly behind a run already in
                                 // flight — so an unbounded wait here could pin the
                                 // IPC caller for as long as the daemon is wedged.
-                                let result = async {
-                                    do! admission |> Async.AwaitTask
-                                    return! reply.Task |> Async.AwaitTask
-                                } |> Async.StartAsTask
+                                let result =
+                                    async {
+                                        do! admission |> Async.AwaitTask
+                                        return! reply.Task |> Async.AwaitTask
+                                    }
+                                    |> Async.StartAsTask
                                 let! winner =
                                     Tasks.Task.WhenAny(result, Tasks.Task.Delay(waitForResultMs))
                                     |> Async.AwaitTask
