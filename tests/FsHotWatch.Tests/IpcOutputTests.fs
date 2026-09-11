@@ -2077,3 +2077,29 @@ let ``green publication requires the graded run's current model receipt`` kind e
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
         test <@ exitCode = expectedExit @>)
+
+[<Theory>]
+[<InlineData("matching", 0)>]
+[<InlineData("missing", 2)>]
+[<InlineData("different-model", 2)>]
+[<InlineData("refused", 2)>]
+let ``analysis-only green requires its own completed model receipt`` kind expectedExit =
+    withTempDir "ipcoutput-analysis-model-receipt" (fun repoRoot ->
+        let receipts =
+            if kind = "missing" then []
+            else
+                [ {| runId = null : string
+                     modelGeneration = if kind = "different-model" then 2L else 1L
+                     refusals = if kind = "refused" then [ "unchecked file" ] else [] |} ]
+        let evidence =
+            System.Text.Json.JsonSerializer.Serialize(
+                {| daemonPhases = [||] : string array
+                   projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
+                   modelReceipts = receipts |})
+            |> DaemonEvidence.parse
+        let exitCode =
+            TestHelpers.publishVerdict evidence repoRoot [] CheckVerdict.InnerLoop false
+                TestRunReport.noTestSuite Verdict.NoReading Map.empty []
+                (SettledTree.capture repoRoot [])
+                (CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite)
+        test <@ exitCode = expectedExit @>)
