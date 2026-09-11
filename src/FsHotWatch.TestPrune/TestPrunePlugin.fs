@@ -1338,6 +1338,8 @@ type TestEvidenceReceipt =
 /// run results. Migration consumers must read this value, never closure mirrors.
 type VerificationDebt =
     { PendingQueue: PendingVerification.Queue
+      SymbolRevisions: Map<string, int64>
+      Revision: int64
       RecoveryOutstanding: bool
       Baseline: FullSuiteBaseline.Baseline option
       RuntimeObligations: RuntimeCoverageObligations }
@@ -1468,7 +1470,10 @@ type TestPruneState =
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
+        Earned: EarnedEvidence option
     }
+    interface IEarnedEvidenceState with
+        member this.EarnedEvidence = this.Earned
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -1485,6 +1490,7 @@ type TestPruneState =
 /// baseline exist" — which the caller computes and passes as `hasCachedResults`.
 type TestRunInputs =
     {
+        ModelGeneration: int64 option
         Debt: VerificationDebt
         FullSuiteRequested: bool
         /// The impact selection: which test classes the changed symbols reach.
@@ -1512,8 +1518,9 @@ type TestRunInputs =
 
 module TestRunInputs =
     /// Project the state down to what a run reads, at LAUNCH time.
-    let ofState (state: TestPruneState) : TestRunInputs =
-        { Debt = state.Debt
+    let ofState (modelGeneration: int64 option) (state: TestPruneState) : TestRunInputs =
+        { ModelGeneration = modelGeneration
+          Debt = state.Debt
           FullSuiteRequested = state.FullSuiteRequested
           AffectedTests = state.AffectedTests
           ChangedSymbols = state.ChangedSymbols
@@ -1548,6 +1555,8 @@ module TestRunInputs =
 /// lifecycle: they executed nothing, so they clear nothing.
 type TestRunLaunch =
     {
+        ModelGeneration: int64 option
+        SymbolRevisions: Map<string, int64>
         Symbols: Set<string>
         CoveringProjectsBySymbol: Map<string, Set<string>>
         /// Durable file-granular runtime obligations launched independently of
@@ -4912,8 +4921,22 @@ let internal createWithLaunchDeadline
             | None -> $"{queued} symbol(s) awaiting verification"
 
     let enqueuePending symbols (state: TestPruneState) =
-        { state with
-            Debt = { state.Debt with PendingQueue = Set.union state.Debt.PendingQueue (Set.ofList symbols) } }
+        if List.isEmpty symbols then state
+        else
+            let revision = state.Debt.Revision + 1L
+            { state with
+                Debt =
+                    { state.Debt with
+                        PendingQueue = Set.union state.Debt.PendingQueue (Set.ofList symbols)
+                        Revision = revision
+                        SymbolRevisions =
+                            (state.Debt.SymbolRevisions, symbols)
+                            ||> List.fold (fun versions symbol -> Map.add symbol revision versions) } }
+
+    let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
+        match ctx.ProjectGraph.ObserveModel () with
+        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+        | _ -> None
 
     let markRunLaunched (state: TestPruneState) =
         let symbols = Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
@@ -4969,7 +4992,8 @@ let internal createWithLaunchDeadline
             Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols) |> Set.toList
 
         let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
-        let state = enqueuePending priorLiteralSeeds state
+        let newlyOwedLiterals = priorLiteralSeeds |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
+        let state = enqueuePending newlyOwedLiterals state
 
         let state =
             { state with
@@ -5339,6 +5363,8 @@ let internal createWithLaunchDeadline
     let initialState =
         { Debt =
             { PendingQueue = initialQueue
+              SymbolRevisions = initialQueue |> Seq.map (fun symbol -> symbol, 0L) |> Map.ofSeq
+              Revision = 0L
               RecoveryOutstanding = ledgerUnreadableReason.IsSome || failuresUnreadable || runtimeUnreadable || interruptedPublication
               Baseline = initialBaseline
               RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects initialRuntimeObligations }
@@ -5369,7 +5395,8 @@ let internal createWithLaunchDeadline
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
-          EvidenceReceipt = None }
+          EvidenceReceipt = None
+          Earned = None }
 
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
@@ -5581,7 +5608,9 @@ let internal createWithLaunchDeadline
                         |> Some
 
                 let launch =
-                    { Symbols = launchedSymbols
+                    { ModelGeneration = inputs.ModelGeneration
+                      SymbolRevisions = inputs.Debt.SymbolRevisions
+                      Symbols = launchedSymbols
                       CoveringProjectsBySymbol = coveringProjectsBySymbol
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
@@ -5796,7 +5825,9 @@ let internal createWithLaunchDeadline
                 // The empty SELECTION says the same thing about the ledger: an
                 // aborted run executed nothing, so it clears nothing.
                 let launch =
-                    { Symbols = launchedSymbols
+                    { ModelGeneration = inputs.ModelGeneration
+                      SymbolRevisions = inputs.Debt.SymbolRevisions
+                      Symbols = launchedSymbols
                       CoveringProjectsBySymbol = Map.empty
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
@@ -5839,7 +5870,9 @@ let internal createWithLaunchDeadline
         // (`--only-failed`, `--projects`) are absent from the selection and so are
         // covered by nothing — exactly right, they did not run.
         let commandLaunch: TestRunLaunch =
-            { Symbols = Set.empty
+            { ModelGeneration = observeModelGeneration ctx
+              SymbolRevisions = Map.empty
+              Symbols = Set.empty
               CoveringProjectsBySymbol = Map.empty
               RuntimeProjectsByFile = Map.empty
               Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
@@ -6792,7 +6825,7 @@ let internal createWithLaunchDeadline
                                         (runTestsWithImpact
                                             ctx
                                             configs
-                                            (TestRunInputs.ofState drainedState)
+                                            (TestRunInputs.ofState (observeModelGeneration ctx) drainedState)
                                             hasCachedResults
                                             forceRunProjects)
                                 with
@@ -6964,7 +6997,7 @@ let internal createWithLaunchDeadline
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                (TestRunInputs.ofState launchState)
+                                                (TestRunInputs.ofState (observeModelGeneration ctx) launchState)
                                                 hasCachedResults
                                                 forceRunProjects)
                                     with
@@ -7144,6 +7177,12 @@ let internal createWithLaunchDeadline
 
                             Set.union launch.Symbols bootScanCandidates
                             |> Set.filter (fun s ->
+                                let sameRevision =
+                                    let current = state.Debt.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
+                                    let launched = launch.SymbolRevisions |> Map.tryFind s |> Option.defaultValue 0L
+                                    current = launched
+                                    || (Set.contains s bootScanCandidates && not (Set.contains s launch.Symbols))
+                                sameRevision &&
                                 match Map.tryFind s launch.CoveringProjectsBySymbol with
                                 | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
                                 | Some _ -> true
@@ -7208,6 +7247,7 @@ let internal createWithLaunchDeadline
                             Debt =
                                 { state.Debt with
                                     PendingQueue = Set.difference state.Debt.PendingQueue committedSymbols
+                                    SymbolRevisions = state.Debt.SymbolRevisions |> Map.filter (fun symbol _ -> not (Set.contains symbol committedSymbols))
                                     RecoveryOutstanding = state.Debt.RecoveryOutstanding && not recovered
                                     RuntimeObligations =
                                         if recovered then Map.empty
@@ -7246,6 +7286,34 @@ let internal createWithLaunchDeadline
                     // tests until a covering run passes. `queueAfterCommit` is the
                     // post-commit durable queue; it drives the cleared ChangedSymbols
                     // and the cache-key snapshot in every return branch below.
+                    let pendingObligations =
+                        Set.count state.Debt.PendingQueue
+                        + (state.Debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count)
+                        + state.UnanalyzableFiles.Count
+                        + state.OutstandingFailures.Length
+                        + (if state.Debt.RecoveryOutstanding then 1 else 0)
+
+                    let earned =
+                        match completed.Verification with
+                        | NoProjectsSelected when
+                            pendingObligations = 0
+                            && completed.Outcome = Normal
+                            && launch.ZeroSelection <> ZeroSelection.NotAZero
+                            && launch.ModelGeneration = observeModelGeneration ctx ->
+                            state.Earned
+                            |> Option.filter (fun evidence -> Some evidence.Generation = observeModelGeneration ctx)
+                        | _ ->
+                            EarnedEvidence.fromCompletion
+                                started.RunId
+                                launch.ModelGeneration
+                                (observeModelGeneration ctx)
+                                runnableProjects
+                                pendingObligations
+                                state.Earned
+                                completed
+
+                    let state = { state with Earned = earned }
+
                     let queueAfterCommit = state.Debt.PendingQueue
                     let remainingChangedSymbols = queueAfterCommit |> Set.toList
 
@@ -7727,7 +7795,7 @@ let internal createWithLaunchDeadline
                                             (runTestsWithImpact
                                                 ctx
                                                 configs
-                                                (TestRunInputs.ofState rerunState)
+                                                (TestRunInputs.ofState (observeModelGeneration ctx) rerunState)
                                                 true
                                                 deferredFanout)
                                     with

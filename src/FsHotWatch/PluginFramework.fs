@@ -224,6 +224,8 @@ type PluginCtx<'Msg> =
 /// path is the canonical `bin/Debug/<TFM>/<name>.dll`.
 and [<NoComparison; NoEquality>] ProjectGraphAccessor =
     {
+        /// Completed discovery identity. Unavailable or changing models cannot earn test proof.
+        ObserveModel: unit -> ProjectModel.Observation
         /// Every registered project, as absolute `.fsproj` paths.
         GetAllProjects: unit -> string list
         /// Projects that directly or transitively ProjectReference the given
@@ -240,7 +242,8 @@ module ProjectGraphAccessor =
     /// No-op accessor: no graph wired (tests, null-checker daemon). Every query
     /// returns empty/None, so dependency-fanout consumers fall back cleanly.
     let none: ProjectGraphAccessor =
-        { GetAllProjects = fun () -> []
+        { ObserveModel = fun () -> ProjectModel.Observation.Unobserved
+          GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
           GetCanonicalDllPath = fun _ -> None }
