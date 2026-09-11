@@ -114,7 +114,9 @@ let emitBuildAndWaitTerminal (host: PluginHost) =
                     | Some(Failed _) -> true
                     | _ -> false
 
-                host.CompletedDispatches() > completedBefore && terminal && not (host.AnyPluginBusy()))
+                host.CompletedDispatches() > completedBefore
+                && terminal
+                && not (host.AnyPluginBusy()))
             20000
 
     test <@ completedNewCycle @>

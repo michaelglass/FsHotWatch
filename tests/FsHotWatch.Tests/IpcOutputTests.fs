@@ -83,7 +83,9 @@ let ``positive bounded filtered project counts are retainable executed evidence`
 let ``an executed-looking scope without a run id is not retainable evidence`` (fullSuite: bool) =
     let scope = if fullSuite then FullSuite 4 else ImpactFiltered(2, 4)
 
-    let scopeOnly = { BaselineFixtures.reportOf scope with RunId = None }
+    let scopeOnly =
+        { BaselineFixtures.reportOf scope with
+            RunId = None }
 
     let effective, retained =
         TestRunEvidence.reconcile (evidenceTree "sha256:no-run") scopeOnly None
@@ -762,8 +764,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
 
         statusJsonFor true
 
-    let cleanDiagnostics () : string =
-        (completedDiagnosticsJson ())
+    let cleanDiagnostics () : string = (completedDiagnosticsJson ())
 
     // AUTOMATION-555. The verdict the daemon transport publishes is stamped with the
     // invocation that drove it, so the wrapping CLI can attach its hook timing to THIS
@@ -842,8 +843,7 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
 
         statusJsonFor true
 
-    let cleanDiagnostics () : string =
-        (completedDiagnosticsJson ())
+    let cleanDiagnostics () : string = (completedDiagnosticsJson ())
 
     let earlier = System.Guid.NewGuid()
     let firstBatch = System.Guid.NewGuid()
@@ -1650,7 +1650,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
               Diagnostics = DiagnosticCounts.empty }
 
         let initialExitCode =
-            publishVerdict (modelEvidence [ runId ])
+            publishVerdict
+                (modelEvidence [ runId ])
                 repoRoot
                 []
                 CheckVerdict.Confirmation
@@ -1707,7 +1708,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
 
         let zeroTestExitCode =
-            publishVerdict (modelEvidence [ runId ])
+            publishVerdict
+                (modelEvidence [ runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1759,7 +1761,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         let tracked = System.IO.Path.Combine(src, "Tracked.fs")
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 42\n")
 
-        publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+        publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             CheckVerdict.Confirmation
@@ -1775,7 +1778,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
         System.IO.File.WriteAllText(tracked, "module Tracked\nlet answer = 43\n")
 
         let exitCode =
-            publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+            publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1798,7 +1802,8 @@ let ``a zero-test convergence never preserves a full-suite green from a differen
 
 let private publishA643Prior (repoRoot: string) (kind: string) =
     let publish scope outcome statuses =
-        publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+        publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             CheckVerdict.InnerLoop
@@ -1864,7 +1869,8 @@ let ``a zero-test convergence replaces every prior that is not an applicable ful
         let noTests = NoTestsRun NoTestsReason.AlreadyVerified
 
         let exitCode =
-            publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+            publishVerdict
+                (modelEvidence [ BaselineFixtures.runId ])
                 repoRoot
                 []
                 CheckVerdict.InnerLoop
@@ -1908,7 +1914,8 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
             else
                 CheckVerdict.InnerLoop
 
-        publishVerdict (modelEvidence [ BaselineFixtures.runId ])
+        publishVerdict
+            (modelEvidence [ BaselineFixtures.runId ])
             repoRoot
             []
             mode
@@ -1934,9 +1941,17 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                 (fun _ -> [])
                 false
                 (fun () -> "complete: 0 files checked")
-                (fun () -> raise (FsHotWatch.ProjectModel.UnavailableException(
-                    FsHotWatch.ProjectModel.ofCompleted 1L
-                        { Discovered = 1; Loaded = 0; OptionsMapped = 0; Registered = 0 })))
+                (fun () ->
+                    raise (
+                        FsHotWatch.ProjectModel.UnavailableException(
+                            FsHotWatch.ProjectModel.ofCompleted
+                                1L
+                                { Discovered = 1
+                                  Loaded = 0
+                                  OptionsMapped = 0
+                                  Registered = 0 }
+                        )
+                    ))
                 (fun () -> "{}")
                 (fun () ->
                     diagnosticsReads <- diagnosticsReads + 1
@@ -2089,17 +2104,38 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
 let ``green publication requires the graded run's current model receipt`` kind expectedExit =
     withTempDir "ipcoutput-model-receipt" (fun repoRoot ->
         let receipts =
-            if kind = "missing" then []
+            if kind = "missing" then
+                []
             else
-                [ { RunId = if kind = "analysis-only" then None else Some(if kind = "different-run" then System.Guid.NewGuid() else BaselineFixtures.runId)
+                [ { RunId =
+                      if kind = "analysis-only" then
+                          None
+                      else
+                          Some(
+                              if kind = "different-run" then
+                                  System.Guid.NewGuid()
+                              else
+                                  BaselineFixtures.runId
+                          )
                     Generation = if kind = "different-model" then 2L else 1L
                     Refusals = if kind = "refused" then [ "unknown debt" ] else [] } ]
+
         let evidence = DaemonEvidence.Served([], BaselineFixtures.model, receipts)
+
         let exitCode =
-            TestHelpers.publishVerdict evidence repoRoot [] CheckVerdict.InnerLoop false
-                (BaselineFixtures.reportOf (FullSuite 1)) Verdict.NoReading Map.empty []
+            TestHelpers.publishVerdict
+                evidence
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                (BaselineFixtures.reportOf (FullSuite 1))
+                Verdict.NoReading
+                Map.empty
+                []
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
         test <@ exitCode = expectedExit @>)
 
 [<Theory>]
@@ -2111,20 +2147,37 @@ let ``green publication requires the graded run's current model receipt`` kind e
 let ``analysis-only green requires its own completed model receipt`` kind expectedExit =
     withTempDir "ipcoutput-analysis-model-receipt" (fun repoRoot ->
         let receipts =
-            if kind = "missing" then []
+            if kind = "missing" then
+                []
             else
-                [ {| runId = if kind = "test-run" then BaselineFixtures.runId.ToString("N") else (null : string)
+                [ {| runId =
+                      if kind = "test-run" then
+                          BaselineFixtures.runId.ToString("N")
+                      else
+                          (null: string)
                      modelGeneration = if kind = "different-model" then 2L else 1L
                      refusals = if kind = "refused" then [ "unchecked file" ] else [] |} ]
+
         let evidence =
             System.Text.Json.JsonSerializer.Serialize(
-                {| daemonPhases = ([||] : string array)
+                {| daemonPhases = ([||]: string array)
                    projectModel = FsHotWatch.ProjectModelWire.payload BaselineFixtures.model
-                   modelReceipts = receipts |})
+                   modelReceipts = receipts |}
+            )
             |> DaemonEvidence.parse
+
         let exitCode =
-            TestHelpers.publishVerdict evidence repoRoot [] CheckVerdict.InnerLoop false
-                TestRunReport.noTestSuite Verdict.NoReading Map.empty []
+            TestHelpers.publishVerdict
+                evidence
+                repoRoot
+                []
+                CheckVerdict.InnerLoop
+                false
+                TestRunReport.noTestSuite
+                Verdict.NoReading
+                Map.empty
+                []
                 (SettledTree.capture repoRoot [])
                 (CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite)
+
         test <@ exitCode = expectedExit @>)

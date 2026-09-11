@@ -91,7 +91,10 @@ type Registry(?parent: Registry) =
                     // makes that benign; a disposed/unobservable handle is not
                     // proof that its OS child died.
                     try
-                        if ownedTermination.IsNone && p.HasExited then Ok() else Result.Error failure
+                        if ownedTermination.IsNone && p.HasExited then
+                            Ok()
+                        else
+                            Result.Error failure
                     with _ ->
                         Result.Error failure)
 
@@ -109,7 +112,8 @@ type Registry(?parent: Registry) =
         // The daemon retains shutdown ownership even when an operation has a
         // narrower cancellation scope. Parent admission happens first: if it
         // already closed, it reaps this exact handle before admitting anything.
-        parent |> Option.iter (fun owner -> owner.Track(p, ?terminateOwned = terminateOwned))
+        parent
+        |> Option.iter (fun owner -> owner.Track(p, ?terminateOwned = terminateOwned))
 
         let accepted =
             lock admission (fun () ->

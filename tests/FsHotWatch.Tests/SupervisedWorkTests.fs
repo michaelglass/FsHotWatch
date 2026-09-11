@@ -417,30 +417,38 @@ let ``shared execution deadline retains an exclusive capability until real compl
     let identity, _ = owner.TryClaim "run" |> Option.get
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
-    let deadlineCallback = TaskCompletionSource<unit -> unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let deadlineCallback =
+        TaskCompletionSource<unit -> unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
     let execution =
         SupervisedWork.execute
             "exclusive"
             (TimeSpan.FromMinutes 1.0)
             (fun _ callback ->
                 deadlineCallback.SetResult callback
-                { new IDisposable with member _.Dispose() = () })
+
+                { new IDisposable with
+                    member _.Dispose() = () })
             (fun failure -> owner.MarkRunFailure(identity, failure))
             CancellationToken.None
-            (fun _ -> async {
-                entered.Set()
-                Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
-                return () })
+            (fun _ ->
+                async {
+                    entered.Set()
+                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    return ()
+                })
             (fun outcome settleChildren ->
                 settleChildren ()
+
                 match outcome with
-                | Ok () -> owner.CompleteRun identity |> ignore
+                | Ok() -> owner.CompleteRun identity |> ignore
                 | Result.Error failure -> owner.FailRun(identity, failure))
         |> fun work -> Async.StartAsTask(work, cancellationToken = CancellationToken.None)
 
     try
         Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
-        deadlineCallback.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() ()
+        deadlineCallback.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult () ()
         Assert.True(store.Snapshot.IsBusy)
         Assert.NotEmpty store.Snapshot.Faults
         Assert.False execution.IsCompleted
@@ -490,9 +498,11 @@ let ``queued intents follow the exact run through prepared completion before FIF
     Assert.True before.IsBusy
     Assert.Equal(1, owner.Snapshot.State)
     Assert.False first.IsCompleted
-    for index in 0 .. 2 do
+
+    for index in 0..2 do
         let _, identity = received[index]
         owner.CommitEvent(identity, owner.Snapshot.State + 1)
+
     Assert.Equal<string list>([ "command-1"; "new-flush"; "command-2" ], received |> Seq.map fst |> Seq.toList)
     Assert.False store.Snapshot.IsBusy
     Assert.True first.IsCompletedSuccessfully
@@ -504,9 +514,15 @@ let ``executor fault fails queued receipts but retains the live exclusive worker
     let store = PluginWorkOwner.Store()
     let owner = PluginWorkOwner.Owner((), store, "faulted")
     let active, _ = owner.TryClaim "tests" |> Option.get
-    let queued = owner.EnqueueIntent("tests", None, fun _ -> failwith "must not deliver after executor fault")
+
+    let queued =
+        owner.EnqueueIntent("tests", None, fun _ -> failwith "must not deliver after executor fault")
+
     owner.FaultExecutor(InvalidOperationException("executor stopped"))
-    Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult()) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> queued.GetAwaiter().GetResult())
+    |> ignore
+
     Assert.True store.Snapshot.IsBusy
     owner.FailRun(active, InvalidOperationException("worker drained"))
     Assert.False store.Snapshot.IsBusy
@@ -517,7 +533,10 @@ let ``commands queued before a result fold stay ahead of later successor intents
     let owner = PluginWorkOwner.Owner((), store, "fifo")
     let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
     let firstRun, _ = owner.TryClaim "tests" |> Option.get
-    let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
+
+    let earlier =
+        owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier", id))
+
     let fold = owner.CompleteRun firstRun |> Option.get
     let nextRun, _ = owner.TryClaim("tests", after = fold) |> Option.get
     let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later", id))
@@ -565,6 +584,7 @@ let ``successor delivery failure cannot strand the retired predecessor receipt``
     owner.CommitEvent(fold, 1)
     let identity = Assert.Single delivered
     let originalFailure = InvalidOperationException("predecessor update failed")
+
     let settle () =
         match mode with
         | "commit" -> owner.CommitEvent(identity, 2)
@@ -572,16 +592,23 @@ let ``successor delivery failure cannot strand the retired predecessor receipt``
             owner.PublishEventState(identity, 2)
             owner.SettleEvent(identity, preparedCommit = true)
         | _ -> owner.FailEvent(identity, PluginWorkOwner.UpdateFailure originalFailure)
+
     let thrown = Assert.Throws<InvalidOperationException>(settle)
     Assert.Same(deliveryFailure, thrown)
     Assert.True(predecessor.IsCompleted, "retired predecessor receipt must settle even when successor delivery throws")
+
     if mode = "failure" then
-        let failed = Assert.Throws<InvalidOperationException>(fun () -> predecessor.GetAwaiter().GetResult())
+        let failed =
+            Assert.Throws<InvalidOperationException>(fun () -> predecessor.GetAwaiter().GetResult())
+
         Assert.Same(originalFailure, failed)
     else
         Assert.True predecessor.IsCompletedSuccessfully
         Assert.Equal(2, owner.Snapshot.State)
-    let rejected = Assert.Throws<InvalidOperationException>(fun () -> successor.GetAwaiter().GetResult())
+
+    let rejected =
+        Assert.Throws<InvalidOperationException>(fun () -> successor.GetAwaiter().GetResult())
+
     Assert.Same(deliveryFailure, rejected)
     Assert.True owner.Snapshot.ExecutorFault.IsSome
     Assert.False owner.Snapshot.IsBusy
@@ -591,7 +618,10 @@ let ``idle intent reserves its key until its exact fold admits work`` () =
     let owner = PluginWorkOwner.Owner(())
     let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
     let first = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("first", id))
-    let second = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("second", id))
+
+    let second =
+        owner.EnqueueIntent("tests", None, fun id -> delivered.Add("second", id))
+
     Assert.Equal<string list>([ "first" ], delivered |> Seq.map fst |> Seq.toList)
     Assert.True((owner.TryClaim "tests").IsNone)
     let firstIdentity = snd delivered[0]
@@ -611,20 +641,36 @@ let ``coalescing spans the completing run and its already admitted successor`` (
     let owner = PluginWorkOwner.Owner(())
     let delivered = ResizeArray<string * PluginWorkOwner.WorkId>()
     let firstRun, _ = owner.TryClaim "tests" |> Option.get
-    let original = owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("old-flush", id))
-    let earlier = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier-command", id))
+
+    let original =
+        owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("old-flush", id))
+
+    let earlier =
+        owner.EnqueueIntent("tests", None, fun id -> delivered.Add("earlier-command", id))
+
     let fold = owner.CompleteRun firstRun |> Option.get
     let nextRun, _ = owner.TryClaim("tests", after = fold) |> Option.get
-    let replacement = owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("new-flush", id))
-    let later = owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later-command", id))
+
+    let replacement =
+        owner.EnqueueIntent("tests", Some "flush", fun id -> delivered.Add("new-flush", id))
+
+    let later =
+        owner.EnqueueIntent("tests", None, fun id -> delivered.Add("later-command", id))
+
     Assert.Same(original, replacement)
     owner.CommitEvent(fold, ())
     let nextFold = owner.CompleteRun nextRun |> Option.get
     owner.CommitEvent(nextFold, ())
-    for index in 0 .. 2 do
+
+    for index in 0..2 do
         Assert.Equal(index + 1, delivered.Count)
         owner.CommitEvent(snd delivered[index], ())
-    Assert.Equal<string list>([ "new-flush"; "earlier-command"; "later-command" ], delivered |> Seq.map fst |> Seq.toList)
+
+    Assert.Equal<string list>(
+        [ "new-flush"; "earlier-command"; "later-command" ],
+        delivered |> Seq.map fst |> Seq.toList
+    )
+
     Assert.True original.IsCompletedSuccessfully
     Assert.True replacement.IsCompletedSuccessfully
     Assert.True earlier.IsCompletedSuccessfully
@@ -660,27 +706,52 @@ let ``external execution refuses an unbounded ownership lifetime`` kind =
         | "zero" -> TimeSpan.Zero
         | "negative" -> TimeSpan.FromSeconds -1.0
         | _ -> TimeSpan.MaxValue
+
     let mutable started = false
+
     let execution =
-        SupervisedWork.execute "invalid" deadline SupervisedWork.defaultScheduler ignore
-            CancellationToken.None (fun _ -> async { started <- true })
-            (fun outcome cleanup -> cleanup (); outcome)
-    Assert.Throws<ArgumentException>(fun () -> Async.RunSynchronously execution |> ignore) |> ignore
+        SupervisedWork.execute
+            "invalid"
+            deadline
+            SupervisedWork.defaultScheduler
+            ignore
+            CancellationToken.None
+            (fun _ -> async { started <- true })
+            (fun outcome cleanup ->
+                cleanup ()
+                outcome)
+
+    Assert.Throws<ArgumentException>(fun () -> Async.RunSynchronously execution |> ignore)
+    |> ignore
+
     Assert.False started
 
 [<Fact>]
 let ``scheduler failure settles the operation without invoking external work`` () =
     let failure = InvalidOperationException("scheduler unavailable")
     let mutable started = false
+
     let result =
-        SupervisedWork.execute "schedule" (TimeSpan.FromSeconds 1.0)
-            (fun _ _ -> raise failure) ignore CancellationToken.None
-            (fun _ -> async { started <- true; return 1 })
-            (fun outcome cleanup -> cleanup (); outcome)
+        SupervisedWork.execute
+            "schedule"
+            (TimeSpan.FromSeconds 1.0)
+            (fun _ _ -> raise failure)
+            ignore
+            CancellationToken.None
+            (fun _ ->
+                async {
+                    started <- true
+                    return 1
+                })
+            (fun outcome cleanup ->
+                cleanup ()
+                outcome)
         |> Async.RunSynchronously
+
     match result with
     | Error actual -> Assert.Same(failure, actual)
     | Ok _ -> failwith "scheduler failure cannot return a successful operation"
+
     Assert.False started
 
 [<Theory>]
@@ -690,18 +761,34 @@ let ``settlement failure remains owned until its failed receipt is published`` s
     let store = PluginWorkOwner.Store()
     let failure = InvalidOperationException(stage)
     let mutable disposed = 0
+
     let queue =
         SupervisedWork.Queue(
-            store, "settlement", 0, TimeSpan.FromMinutes 1.0,
-            (fun state (_: unit) -> state), (fun _ _ -> -1),
-            (fun _ -> if stage = "notification" then raise failure),
-            (fun _ _ _ publish -> async { publish 1; return 2 }),
-            scheduleDeadline = (fun _ _ ->
-                { new IDisposable with
-                    member _.Dispose() =
-                        Assert.True(store.Snapshot.IsBusy, "timer teardown must precede ownership retirement")
-                        disposed <- disposed + 1
-                        if stage = "timer-disposal" then raise failure }))
+            store,
+            "settlement",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: unit) -> state),
+            (fun _ _ -> -1),
+            (fun _ ->
+                if stage = "notification" then
+                    raise failure),
+            (fun _ _ _ publish ->
+                async {
+                    publish 1
+                    return 2
+                }),
+            scheduleDeadline =
+                (fun _ _ ->
+                    { new IDisposable with
+                        member _.Dispose() =
+                            Assert.True(store.Snapshot.IsBusy, "timer teardown must precede ownership retirement")
+                            disposed <- disposed + 1
+
+                            if stage = "timer-disposal" then
+                                raise failure })
+        )
+
     try
         let receipt = queue.Submit((), CancellationToken.None)
         Assert.Same(failure, Assert.Throws<InvalidOperationException>(fun () -> awaitResult receipt))
@@ -719,15 +806,25 @@ let ``foreign and wrong-kind capabilities cannot retire another owners work`` ()
     let active, _ = owner.TryClaim "tests" |> Option.get
     let foreign, _ = other.TryClaim "tests" |> Option.get
     let event = owner.AdmitEvent()
-    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun foreign |> ignore) |> ignore
-    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun event |> ignore) |> ignore
-    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(active, 1)) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun foreign |> ignore)
+    |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun event |> ignore)
+    |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(active, 1))
+    |> ignore
+
     Assert.True owner.Snapshot.IsBusy
     Assert.Equal(0, owner.Snapshot.State)
     owner.CommitEvent(event, 1)
     let completion = owner.TransferToCompletion active
     owner.CommitEvent(completion, 2)
-    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(completion, 3)) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(completion, 3))
+    |> ignore
+
     Assert.Equal(2, owner.Snapshot.State)
     Assert.False owner.Snapshot.IsBusy
     let otherCompletion = other.TransferToCompletion foreign
@@ -747,7 +844,10 @@ let ``executor failure is immutable while outstanding worker capabilities drain`
     Assert.Same(first, owner.Snapshot.ExecutorFault.Value)
     Assert.Same(first, snd (Assert.Single store.Snapshot.ExecutorFaults))
     Assert.True store.Snapshot.IsBusy
-    Assert.Throws<InvalidOperationException>(fun () -> owner.TransferToCompletion run |> ignore) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> owner.TransferToCompletion run |> ignore)
+    |> ignore
+
     Assert.False store.Snapshot.IsBusy
     Assert.Equal(1, owner.Snapshot.State)
 
@@ -764,7 +864,10 @@ let ``a retry cannot clear the failure of an overlapping host operation`` () =
     store.EndOperation active
     store.FailOperation(active, InvalidOperationException("late callback"))
     Assert.Same(failure, snd (Assert.Single store.Snapshot.OperationFaults))
-    Assert.Throws<InvalidOperationException>(fun () -> store.EndOperation active) |> ignore
+
+    Assert.Throws<InvalidOperationException>(fun () -> store.EndOperation active)
+    |> ignore
+
     let fresh = store.BeginOperation "scan"
     Assert.Empty store.Snapshot.OperationFaults
     store.EndOperation fresh
@@ -775,6 +878,7 @@ let ``a retry cannot clear the failure of an overlapping host operation`` () =
 let ``an ordinary update cannot overwrite stronger failed verification`` kind =
     let owner = PluginWorkOwner.Owner(0)
     let first = InvalidOperationException("verification did not commit")
+
     if kind = "commit" then
         let event = owner.AdmitEvent()
         owner.FailEvent(event, PluginWorkOwner.CommitFailure first)
@@ -785,16 +889,22 @@ let ``an ordinary update cannot overwrite stronger failed verification`` kind =
         Assert.Same(first, owner.Snapshot.Fault.Value)
         owner.FailRun(run, first)
         owner.MarkRunFailure(run, InvalidOperationException("late callback"))
+
     let unrelated = owner.AdmitEvent()
     owner.FailEvent(unrelated, PluginWorkOwner.UpdateFailure(InvalidOperationException("ordinary event")))
     Assert.Same(first, owner.Snapshot.Fault.Value)
     let ordinary = owner.AdmitEvent()
     owner.CommitEvent(ordinary, 1)
     Assert.Same(first, owner.Snapshot.Fault.Value)
+
     if kind = "commit" then
         let successfulRun, _ = owner.TryClaim "tests" |> Option.get
         owner.FailRun(successfulRun, InvalidOperationException("run cannot erase commit failure"))
         Assert.Same(first, owner.Snapshot.Fault.Value)
+
     let invalid = owner.AdmitEvent()
-    Assert.Throws<ArgumentException>(fun () -> owner.FailEvent(invalid, PluginWorkOwner.ExecutorFailure first)) |> ignore
+
+    Assert.Throws<ArgumentException>(fun () -> owner.FailEvent(invalid, PluginWorkOwner.ExecutorFailure first))
+    |> ignore
+
     owner.CommitEvent(invalid, 2)

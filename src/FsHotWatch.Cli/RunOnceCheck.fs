@@ -295,6 +295,7 @@ let private runOnceAndVerdictIn
 
         let awaitDiscovery () =
             let observation = daemon.WaitForProjectModel().GetAwaiter().GetResult()
+
             match FsHotWatch.ProjectModel.failure observation with
             | Some message ->
                 // Publish BEFORE Program.fs converts ConfigError to exit 2. Otherwise a
@@ -318,17 +319,24 @@ let private runOnceAndVerdictIn
             match error with
             | :? FsHotWatch.PluginWorkOwner.WorkFailedException as failure ->
                 not daemon.Host.WorkSnapshot.IsBusy
-                && (daemon.Host.WorkSnapshot.Faults |> List.exists (fun (name, _) -> name = failure.Name))
+                && (daemon.Host.WorkSnapshot.Faults
+                    |> List.exists (fun (name, _) -> name = failure.Name))
                 && (daemon.Host.GetAllStatuses() |> Map.containsKey failure.Name)
             | :? System.AggregateException as aggregate ->
-                aggregate.InnerExceptions.Count = 1 && committedPluginFailure aggregate.InnerExceptions.[0]
+                aggregate.InnerExceptions.Count = 1
+                && committedPluginFailure aggregate.InnerExceptions.[0]
             | _ -> false
 
         let scanAndSettle () : Map<string, PluginStatus> =
             let statuses, failedOwner =
-                try runScan daemon, false
-                with error when committedPluginFailure error -> daemon.Host.GetAllStatuses(), true
-            if not failedOwner then awaitDiscovery ()
+                try
+                    runScan daemon, false
+                with error when committedPluginFailure error ->
+                    daemon.Host.GetAllStatuses(), true
+
+            if not failedOwner then
+                awaitDiscovery ()
+
             daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
             settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
             statuses

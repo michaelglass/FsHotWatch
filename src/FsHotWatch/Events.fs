@@ -718,7 +718,8 @@ module internal EarnedEvidence =
                           | Verified when Set.contains project wholeProjectCoverage -> ()
                           | Verified -> yield $"{project}: filtered execution without a whole-project baseline"
                           | Refuted -> yield $"{project}: tests failed or timed out"
-                          | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects -> ()
+                          | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects ->
+                              ()
                           | NothingVerified -> yield $"{project}: no tests verified"
 
                   // Additional results cannot hide an errored sibling merely
@@ -759,8 +760,10 @@ module internal EarnedEvidence =
             not (System.String.IsNullOrWhiteSpace current)
             && retained = current
             && prior.Generation = candidate.Generation
-            && Set.contains receiptRunId prior.ReceiptRunIds ->
-            { candidate with ReceiptRunIds = Set.add receiptRunId candidate.ReceiptRunIds }
+            && Set.contains receiptRunId prior.ReceiptRunIds
+            ->
+            { candidate with
+                ReceiptRunIds = Set.add receiptRunId candidate.ReceiptRunIds }
         | _ -> candidate
 
 /// Implemented by an immutable plugin domain which owns an earned receipt.
@@ -786,7 +789,7 @@ module internal AnalysisFileEvidence =
                           yield diagnostic.Message
 
               match symbolAnalysis with
-              | Ok () -> ()
+              | Ok() -> ()
               | Error reason -> yield reason ]
 
         { File = result.File

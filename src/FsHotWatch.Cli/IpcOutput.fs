@@ -866,7 +866,8 @@ module internal TestRunEvidence =
 /// The application error code and versioned data carry model failure over RPC.
 let rec internal modelUnavailable (error: exn) =
     match error with
-    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 -> modelUnavailable aggregate.InnerExceptions[0]
+    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 ->
+        modelUnavailable aggregate.InnerExceptions[0]
     | :? FsHotWatch.ProjectModel.UnavailableException as unavailable -> Some unavailable.Observation
     | :? StreamJsonRpc.RemoteInvocationException as remote when remote.ErrorCode = FsHotWatch.ProjectModelWire.ErrorCode ->
         try
@@ -875,12 +876,15 @@ let rec internal modelUnavailable (error: exn) =
                 | :? System.Text.Json.JsonElement as element -> element.GetRawText()
                 | null -> "null"
                 | data -> data.ToString()
+
             use document = System.Text.Json.JsonDocument.Parse json
+
             FsHotWatch.ProjectModelWire.tryRead document.RootElement
             |> Option.filter (FsHotWatch.ProjectModel.failure >> Option.isSome)
             |> Option.defaultValue FsHotWatch.ProjectModel.Observation.Unobserved
             |> Some
-        with :? System.Text.Json.JsonException -> Some FsHotWatch.ProjectModel.Observation.Unobserved
+        with :? System.Text.Json.JsonException ->
+            Some FsHotWatch.ProjectModel.Observation.Unobserved
     | _ -> None
 
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
@@ -939,6 +943,7 @@ let private publishVerdictWithReason
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
 
         let projectModel = IpcParsing.DaemonEvidence.model daemonEvidence
+
         let terminalIncompleteReason =
             match outcome, terminalIncompleteReason with
             | CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite, None ->
@@ -950,10 +955,15 @@ let private publishVerdictWithReason
                         | FsHotWatch.ProjectModel.Observation.Available model ->
                             IpcParsing.DaemonEvidence.receipts daemonEvidence
                             |> List.exists (fun receipt ->
-                                receipt.RunId.IsNone && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                                receipt.RunId.IsNone
+                                && receipt.Generation = model.Generation
+                                && receipt.Refusals.IsEmpty)
                         | _ -> false
-                    if witnessed then None
-                    else Some "the analysis-only check has no earned receipt for the observed project model"
+
+                    if witnessed then
+                        None
+                    else
+                        Some "the analysis-only check has no earned receipt for the observed project model"
             | CheckVerdict.CheckOutcome.Clean _, None ->
                 match FsHotWatch.ProjectModel.failure projectModel with
                 | Some reason -> Some reason
@@ -963,10 +973,15 @@ let private publishVerdictWithReason
                         | FsHotWatch.ProjectModel.Observation.Available model, Some runId ->
                             IpcParsing.DaemonEvidence.receipts daemonEvidence
                             |> List.exists (fun receipt ->
-                                receipt.RunId = Some runId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                                receipt.RunId = Some runId
+                                && receipt.Generation = model.Generation
+                                && receipt.Refusals.IsEmpty)
                         | _ -> false
-                    if witnessed then None
-                    else Some "the graded test run has no earned receipt for the observed project model"
+
+                    if witnessed then
+                        None
+                    else
+                        Some "the graded test run has no earned receipt for the observed project model"
             | _ -> terminalIncompleteReason
 
         let verdictOutcome, exitCode =
@@ -1109,7 +1124,18 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create projectModel command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
+            Verdict.create
+                projectModel
+                command
+                runReport
+                atWrite
+                excluded
+                verdictOutcome
+                exitCode
+                plugins
+                runs
+                comparison
+                redCauses
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1143,7 +1169,9 @@ let private publishVerdictWithReason
                 | FsHotWatch.ProjectModel.Observation.Available model ->
                     IpcParsing.DaemonEvidence.receipts daemonEvidence
                     |> List.exists (fun receipt ->
-                        receipt.RunId = prior.RunId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                        receipt.RunId = prior.RunId
+                        && receipt.Generation = model.Generation
+                        && receipt.Refusals.IsEmpty)
                 | _ -> false)
 
         match preservedPrior with
@@ -1236,10 +1264,21 @@ let internal publishModelUnavailableForInvocation
     (settledTree: SettledTree)
     : int =
     let reason = (FsHotWatch.ProjectModel.UnavailableException observation).Message
-    publishVerdictWithReason invocation repoRoot excludePatterns checkMode false
-        (TestRunReport.ofScopeOnly (ScopeUnreadable reason)) Verdict.NoReading Map.empty
-        (IpcParsing.DaemonEvidence.Served([], observation, [])) [] settledTree
-        (CheckVerdict.CheckOutcome.Incomplete -1) (Some reason)
+
+    publishVerdictWithReason
+        invocation
+        repoRoot
+        excludePatterns
+        checkMode
+        false
+        (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
+        Verdict.NoReading
+        Map.empty
+        (IpcParsing.DaemonEvidence.Served([], observation, []))
+        []
+        settledTree
+        (CheckVerdict.CheckOutcome.Incomplete -1)
+        (Some reason)
 
 /// `publishTerminalIncompleteForInvocation` for a publish that no CLI bracket wraps.
 let internal publishTerminalIncomplete
@@ -1521,8 +1560,16 @@ let pollAndRenderForInvocation
     with
     | ex when modelUnavailable ex |> Option.isSome ->
         let observation = modelUnavailable ex |> Option.get
+
         let exitCode =
-            publishModelUnavailableForInvocation invocation repoRoot excludePatterns checkMode observation settledTree.Value
+            publishModelUnavailableForInvocation
+                invocation
+                repoRoot
+                excludePatterns
+                checkMode
+                observation
+                settledTree.Value
+
         UI.fail ex.Message
         exitCode
     // AUTOMATION-747. Memory exhaustion — here or in the daemon — AFTER the run

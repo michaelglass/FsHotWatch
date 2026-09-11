@@ -8,12 +8,20 @@ open System.Threading.Tasks
 let defaultDeadline = TimeSpan.FromMinutes 60.0
 
 let resolveDeadline (overrideSeconds: string option) =
-    match overrideSeconds |> Option.bind (fun value -> match Int32.TryParse value with true, n when n > 0 -> Some n | _ -> None) with
+    match
+        overrideSeconds
+        |> Option.bind (fun value ->
+            match Int32.TryParse value with
+            | true, n when n > 0 -> Some n
+            | _ -> None)
+    with
     | Some seconds -> TimeSpan.FromSeconds(float seconds)
     | None -> defaultDeadline
 
 let ambientDeadline () =
-    Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC" |> Option.ofObj |> resolveDeadline
+    Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC"
+    |> Option.ofObj
+    |> resolveDeadline
 
 let defaultScheduler delay expire =
     new Timer((fun _ -> expire ()), null, delay, Timeout.InfiniteTimeSpan) :> IDisposable
@@ -35,25 +43,36 @@ let execute
             invalidArg (nameof deadline) "Supervised work needs a finite positive deadline"
 
         use cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct)
+
         let timer =
             try
-                Ok(schedule deadline (fun () ->
-                    try
-                        onDeadline (TimeoutException($"{name} exceeded its {deadline} work deadline"))
-                    with failure ->
-                        Logging.error name $"deadline publication failed: {failure}"
+                Ok(
+                    schedule deadline (fun () ->
+                        try
+                            onDeadline (TimeoutException($"{name} exceeded its {deadline} work deadline"))
+                        with failure ->
+                            Logging.error name $"deadline publication failed: {failure}"
 
-                    try
-                        cancellation.CancelAsync().ContinueWith(
-                            (fun (result: Task) -> Logging.error name $"work cancellation callback failed: {result.Exception}"),
-                            TaskContinuationOptions.OnlyOnFaulted) |> ignore
-                    with :? ObjectDisposedException -> ()))
-            with failure -> Result.Error failure
+                        try
+                            cancellation
+                                .CancelAsync()
+                                .ContinueWith(
+                                    (fun (result: Task) ->
+                                        Logging.error name $"work cancellation callback failed: {result.Exception}"),
+                                    TaskContinuationOptions.OnlyOnFaulted
+                                )
+                            |> ignore
+                        with :? ObjectDisposedException ->
+                            ())
+                )
+            with failure ->
+                Result.Error failure
 
         match timer with
         | Result.Error failure -> return finish (Result.Error failure) ignore
         | Ok timer ->
             let mutable timerDisposed = false
+
             let disposeTimer () =
                 if not timerDisposed then
                     timerDisposed <- true
@@ -70,11 +89,16 @@ let execute
                                         let! result = work cancellation.Token
                                         cancellation.Token.ThrowIfCancellationRequested()
                                         return Ok result
-                                    with failure -> return Result.Error failure
+                                    with failure ->
+                                        return Result.Error failure
                                 }
+
                             let cleanup () =
-                                try settleChildren ()
-                                finally disposeTimer ()
+                                try
+                                    settleChildren ()
+                                finally
+                                    disposeTimer ()
+
                             return finish outcome cleanup
                         })
             finally
