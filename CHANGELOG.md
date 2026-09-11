@@ -1848,7 +1848,7 @@ YamlDotNet dependency exists in this repo.
 
 ### Daemon: auto-refresh FCS on `.fsproj` and `obj/project.assets.json` changes
 
-Reported by `thellma/intelligence` during the `bedrock-spike` landing
+Reported by a large private F# codebase during the `bedrock-spike` landing
 (docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25). Adding an
 `AWSSDK.Bedrock` `PackageReference` and running `dotnet restore` left
 the daemon reporting `FS0039: namespace 'Bedrock' is not defined`
