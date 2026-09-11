@@ -2768,52 +2768,15 @@ type ReportEvidence =
     /// No report was requested (an unknown / unsupported runner) — the process
     /// exit code is the only pass/fail signal available.
     | NoReportRequested
-    /// A report WAS requested from a capable runner. `Some` carries the parsed
-    /// summary; `None` means the file was absent / unreadable / unparseable —
-    /// the host aborted before flushing, or wrote a truncated report.
-    | ReportRequested of report: Flakiness.TestReport option
+    /// A requested report must carry coherent summary/row evidence. An error
+    /// preserves why the report cannot authorize a verdict, even on exit zero.
+    | ReportRequested of report: Result<Ctrf.VerdictReport, string>
 
-/// Decide a single project's verdict. The structured test report (when present and
-/// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
-/// when there is no usable report. Exit-code-only produced false REDs: a test host that
-/// exits non-zero during a dirty shutdown (the Microsoft.Testing.Platform exit-7 flake)
-/// after flushing a clean report reported "Tests failed" with zero named tests, while
-/// `test-rerun` came back green.
-///
-/// Precedence (apphost-missing / zero-match-under-filter are handled by the
-/// caller BEFORE this — they are not test outcomes):
-///   1. report has any failed/other result → `TestsFailed` (red). Exit irrelevant.
-///   2. report is all-clear (no failed/other) AND ran ≥1 test → `TestsPassed`
-///      (green) EVEN IF the process exited non-zero — the flake case.
-///   3. no usable report (absent / unparseable / no summary) AND exit ≠ 0:
-///        - report WAS requested from a capable runner → `TestsErrored`: the host
-///          aborted before writing results; nothing was verified. Never green,
-///          never the misleading "tests failed".
-///        - report NOT requested (unknown runner) → exit code is the only signal
-///          we have → `TestsFailed`.
-///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
-///
-///   0. AND BEFORE ALL OF THEM: the host was TERMINATED BY A SIGNAL → `TestsErrored`.
-///      A killed host did not finish, so nothing it wrote is a result — including a
-///      CTRF report it managed to flush on the way down, whose rows for tests that
-///      never executed are exactly the mass 0ms "failures" the tracked issue is about.
-///      This arm is why the report is not consulted there: outcome 1 would read that
-///      partial report and call a machine that ran out of CPU a mass regression.
-///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
-///   run (the filtered case was handled upstream) — a real misconfiguration, so
-///   it falls to the exit-code tie-break rather than going green.
-///
-/// Outcome 2 deliberately does NOT also require a whitelisted shutdown exit code: the
-/// benign codes are runner/version-specific, and a report positively showing zero
-/// failures is stronger evidence than the exit number.
-///
-/// Outcome 0 is the one direction where the exit code OUTRANKS the report, and only
-/// because of what that particular exit code means: `TerminatingSignal` recognises
-/// codes no runner CHOOSES, so it can only ever fire for a host that was killed. A
-/// suite that genuinely goes red exits with a code the runner picked (MTP's are single
-/// digits) and still reaches outcome 1 — the assertion this must survive in BOTH
-/// directions, because a real mass failure dressed as an abort is the same lie with
-/// the sign flipped.
+/// A coherent requested report decides pass/fail; a missing or contradictory
+/// report proves nothing. Unfiltered zero-test reports also prove nothing.
+/// Completed clean reports may outlive a runner's dirty shutdown, but a signal
+/// termination or timeout always refuses any partial report left behind.
+/// Custom runners that requested no report retain their explicit exit contract.
 let internal classifyTestOutcome
     (evidence: ReportEvidence)
     (wasFiltered: bool)
@@ -2840,9 +2803,10 @@ let internal classifyTestOutcome
         // not a verdict, or they will open it and find their "mass regression".
         let reportNote =
             match evidence with
-            | ReportRequested(Some r) ->
+            | ReportRequested(Ok proof) ->
+                let r = Ctrf.VerdictReport.summary proof
                 $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
-            | ReportRequested None -> " It wrote no parseable report."
+            | ReportRequested(Error reason) -> $" Its requested report was not usable: {reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 
         TestsErrored(
@@ -2853,29 +2817,19 @@ let internal classifyTestOutcome
         let succeeded = isSucceeded outcome
 
         match evidence with
-        | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
-            // Outcome 1.
-            TestsFailed(output, wasFiltered, elapsed)
-        | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
-            // Outcome 2 — green even on a non-zero exit (the dirty-shutdown flake).
-            TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested(Some _) ->
-            // Total == 0: an unfiltered zero-test run. Defer to the exit code so an
-            // empty suite stays red.
-            if succeeded then
-                TestsPassed(output, wasFiltered, elapsed)
-            else
+        | ReportRequested(Ok proof) ->
+            let report = Ctrf.VerdictReport.summary proof
+            if report.Failed > 0 || report.Other > 0 then
                 TestsFailed(output, wasFiltered, elapsed)
-        | _ when succeeded ->
-            // Outcome 4.
-            TestsPassed(output, wasFiltered, elapsed)
-        | ReportRequested None ->
-            // Outcome 3 — the host aborted before writing results, so nothing was
-            // verified. Never green, never the misleading "tests failed".
-            TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
-        | NoReportRequested ->
-            // Unknown runner we never asked for a report: the exit code is all there is.
-            TestsFailed(output, wasFiltered, elapsed)
+            elif report.Total = 0 then
+                if wasFiltered then TestsNoMatch(output, elapsed)
+                else TestsErrored "requested report contains zero tests for an unfiltered run — nothing verified"
+            else
+                TestsPassed(output, wasFiltered, elapsed)
+        | ReportRequested(Error reason) ->
+            TestsErrored $"requested test report cannot verify this run: {reason} — nothing verified"
+        | NoReportRequested when succeeded -> TestsPassed(output, wasFiltered, elapsed)
+        | NoReportRequested -> TestsFailed(output, wasFiltered, elapsed)
 
 /// Parse the `ProcessStartInfo.Arguments` string far enough to discover a project
 /// path. Double quotes group; a backslash before a quote follows the same odd/even
@@ -3277,7 +3231,7 @@ let parseFailedTests (output: string) : (string * string * string) list =
 /// `CoveredWholeProject` and clears everything. A rule that let a skip block a class
 /// here would be stricter than the whole-project path it is a refinement of.
 let internal passedTestsOfReport (json: string) : Set<string * string> =
-    match Ctrf.trySummary json with
+    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3306,7 +3260,7 @@ let internal passedTestsOfReport (json: string) : Set<string * string> =
             |> Set.ofList
 
 let internal passedClassesOfReport (json: string) : Set<string> =
-    match Ctrf.trySummary json with
+    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
     | None -> Set.empty
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3339,7 +3293,7 @@ let internal passedClassesOfReport (json: string) : Set<string> =
 /// entry, and a project absent from the map claims nothing — the absence of evidence is
 /// never evidence of a pass.
 let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string>> =
-    Ctrf.reportsForRun repoRoot runId
+    Ctrf.verdictReportsForRun repoRoot runId
     |> List.choose (fun report ->
         let json =
             try
@@ -3354,7 +3308,7 @@ let internal passedClassesOfRun (repoRoot: string) (runId: Guid) : Map<string, S
     |> Map.ofList
 
 let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set<string * string>> =
-    Ctrf.reportsForRun repoRoot runId
+    Ctrf.verdictReportsForRun repoRoot runId
     |> List.choose (fun report ->
         let json =
             try
@@ -3373,7 +3327,7 @@ let internal passedTestsOfRun (repoRoot: string) (runId: Guid) : Map<string, Set
 /// the sample rather than shrinking recall's denominator to the rows that happened to
 /// parse.
 let internal failedTestsOfReport (json: string) : (string * string) list option =
-    match Ctrf.trySummary json with
+    match Ctrf.tryVerdictReport json |> Result.map Ctrf.VerdictReport.summary |> Result.toOption with
     | None -> None
     | Some summary ->
         let records = Flakiness.parseCtrfTests json
@@ -3476,7 +3430,7 @@ let internal failedTestsOfRun
     (results: TestResults)
     : Result<OutstandingFailure list, string> =
     let reports =
-        Ctrf.reportsForRun repoRoot runId
+        Ctrf.verdictReportsForRun repoRoot runId
         |> List.map (fun report -> report.Project, report)
         |> Map.ofList
 
@@ -4195,7 +4149,11 @@ let private executeTests
                             let reportEvidence =
                                 match ctrfPath with
                                 | None -> NoReportRequested
-                                | Some _ -> ReportRequested(reportJson |> Option.bind Flakiness.tryParseReport)
+                                | Some path ->
+                                    reportJson
+                                    |> Option.map Ctrf.tryVerdictReport
+                                    |> Option.defaultValue (Error $"requested report is missing or unreadable: {path}")
+                                    |> ReportRequested
 
                             let result =
                                 if apphostMissing then
@@ -4207,7 +4165,7 @@ let private executeTests
                                     // elapsed/wasFiltered, so it never lowers a
                                     // coverage baseline.
                                     TestsDeferred "apphost not produced; tests did not run"
-                                elif zeroTestsUnderFilter then
+                                elif zeroTestsUnderFilter && (match reportEvidence with NoReportRequested -> true | _ -> false) then
                                     // Not a failure — per project, a filter selecting
                                     // nothing is not that project's fault, so it is never
                                     // reported as one. Its own case (rather than a passing
@@ -5948,7 +5906,7 @@ let internal createWithLaunchDeadline
                 // run-dir means the run executed no tests, and that is exactly the
                 // fact the CLI has to be able to state.
                 let runReports =
-                    FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
+                    FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
                     |> List.map (fun r -> r.Project, r.Summary)
                     |> Map.ofList
 
