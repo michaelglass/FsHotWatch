@@ -91,7 +91,7 @@ let ``only actual current completion with discharged obligations earns evidence`
     Assert.Empty proof.FailureReasons
     Assert.True((earn None (Some 3L) 0 None result).IsNone)
     Assert.True((earn (Some 2L) (Some 3L) 0 None result).IsNone)
-    Assert.True((earn (Some 3L) (Some 3L) 1 None result).IsNone)
+    Assert.NotEmpty((earn (Some 3L) (Some 3L) 1 None result |> Option.get).FailureReasons)
     Assert.True(
         (EarnedEvidence.fromCompletion
             (Guid.NewGuid())
