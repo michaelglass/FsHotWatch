@@ -674,9 +674,10 @@ let ``model failure crosses RPC as versioned data without relying on diagnostic 
     waitForServer pipeName
     try
         let fault =
-            Assert.Throws<StreamJsonRpc.RemoteInvocationException>(fun () ->
+            Assert.Throws<AggregateException>(fun () ->
                 (IpcClient.waitForComplete pipeName 1000 |> Async.StartAsTask).GetAwaiter().GetResult() |> ignore)
-        Assert.Equal(523, fault.ErrorCode)
+        let remote = Assert.IsType<StreamJsonRpc.RemoteInvocationException>(Assert.Single(fault.InnerExceptions))
+        Assert.Equal(523, remote.ErrorCode)
         match FsHotWatch.Cli.IpcOutput.modelUnavailable fault with
         | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot, FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
             Assert.Equal(7L, snapshot.Generation)

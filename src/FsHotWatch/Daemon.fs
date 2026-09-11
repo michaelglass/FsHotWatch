@@ -1736,7 +1736,7 @@ type Daemon
                         let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
 
                         if not files.IsEmpty then
-                            publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
+                            host.EmitFileChanged(SourceChanged files)
                     }
 
                 let formatAll () =

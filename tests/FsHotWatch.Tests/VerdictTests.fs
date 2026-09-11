@@ -1886,7 +1886,7 @@ let ``a confirm whose forced full run did not complete records no filtered scope
                 | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
                 | _ -> []
 
-            IpcOutput.publishVerdict BaselineFixtures.model
+            TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
                 root
                 []
                 mode
@@ -1993,7 +1993,7 @@ let private publishConfirm
         | CheckVerdict.CheckOutcome.FailuresFound -> [ structuralRedCause ]
         | _ -> []
 
-    IpcOutput.publishVerdict BaselineFixtures.model
+    TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
         root
         []
         CheckVerdict.Confirmation
@@ -2083,7 +2083,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
     // `IpcOutputTests` (daemon) and `RunOnceOutputTests` (`--run-once`).
     withTempDir "verdict-167-returns-code" (fun root ->
         let publishedFor (outcome: CheckVerdict.CheckOutcome) =
-            IpcOutput.publishVerdict BaselineFixtures.model
+            TestHelpers.publishVerdict (modelEvidence [ BaselineFixtures.runId ])
                 root
                 []
                 CheckVerdict.InnerLoop

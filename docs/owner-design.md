@@ -142,3 +142,23 @@ BuildCacheSnapshot reproduced a served cache key despite supplied state naming a
 ## Generated dependency input scheduling verified
 
 The current watcher-to-batch GeneratedFanout control reproduced raw graph sources being scheduled against filtered FCS options. After supplying the synthetic projects with fresh restore metadata, the control reached actual transitive authored checking and failed its generated-input exclusion assertion. Project refresh and source dependency fanout now share pipeline-registered checkable membership, with generated-filtered graph fallback. Full unit report 5ec2afa1ec6a4e9eb7f1b6d98eb62566 is 3168 total, 3167 passed, one outstanding VerdictEvidence failure, zero skipped; the new control passes. Evidence is in docs/evidence/generated-input-fanout.json. This does not complete private earned verdicts, pending-debt ownership, full CI, or consumer qualification.
+
+
+## Discovery identity through scan and batch publication
+
+the deterministic paused-scan control reproduced a successful old scan after
+rediscovery admitted a newer model (`/tmp/model-queue-unit.log`, 2026-09-11).
+Scan and incremental batch inputs now capture options, membership and dependency
+tiers together with their completed discovery generation. Intentional batch
+rediscovery refreshes that snapshot before any subsequent plan is derived.
+FileChecked and BatchChecked carry this captured identity. A short WithCurrent
+publication boundary checks and dispatches under discovery admission's state lock;
+an invalidated cohort faults its owner rather than becoming current coverage.
+No graph/accessor read taken after checking may relabel old results.
+
+A scan completion signal means that the owned attempt finished, not that a
+current-model verdict was earned. Test receipts and separate analysis-only
+receipts remain required at verdict admission and rendering. Analysis-only
+receipts have no test RunId and cannot establish full-suite evidence. The
+completed model and authoritative source membership are published atomically.
+Combined verification and verdict-v2 consumer qualification remain pending.
