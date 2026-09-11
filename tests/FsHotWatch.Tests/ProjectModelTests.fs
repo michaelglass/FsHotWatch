@@ -123,6 +123,9 @@ let ``versioned wire preserves completed and transient observations without clai
 [<InlineData("{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\",\"generation\":\"1\"}")>]
 [<InlineData("{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\",\"generation\":1.5}")>]
 [<InlineData("{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\",\"generation\":9223372036854775808}")>]
+[<InlineData("{\"schema\":\"fshw-project-model-v1\",\"generation\":1}")>]
+[<InlineData("{\"schema\":\"fshw-project-model-v1\",\"status\":null,\"generation\":1}")>]
+[<InlineData("{\"schema\":\"fshw-project-model-v1\",\"status\":\"available\"}")>]
 let ``unknown or malformed model envelope fails closed`` (json: string) =
     use document = System.Text.Json.JsonDocument.Parse json
     Assert.Equal(None, FsHotWatch.ProjectModelWire.tryRead document.RootElement)

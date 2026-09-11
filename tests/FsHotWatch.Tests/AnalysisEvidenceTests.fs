@@ -20,10 +20,9 @@ let private available generation =
           OptionsMapped = 1
           Registered = 1 }
 
-let private withCheckedSource action =
+let private withCheckedText (source: string) action =
     withTempDir "analysis-evidence" (fun root ->
         let sourceFile = Path.Combine(root, "Lib.fs")
-        let source = "module Lib\nlet answer = 42\n"
         File.WriteAllText(sourceFile, source)
         let checker = sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -48,6 +47,9 @@ let private withCheckedSource action =
             root
             { result with
                 ModelGeneration = Some 1L })
+
+let private withCheckedSource action =
+    withCheckedText "module Lib\nlet answer = 42\n" action
 
 [<Fact(Timeout = 30000)>]
 let ``analysis-only handler earns completion from a sealed actual analysis without inventing tests`` () =
@@ -137,7 +139,16 @@ let ``analysis proof refuses missing stale and failed file outcomes and configur
 
         Assert.Empty((proof outcomes).FailureReasons)
         Assert.NotEmpty((proof Map.empty).FailureReasons)
-        let foreign = AnalysisFileEvidence.fromResult { result with File = AbsFilePath.create(Path.Combine(Path.GetDirectoryName(AbsFilePath.value result.File), "Other.fs")) } (Ok())
+
+        let foreign =
+            AnalysisFileEvidence.fromResult
+                { result with
+                    File =
+                        AbsFilePath.create (
+                            Path.Combine(Path.GetDirectoryName(AbsFilePath.value result.File), "Other.fs")
+                        ) }
+                (Ok())
+
         Assert.NotEmpty((proof (Map.ofList [ result.File, foreign ])).FailureReasons)
 
         let stale =
@@ -307,3 +318,26 @@ let ``available empty model earns no-suite analysis only after its actual batch 
         Assert.Empty(proof.CheckedFiles)
         Assert.Empty(proof.FailureReasons)
         Assert.Empty(host.WorkSnapshot.Evidence))
+
+[<Fact(Timeout = 30000)>]
+let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =
+    withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
+        match result.CheckResults with
+        | FullCheck checkedResult ->
+            Assert.Contains(
+                checkedResult.Diagnostics,
+                fun diagnostic -> diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
+            )
+        | ParseOnly -> Assert.Fail("positive control requires an actual completed type check")
+
+        let outcome = AnalysisFileEvidence.fromResult result (Ok())
+
+        let proof =
+            AnalysisEvidence.fromCompleted
+                (Some 1L)
+                (Set.singleton result.File)
+                Set.empty
+                (Map.ofList [ result.File, outcome ])
+            |> Option.get
+
+        Assert.Empty proof.FailureReasons)

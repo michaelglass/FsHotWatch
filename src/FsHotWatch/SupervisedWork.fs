@@ -380,15 +380,11 @@ type Queue<'State, 'Request>
 
             running.ContinueWith(
                 (fun (task: Task) ->
-                    let failure =
-                        if task.IsCanceled then
-                            TaskCanceledException(task) :> exn
-                        else
-                            task.Exception.GetBaseException()
-
-                    failExecutor request failure),
+                    // launch uses Task.Run(Action) without a cancellation token.
+                    // Owned cancellation is an execute result; this outer task can only fault.
+                    failExecutor request (task.Exception.GetBaseException())),
                 CancellationToken.None,
-                TaskContinuationOptions.NotOnRanToCompletion,
+                TaskContinuationOptions.OnlyOnFaulted,
                 TaskScheduler.Default
             )
             |> ignore

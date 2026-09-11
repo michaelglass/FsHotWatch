@@ -1652,20 +1652,28 @@ let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in bo
 [<Fact(Timeout = 15000)>]
 let ``in process check reach preserves the recorded failing suite and run identity`` () =
     let mutable arguments = None
-    let host = hostWith [ FsHotWatch.Cli.IpcParsing.CheckReachCommand, fun args ->
-        arguments <- Some args
-        """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full","ranProjects":3,"totalProjects":3,"reach":"reached-a-failure","failingSuites":["Lib.Tests"],"reason":null}""" ]
+
+    let host =
+        hostWith
+            [ FsHotWatch.Cli.IpcParsing.CheckReachCommand,
+              fun args ->
+                  arguments <- Some args
+                  """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full","ranProjects":3,"totalProjects":3,"reach":"reached-a-failure","failingSuites":["Lib.Tests"],"reason":null}""" ]
+
     match FsHotWatch.Cli.RunOnceCheck.readCheckReach host with
     | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
         test <@ reading.RunId = Some(Guid.Parse "5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e") @>
         test <@ reading.Scope = FsHotWatch.Cli.IpcParsing.FullSuite 3 @>
         test <@ reading.Reach = FsHotWatch.Cli.IpcParsing.ReachedAFailure [ "Lib.Tests" ] @>
     | other -> failwithf "expected recorded reach, got %A" other
+
     test <@ arguments = Some [||] @>
 
 [<Fact(Timeout = 15000)>]
 let ``in process check reach command failure remains unavailable with its cause`` () =
-    let host = hostWith [ FsHotWatch.Cli.IpcParsing.CheckReachCommand, fun _ -> failwith "projection unavailable" ]
+    let host =
+        hostWith [ FsHotWatch.Cli.IpcParsing.CheckReachCommand, fun _ -> failwith "projection unavailable" ]
+
     match FsHotWatch.Cli.RunOnceCheck.readCheckReach host with
     | FsHotWatch.Cli.IpcParsing.ReachUnavailable reason ->
         test <@ reason.Contains "projection unavailable" @>

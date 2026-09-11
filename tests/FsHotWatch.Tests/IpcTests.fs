@@ -1634,8 +1634,13 @@ let ``scan waiters retain their request when recovery is queued before failure s
 [<InlineData(3)>]
 let ``cache clear RPC preserves entries outside its requested filter`` (selection: int) =
     let pipeName = $"fc-{Guid.NewGuid():N}"
-    let repoRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-cache-filter-{Guid.NewGuid():N}")
-    let cache = FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let repoRoot =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-cache-filter-{Guid.NewGuid():N}")
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
     let host = PluginHost(Unchecked.defaultof<_>, repoRoot, taskCache = cache)
     use cts = new CancellationTokenSource()
     let key = ContentHash.create "unchanged-input"
@@ -1657,6 +1662,7 @@ let ``cache clear RPC preserves entries outside its requested filter`` (selectio
         test <@ (cache.TryGet (composite plugin file) key).IsSome @>
 
     let absoluteA = System.IO.Path.Combine(repoRoot, "a.fs")
+
     let filter, survivors =
         match selection with
         | 0 -> ClearAll, []

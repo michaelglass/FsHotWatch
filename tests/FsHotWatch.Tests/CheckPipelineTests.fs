@@ -573,15 +573,28 @@ let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () 
 let ``mixed project options retain only FSharp files as checkable model members`` () =
     let pipeline = CheckPipeline(nullChecker)
     let project = "/tmp/mixed/App.fsproj"
-    let supported = [ "/tmp/mixed/Lib.fsi"; "/tmp/mixed/Lib.fs"; "/tmp/mixed/Script.fsx" ]
+
+    let supported =
+        [ "/tmp/mixed/Lib.fsi"; "/tmp/mixed/Lib.fs"; "/tmp/mixed/Script.fsx" ]
+
     let csharp = "/tmp/mixed/Helper.cs"
     let options = dummyOptions project (supported @ [ csharp ])
     pipeline.RegisterProject(project, options)
     let registered = pipeline.GetProjectOptions project |> Option.get
     Assert.Equal<string>(supported, registered.SourceFiles)
-    Assert.Equal<AbsFilePath>(supported |> List.map AbsFilePath.create |> List.sort, pipeline.GetAllRegisteredFiles() |> List.sort)
-    let ordinary = pipeline.CheckFile(AbsFilePath.create csharp) |> Async.RunSynchronously
-    let explicit = pipeline.CheckFileWithOptions(AbsFilePath.create csharp, options) |> Async.RunSynchronously
+
+    Assert.Equal<AbsFilePath>(
+        supported |> List.map AbsFilePath.create |> List.sort,
+        pipeline.GetAllRegisteredFiles() |> List.sort
+    )
+
+    let ordinary =
+        pipeline.CheckFile(AbsFilePath.create csharp) |> Async.RunSynchronously
+
+    let explicit =
+        pipeline.CheckFileWithOptions(AbsFilePath.create csharp, options)
+        |> Async.RunSynchronously
+
     Assert.True(ordinary.IsNone)
     Assert.True(explicit.IsNone)
     // A dependency project remains registered even when none of its sources are F#.

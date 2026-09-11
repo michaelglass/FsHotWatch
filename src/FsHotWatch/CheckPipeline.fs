@@ -331,9 +331,12 @@ type CheckPipeline
 
             try
                 fileToken.ThrowIfCancellationRequested()
+
                 if PathFilter.isFSharpSource absPath then
                     let checkableOptions =
-                        { options with SourceFiles = options.SourceFiles |> Array.filter PathFilter.isFSharpSource }
+                        { options with
+                            SourceFiles = options.SourceFiles |> Array.filter PathFilter.isFSharpSource }
+
                     return! this.CheckFileCached(absPath, checkableOptions, fileToken)
                 else
                     return None

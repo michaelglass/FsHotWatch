@@ -127,7 +127,8 @@ let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string 
     let csharpProjects =
         Discovery.existingDiscoveryRoots repoRoot
         |> List.collect (fun directory ->
-            SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*.csproj" directory |> List.ofSeq)
+            SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*.csproj" directory
+            |> List.ofSeq)
 
     (Discovery.findFsprojFiles repoRoot @ csharpProjects)
     |> List.filter (fun f -> not (isExcluded f))
@@ -531,22 +532,31 @@ let private discoverAndRegisterProjects
             // missing F# mapping. Counts describe admitted stage outputs: reject
             // the whole mapping cohort before admitting any options on failure.
             let projectIdentity = AbsProjectPath.create
+
             let isFSharpProject (path: string) =
                 Path.GetExtension(path).Equals(".fsproj", StringComparison.OrdinalIgnoreCase)
+
             let requiredFSharpProjects =
-                (fsprojFiles
-                 @ (loaded |> List.map (fun project -> project.ProjectFileName)))
+                (fsprojFiles @ (loaded |> List.map (fun project -> project.ProjectFileName)))
                 |> List.filter (fun path -> isFSharpProject path && not (isExcluded path))
                 |> List.map projectIdentity
                 |> Set.ofList
+
             let fcsOptionsList =
-                mapOptions loaded |> List.filter (fun options -> not (isExcluded options.ProjectFileName))
+                mapOptions loaded
+                |> List.filter (fun options -> not (isExcluded options.ProjectFileName))
+
             let mappedProjects =
-                fcsOptionsList |> List.map (fun options -> projectIdentity options.ProjectFileName) |> Set.ofList
+                fcsOptionsList
+                |> List.map (fun options -> projectIdentity options.ProjectFileName)
+                |> Set.ofList
+
             let missingMappings = Set.difference requiredFSharpProjects mappedProjects
+
             if not missingMappings.IsEmpty then
                 let names = missingMappings |> Seq.map AbsProjectPath.value |> String.concat ", "
                 invalidOp $"Required F# project mapping failed: {names}; no partial options cohort was admitted."
+
             optionsMappedCount <- fcsOptionsList.Length
             let mutable registeredFSharpProjects = Set.empty
             sw.Stop()
@@ -574,8 +584,10 @@ let private discoverAndRegisterProjects
                         pipeline.RegisterProject(absProject, fcsOptions)
                         registeredCount <- registeredCount + 1
                         let identity = projectIdentity absProject
+
                         if Set.contains identity requiredFSharpProjects then
                             registeredFSharpProjects <- Set.add identity registeredFSharpProjects
+
                         dumpProjectOptions logDir fcsOptions
                         let refCount = countReferences fcsOptions.OtherOptions
 
@@ -587,10 +599,17 @@ let private discoverAndRegisterProjects
                             "discover"
                             $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
 
-            let missingRegistrations = Set.difference requiredFSharpProjects registeredFSharpProjects
+            let missingRegistrations =
+                Set.difference requiredFSharpProjects registeredFSharpProjects
+
             if not missingRegistrations.IsEmpty then
-                let names = missingRegistrations |> Seq.map AbsProjectPath.value |> String.concat ", "
-                Logging.error "discover" $"Required F# project registration failed: {names}; retiring the partial model."
+                let names =
+                    missingRegistrations |> Seq.map AbsProjectPath.value |> String.concat ", "
+
+                Logging.error
+                    "discover"
+                    $"Required F# project registration failed: {names}; retiring the partial model."
+
                 pipeline.PrepareForRediscovery(clearCheckCache = false)
                 registeredCount <- 0
         with ex ->
@@ -1094,7 +1113,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 | None ->
                     sourceFilesFor project
                     |> List.map AbsFilePath.value
-                    |> List.filter (fun file -> PathFilter.isFSharpSource file && not (PathFilter.isGeneratedPath file)))
+                    |> List.filter (fun file ->
+                        PathFilter.isFSharpSource file && not (PathFilter.isGeneratedPath file)))
             |> List.distinct
 
         if not projFilesChanged.IsEmpty || hasSolution then
@@ -1241,7 +1261,11 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             publishCurrent (fun () ->
                 ctx.Host.EmitFileChanged(
-                    SourceChanged((allSourceFiles @ (allFilesToCheck |> List.map AbsFilePath.value)) |> List.distinct)))
+                    SourceChanged(
+                        (allSourceFiles @ (allFilesToCheck |> List.map AbsFilePath.value))
+                        |> List.distinct
+                    )
+                ))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
@@ -1309,7 +1333,9 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             // A non-F# build input can change without an FCS result. Seal that
             // accepted cohort so analysis and runtime-debt owners can settle it.
-            let nextGen = System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+            let nextGen =
+                System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+
             publishCurrent (fun () ->
                 ctx.Host.EmitBatchChecked
                     { Trigger = InSessionBatch changes
@@ -2294,8 +2320,10 @@ let private performScan
                         graph.GetAllProjects()
                         |> List.collect graph.GetSourceFiles
                         |> List.map AbsFilePath.value
-                        |> List.filter (fun file -> not (PathFilter.isFSharpSource file) && not (PathFilter.isGeneratedPath file))
+                        |> List.filter (fun file ->
+                            not (PathFilter.isFSharpSource file) && not (PathFilter.isGeneratedPath file))
                         |> List.distinct
+
                     epoch, projects, files, buildOnlyFiles, tiers)
 
             let modelGeneration = snd capturedModel |> Option.map (fun _ -> fst capturedModel)
@@ -2353,6 +2381,7 @@ let private performScan
             let mutable checkedTotal = 0
 
             let buildInputs = List.distinct (files @ buildOnlyFiles)
+
             if not buildInputs.IsEmpty then
                 // Run preprocessors (e.g., formatter) only on FCS-supported inputs.
                 let modified = host.RunPreprocessors(files).Modified

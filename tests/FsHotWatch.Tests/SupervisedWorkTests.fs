@@ -915,20 +915,48 @@ let ``an ordinary update cannot overwrite stronger failed verification`` kind =
 [<InlineData(1)>]
 let ``invalid queue deadline admits no owner or worker`` kind =
     let store = PluginWorkOwner.Store()
-    let deadline = if kind = 1 then TimeSpan.MaxValue else TimeSpan.FromSeconds(float kind)
+
+    let deadline =
+        if kind = 1 then
+            TimeSpan.MaxValue
+        else
+            TimeSpan.FromSeconds(float kind)
+
     Assert.Throws<ArgumentException>(fun () ->
-        SupervisedWork.Queue(store, "invalid", 0, deadline, (fun state (_: int) -> state), (fun state _ -> state), ignore,
-            (fun state _ _ _ -> async.Return state)) |> ignore) |> ignore
+        SupervisedWork.Queue(
+            store,
+            "invalid",
+            0,
+            deadline,
+            (fun state (_: int) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state _ _ _ -> async.Return state)
+        )
+        |> ignore)
+    |> ignore
+
     Assert.False store.Snapshot.IsBusy
     Assert.Empty store.Snapshot.BusyNames
 
 [<Fact(Timeout = 15000)>]
 let ``supervisor constructed without flowing context still settles its actual worker`` () =
     let store = PluginWorkOwner.Store()
+
     let queue =
         use suppressed = ExecutionContext.SuppressFlow()
-        SupervisedWork.Queue(store, "suppressed", 0, TimeSpan.FromSeconds 5., (fun state (_: int) -> state),
-            (fun state _ -> state), ignore, (fun state request _ _ -> async.Return(state + request)))
+
+        SupervisedWork.Queue(
+            store,
+            "suppressed",
+            0,
+            TimeSpan.FromSeconds 5.,
+            (fun state (_: int) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state request _ _ -> async.Return(state + request))
+        )
+
     try
         queue.Submit(3, CancellationToken.None) |> awaitResult
         Assert.Equal(3, queue.State)
@@ -942,27 +970,157 @@ let ``deadline publication failure still cancels work and late timer callbacks c
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
     let mutable cancelled = false
+
     let work =
-        SupervisedWork.execute "deadline-report" (TimeSpan.FromSeconds 5.)
-            (fun _ callback -> expire <- callback; { new IDisposable with member _.Dispose() = () })
-            (fun _ -> failwith "diagnostic publication refused") CancellationToken.None
-            (fun token -> async {
-                entered.Set()
-                Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
-                cancelled <- token.IsCancellationRequested
-                return () })
-            (fun outcome cleanup -> cleanup(); outcome)
+        SupervisedWork.execute
+            "deadline-report"
+            (TimeSpan.FromSeconds 5.)
+            (fun _ callback ->
+                expire <- callback
+
+                { new IDisposable with
+                    member _.Dispose() = () })
+            (fun _ -> failwith "diagnostic publication refused")
+            CancellationToken.None
+            (fun token ->
+                async {
+                    entered.Set()
+                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
+                    cancelled <- token.IsCancellationRequested
+                    return ()
+                })
+            (fun outcome cleanup ->
+                cleanup ()
+                outcome)
         |> Async.StartAsTask
+
     try
         Assert.True(entered.Wait(TimeSpan.FromSeconds 5.))
-        expire()
+        expire ()
         release.Set()
         let outcome = work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
         Assert.True cancelled
+
         match outcome with
         | Error failure -> Assert.IsAssignableFrom<OperationCanceledException>(failure) |> ignore
-        | Ok () -> Assert.Fail("deadline cancellation must refuse successful settlement")
-        expire()
+        | Ok() -> Assert.Fail("deadline cancellation must refuse successful settlement")
+
+        expire ()
     finally
         release.Set()
         work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult() |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``work admitted during completion notification stays queued until predecessor cleanup`` () =
+    let store = PluginWorkOwner.Store()
+    use finishing = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "finishing",
+            0,
+            TimeSpan.FromSeconds 10.,
+            (fun state (_: int) -> state),
+            (fun state _ -> state),
+            (fun state ->
+                if state = 1 then
+                    finishing.Set()
+                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))),
+            (fun state request _ _ -> async.Return(state + request))
+        )
+
+    let first = queue.Submit(1, CancellationToken.None)
+    let mutable next: Task<unit> option = None
+
+    try
+        Assert.True(finishing.Wait(TimeSpan.FromSeconds 5.))
+        let second = queue.Submit(2, CancellationToken.None)
+        next <- Some second
+        Assert.False first.IsCompleted
+        Assert.False second.IsCompleted
+        Assert.True store.Snapshot.IsBusy
+        release.Set()
+        awaitResult first
+        awaitResult second
+        Assert.Equal(3, queue.State)
+        Assert.False store.Snapshot.IsBusy
+    finally
+        release.Set()
+        awaitResult first
+        next |> Option.iter awaitResult
+        queue.Close()
+
+[<Fact(Timeout = 15000)>]
+let ``throwing cancellation registration cannot abandon the still running owned callback`` () =
+    let store = PluginWorkOwner.Store()
+    use entered = new ManualResetEventSlim(false)
+    use cancelled = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "cancellation-refusal",
+            0,
+            TimeSpan.FromSeconds 10.,
+            (fun state (_: int) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state _ token _ ->
+                async {
+                    use registration =
+                        token.Register(fun () ->
+                            cancelled.Set()
+                            failwith "cancellation callback refused")
+
+                    entered.Set()
+                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
+                    return state + 1
+                })
+        )
+
+    let active = queue.Submit(1, CancellationToken.None)
+
+    try
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.))
+        queue.Close()
+        Assert.True(cancelled.Wait(TimeSpan.FromSeconds 5.))
+        Assert.True store.Snapshot.IsBusy
+        Assert.False active.IsCompleted
+        release.Set()
+
+        Assert.ThrowsAny<OperationCanceledException>(fun () -> awaitResult active)
+        |> ignore
+
+        Assert.False store.Snapshot.IsBusy
+        Assert.Equal(0, queue.State)
+    finally
+        release.Set()
+
+        try
+            awaitResult active
+        with :? OperationCanceledException ->
+            ()
+
+        queue.Close()
+
+[<Fact>]
+let ``published update recovery restores rest while exclusive presence tracks only the actual run`` () =
+    let owner = PluginWorkOwner.Owner(0)
+    Assert.False owner.Snapshot.HasExclusiveRun
+    let bad = owner.AdmitEvent()
+    owner.FailEvent(bad, PluginWorkOwner.UpdateFailure(InvalidOperationException("update refused")))
+    Assert.True owner.Snapshot.Fault.IsSome
+    let recovery = owner.AdmitEvent()
+    owner.PublishEventState(recovery, 1)
+    owner.SettleEvent(recovery)
+    Assert.True owner.Snapshot.Fault.IsNone
+    let run, _ = owner.TryClaim "tests" |> Option.get
+    Assert.True owner.Snapshot.HasExclusiveRun
+    let fold = owner.CompleteRun run |> Option.get
+    Assert.False owner.Snapshot.HasExclusiveRun
+    owner.CommitEvent(fold, 2)
+    Assert.False owner.Snapshot.HasExclusiveRun
+    Assert.False owner.Snapshot.IsBusy
