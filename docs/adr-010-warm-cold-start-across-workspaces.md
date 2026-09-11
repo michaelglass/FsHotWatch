@@ -104,3 +104,33 @@ to copy once per fresh workspace.
 - If a shared daemon is reconsidered, the bar is still evidence that *simultaneously-active*
   (not merely numerous) workspaces oversubscribe even after seeding + content-addressed
   caching remove the redundant recompute.
+
+## AUTOMATION-564 QA rework: repository identity is the whole directory key
+
+The shared-store namespace previously combined a checkout label with an identity
+suffix. Comparing only the suffix in tests hid that the store uses the whole name:
+`main-<digest>` and `worker-<digest>` are different directories. The namespace now
+contains only a fixed prefix and the full repository-identity digest. The changed
+name also isolates entries written under the defective identity scheme.
+
+A secondary jj workspace can store `../../../.jj/repo`, relative to its `.jj`
+directory. Resolve that pointer before hashing it; hashing the literal text aliases
+same-named workers in unrelated repositories. Git's `gitdir:` pointer likewise
+resolves from the directory containing `.git`. Tests compare complete namespaces
+and pair same-repository sharing with unrelated, identically laid-out repositories.
+
+The 2026-09-10 maintainer decision supersedes ADR-011's emitted-assembly key
+requirement: package dependencies use package id and version; first-party analyzers
+use their source inputs, project configuration, and dependency identities. The F#
+compiler patch and Deterministic/PathMap workaround are rejected, not prerequisites.
+This namespace repair does not implement the separate analyzer-key change, nor does
+it establish the five-fresh-workspace timing criterion. Both remain separately
+verifiable work; namespace correctness alone is not ticket completion.
+
+A final filesystem reproduction found that trimming a `worktrees/<name>` suffix
+also aliases two unrelated `git init --separate-git-dir` repositories whose Git
+directories happen to use those names. That heuristic is rejected. Read Git's
+`commondir` file instead, resolving relative contents from the administrative Git
+directory. Missing or unusable metadata keeps the original Git directory identity;
+only recorded shared-directory metadata grants sharing. Tests now create that
+metadata rather than treating a fabricated path shape as proof of a worktree.
