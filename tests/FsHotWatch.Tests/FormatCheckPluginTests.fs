@@ -90,22 +90,27 @@ let private recorder (outcome: ProcessOutcome) =
 
     runner, (fun () -> List.ofSeq calls)
 
+// Status is published inside Update; state reads require the owned fold to retire.
 let private waitCompleted (host: PluginHost) (timeoutMs: int) =
-    waitUntil
-        (fun () ->
-            match host.GetStatus("format-check") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        timeoutMs
+    Assert.True(
+        waitUntilTrue
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> not (host.AnyPluginBusy())
+                | _ -> false)
+            timeoutMs
+    )
 
 let private waitTerminal (host: PluginHost) (timeoutMs: int) =
-    waitUntil
-        (fun () ->
-            match host.GetStatus("format-check") with
-            | Some(Completed _)
-            | Some(PluginStatus.Failed _) -> true
-            | _ -> false)
-        timeoutMs
+    Assert.True(
+        waitUntilTrue
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _)
+                | Some(PluginStatus.Failed _) -> not (host.AnyPluginBusy())
+                | _ -> false)
+            timeoutMs
+    )
 
 let private summaryOf (host: PluginHost) : string =
     match host.GetStatus("format-check") with
@@ -459,6 +464,7 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         let second = beginAwaitNextTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
         test <@ second.Wait(TimeSpan.FromSeconds 30.0) @>
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 25000)
         test <@ summaryOf host = $"format OK (1 checked) — %s{evidenceFor dir thisRepoPin.Version}" @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
@@ -556,18 +562,22 @@ let ``format check detects formatting change even with same commit ID`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(createFormatCheck dir None)
 
-        // First: file is unformatted
-        File.WriteAllText(file, "module Test\nlet   x = 1\n")
-        host.EmitFileChanged(SourceChanged [ file ])
-        waitCompleted host 25000
-        test <@ (unformattedCount host).Contains("\"count\": 1") @>
+        try
+            // First: file is unformatted
+            File.WriteAllText(file, "module Test\nlet   x = 1\n")
+            host.EmitFileChanged(SourceChanged [ file ])
+            waitCompleted host 25000
+            test <@ (unformattedCount host).Contains("\"count\": 1") @>
 
-        // Second: file is now formatted, but commit ID hasn't changed
-        let second = beginAwaitNextTerminal host "format-check"
-        File.WriteAllText(file, "module Test\n\nlet x = 1\n")
-        host.EmitFileChanged(SourceChanged [ file ])
-        test <@ second.Wait(TimeSpan.FromSeconds 25.0) @>
-        test <@ (unformattedCount host).Contains("\"count\": 0") @>)
+            // Second: file is now formatted, but commit ID hasn't changed
+            let second = beginAwaitNextTerminal host "format-check"
+            File.WriteAllText(file, "module Test\n\nlet x = 1\n")
+            host.EmitFileChanged(SourceChanged [ file ])
+            test <@ second.Wait(TimeSpan.FromSeconds 25.0) @>
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 25000)
+            test <@ (unformattedCount host).Contains("\"count\": 0") @>
+        finally
+            host.Teardown())
 
 [<Fact(Timeout = 30000)>]
 let ``format check reports unformatted files to error ledger`` () =
@@ -606,6 +616,7 @@ let ``format check clears errors when file becomes formatted`` () =
         let firstTerminal = beginAwaitTerminal host "format-check"
         host.EmitFileChanged(SourceChanged [ file ])
         test <@ firstTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 25000)
         test <@ not (host.GetErrors()).IsEmpty @>
 
         // Subscribe before emitting: this small clean-file run can otherwise pass
@@ -614,6 +625,7 @@ let ``format check clears errors when file becomes formatted`` () =
         File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
         test <@ secondTerminal.Wait(TimeSpan.FromSeconds 25.0) @>
+        Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 25000)
 
         let fileErrors = host.GetErrors() |> Map.tryFind file
 
