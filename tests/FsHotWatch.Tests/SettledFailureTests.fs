@@ -122,6 +122,17 @@ let ``public verdict wait reports current failed build without inventing test ev
             let wire = target.WaitForComplete(1000).GetAwaiter().GetResult()
             Assert.Contains("current-build-refusal", wire)
             Assert.Contains("failed", wire)
+            let diagnostics = target.GetDiagnostics("")
+            Assert.True(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root diagnostics)
+            for field in [ "schema"; "owner"; "reason"; "inputTreeHash" ] do
+                let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
+                malformed["completedFailures"][0][field] <- System.Text.Json.Nodes.JsonValue.Create("")
+                Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
+            for generation in [ System.Text.Json.Nodes.JsonValue.Create(2L) :> System.Text.Json.Nodes.JsonNode
+                                System.Text.Json.Nodes.JsonValue.Create("1") :> System.Text.Json.Nodes.JsonNode ] do
+                let malformed = System.Text.Json.Nodes.JsonNode.Parse diagnostics
+                malformed["completedFailures"][0]["modelGeneration"] <- generation
+                Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root (malformed.ToJsonString()))
             // Drive the public CLI publication path from real RPC diagnostics and
             // the actual no-run test-scope response. Neither command may start tests.
             for mode in [ FsHotWatch.Cli.CheckVerdict.InnerLoop; FsHotWatch.Cli.CheckVerdict.Confirmation ] do
