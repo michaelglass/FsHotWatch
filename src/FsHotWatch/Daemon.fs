@@ -911,6 +911,23 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         // change provokes while a check is already waiting — is daemon wall time no
         // plugin owns. One record per batch, on every exit.
         use batchPhase = ctx.Host.Phases.Begin DaemonPhases.Phase.Check
+        let captureBatchModel () =
+            ctx.Discovery.Capture(fun epoch ->
+                let projects = ctx.Graph.GetAllProjects()
+                {| Epoch = epoch
+                   RegisteredProjects = ctx.Pipeline.GetRegisteredProjects()
+                   SourceFiles = projects |> List.map (fun project -> project, ctx.Graph.GetSourceFiles project) |> Map.ofList
+                   Options = projects |> List.map (fun project -> project, ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project)) |> Map.ofList
+                   Dependents = projects |> List.map (fun project -> project, ctx.Graph.GetTransitiveDependents project) |> Map.ofList
+                   Tiers = ctx.Graph.GetParallelTiers() |})
+
+        let! initialModel = captureBatchModel ()
+        let mutable batchModel = initialModel
+        let projectOptions project = batchModel.Options |> Map.tryFind (AbsProjectPath.create project) |> Option.flatten
+        let sourceFilesFor project = batchModel.SourceFiles |> Map.tryFind project |> Option.defaultValue []
+        let dependentsFor project = batchModel.Dependents |> Map.tryFind project |> Option.defaultValue []
+        let publishCurrent write = ctx.Discovery.WithCurrent(batchModel.Epoch, write)
+        let modelGeneration () = snd batchModel.Epoch |> Option.map (fun _ -> fst batchModel.Epoch)
         let mutable sourceFiles = []
         let mutable projFiles = []
         let mutable hasSolution = false
@@ -976,10 +993,10 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         let checkableFilesOf (projects: AbsProjectPath list) =
             projects
             |> List.collect (fun project ->
-                match ctx.Pipeline.GetProjectOptions(AbsProjectPath.value project) with
+                match projectOptions (AbsProjectPath.value project) with
                 | Some options -> options.SourceFiles |> Array.toList
                 | None ->
-                    ctx.Graph.GetSourceFiles project
+                    sourceFilesFor project
                     |> List.map AbsFilePath.value
                     |> List.filter (fun file -> not (PathFilter.isGeneratedPath file)))
             |> List.distinct
@@ -992,7 +1009,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 if hasSolution then
                     None
                 else
-                    resolveAffectedProjects (ctx.Pipeline.GetRegisteredProjects()) projFilesChanged
+                    resolveAffectedProjects (batchModel.RegisteredProjects) projFilesChanged
 
             match scopedProjects, ctx.InvalidateFcsForProjects with
             | Some affectedFsprojs, Some invalidateScoped when not (List.isEmpty affectedFsprojs) ->
@@ -1004,7 +1021,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 let recheckProjects =
                     affectedFsprojs
                     |> List.map AbsProjectPath.create
-                    |> List.collect ctx.Graph.GetTransitiveDependents
+                    |> List.collect dependentsFor
                     |> List.distinct
 
                 // Snapshot current options BEFORE re-discovery — these are the
@@ -1014,7 +1031,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 // recompute instead of serving a stale cached result.
                 let oldOpts =
                     recheckProjects
-                    |> List.choose (fun p -> ctx.Pipeline.GetProjectOptions(AbsProjectPath.value p))
+                    |> List.choose (fun p -> projectOptions (AbsProjectPath.value p))
 
                 for f in checkableFilesOf recheckProjects |> List.map AbsFilePath.create do
                     ctx.Pipeline.InvalidateFile f
@@ -1038,12 +1055,20 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         false // keep unrelated projects' check cache
 
+                let! refreshedModel = captureBatchModel ()
+                batchModel <- refreshedModel
+
                 if not projFilesChanged.IsEmpty then
                     ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                 // Re-derive source files from the refreshed graph (membership
                 // may have shifted) for the same project set.
-                allSourceFiles <- (allSourceFiles @ checkableFilesOf recheckProjects) |> List.distinct
+                let refreshedProjects =
+                    affectedFsprojs
+                    |> List.map AbsProjectPath.create
+                    |> List.collect dependentsFor
+                    |> List.distinct
+                allSourceFiles <- (allSourceFiles @ checkableFilesOf refreshedProjects) |> List.distinct
 
             | _ ->
                 // ── Full path ────────────────────────────────────────────────
@@ -1067,15 +1092,18 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         ctx.ExcludePatterns
                         true
 
+                let! refreshedModel = captureBatchModel ()
+                batchModel <- refreshedModel
+
                 Logging.info
                     "daemon"
-                    $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
+                    $"Re-discovery complete: %d{(batchModel.SourceFiles |> Map.keys |> Seq.toList).Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
 
                 if not projFilesChanged.IsEmpty then
                     ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                 allSourceFiles <-
-                    (allSourceFiles @ checkableFilesOf (ctx.Graph.GetAllProjects()))
+                    (allSourceFiles @ checkableFilesOf (batchModel.SourceFiles |> Map.keys |> Seq.toList))
                     |> List.distinct
 
         let batchStartedAt = System.DateTime.UtcNow
@@ -1091,14 +1119,14 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             let changedProjects =
                 absSourceFiles
-                |> List.collect (fun f -> ctx.Graph.GetProjectsForFile(f))
+                |> List.collect (fun f -> (batchModel.SourceFiles |> Map.toList |> List.choose (fun (project, files) -> if List.contains f files then Some project else None)))
                 |> List.distinct
 
             let changedProjectSet = Set.ofList changedProjects
 
             let dependentProjectFiles =
                 changedProjects
-                |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
+                |> List.collect (fun p -> dependentsFor(p))
                 |> List.distinct
                 |> List.filter (fun p -> not (Set.contains p changedProjectSet))
                 |> checkableFilesOf
@@ -1108,12 +1136,12 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
-            ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value))
+            publishCurrent (fun () -> ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
             let filesToCheckSet = allFilesToCheck |> Set.ofList
-            let tiers = ctx.Graph.GetParallelTiers()
+            let tiers = batchModel.Tiers
 
             let emitResults (results: FileCheckResult option array) =
                 for result in results do
@@ -1123,9 +1151,11 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                             "daemon"
                             $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
-                        dispatchedFiles.Add(checkResult.File)
-                        ctx.Host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
+                        publishCurrent (fun () ->
+                            let checkResult = { checkResult with ModelGeneration = modelGeneration () }
+                            dispatchedFiles.Add(checkResult.File)
+                            ctx.Host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
                     // Unlike the cold scan (see `runChecksWithRetry`), the batch
                     // path does NOT retry a cancelled (`None`) check. Batch
                     // cancellations are self-healing: `CancelPreviousCheck` only
@@ -1142,13 +1172,13 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     let projPath = AbsProjectPath.value proj
 
                     let projFiles =
-                        ctx.Graph.GetSourceFiles(proj) |> List.filter filesToCheckSet.Contains
+                        sourceFilesFor proj |> List.filter filesToCheckSet.Contains
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
                     // Deps-freshness gate — see `applyDepsGate`.
                     if applyDepsGate ctx.DepsGate ctx.Host projPath then
-                        match ctx.Pipeline.GetProjectOptions(projPath) with
+                        match projectOptions projPath with
                         | Some options ->
                             for file in projFiles do
                                 tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
@@ -1177,13 +1207,14 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 let nextGen =
                     System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
 
-                ctx.Host.EmitBatchChecked
-                    { Trigger = InSessionBatch changes
-                      Files = dispatchedFiles |> List.ofSeq
-                      Generation = nextGen
-                      ModelGeneration = None
-                      StartedAt = batchStartedAt
-                      CompletedAt = System.DateTime.UtcNow }
+                publishCurrent (fun () ->
+                    ctx.Host.EmitBatchChecked
+                        { Trigger = InSessionBatch changes
+                          Files = dispatchedFiles |> List.ofSeq
+                          Generation = nextGen
+                          ModelGeneration = modelGeneration ()
+                          StartedAt = batchStartedAt
+                          CompletedAt = System.DateTime.UtcNow })
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
