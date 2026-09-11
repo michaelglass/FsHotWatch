@@ -531,3 +531,74 @@ let ``successful cleanup leaves the original operation exception intact`` () =
 
     Assert.Same(primary, error)
     Assert.True(released)
+
+[<Fact>]
+let ``detached session failure never attempts exec and retains native errno`` () =
+    let mutable execAttempted = false
+    let messages = ResizeArray<string>()
+
+    let result =
+        FsHotWatch.Cli.DetachedLaunch.runHelperWith
+            (fun () -> -1)
+            (fun _ ->
+                execAttempted <- true
+                -1)
+            (fun () -> 13)
+            messages.Add
+            "must not execute"
+
+    Assert.Equal(1, result)
+    Assert.False(execAttempted)
+    Assert.Contains("setsid failed (errno 13)", Assert.Single messages)
+
+[<Fact>]
+let ``detached exec receives complete null terminated UTF8 shell arguments and reports failure`` () =
+    let command = "printf 'héllo 🌍'"
+    let messages = ResizeArray<string>()
+    let mutable inspected = false
+
+    let inspect (path: string, argv: nativeint) =
+        Assert.Equal("/bin/sh", path)
+
+        let read index =
+            let pointer =
+                System.Runtime.InteropServices.Marshal.ReadIntPtr(argv, index * IntPtr.Size)
+
+            System.Runtime.InteropServices.Marshal.PtrToStringUTF8 pointer
+
+        Assert.Equal("/bin/sh", read 0)
+        Assert.Equal("-c", read 1)
+        Assert.Equal(command, read 2)
+        Assert.Equal(IntPtr.Zero, System.Runtime.InteropServices.Marshal.ReadIntPtr(argv, 3 * IntPtr.Size))
+        inspected <- true
+        -1
+
+    let result =
+        FsHotWatch.Cli.DetachedLaunch.runHelperWith (fun () -> 123) inspect (fun () -> 2) messages.Add command
+
+    Assert.True(inspected)
+    Assert.Equal(1, result)
+    Assert.Contains("execv failed (errno 2)", Assert.Single messages)
+
+[<Fact(Timeout = 15000)>]
+let ``disabled output sink is never retried across multiple read buffers`` () =
+    let mutable attempts = 0
+
+    let sink _ =
+        attempts <- attempts + 1
+        raise (IOException("streamed log is unavailable"))
+
+    let outcome =
+        ProcessHelper.runProcessTo
+            (Some sink)
+            "/bin/sh"
+            "-c \"i=0; while [ $i -lt 10000 ]; do printf x; i=$((i+1)); done\""
+            "."
+            []
+            (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 10.))
+
+    Assert.Equal(1, attempts)
+
+    match outcome with
+    | ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained output) -> Assert.Equal(String('x', 10000), output)
+    | other -> failwithf "Expected complete successful capture despite disabled sink, got %A" other
