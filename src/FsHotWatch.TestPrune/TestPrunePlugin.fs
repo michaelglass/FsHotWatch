@@ -4816,7 +4816,8 @@ let internal createWithLaunchDeadlineAndScope
     // Unknown projects remain obligations; absence from runnableProjects is not
     // an exclusion. Configured projects always remain required.
     let coveringProjectsForScope () =
-        let excludedProjects = resolveExcludedProjects () |> fun _ -> Map.empty
+        let excludedProjects = resolveExcludedProjects ()
+
         fun symbol ->
             db.QueryAffectedTests [ symbol ]
             |> List.map (fun test -> test.TestProject)
@@ -5583,12 +5584,12 @@ let internal createWithLaunchDeadlineAndScope
                 // Apply exactly the same declared-scope policy as admission and
                 // post-run diagnostics. Unknown covering projects remain owed.
                 let coveringProjects = coveringProjectsForScope ()
+
                 let coveringProjectsBySymbol =
                     launchedSymbols
                     |> Set.toList
                     |> List.map (fun s ->
-                        let projs =
-                            coveringProjects s
+                        let projs = coveringProjects s
 
                         s, projs)
                     |> Map.ofList
@@ -7495,9 +7496,7 @@ let internal createWithLaunchDeadlineAndScope
                                 && match Map.tryFind s launch.CoveringProjectsBySymbol with
                                    | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
                                    | Some _ -> true
-                                   | None ->
-                                       coveringProjects s
-                                       |> Set.forall projectPassed)
+                                   | None -> coveringProjects s |> Set.forall projectPassed)
 
                     if not (Set.isEmpty committedSymbols) then
                         Logging.info
@@ -8252,8 +8251,28 @@ let internal createWithLaunchDeadlineAndScope
 
 /// Default callers have no declared exclusions: every known covering project
 /// remains required, including projects absent from the runnable configuration.
-let internal createWithLaunchDeadline launchDeadline dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
-    createWithLaunchDeadlineAndScope launchDeadline (fun () -> Map.empty) dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
+let internal createWithLaunchDeadline
+    launchDeadline
+    dbPath
+    repoRoot
+    testConfigs
+    buildExtensions
+    beforeRun
+    afterRun
+    coveragePaths
+    dependsOn
+    =
+    createWithLaunchDeadlineAndScope
+        launchDeadline
+        (fun () -> Map.empty)
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn
 
 /// Create a TestPrune handler with the launch policy captured at construction.
 /// Environment configuration is process-global, so reading it lazily at run time can
@@ -8289,10 +8308,30 @@ let create
 
 /// Construct an owner with the explicitly declared exclusions validated by the
 /// caller's solution scope. Blank reasons do not exclude a project.
-let createWithScope resolveExcludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn =
+let createWithScope
+    resolveExcludedProjects
+    dbPath
+    repoRoot
+    testConfigs
+    buildExtensions
+    beforeRun
+    afterRun
+    coveragePaths
+    dependsOn
+    =
     let launchDeadline =
         Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
         |> Option.ofObj
         |> resolveLaunchDeadline
 
-    createWithLaunchDeadlineAndScope launchDeadline resolveExcludedProjects dbPath repoRoot testConfigs buildExtensions beforeRun afterRun coveragePaths dependsOn
+    createWithLaunchDeadlineAndScope
+        launchDeadline
+        resolveExcludedProjects
+        dbPath
+        repoRoot
+        testConfigs
+        buildExtensions
+        beforeRun
+        afterRun
+        coveragePaths
+        dependsOn

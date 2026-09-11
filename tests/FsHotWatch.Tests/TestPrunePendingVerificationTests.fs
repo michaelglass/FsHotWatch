@@ -2050,17 +2050,33 @@ let ``A104 declared exclusions retire only governed covering debt`` (mixed: bool
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let db = Database.create dbPath
         PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P2" "P2Tests" "sharedTest"
+
         if mixed then
             PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
-        let coverers = db.QueryAffectedTests [ "Lib.shared" ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+
+        let coverers =
+            db.QueryAffectedTests [ "Lib.shared" ]
+            |> List.map (fun t -> t.TestProject)
+            |> Set.ofList
+
         Assert.Contains("P2", coverers)
-        if mixed then Assert.Contains("P1", coverers)
+
+        if mixed then
+            Assert.Contains("P1", coverers)
+
         PendingVerification.save tmpDir (Set.singleton "Lib.shared")
-        let configs = [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
+        let configs =
+            [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
         let run exclusions =
             let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-            let handler = createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
+
+            let handler =
+                createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
+
             host.RegisterHandler(handler)
+
             try
                 let terminal = beginAwaitNextTerminal host "test-prune"
                 host.EmitBuildCompleted(BuildSucceeded)
@@ -2069,8 +2085,15 @@ let ``A104 declared exclusions retire only governed covering debt`` (mixed: bool
                 PendingQueueHelpers.loadQueue tmpDir
             finally
                 host.Teardown()
-        let exclusions = if isNull reason then Map.empty else Map.ofList [ "P2", reason ]
+
+        let exclusions =
+            if isNull reason then
+                Map.empty
+            else
+                Map.ofList [ "P2", reason ]
+
         Assert.Equal(remainsOwed, run exclusions |> Set.contains "Lib.shared")
+
         if not remainsOwed then
             // A later edit is new debt; removing the declaration restores the
             // requirement despite the prior successful configured-suite receipt.
@@ -2085,15 +2108,23 @@ let ``A104 scope resolution failure at completion settles owned work and retains
         PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
         PendingVerification.save tmpDir (Set.singleton "Lib.shared")
         let completedFlag = Path.Combine(tmpDir, "runner-completed")
+
         let config =
             { PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) with
                 Args = $"-c \"touch {completedFlag}; exit 0\"" }
-        let failure = InvalidOperationException("ambiguous exclusion project after runner completion")
+
+        let failure =
+            InvalidOperationException("ambiguous exclusion project after runner completion")
+
         let resolve () =
-            if File.Exists completedFlag then raise failure
+            if File.Exists completedFlag then
+                raise failure
+
             Map.empty
+
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         host.RegisterHandler(createWithScope resolve dbPath tmpDir (Some [ config ]) None None None None [])
+
         try
             host.EmitBuildCompleted(BuildSucceeded)
             Assert.True(waitUntilTrue (fun () -> not (List.isEmpty (host.FailedWork()))) 15000)
