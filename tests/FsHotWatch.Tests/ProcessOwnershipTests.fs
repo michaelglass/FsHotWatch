@@ -315,7 +315,7 @@ let ``detached launch bounds and reaps a stuck helper`` () =
 [<InlineData("{\"kind\":\"ready\"}\n", "Unexpected process host protocol")>]
 [<InlineData("{\"kind\":\"error\",\"message\":\"target failed\"}\n", "target failed")>]
 [<InlineData("{\"kind\":\"exit\",\"exitCode\":7}\nextra\n", "Unexpected data after")>]
-let ``process receipt protocol refuses missing malformed and duplicate terminal records`` payload expected =
+let ``process receipt protocol refuses missing malformed and duplicate terminal records`` (payload: string) (expected: string) =
     use bytes = new MemoryStream(System.Text.Encoding.UTF8.GetBytes payload)
     use reader = new StreamReader(bytes)
 
@@ -361,7 +361,7 @@ let ``ownership retry never waits forever behind an outstanding cleanup`` () =
 let ``ownership monitor is released when protected operation throws`` () =
     let gate = obj ()
 
-    Assert.Throws<IOException>(fun () -> ChildProtocol.withLock gate (fun () -> raise (IOException("original"))))
+    Assert.Throws<IOException>(fun () -> ChildProtocol.withLock gate (fun () -> raise (IOException("original")) : unit))
     |> ignore
 
     Assert.Equal(42, ChildProtocol.withLock gate (fun () -> 42))
