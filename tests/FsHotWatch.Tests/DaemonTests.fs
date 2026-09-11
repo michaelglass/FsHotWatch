@@ -2558,9 +2558,9 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
             loader.Resume(1)
 
             let failedScan =
-                Assert.ThrowsAny<OperationCanceledException>(fun () -> scan.GetAwaiter().GetResult())
+                Assert.ThrowsAny<Exception>(fun () -> scan.GetAwaiter().GetResult())
 
-            test <@ not (isNull failedScan) @>
+            test <@ failedScan.GetBaseException() :? OperationCanceledException @>
             // Register after failure: a receipt must survive this ordinary RPC race.
             let waiter = Async.StartAsTask(FsHotWatch.Ipc.IpcClient.waitForScan pipeName before)
 
