@@ -1482,8 +1482,8 @@
     "PluginHost.fs": [
       {
         "coveredLines": 335,
-        "coveredBranches": 58,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
+        "coveredBranches": 47,
+        "reason": "AUTOMATION-104 removes 11 covered branches: generation bump 6/6, dispatch loop 2/2, CompletedDispatches sum 3/4; base58/70 becomes47/58, all surviving branch sites unchanged. See docs/adr/automation-104-pluginhost-deleted-branch-floor.md. Original baseline: min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only (AUTOMATION-312).",
         "platform": "macos"
       },
       {

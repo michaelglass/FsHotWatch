@@ -750,3 +750,51 @@ let ``executor failure is immutable while outstanding worker capabilities drain`
     Assert.Throws<InvalidOperationException>(fun () -> owner.TransferToCompletion run |> ignore) |> ignore
     Assert.False store.Snapshot.IsBusy
     Assert.Equal(1, owner.Snapshot.State)
+
+[<Fact>]
+let ``a retry cannot clear the failure of an overlapping host operation`` () =
+    let store = PluginWorkOwner.Store()
+    let active = store.BeginOperation "scan"
+    let failure = InvalidOperationException("first scan still live")
+    store.FailOperation(active, failure)
+    let retry = store.BeginOperation "scan"
+    Assert.Same(failure, snd (Assert.Single store.Snapshot.OperationFaults))
+    Assert.Equal<string list>([ "scan" ], store.Snapshot.BusyNames)
+    store.EndOperation retry
+    store.EndOperation active
+    store.FailOperation(active, InvalidOperationException("late callback"))
+    Assert.Same(failure, snd (Assert.Single store.Snapshot.OperationFaults))
+    Assert.Throws<InvalidOperationException>(fun () -> store.EndOperation active) |> ignore
+    let fresh = store.BeginOperation "scan"
+    Assert.Empty store.Snapshot.OperationFaults
+    store.EndOperation fresh
+
+[<Theory>]
+[<InlineData("commit")>]
+[<InlineData("run")>]
+let ``an ordinary update cannot overwrite stronger failed verification`` kind =
+    let owner = PluginWorkOwner.Owner(0)
+    let first = InvalidOperationException("verification did not commit")
+    if kind = "commit" then
+        let event = owner.AdmitEvent()
+        owner.FailEvent(event, PluginWorkOwner.CommitFailure first)
+    else
+        let run, _ = owner.TryClaim "tests" |> Option.get
+        owner.MarkRunFailure(run, first)
+        owner.MarkRunFailure(run, InvalidOperationException("later deadline"))
+        Assert.Same(first, owner.Snapshot.Fault.Value)
+        owner.FailRun(run, first)
+        owner.MarkRunFailure(run, InvalidOperationException("late callback"))
+    let unrelated = owner.AdmitEvent()
+    owner.FailEvent(unrelated, PluginWorkOwner.UpdateFailure(InvalidOperationException("ordinary event")))
+    Assert.Same(first, owner.Snapshot.Fault.Value)
+    let ordinary = owner.AdmitEvent()
+    owner.CommitEvent(ordinary, 1)
+    Assert.Same(first, owner.Snapshot.Fault.Value)
+    if kind = "commit" then
+        let successfulRun, _ = owner.TryClaim "tests" |> Option.get
+        owner.FailRun(successfulRun, InvalidOperationException("run cannot erase commit failure"))
+        Assert.Same(first, owner.Snapshot.Fault.Value)
+    let invalid = owner.AdmitEvent()
+    Assert.Throws<ArgumentException>(fun () -> owner.FailEvent(invalid, PluginWorkOwner.ExecutorFailure first)) |> ignore
+    owner.CommitEvent(invalid, 2)
