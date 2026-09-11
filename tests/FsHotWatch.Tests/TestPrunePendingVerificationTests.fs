@@ -2057,15 +2057,22 @@ let ``declared exclusions retire only governed covering debt`` (mixed: bool) (re
         if mixed then Assert.Contains("P1", coverers)
         PendingVerification.save tmpDir (Set.singleton "Lib.shared")
         let configs = [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let run exclusions =
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+            let handler = createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
+            host.RegisterHandler(handler)
+            try
+                let terminal = beginAwaitNextTerminal host "test-prune"
+                host.EmitBuildCompleted(BuildSucceeded)
+                Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0))
+                waitForQuiescent host 20000
+                PendingQueueHelpers.loadQueue tmpDir
+            finally
+                host.Teardown()
         let exclusions = if isNull reason then Map.empty else Map.ofList [ "P2", reason ]
-        let handler = createWithScope (fun () -> exclusions) dbPath tmpDir (Some configs) None None None None []
-        host.RegisterHandler(handler)
-        try
-            let terminal = beginAwaitNextTerminal host "test-prune"
-            host.EmitBuildCompleted(BuildSucceeded)
-            Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0))
-            waitForQuiescent host 20000
-            Assert.Equal(remainsOwed, PendingQueueHelpers.loadQueue tmpDir |> Set.contains "Lib.shared")
-        finally
-            host.Teardown())
+        Assert.Equal(remainsOwed, run exclusions |> Set.contains "Lib.shared")
+        if not remainsOwed then
+            // A later edit is new debt; removing the declaration restores the
+            // requirement despite the prior successful configured-suite receipt.
+            PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+            Assert.Contains("Lib.shared", run Map.empty))

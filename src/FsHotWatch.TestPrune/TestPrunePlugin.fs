@@ -4815,16 +4815,17 @@ let internal createWithLaunchDeadlineAndScope
     // Explicit, reasoned exclusions limit this configured verification claim.
     // Unknown projects remain obligations; absence from runnableProjects is not
     // an exclusion. Configured projects always remain required.
-    let coveringProjects symbol =
+    let coveringProjectsForScope () =
         let excludedProjects = resolveExcludedProjects ()
-        db.QueryAffectedTests [ symbol ]
-        |> List.map (fun test -> test.TestProject)
-        |> Set.ofList
-        |> Set.filter (fun project ->
-            configuredTestProjects |> List.exists (fun config -> config.Project = project)
-            || match Map.tryFind project excludedProjects with
-               | Some reason -> String.IsNullOrWhiteSpace reason
-               | None -> true)
+        fun symbol ->
+            db.QueryAffectedTests [ symbol ]
+            |> List.map (fun test -> test.TestProject)
+            |> Set.ofList
+            |> Set.filter (fun project ->
+                configuredTestProjects |> List.exists (fun config -> config.Project = project)
+                || match Map.tryFind project excludedProjects with
+                   | Some reason -> String.IsNullOrWhiteSpace reason
+                   | None -> true)
 
     let runTestHostExclusive (ctx: PluginCtx<TestPruneMsg>) (reply: Tasks.TaskCompletionSource<string> option) work =
         let workFor =
@@ -5033,6 +5034,7 @@ let internal createWithLaunchDeadlineAndScope
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
     let flushAndQueryAffected (state: TestPruneState) =
+        let coveringProjects = coveringProjectsForScope ()
         // Capture OLD literal coupling before `RebuildProjects`
         // replaces a changed producer's outgoing graph. The unchanged test still
         // points at that old literal, but after the rebuild the producer does not;
@@ -5580,6 +5582,7 @@ let internal createWithLaunchDeadlineAndScope
                 // the framework's `runOne`, which would only log-and-strand the run.
                 // Apply exactly the same declared-scope policy as admission and
                 // post-run diagnostics. Unknown covering projects remain owed.
+                let coveringProjects = coveringProjectsForScope ()
                 let coveringProjectsBySymbol =
                     launchedSymbols
                     |> Set.toList
@@ -7296,6 +7299,7 @@ let internal createWithLaunchDeadlineAndScope
 
                 | Custom(TestsFinished(started, completed, launch))
                 | Custom(CommandTestsFinished(started, completed, launch, _, _)) ->
+                    let coveringProjects = coveringProjectsForScope ()
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
                     // and re-fire on cache replay — subscribers that key off
