@@ -1,0 +1,39 @@
+{
+  "recordedAtUtc": "2026-09-11T10:46:54.502615+00:00",
+  "sourceRevision": "1209536b",
+  "base": "733413568992",
+  "testRevision": "3f782b6e",
+  "compile": {
+    "command": "mise run compile",
+    "exit": 0,
+    "compilerWarnings": 0,
+    "compilerErrors": 0,
+    "elapsedSeconds": 35.86,
+    "note": "Initial restricted invocation emitted NuGet/mise cache access warnings; restore completed. Escalated integration restore then completed without those warnings."
+  },
+  "test": {
+    "command": "mise run test-integration -- --filter-trait A106Supervision=ExitedParentDescendant",
+    "exit": 2,
+    "total": 1,
+    "failed": 1,
+    "passed": 0,
+    "skipped": 0,
+    "durationMs": 899,
+    "name": "successful process retirement reaps a descendant after its parent exits",
+    "assertion": "successful retirement left the exited parent's descendant alive",
+    "positiveControls": [
+      "exact parent and descendant handles captured while parent held",
+      "parent actually exited",
+      "ProcessOutcome.Succeeded with Drained streams",
+      "supervisor reported no owned work"
+    ],
+    "cleanup": "Test finally completed; no cleanup failure reported"
+  },
+  "sourceSha256": {
+    "src/FsHotWatch/ProcessRegistry.fs": "ee4ff909b16a406c8fb3bf1b8661f72e77a37f5450abacfe862591261312b691",
+    "src/FsHotWatch/ProcessHelper.fs": "6d832bb829a4027800e57bd6ff35ffc26902937a0cd952fa05b81fd9fcc43ac4",
+    "src/FsHotWatch/SupervisedWork.fs": "78dd93d6320d02f4e5a40f6b7243f377f6b0e13f54c3aa3d6f90ad2ebfc5aeee",
+    "tests/FsHotWatch.IntegrationTests/SupervisedProcessTests.fs": "7cc120e578b9d65cefe262989d317e16d05bec42380b7777daa17790b27d67a4"
+  },
+  "scope": "Assertion-red receipt only. No implementation, merge-gate, whole-tree verdict, or QA claim."
+}
