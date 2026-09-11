@@ -647,10 +647,12 @@ type EarnedEvidence =
           ModelGeneration: int64
           ExpectedProjects: Set<string>
           WholeProjectCoverage: Set<string>
+          ReceiptRunIds: Set<System.Guid>
           Refusals: string list }
 
     member this.RunId = this.Completion.RunId
     member this.Generation = this.ModelGeneration
+    member this.AuthorizedRunIds = this.ReceiptRunIds
     member this.FailureReasons = this.Refusals
 
 module internal EarnedEvidence =
@@ -674,7 +676,7 @@ module internal EarnedEvidence =
             ->
             let baselineProjects =
                 baseline
-                |> Option.filter (fun evidence -> evidence.Generation = current && evidence.Refusals.IsEmpty)
+                |> Option.filter (fun evidence -> evidence.Generation = current)
                 |> Option.map (fun evidence -> evidence.WholeProjectCoverage)
                 |> Option.defaultValue Set.empty
 
@@ -682,10 +684,10 @@ module internal EarnedEvidence =
                 completed.Results
                 |> Map.toSeq
                 |> Seq.choose (fun (project, result) ->
-                    if TestResult.verifiedGreen result && not (TestResult.wasFiltered result) then
-                        Some project
-                    else
-                        None)
+                    match completed.Outcome, result with
+                    | Normal, TestsPassed(_, false, _)
+                    | Normal, TestsFailed(_, false, _) -> Some project
+                    | _ -> None)
                 |> Set.ofSeq
                 |> Set.union baselineProjects
 
@@ -731,8 +733,28 @@ module internal EarnedEvidence =
                   ModelGeneration = current
                   ExpectedProjects = expectedProjects
                   WholeProjectCoverage = wholeProjectCoverage
+                  ReceiptRunIds = Set.singleton completed.RunId
                   Refusals = List.distinct refusals }
         | _ -> None
+
+    /// A narrower completion may retain the full-suite receipt for identical
+    /// input bytes. Authorization preserves the NEW completion's refusal reasons;
+    /// an earlier green can never overwrite a newer failure.
+    let authorizeSameInputReceipt
+        (receiptRunId: System.Guid)
+        (retainedInputTree: string option)
+        (currentInputTree: string option)
+        (previous: EarnedEvidence option)
+        (candidate: EarnedEvidence)
+        : EarnedEvidence =
+        match retainedInputTree, currentInputTree, previous with
+        | Some retained, Some current, Some prior when
+            not (System.String.IsNullOrWhiteSpace current)
+            && retained = current
+            && prior.Generation = candidate.Generation
+            && Set.contains receiptRunId prior.ReceiptRunIds ->
+            { candidate with ReceiptRunIds = Set.add receiptRunId candidate.ReceiptRunIds }
+        | _ -> candidate
 
 /// Implemented by an immutable plugin domain which owns an earned receipt.
 /// The framework projects this value in the SAME publication as its work ledger.
