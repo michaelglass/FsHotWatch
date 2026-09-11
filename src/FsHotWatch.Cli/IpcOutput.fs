@@ -622,9 +622,9 @@ let MaxConvergeAttempts = 3
 /// observably `Idle`, handler not yet run) or while it is mid-run with a non-empty
 /// pending-verification queue — which exits 0 having computed N affected tests BEFORE
 /// the test-prune run's verdict was captured. The authoritative settle is the daemon's
-/// `WaitForComplete` RPC (`waitForVerdict` → `requireVerdict=true`, gating on
-/// `AnyPluginBusy` + generation advancement + quiescence), so `isSettled` is wired to
-/// that RPC's completion. The status reads here are for RENDERING ONLY and never
+/// `WaitForComplete` RPC: the shared owner snapshot must contain no live work and
+/// a current-model receipt earned from actual outcomes. `isSettled` observes that
+/// RPC's completion. The status reads here are for RENDERING ONLY and never
 /// decide the verdict.
 let private pollUntilSettled
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)

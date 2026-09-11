@@ -99,7 +99,7 @@ let ``analysis proof refuses missing stale and failed file outcomes and configur
         let parseOnly = AnalysisFileEvidence.fromResult { result with CheckResults = ParseOnly } (Ok ())
         Assert.NotEmpty((proof (Map.ofList [ result.File, parseOnly ])).FailureReasons)
         Assert.True((AnalysisEvidence.fromCompleted None files Set.empty outcomes).IsNone)
-        Assert.True((AnalysisEvidence.fromCompleted (Some 1L) Set.empty Set.empty outcomes).IsNone)
+        Assert.True((AnalysisEvidence.fromCompleted (Some -1L) files Set.empty outcomes).IsNone)
         Assert.True((AnalysisEvidence.fromCompleted (Some 1L) files (Set.singleton "Tests.fsproj") outcomes).IsNone))
 
 [<Fact>]
@@ -195,3 +195,25 @@ let ``new-model BuildCompleted cannot persist accepted old-model pending analysi
     // Cold scan ordering sends the new build before the new FCS results. The old
     // pending cohort must be retired before that build can flush into the new model.
     Assert.Empty(persistedNames 2L)
+
+[<Fact(Timeout = 15000)>]
+let ``available empty model earns no-suite analysis only after its actual batch seal`` () =
+    withTempDir "analysis-empty-model" (fun root ->
+        let host = PluginHost.create sharedChecker.Value root
+        host.WorkStore.PublishProjectModelWithFiles(available 1L, Set.empty)
+        host.SetProjectGraph
+            { ProjectGraphAccessor.none with
+                ObserveModel = fun () -> host.WorkSnapshot.ProjectModel
+                ObserveCheckableFiles = fun () -> host.WorkSnapshot.ProjectModelFiles }
+        host.RegisterHandler(
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                (Path.Combine(root, "analysis.db")) root None None None None None [])
+        Assert.Empty(host.WorkSnapshot.AnalysisEvidence)
+        let batch = { fakeBatchChecked [] with ModelGeneration = Some 1L }
+        host.EmitBatchCheckedTracked batch
+        |> List.iter (fun receipt -> receipt.Wait(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
+        let proof = Assert.Single(host.WorkSnapshot.AnalysisEvidence)
+        Assert.Equal(1L, proof.Generation)
+        Assert.Empty(proof.CheckedFiles)
+        Assert.Empty(proof.FailureReasons)
+        Assert.Empty(host.WorkSnapshot.Evidence))

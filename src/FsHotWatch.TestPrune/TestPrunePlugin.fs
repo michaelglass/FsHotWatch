@@ -5125,7 +5125,7 @@ let internal createWithLaunchDeadline
                 // them.
                 //
                 // This only READS the ages — they advance once per test RUN, at the
-                // launch point (see `pendingAgeRef`). Do not bump them here: this
+                // launch point (the owner state's `PendingAges`). Do not bump them here: this
                 // function runs 2-3 times per edit-save cycle, so the counter would
                 // measure flushes, and two edits to one function on a green repo would
                 // trip a guard designed to fire late.

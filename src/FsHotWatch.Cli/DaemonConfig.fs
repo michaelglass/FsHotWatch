@@ -1704,7 +1704,13 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths t.DependsOn
 
         daemon.RegisterHandler(handler)
-    | None -> ()
+    | None ->
+        // A repository without a test suite still owes current-model FCS/symbol
+        // analysis. This handler seals that evidence without inventing a test run
+        // or exposing full-suite commands.
+        let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
+        daemon.RegisterHandler(create dbPath repoRoot None None None None None [])
 
     // File commands
     for fc in config.FileCommands do

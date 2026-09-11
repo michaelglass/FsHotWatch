@@ -60,6 +60,24 @@ type private ControlledWorkspaceLoader(resultsByAttempt: Types.ProjectOptions li
 
 open FsHotWatch.Tests.TestHelpers
 
+// These transport controls inject a completed run rather than launching a test
+// binary. Its public scope and private owner evidence must describe the same run.
+[<NoEquality; NoComparison>]
+type private CompletedRunFixture =
+    { Proof: EarnedEvidence option }
+    interface IEarnedEvidenceState with
+        member this.EarnedEvidence = this.Proof
+
+let private completedRunFixture runId project =
+    let results = Map.ofList [ project, TestsPassed("fixture passed", false, TimeSpan.Zero) ]
+    let completed =
+        { RunId = runId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = results
+          Verification = RunVerification.ofResults results }
+    { Proof = EarnedEvidence.fromCompletion runId (Some 1L) (Some 1L) (Set.singleton project) 0 None completed }
+
 let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
@@ -491,10 +509,9 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
 // starts with a COLD impact DB; warm that cache and the same green comes from a subset.
 //
 // These drive the REAL run-once driver (`RunOnceCheck.runOnceAndVerdict`), not a pure
-// helper beside it. A repo with a project but NO test projects has no test-prune plugin, so
-// `test-scope` does not exist and the scope reads `ScopeUnknown` — "I could not establish
-// what ran". `confirm` must refuse it (exit 3); the inner loop tolerates it (exit 0),
-// because a repo with no tests configured has no tests to run.
+// helper beside it. A repo with no test projects still runs model/symbol analysis,
+// but exposes no test-scope command. `confirm` must refuse it (exit 3); the inner
+// loop accepts completed analysis (exit 0) without inventing a test execution.
 // ---------------------------------------------------------------------------
 
 /// A repo with one discoverable, loadable project and NO test projects.
@@ -521,9 +538,9 @@ let private withProjectOnlyRepo (name: string) (f: string -> 'a) : 'a =
 /// plugins registered yet" is not "everything finished"), so a genuinely plugin-free daemon
 /// never settles and `RunOnce` blocks until its 30-minute timeout.
 ///
-/// No build, no lint, and above all NO TESTS: with no test projects there is no test-prune
-/// plugin, hence no `test-scope` command, hence no way to establish what ran. That is the
-/// state `confirm` must refuse.
+/// No build, lint or tests: production registration still supplies analysis-only
+/// TestPrune, which seals the empty source cohort but exposes no test-scope command.
+/// `confirm` must refuse this lack of executed full-suite evidence.
 let private noTestProjectsConfig () : DaemonConfiguration =
     { defaultTestConfig () with
         Build = None
@@ -594,7 +611,7 @@ let ``check and confirm --run-once complete without constructing a file watcher`
                 None
 
         // The exit codes are the ones the watcher-backed tests above establish for this
-        // tree: `check` tolerates the unknown scope, `confirm` refuses it. A one-shot host
+        // tree: `check` accepts completed analysis, `confirm` refuses absent tests. A one-shot host
         // changes what is CONSTRUCTED, not what is verdicted.
         let expected = if confirm then 3 else 0
         test <@ exitCode = expected @>)
@@ -663,6 +680,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
         let pendingPath = System.IO.Path.Combine(repoRoot, "src", "Pending.fs")
         let projectPath = System.IO.Path.Combine(repoRoot, "src", "MyProject.fsproj")
         System.IO.File.WriteAllText(sourcePath, "module Library\n")
+        System.IO.File.WriteAllText(pendingPath, "module Pending\n")
         // Keep the disk project consistent with the manual registration below. The
         // daemon's watcher may rediscover during this test; rediscovery must preserve
         // both files, especially the deliberately unchecked Pending.fs.
@@ -686,7 +704,7 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
 
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
-            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[{"name":"first","status":"passed","duration":1},{"name":"second","status":"passed","duration":1},{"name":"third","status":"passed","duration":1}]}}"""
         )
 
         let mutable scopeReads = 0
@@ -698,9 +716,9 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
                     root
                     Daemon.DaemonOptions.defaults
 
-            let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+            let handler: FsHotWatch.PluginFramework.PluginHandler<CompletedRunFixture, unit> =
                 { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
-                  Init = ()
+                  Init = completedRunFixture runId "A.Tests"
                   Update = fun _ctx state _event -> async { return state }
                   Commands =
                     [ FsHotWatch.Cli.IpcParsing.TestScopeCommand,
@@ -734,15 +752,20 @@ let ``run-once command retains executed evidence across a same-tree quiet conver
 
             if scanCount > 1 then
                 for file in [ sourcePath; pendingPath ] do
-                    daemon.Host.EmitFileChecked(
-                        { File = AbsFilePath.create file
-                          Source = ""
-                          ParseResults = Unchecked.defaultof<_>
-                          CheckResults = FullCheck(Unchecked.defaultof<_>)
-                          ProjectOptions = Unchecked.defaultof<_>
-                          Version = 0L
-                          ModelGeneration = None }
-                    )
+                    let checker = sharedChecker.Value
+                    let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
+                    let source = System.IO.File.ReadAllText file
+                    let options =
+                        checker.GetProjectOptionsFromScript(
+                            file, FSharp.Compiler.Text.SourceText.ofString source, assumeDotNetFramework = false)
+                        |> Async.RunSynchronously
+                        |> fst
+                    pipeline.RegisterProject(file, options)
+                    let result =
+                        pipeline.CheckFile(AbsFilePath.create file)
+                        |> Async.RunSynchronously
+                        |> Option.defaultWith (fun () -> failwith "fixture FCS check returned no result")
+                    daemon.Host.EmitFileChecked({ result with ModelGeneration = Some 1L })
 
             daemon.Host.GetAllStatuses()
 
@@ -822,7 +845,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             match v.Outcome with
             | FsHotWatch.Cli.Verdict.Incomplete reason ->
                 test <@ reason.Contains("PROJECT LOADING FAILED") @>
-                test <@ reason.Contains("0 of 1") @>
+                test <@ reason.Contains("1 discovered, 0 loaded") @>
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected discovery failure to replace the seeded green, got %A" other)
 
@@ -1025,9 +1048,9 @@ let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial sc
                     root
                     Daemon.DaemonOptions.defaults
 
-            let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+            let handler: FsHotWatch.PluginFramework.PluginHandler<CompletedRunFixture, unit> =
                 { Name = FsHotWatch.PluginFramework.PluginName.create "fake-test-prune"
-                  Init = ()
+                  Init = completedRunFixture BaselineFixtures.runId "P"
                   Update = fun _ctx state _event -> async { return state }
                   Commands =
                     [ FsHotWatch.Cli.IpcParsing.SetScopeCommand, fun _ctx _state _args -> async { return "" }
@@ -1035,7 +1058,7 @@ let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial sc
                       fun _ctx _state _args ->
                           async {
                               return
-                                  """{"scope":"full","ranProjects":1,"totalProjects":1"""
+                                  $"""{{"scope":"full","ranProjects":1,"totalProjects":1,"runId":"%O{BaselineFixtures.runId}" """
                                   + BaselineFixtures.replyFragment
                                   + "}"
                           } ]
@@ -1069,7 +1092,7 @@ let ``AUTOMATION-163: confirm one-shot accepts full evidence from its initial sc
 
 [<Fact(Timeout = 60000)>]
 let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` () =
-    // No test-prune plugin ⇒ no `test-scope` command ⇒ `ScopeUnknown`, which is not
+    // Analysis-only TestPrune ⇒ no `test-scope` command ⇒ no test suite, which is not
     // full-suite and so cannot reach green. Exit 3 = UnearnedScope: nothing reported broken,
     // nothing reported sound either.
     withProjectOnlyRepo "confirm-runonce-refuses" (fun repoRoot ->
@@ -1077,14 +1100,20 @@ let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` (
         test <@ exitCode = 3 @>)
 
 [<Fact(Timeout = 60000)>]
-let ``check --run-once tolerates an unknown scope`` () =
+let ``check --run-once accepts completed analysis without a test suite`` () =
     // Same driver, same tree, DIFFERENT mode — this pins that the mode is what decides.
     //
     // It is also the positive control for the faulted-read test below, where the only
     // difference is a throwing `test-scope`; an exit 3 there is therefore the fault's doing.
     withProjectOnlyRepo "check-runonce-tolerates" (fun repoRoot ->
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.InnerLoop repoRoot
-        test <@ exitCode = 0 @>)
+        test <@ exitCode = 0 @>
+        match FsHotWatch.Cli.Verdict.read repoRoot with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.RunId = None @>
+            test <@ verdict.Suites.IsEmpty @>
+            test <@ BaselineFixtures.isGreen verdict.Outcome @>
+        | other -> failwithf "expected an analysis-only verdict, got %A" other)
 
 /// AUTOMATION-555. The `--run-once` transport stamps its verdict with the invocation
 /// that drove it, exactly as the daemon transport does.
