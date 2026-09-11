@@ -664,14 +664,23 @@ let ``model failure crosses RPC as versioned data without relying on diagnostic 
     let pipeName = $"fshw-model-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     use cancellation = new CancellationTokenSource()
+
     let observation =
-        FsHotWatch.ProjectModel.ofCompleted 7L
-            { Discovered = 1; Loaded = 1; OptionsMapped = 0; Registered = 0 }
+        FsHotWatch.ProjectModel.ofCompleted
+            7L
+            { Discovered = 1
+              Loaded = 1
+              OptionsMapped = 0
+              Registered = 0 }
+
     let config =
         { defaultRpcConfig host with
-            WaitForAllTerminal = fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+            WaitForAllTerminal =
+                fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+
     let server = Async.StartAsTask(IpcServer.start pipeName config cancellation)
     waitForServer pipeName
+
     try
         let fault =
             Assert.Throws<AggregateException>(fun () ->
@@ -679,13 +688,18 @@ let ``model failure crosses RPC as versioned data without relying on diagnostic 
         let remote = Assert.IsType<StreamJsonRpc.RemoteInvocationException>(Assert.Single(fault.InnerExceptions))
         Assert.Equal(523, remote.ErrorCode)
         match FsHotWatch.Cli.IpcOutput.modelUnavailable fault with
-        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot, FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
+        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot,
+                                                               FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
             Assert.Equal(7L, snapshot.Generation)
             Assert.Equal(0, snapshot.Counts.Registered)
         | other -> failwithf "Expected structured mapping refusal, got %A" other
     finally
         cancellation.Cancel()
-        try server.GetAwaiter().GetResult() with :? OperationCanceledException -> ()
+
+        try
+            server.GetAwaiter().GetResult()
+        with :? OperationCanceledException ->
+            ()
 
 [<Fact(Timeout = 15000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
@@ -1035,8 +1049,12 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
 [<Fact(Timeout = 20000)>]
 let ``WaitForComplete times out while plugin owns unfinished work`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     use cleanup =
         { new IDisposable with
@@ -1094,8 +1112,12 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     // teardown into a clean exit.
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let entered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let release =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     use cleanup =
         { new IDisposable with
@@ -1131,7 +1153,9 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     test <@ host.AnyPluginBusy() @>
 
     use cts = new CancellationTokenSource()
-    let waitEntered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let waitEntered =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let config =
         { defaultRpcConfig host with
@@ -1571,3 +1595,28 @@ let ``the seam refuses an infinite deadline rather than obeying it`` () =
 
     // Healthy work still returns — the fallback deadline is finite but ample, not zero.
     test <@ target.WaitForScan(-1L).Result = "idle" @>
+
+[<Fact(Timeout = 10000)>]
+let ``scan waiters retain their request when recovery is queued before failure settles`` () =
+    let signal = ScanSignal()
+
+    let first =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let recovery =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    signal.ObserveScan(first.Task, fun () -> 0L)
+    let originalWaiter = signal.WaitForGeneration(0L, 0L)
+    signal.ObserveScan(recovery.Task, fun () -> 1L)
+    let recoveryWaiter = signal.WaitForGeneration(0L, 0L)
+    first.SetException(InvalidOperationException("first scan failed"))
+
+    let failure =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            originalWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult())
+
+    test <@ failure.Message = "first scan failed" @>
+    test <@ not recoveryWaiter.IsCompleted @>
+    recovery.SetResult(())
+    recoveryWaiter.WaitAsync(TimeSpan.FromSeconds 2.0).GetAwaiter().GetResult()

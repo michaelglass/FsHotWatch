@@ -276,7 +276,8 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                             Choice1Of2(
                                 match completed with
                                 | Some(epoch, snapshot) -> epoch, Some snapshot
-                                | None -> generation, None)
+                                | None -> generation, None
+                            )
                         else
                             Choice2Of2(quiescence.Value.Task))
 
@@ -671,113 +672,135 @@ let private rediscoverAndClearRemoved
             return completed, (completed, removedFiles)
         })
 
-/// Manages TaskCompletionSource instances for signal-based WaitForScan.
+/// Scan waits observe the actual supervised request receipt, including failures.
 [<NoComparison; NoEquality>]
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
-    /// Test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
-    /// for the rationale. Production messages don't have a natural failure
-    /// mode, so this is the only realistic way to verify the agent surfaces
-    /// programming bugs instead of swallowing them.
+    | ObserveScan of Task<unit>
+    | ScanSettled of Task<unit> * Result<int64, exn>
     | RaiseFaultForTest of exn
 
 type ScanSignal(?cancellationToken: CancellationToken) =
+    let satisfied afterGeneration generation =
+        if afterGeneration >= 0L then
+            generation > afterGeneration
+        else
+            generation > 0L
+
     let agent =
         MailboxProcessor.Start(
             (fun inbox ->
-                // latestGeneration latches the most recent SignalGeneration so a
-                // WaitFor that arrives after the signal can resolve immediately.
-                // Without this, a race between performScan signalling completion
-                // and the client posting WaitFor leaves the waiter hanging.
-                let rec loop (latestGeneration: int64) (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                let rec loop
+                    latestGeneration
+                    (latestReceipt: Task<unit> option)
+                    (waiters: (int64 * Task<unit> option * TaskCompletionSource<unit>) list)
+                    =
                     async {
                         let! msg = inbox.Receive()
 
-                        // No inner try/with: the body is a typed match over messages
-                        // we own, so anything that throws is a programming bug and
-                        // must surface via `agent.Error` (exposed as `AgentCrashed`)
-                        // rather than silently looping in the original state.
                         match msg with
-                        | WaitFor(afterGeneration, tcs) ->
-                            let alreadySatisfied =
-                                if afterGeneration >= 0L then
-                                    latestGeneration > afterGeneration
-                                else
-                                    latestGeneration > 0L
-
-                            if alreadySatisfied then
-                                Logging.debug
-                                    "scan-signal"
-                                    $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
-
-                                tcs.TrySetResult(()) |> ignore
-                                return! loop latestGeneration waiters
+                        | WaitFor(afterGeneration, reply) ->
+                            if satisfied afterGeneration latestGeneration then
+                                reply.TrySetResult(()) |> ignore
+                                return! loop latestGeneration latestReceipt waiters
                             else
-                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
-                                return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
+                                let receipt =
+                                    latestReceipt |> Option.filter (fun task -> not task.IsCompletedSuccessfully)
 
-                        | Signal newGeneration ->
-                            let toSignal, remaining =
+                                match receipt with
+                                | Some task when task.IsFaulted ->
+                                    reply.TrySetException(task.Exception.GetBaseException()) |> ignore
+                                    return! loop latestGeneration latestReceipt waiters
+                                | Some task when task.IsCanceled ->
+                                    reply.TrySetException(TaskCanceledException(task)) |> ignore
+                                    return! loop latestGeneration latestReceipt waiters
+                                | _ ->
+                                    return!
+                                        loop
+                                            latestGeneration
+                                            latestReceipt
+                                            ((afterGeneration, receipt, reply) :: waiters)
+                        | ObserveScan receipt ->
+                            // Already-bound waiters belong to that exact request. A
+                            // queued recovery cannot turn its predecessor's failure green.
+                            let assigned =
                                 waiters
-                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+                                |> List.map (fun (generation, previous, reply) ->
+                                    match previous with
+                                    | Some task when not task.IsCompletedSuccessfully -> generation, previous, reply
+                                    | _ -> generation, Some receipt, reply)
 
-                            Logging.debug
-                                "scan-signal"
-                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                            return! loop latestGeneration (Some receipt) assigned
+                        | ScanSettled(receipt, Result.Error failure) ->
+                            let failed, remaining =
+                                waiters
+                                |> List.partition (fun (_, pending, _) ->
+                                    pending |> Option.exists (fun task -> obj.ReferenceEquals(task, receipt)))
 
-                            for _, tcs in toSignal do
-                                tcs.TrySetResult(()) |> ignore
+                            for _, _, reply in failed do
+                                reply.TrySetException(failure) |> ignore
 
-                            return! loop (max latestGeneration newGeneration) remaining
+                            return! loop latestGeneration latestReceipt remaining
+                        | ScanSettled(_, Ok generation)
+                        | Signal generation ->
+                            let completed, remaining =
+                                waiters
+                                |> List.partition (fun (afterGeneration, receipt, _) ->
+                                    satisfied afterGeneration generation
+                                    && (receipt |> Option.forall (fun task -> task.IsCompletedSuccessfully)))
 
-                        | RaiseFaultForTest ex -> raise ex
+                            for _, _, reply in completed do
+                                reply.TrySetResult(()) |> ignore
+
+                            return! loop (max latestGeneration generation) latestReceipt remaining
+                        | RaiseFaultForTest failure -> raise failure
                     }
 
-                loop 0L []),
+                loop 0L None []),
             ?cancellationToken = cancellationToken
         )
 
     do
-        agent.Error.Add(fun ex ->
-            // An unhandled exception inside the agent loop is a programming bug.
-            // Logged with the full stack trace (ex.ToString(), not ex.Message); the
-            // agent stops and pending waiters' WaitForGeneration tasks remain
-            // unresolved, which is a visible hang at the next caller.
-            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
+        agent.Error.Add(fun failure ->
+            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): {failure}")
 
-    /// Register a waiter that resolves when generation exceeds afterGeneration.
-    /// If afterGeneration < 0, resolves on the next generation increment.
+    /// Wait for a successful generation, or propagate the admitted scan's failure.
     member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
-        let alreadySatisfied =
-            if afterGeneration >= 0L then
-                currentGeneration > afterGeneration
-            else
-                currentGeneration > 0L
-
-        if alreadySatisfied then
-            Logging.debug
-                "scan-signal"
-                $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — already satisfied, returning immediately"
-
+        if satisfied afterGeneration currentGeneration then
             Task.FromResult(())
         else
-            let tcs =
+            let reply =
                 TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            agent.Post(WaitFor(afterGeneration, tcs))
-            tcs.Task
+            agent.Post(WaitFor(afterGeneration, reply))
+            reply.Task
 
-    /// Signal all waiters whose afterGeneration is now satisfied.
+    /// Observe independently of the caller's cancellation: the request only settles
+    /// after actual worker and child cleanup. A later request replaces the latest
+    /// receipt, so failure is retained for late waiters without poisoning recovery.
+    member _.ObserveScan(receipt: Task<unit>, generation: unit -> int64) =
+        agent.Post(ObserveScan receipt)
+
+        receipt.ContinueWith(
+            (fun (completed: Task<unit>) ->
+                let outcome =
+                    try
+                        completed.GetAwaiter().GetResult()
+                        Ok(generation ())
+                    with failure ->
+                        Result.Error failure
+
+                agent.Post(ScanSettled(receipt, outcome))),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        )
+        |> ignore
+
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
-
-    /// Unhandled exceptions inside the mailbox loop surface here. Subscribe to
-    /// observe programming bugs.
     member _.AgentCrashed: IEvent<exn> = agent.Error
-
-    /// Test seam: deterministically raise inside the agent loop. See
-    /// `ErrorLedger.RaiseFaultForTest` for rationale.
-    member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
+    member internal _.RaiseFaultForTest(failure: exn) = agent.Post(RaiseFaultForTest failure)
 
 /// Published scan state; external discovery/checks never run in its writer.
 type private ScanAgentState =
@@ -791,22 +814,26 @@ type private ScanRequest =
     | SetScanState of ScanState
 
 [<NoComparison; NoEquality>]
-type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanRequest>
+type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanRequest> * ScanSignal
 
-let private requestScan (ScanAgent owner) ct =
-    async { do! owner.Submit(RunScan, ct) |> Async.AwaitTask }
+let private requestScan (ScanAgent(owner, signal)) ct =
+    async {
+        let receipt = owner.Submit(RunScan, ct)
+        signal.ObserveScan(receipt, fun () -> owner.State.Generation)
+        do! receipt |> Async.AwaitTask
+    }
 
-let private getScanGeneration (ScanAgent owner) = owner.State.Generation
-let private getScanStatus (ScanAgent owner) = owner.State.ScanState
+let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
+let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
 
-let private setScanStatus (ScanAgent owner) state =
+let private setScanStatus (ScanAgent(owner, _)) state =
     owner
         .Submit(SetScanState state, CancellationToken.None)
         .WaitAsync(TimeSpan.FromSeconds 5.0)
         .GetAwaiter()
         .GetResult()
 
-let private closeScan (ScanAgent owner) = owner.Close()
+let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
 /// Centralized failure handler for daemon batch/scan steps. `processBatch` and
 /// `performScan` transitively call FCS, MSBuild, and arbitrary plugin Update
@@ -1301,7 +1328,9 @@ let internal waitForAllTerminalCore
 
             match snapshot.Faults with
             | (name, failure) :: _ ->
-                let isExecutor = snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+                let isExecutor =
+                    snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
+
                 raise (PluginWorkOwner.WorkFailedException(name, failure, isExecutor))
             | [] -> ()
 
@@ -1315,16 +1344,25 @@ let internal waitForAllTerminalCore
             if snapshot.IsBusy && started.Elapsed - lastProgressAt >= stallThreshold then
                 let hasRunningReport =
                     host.GetAllStatuses()
-                    |> Map.exists (fun _ status -> match status with Running _ -> true | _ -> false)
+                    |> Map.exists (fun _ status ->
+                        match status with
+                        | Running _ -> true
+                        | _ -> false)
 
                 if not hasRunningReport then
                     let names = String.concat ", " snapshot.BusyNames
-                    raise (TimeoutException($"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"))
+
+                    raise (
+                        TimeoutException(
+                            $"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"
+                        )
+                    )
 
             let evidence =
                 match snapshot.ProjectModel with
                 | ProjectModel.Observation.Available model ->
-                    snapshot.Evidence |> List.filter (fun proof -> proof.Generation = model.Generation)
+                    snapshot.Evidence
+                    |> List.filter (fun proof -> proof.Generation = model.Generation)
                 | _ -> []
 
             let analysisEvidence =
@@ -1581,6 +1619,7 @@ type Daemon
     member internal _.WaitForProjectModel() : Task<ProjectModel.Observation> =
         task {
             let! generation, completed = discovery.WaitForStableAdmission()
+
             return
                 completed
                 |> Option.map (ProjectModel.ofCompleted generation)
@@ -1590,9 +1629,12 @@ type Daemon
     member internal this.WaitForDiscoveryAdmission() : Task<DiscoveryAdmission> =
         task {
             let! observation = this.WaitForProjectModel()
+
             match observation with
             | ProjectModel.Observation.Available snapshot ->
-                return { Generation = snapshot.Generation; Failure = None }
+                return
+                    { Generation = snapshot.Generation
+                      Failure = None }
             | _ -> return raise (ProjectModel.UnavailableException observation)
         }
 
@@ -1789,6 +1831,7 @@ type Daemon
                                     raise (System.OperationCanceledException(daemonShuttingDownMessage, cts.Token))
 
                                 linked.Cancel()
+                                do! waiter
                                 return ()
                             }
                       WaitForAllTerminal =
@@ -2734,7 +2777,7 @@ module Daemon =
                                 ScanState = Scanning(0, 0, DateTime.UtcNow) }
                         | SetScanState _ -> state),
                     (fun state _ -> { state with ScanState = ScanIdle }),
-                    (fun state -> scanSignal.SignalGeneration(state.Generation)),
+                    ignore,
                     (fun state request ct publish ->
                         async {
                             match request with
@@ -2743,7 +2786,7 @@ module Daemon =
                         })
                 )
 
-            let scanAgentWrapper = ScanAgent scanOwner
+            let scanAgentWrapper = ScanAgent(scanOwner, scanSignal)
 
             let formatAllViaAgent () =
                 async {
