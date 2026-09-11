@@ -390,23 +390,54 @@ let ``two jj workspaces of one repository share a cache namespace`` () =
         // What `jj workspace add` writes: a pointer at the shared repo directory.
         File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), sharedRepoDir)
 
-        test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Jujutsu sharedRepoDir @>
+        test
+            <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Jujutsu(sharedRepoDir.Replace('\\', '/')) @>
 
-        // The namespace's identity half must agree even though the labels differ.
-        let digestOf (dir: string) =
-            (RepoIdentity.namespaceOf dir).Split('-') |> Array.last
-
-        test <@ digestOf main = digestOf secondary @>)
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf secondary @>)
 
 [<Fact(Timeout = 15000)>]
 let ``two unrelated checkouts never share a cache namespace`` () =
     withTwinCheckouts "unrelated" (fun _ -> ()) (fun a b ->
         test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
 
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``git worktree common directory metadata resolves relative and absolute pointers`` absolute =
+    withTempDir "commondir" (fun root ->
+        let gitDir = Path.Combine(root, "repository")
+        let adminDir = Path.Combine(gitDir, "worktrees", "feature")
+        Directory.CreateDirectory adminDir |> ignore
+        File.WriteAllText(Path.Combine(adminDir, "commondir"), if absolute then gitDir else "../..")
+        test <@ RepoIdentity.canonicalGitDir adminDir = gitDir.Replace('\\', '/') @>
+        test <@ RepoIdentity.canonicalGitDir gitDir = gitDir.Replace('\\', '/') @>)
+
 [<Fact(Timeout = 15000)>]
-let ``a git worktree resolves to the repository's own git directory`` () =
-    test <@ RepoIdentity.canonicalGitDir "/repo/.git/worktrees/feature" = "/repo/.git" @>
-    test <@ RepoIdentity.canonicalGitDir "/repo/.git" = "/repo/.git" @>
+let ``unrelated separate git directories named worktrees stay separate`` () =
+    withTempDir "separate-gitdirs" (fun root ->
+        let checkout name =
+            let worktree = Path.Combine(root, name)
+            let gitDir = Path.Combine(root, "worktrees", name)
+            Directory.CreateDirectory worktree |> ignore
+            Directory.CreateDirectory gitDir |> ignore
+            File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: {gitDir}\n")
+            worktree, gitDir
+
+        let first, firstGitDir = checkout "one"
+        let second, secondGitDir = checkout "two"
+        test <@ RepoIdentity.describe first = RepoIdentity.RepoIdentitySource.Git(firstGitDir.Replace('\\', '/')) @>
+        test <@ RepoIdentity.describe second = RepoIdentity.RepoIdentitySource.Git(secondGitDir.Replace('\\', '/')) @>
+        test <@ RepoIdentity.namespaceOf first <> RepoIdentity.namespaceOf second @>)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("")>]
+[<InlineData("\000invalid")>]
+let ``invalid common directory metadata retains the original git directory`` (pointer: string) =
+    withTempDir "invalid-commondir" (fun root ->
+        let gitDir = Path.Combine(root, "worktrees", "feature")
+        Directory.CreateDirectory gitDir |> ignore
+        File.WriteAllText(Path.Combine(gitDir, "commondir"), pointer)
+        test <@ RepoIdentity.canonicalGitDir gitDir = gitDir.Replace('\\', '/') @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a checkout under no recognised version control gets a private namespace`` () =
@@ -699,15 +730,15 @@ let ``a colocated git checkout and its worktrees share an identity`` () =
         let gitDir = Path.Combine(main, ".git")
         Directory.CreateDirectory gitDir |> ignore
         Directory.CreateDirectory worktree |> ignore
+        let adminDir = Path.Combine(gitDir, "worktrees", "wt")
+        Directory.CreateDirectory adminDir |> ignore
+        File.WriteAllText(Path.Combine(adminDir, "commondir"), "../..")
         File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: %s{gitDir}/worktrees/wt\n")
 
-        test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Git gitDir @>
-        test <@ RepoIdentity.describe worktree = RepoIdentity.RepoIdentitySource.Git gitDir @>
+        test <@ RepoIdentity.describe main = RepoIdentity.RepoIdentitySource.Git(gitDir.Replace('\\', '/')) @>
+        test <@ RepoIdentity.describe worktree = RepoIdentity.RepoIdentitySource.Git(gitDir.Replace('\\', '/')) @>
 
-        let digestOf (dir: string) =
-            (RepoIdentity.namespaceOf dir).Split('-') |> Array.last
-
-        test <@ digestOf main = digestOf worktree @>)
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf worktree @>)
 
 [<Fact(Timeout = 15000)>]
 let ``the identity source is tagged by kind so two kinds cannot collide`` () =
@@ -848,3 +879,82 @@ let ``the project options hash relativizes every source file, not just the first
             CheckCache.getProjectOptionsHashRelativeTo (Some a) (manySources a)
             <> CheckCache.getProjectOptionsHashRelativeTo (Some a) (optionsAt a)
         @>
+
+[<Fact(Timeout = 15000)>]
+let ``relative jj pointers resolve from the jj directory and share the whole namespace`` () =
+    withTempDir "relative" (fun root ->
+        let main = Path.Combine(root, "main")
+        let secondary = Path.Combine(main, ".workspaces", "worker-1")
+        let sharedRepoDir = Path.Combine(main, ".jj", "repo")
+        Directory.CreateDirectory sharedRepoDir |> ignore
+        Directory.CreateDirectory(Path.Combine(secondary, ".jj")) |> ignore
+        File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), "../../../.jj/repo")
+
+        test
+            <@
+                RepoIdentity.describe secondary = RepoIdentity.RepoIdentitySource.Jujutsu(
+                    sharedRepoDir.Replace('\\', '/')
+                )
+            @>
+
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf secondary @>)
+
+[<Fact(Timeout = 15000)>]
+let ``identically named workers with identical relative pointers in unrelated repos stay separate`` () =
+    withTempDir "separate" (fun root ->
+        let worker name =
+            let main = Path.Combine(root, name)
+            let secondary = Path.Combine(main, ".workspaces", "worker-1")
+            Directory.CreateDirectory(Path.Combine(main, ".jj", "repo")) |> ignore
+            Directory.CreateDirectory(Path.Combine(secondary, ".jj")) |> ignore
+            File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), "../../../.jj/repo")
+            secondary
+
+        let first = worker "first"
+        let second = worker "second"
+        test <@ RepoIdentity.namespaceOf first <> RepoIdentity.namespaceOf second @>)
+
+[<Fact(Timeout = 15000)>]
+let ``relative git pointers resolve from the worktree root`` () =
+    withTempDir "relative-git" (fun root ->
+        let main = Path.Combine(root, "main")
+        let worktree = Path.Combine(root, "worker")
+        let gitDir = Path.Combine(main, ".git")
+        Directory.CreateDirectory gitDir |> ignore
+        Directory.CreateDirectory worktree |> ignore
+        let adminDir = Path.Combine(gitDir, "worktrees", "worker")
+        Directory.CreateDirectory adminDir |> ignore
+        File.WriteAllText(Path.Combine(adminDir, "commondir"), "../..")
+        File.WriteAllText(Path.Combine(worktree, ".git"), "gitdir: ../main/.git/worktrees/worker\n")
+        test <@ RepoIdentity.describe worktree = RepoIdentity.RepoIdentitySource.Git(gitDir.Replace('\\', '/')) @>
+        test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf worktree @>)
+
+[<Fact(Timeout = 15000)>]
+let ``ordinary git repositories below a worktrees directory do not share a namespace`` () =
+    withTempDir "git-parent" (fun root ->
+        let first = Path.Combine(root, "worktrees", "one")
+        let second = Path.Combine(root, "worktrees", "two")
+        Directory.CreateDirectory(Path.Combine(first, ".git")) |> ignore
+        Directory.CreateDirectory(Path.Combine(second, ".git")) |> ignore
+        test <@ RepoIdentity.namespaceOf first <> RepoIdentity.namespaceOf second @>)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``malformed repository pointers fall back to separate checkout namespaces`` isJj =
+    let writeMalformedPointer root =
+        let marker =
+            if isJj then
+                let jjDir = Path.Combine(root, ".jj")
+                Directory.CreateDirectory jjDir |> ignore
+                Path.Combine(jjDir, "repo")
+            else
+                Path.Combine(root, ".git")
+
+        let pointer = if isJj then "\000invalid" else "gitdir: \000invalid"
+        File.WriteAllText(marker, pointer)
+
+    withTwinCheckouts "malformed-pointers" writeMalformedPointer (fun first second ->
+        test <@ RepoIdentity.describe first = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath first) @>
+        test <@ RepoIdentity.describe second = RepoIdentity.RepoIdentitySource.CheckoutPath(Path.GetFullPath second) @>
+        test <@ RepoIdentity.namespaceOf first <> RepoIdentity.namespaceOf second @>)
