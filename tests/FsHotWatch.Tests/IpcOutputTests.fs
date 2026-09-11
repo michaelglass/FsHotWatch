@@ -191,13 +191,38 @@ let ``retained test evidence cannot hide a later plugin failure`` () =
     test <@ outcome = CheckVerdict.CheckOutcome.FailuresFound @>
     test <@ CheckVerdict.exitCode outcome = 1 @>
 
+/// A completed runner report includes the rows supporting its summary counts.
+let private completedSuiteReport (reportId: string) (count: int) =
+    let rows =
+        [| for index in 1..count ->
+               {| name = $"Fixture.case{index}"
+                  status = "passed" |} |]
+
+    System.Text.Json.JsonSerializer.Serialize
+        {| reportFormat = "CTRF"
+           specVersion = "0.0.0"
+           reportId = reportId
+           results =
+            {| tool = {| name = "xUnit.net v3" |}
+               summary =
+                {| tests = count
+                   passed = count
+                   failed = 0
+                   pending = 0
+                   skipped = 0
+                   other = 0
+                   suites = 1
+                   start = 1
+                   stop = 2 |}
+               tests = rows |} |}
+
 let private writeEvidenceSuite (repoRoot: string) (runId: System.Guid) =
     let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
     System.IO.Directory.CreateDirectory(runDir) |> ignore
 
     System.IO.File.WriteAllText(
         System.IO.Path.Combine(runDir, "A.Tests" + FsHotWatch.Ctrf.ReportSuffix),
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"a","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+        completedSuiteReport "a" 3
     )
 
 [<Theory(Timeout = 15000)>]
@@ -784,9 +809,7 @@ let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: str
     let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
     System.IO.Directory.CreateDirectory(runDir) |> ignore
 
-    let json =
-        """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"batch","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":N,"passed":N,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
-            .Replace("N", string<int> tests)
+    let json = completedSuiteReport "batch" tests
 
     System.IO.File.WriteAllText(System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix), json)
 
@@ -1585,7 +1608,7 @@ let private writeSevenSuiteRun (repoRoot: string) (runId: System.Guid) : string 
     for project in projects do
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix),
-            """{"reportFormat":"CTRF","specVersion":"0.0.0","reportId":"seven","results":{"tool":{"name":"xUnit.net v3"},"summary":{"tests":3,"passed":3,"failed":0,"pending":0,"skipped":0,"other":0,"suites":1,"start":1,"stop":2},"tests":[]}}"""
+            completedSuiteReport "seven" 3
         )
 
     List.sort projects
