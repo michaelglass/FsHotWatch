@@ -1005,8 +1005,16 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 20000)>]
-let ``WaitForComplete times out when plugin stays Running`` () =
+let ``WaitForComplete times out while plugin owns unfinished work`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1015,7 +1023,10 @@ let ``WaitForComplete times out when plugin stays Running`` () =
             fun ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1030,12 +1041,8 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("stuck-plugin") with
-            | Some(Running _) -> true
-            | _ -> false)
-        5000
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy @>
 
     let config =
         { defaultRpcConfig host with
@@ -1053,12 +1060,20 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 [<Fact(Timeout = 30000)>]
 let ``WaitForComplete client observes failure when daemon is shut down mid-wait`` () =
     // Real IPC over a real named pipe: the client blocks in WaitForComplete on a
-    // stuck-Running plugin, we cancel the server CTS, and the client must observe a
+    // plugin holding an actual unfinished event. We cancel the server CTS; the client must observe a
     // failure within a bounded time. Catches regressions where the daemon-side wait
     // stops observing the shutdown token and the client hangs, or races OS pipe
     // teardown into a clean exit.
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1067,7 +1082,10 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
             fun ctx state event ->
                 async {
                     match event with
-                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1081,19 +1099,20 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("stuck-plugin") with
-            | Some(Running _) -> true
-            | _ -> false)
-        5000
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy @>
 
-    let cts = new CancellationTokenSource()
+    use cts = new CancellationTokenSource()
+    let waitEntered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let config =
         { defaultRpcConfig host with
             RequestShutdown = fun () -> cts.Cancel()
-            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout cts.Token }
+            WaitForAllTerminal =
+                fun timeout ->
+                    let pending = waitForAllTerminal host timeout cts.Token
+                    waitEntered.TrySetResult(()) |> ignore
+                    pending }
 
     let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
     waitForServer pipeName
@@ -1110,8 +1129,8 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
                 }
             )
 
-        // Give the client time to establish the connection and enter the wait.
-        Thread.Sleep(500)
+        // Observe the actual RPC callback entering its owned-work wait.
+        test <@ waitEntered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
         test <@ not clientTask.IsCompleted @>
 
         // Simulate daemon shutdown.
