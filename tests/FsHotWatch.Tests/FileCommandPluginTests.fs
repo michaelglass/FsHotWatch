@@ -9,6 +9,10 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
+// Existing controls retain the ordinary exit-code policy.
+let private create name trigger command args repoRoot timeout =
+    FsHotWatch.FileCommand.FileCommandPlugin.create name trigger command args repoRoot timeout None
+
 let private fileTrigger (filter: string -> bool) : CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
@@ -1469,3 +1473,21 @@ let ``AUTOMATION-343: a cached file-command replay leaves an out-of-batch findin
 
     test <@ ledgerHasOutOfBatch host "run-scripts" @>
     test <@ cached = cold @>
+
+[<Theory>]
+[<InlineData(0)>]
+[<InlineData(-1)>]
+[<InlineData(256)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``direct registration rejects invalid decline exit codes`` code =
+    Assert.Throws<System.ArgumentException>(fun () ->
+        FsHotWatch.FileCommand.FileCommandPlugin.create
+            (FsHotWatch.PluginFramework.PluginName.create "invalid-policy")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            "unused"
+            "/tmp"
+            None
+            (Some code)
+        |> ignore)
+    |> ignore

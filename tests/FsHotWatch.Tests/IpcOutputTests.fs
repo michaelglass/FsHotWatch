@@ -1645,6 +1645,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                     { StartedAt = System.DateTime.UtcNow.AddSeconds(-30.0)
                       Elapsed = System.TimeSpan.FromSeconds 25.0
                       Outcome = CompletedRun
+                      Provenance = FsHotWatch.Events.RunProvenance.Observed
                       Summary = Some "21 passed, 0 failed in 7 projects"
                       ActivityTail = [] }
               Diagnostics = DiagnosticCounts.empty }

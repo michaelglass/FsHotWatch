@@ -365,6 +365,26 @@ module CheckInputs =
     let hasFailures (inputs: CheckInputs) : bool =
         foundProblems inputs.PluginStatuses inputs.FailingDiagnostics
 
+    /// Filtered checks may report a declined measurement. Full runs and confirmations
+    /// must evaluate every participating gate before they can claim completeness.
+    let requiredEvaluationDeclines mode scope (statuses: Map<string, ParsedPluginStatus>) =
+        let required =
+            match mode, scope with
+            | Confirmation, _
+            | _, FullSuite _ -> true
+            | _ -> false
+
+        if not required then
+            []
+        else
+            statuses
+            |> Map.toList
+            |> List.choose (fun (name, parsed) ->
+                match parsed.Status, parsed.LastRun with
+                | (StatusView.Completed _ | StatusView.Idle), Some { Outcome = FsHotWatch.Events.RunOutcome.NotEvaluated reason } ->
+                    Some $"{name}: {reason}"
+                | _ -> None)
+
     /// Are the run's failures ENTIRELY things it cannot attribute to this tree?
     ///
     /// Deliberately conjunctive and deliberately strict. A failing plugin is always a
@@ -422,6 +442,8 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
         // files unchecked" or "scope not full"): the run's incompleteness has a
         // known, nameable cause.
         CheckOutcome.WaitingOnBuild(BuildWait.staleDeferrals inputs.WaitingOnBuild)
+    elif not (CheckInputs.requiredEvaluationDeclines mode testScope inputs.PluginStatuses).IsEmpty then
+        CheckOutcome.Incomplete -1
     else
         // AUTOMATION-110. The only door to `Clean`: every arm below that used to be
         // `Clean` goes through here, so a green without a baseline has no constructor
