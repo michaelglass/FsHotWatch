@@ -1326,13 +1326,26 @@ let internal waitForAllTerminalCore
 
             let snapshot = host.WorkSnapshot
 
+            let faultContext () =
+                match snapshot.Faults with
+                | [] -> ""
+                | faults ->
+                    let causes =
+                        faults
+                        |> List.map (fun (name, failure) -> $"{name}: {failure.Message}")
+                        |> String.concat "; "
+                    "; committed faults awaiting settlement: " + causes
+
             match snapshot.Faults with
-            | (name, failure) :: _ ->
+            | (name, failure) :: _ when not snapshot.IsBusy ->
+                // A fault is final evidence only once every admitted owner has
+                // retired. Publishing it earlier can lose another owner's result
+                // or return while cleanup still owns a child process.
                 let isExecutor =
                     snapshot.ExecutorFaults |> List.exists (fun (faulted, _) -> faulted = name)
 
                 raise (PluginWorkOwner.WorkFailedException(name, failure, isExecutor))
-            | [] -> ()
+            | _ -> ()
 
             if snapshot.CompletedEvents <> lastProgress then
                 lastProgress <- snapshot.CompletedEvents
@@ -1354,7 +1367,7 @@ let internal waitForAllTerminalCore
 
                     raise (
                         TimeoutException(
-                            $"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"
+                            $"WaitForComplete: owned work WEDGED — {names}{faultContext ()}; no completion for {formatElapsed stallThreshold}"
                         )
                     )
 
@@ -1388,7 +1401,7 @@ let internal waitForAllTerminalCore
             else
                 let detail () =
                     if snapshot.IsBusy then
-                        "owned work remains: " + String.concat ", " snapshot.BusyNames
+                        "owned work remains: " + String.concat ", " snapshot.BusyNames + faultContext ()
                     else
                         "no earned verdict for the current completed project model"
 
@@ -2367,17 +2380,17 @@ let private performScan
 
             // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
             // callers (IPC) safely assume BatchChecked has already been dispatched
-            // by the time `fshw scan --wait` returns. Empty cohorts (no registered
-            // files) skip — there's nothing to "flush and decide" against.
-            if dispatchedFiles.Count > 0 then
-                publishCurrent (fun () ->
-                    host.EmitBatchChecked
-                        { Trigger = BootScan
-                          Files = dispatchedFiles |> List.ofSeq
-                          Generation = newGeneration
-                          ModelGeneration = modelGeneration
-                          StartedAt = scanStartedAt
-                          CompletedAt = System.DateTime.UtcNow })
+            // by the time `fshw scan --wait` returns. A loaded model with zero
+            // source files still needs its empty analysis cohort sealed; absence
+            // of a batch would leave that successful scan without any evidence.
+            publishCurrent (fun () ->
+                host.EmitBatchChecked
+                    { Trigger = BootScan
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = newGeneration
+                      ModelGeneration = modelGeneration
+                      StartedAt = scanStartedAt
+                      CompletedAt = System.DateTime.UtcNow })
 
 
             // one measurement record per completed scan generation,
