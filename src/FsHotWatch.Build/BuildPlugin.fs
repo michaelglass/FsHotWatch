@@ -1366,6 +1366,8 @@ let createWith
             // cache, run Update.
             | FileChanged _ when not state.ActiveTestRuns.IsEmpty -> None
             | CommandCompleted result when depNames.Contains result.Name && not state.ActiveTestRuns.IsEmpty -> None
+            | FileChanged _ when state.CompletedFailure.IsSome -> None
+            | CommandCompleted result when depNames.Contains result.Name && state.CompletedFailure.IsSome -> None
             | FileChanged _ when state.ForceRebuild -> None
             | CommandCompleted result when depNames.Contains result.Name && state.ForceRebuild -> None
 
