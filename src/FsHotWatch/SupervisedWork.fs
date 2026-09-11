@@ -53,21 +53,32 @@ let execute
         match timer with
         | Result.Error failure -> return finish (Result.Error failure) ignore
         | Ok timer ->
-            use timer = timer
-            return!
-                ProcessRegistry.withChildScopeAsync cancellation.Token (fun settleChildren ->
-                    async {
-                        let! outcome =
-                            async {
-                                try
-                                    cancellation.Token.ThrowIfCancellationRequested()
-                                    let! result = work cancellation.Token
-                                    cancellation.Token.ThrowIfCancellationRequested()
-                                    return Ok result
-                                with failure -> return Result.Error failure
-                            }
-                        return finish outcome settleChildren
-                    })
+            let mutable timerDisposed = false
+            let disposeTimer () =
+                if not timerDisposed then
+                    timerDisposed <- true
+                    timer.Dispose()
+
+            try
+                return!
+                    ProcessRegistry.withChildScopeAsync cancellation.Token (fun settleChildren ->
+                        async {
+                            let! outcome =
+                                async {
+                                    try
+                                        cancellation.Token.ThrowIfCancellationRequested()
+                                        let! result = work cancellation.Token
+                                        cancellation.Token.ThrowIfCancellationRequested()
+                                        return Ok result
+                                    with failure -> return Result.Error failure
+                                }
+                            let cleanup () =
+                                try settleChildren ()
+                                finally disposeTimer ()
+                            return finish outcome cleanup
+                        })
+            finally
+                disposeTimer ()
     }
 
 [<NoComparison; NoEquality>]
