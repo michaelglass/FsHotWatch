@@ -391,7 +391,7 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -748,7 +748,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         test <@ File.Exists ranMarker @>
 
@@ -789,7 +789,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -1229,7 +1229,7 @@ let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting o
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         // It RAN the covering tests rather than reporting on them ...
         test <@ File.Exists ranMarker @>
@@ -1306,7 +1306,7 @@ let ``AUTOMATION-150: an UNREADABLE ledger widens to the FULL suite rather than 
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         // It RAN — an unreadable ledger owes MORE testing, never less ...
         test <@ File.Exists p1Ran @>
@@ -1428,7 +1428,7 @@ let ``A104: a symbol covered only by an unconfigured project stays owed``
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
-        waitForPluginIdle host "test-prune" 20.0
+        waitForQuiescent host 20000
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
         Assert.Contains("Lib.orphan", queue)
