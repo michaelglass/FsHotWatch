@@ -1461,8 +1461,22 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
     // and the foreground process reports success.
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    // Goes Running and never reaches terminal, so the quiescence window cannot fire and the
-    // wait stays blocked until cancellation.
+    let entered =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+    let release =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    use cleanup =
+        { new IDisposable with
+            member _.Dispose() =
+                release.TrySetResult(()) |> ignore
+                waitUntil (fun () -> not host.AnyPluginBusy) 5000 }
+
+    // Hold a real accepted event through cancellation, then drain it during cleanup.
     let handler =
         { Name = PluginName.create "blocked"
           Init = ()
@@ -1472,7 +1486,8 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
                     match event with
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(DateTime.UtcNow))
-                        do! Async.Sleep 60_000
+                        entered.TrySetResult(()) |> ignore
+                        do! release.Task |> Async.AwaitTask
                     | _ -> ()
 
                     return state
@@ -1487,12 +1502,12 @@ let ``waitForAllTerminal faults with OperationCanceledException when shutdown to
 
     use cts = new System.Threading.CancellationTokenSource()
 
-    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
-
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ host.AnyPluginBusy @>
 
-    // Give the wait a moment to enter its loop, then trip the shutdown token.
-    Threading.Thread.Sleep(200)
+    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
+    test <@ not waitTask.IsCompleted @>
     cts.Cancel()
 
     // Async.StartAsTask wraps OperationCanceledException as AggregateException
