@@ -200,6 +200,7 @@ let withDaemon clock root body =
     // never the detached launcher used by ensureDaemon.
     let daemon = start root "dotnet" [ cli; "start" ]
     let mutable failed = true
+    let mutable bodySucceeded = false
 
     try
         let listening =
@@ -222,7 +223,7 @@ let withDaemon clock root body =
         body cli
         Assert.False(daemon.Process.HasExited, "a check replaced the directly owned daemon")
         Assert.Equal(string daemon.Process.Id, File.ReadAllText(Path.Combine(root, ".fshw", "daemon.pid")))
-        failed <- false
+        bodySucceeded <- true
     finally
         try
             // This unique temporary repository owns the endpoint even if a bug
@@ -237,6 +238,7 @@ let withDaemon clock root body =
             )
 
             Assert.True(daemon.Process.WaitForExit(10000), "original daemon did not exit after fixture shutdown")
+            failed <- not bodySucceeded
         finally
             disposeChild daemon
 
