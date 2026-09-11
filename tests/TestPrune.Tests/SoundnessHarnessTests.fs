@@ -907,6 +907,17 @@ module ``Signature edit soundness`` =
                     test <@ not (db.GetSymbolsInFile signature).IsEmpty @>
                     test <@ not (db.GetSymbolsInFile implementation).IsEmpty @>
 
+                // Extern placeholders must not steal source ownership from real
+                // declarations in either backend, regardless of analysis order.
+                for analysisOrder in [ baseline; List.rev baseline ] do
+                    db.RebuildProjects analysisOrder
+                    let memory = fromAnalysisResults analysisOrder
+
+                    for file in [ signature; implementation; consumer ] do
+                        let persisted = db.GetDependenciesFromFile file |> List.distinct |> List.sort
+                        let inMemory = memory.GetDependenciesFromFile file |> List.distinct |> List.sort
+                        test <@ inMemory = persisted @>
+
                 let deadCode, _ = TestPrune.Tests.TestHelpers.runDeadCode db [] false
 
                 test

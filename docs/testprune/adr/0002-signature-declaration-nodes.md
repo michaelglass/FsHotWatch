@@ -28,7 +28,9 @@ A separate source-occurrences table was considered. It would require a schema
 migration and changes to source lookup, orphan removal, and dependency ownership
 in both persistent and in-memory stores. Separate graph nodes use the existing
 synthetic-node mechanism and keep source ownership explicit without changing
-those storage contracts. A general occurrence model remains appropriate if the
+those storage contracts. The in-memory store follows the same real-declaration
+preference as SQLite when placeholders and declarations appear in either order.
+A general occurrence model remains appropriate if the
 index later needs to represent arbitrary multiple implementations of one name.
 
 The regression uses compiler analysis, the SQLite store, and the standalone

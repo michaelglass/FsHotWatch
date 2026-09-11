@@ -5,7 +5,18 @@ open TestPrune.Ports
 
 /// Create an in-memory SymbolStore from a list of AnalysisResults.
 let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
-    let allSymbols = results |> List.collect (fun r -> r.Symbols)
+    // Match SQLite's UPSERT rule: a reference placeholder cannot replace a real
+    // declaration's kind or owning file. Keep the last real declaration if a
+    // caller supplies more than one, and use an extern only when no real one exists.
+    let allSymbols =
+        results
+        |> List.collect (fun r -> r.Symbols)
+        |> List.groupBy _.FullName
+        |> List.map (fun (_, occurrences) ->
+            occurrences
+            |> List.tryFindBack (fun symbol -> not symbol.IsExtern)
+            |> Option.defaultValue (List.last occurrences))
+
     let allDeps = results |> List.collect (fun r -> r.Dependencies)
     let allTests = results |> List.collect (fun r -> r.TestMethods)
     let allAttrs = results |> List.collect (fun r -> r.Attributes)
