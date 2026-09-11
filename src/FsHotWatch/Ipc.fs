@@ -408,11 +408,16 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                daemonPhases = daemonPhases
                projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
                modelReceipts =
-                   modelSnapshot.Evidence |> List.collect (fun proof ->
-                       proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
-                           {| runId = runId.ToString("N")
-                              modelGeneration = proof.Generation
-                              refusals = proof.FailureReasons |}))
+                   [ yield!
+                         modelSnapshot.Evidence |> List.collect (fun proof ->
+                             proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
+                                 {| runId = runId.ToString("N")
+                                    modelGeneration = proof.Generation
+                                    refusals = proof.FailureReasons |}))
+                     for proof in modelSnapshot.AnalysisEvidence do
+                         yield {| runId = (null : string)
+                                  modelGeneration = proof.Generation
+                                  refusals = proof.FailureReasons |} ]
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)

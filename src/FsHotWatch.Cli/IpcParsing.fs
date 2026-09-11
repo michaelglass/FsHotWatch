@@ -976,7 +976,7 @@ let isAllTerminal (statuses: Map<string, StatusView>) : bool =
 /// daemon (or an embedder) that carries no ledger: the verdict then falls back to
 /// each plugin's `lastRun`, and says so through its coverage rather than pretending.
 type ModelReceipt =
-    { RunId: Guid
+    { RunId: Guid option
       Generation: int64
       Refusals: string list }
 
@@ -999,7 +999,10 @@ module DaemonEvidence =
         let snapshot = host.WorkSnapshot
         let receipts = snapshot.Evidence |> List.collect (fun proof ->
             proof.AuthorizedRunIds |> Set.toList |> List.map (fun runId ->
-                { RunId = runId; Generation = proof.Generation; Refusals = proof.FailureReasons }))
+                { RunId = Some runId; Generation = proof.Generation; Refusals = proof.FailureReasons }))
+        let receipts =
+            receipts @ (snapshot.AnalysisEvidence |> List.map (fun proof ->
+                { RunId = None; Generation = proof.Generation; Refusals = proof.FailureReasons }))
         DaemonEvidence.Served(host.Phases.Snapshot(DateTime.UtcNow), snapshot.ProjectModel, receipts)
 
     /// The `daemonPhases` array of a diagnostics response. Entries that do not carry a
@@ -1060,9 +1063,17 @@ module DaemonEvidence =
                                 if value.ValueKind = JsonValueKind.Object then
                                     match value.TryGetProperty("runId"), value.TryGetProperty("modelGeneration"), value.TryGetProperty("refusals") with
                                     | (true, run), (true, generation), (true, refusals)
-                                        when run.ValueKind = JsonValueKind.String && generation.ValueKind = JsonValueKind.Number && refusals.ValueKind = JsonValueKind.Array ->
-                                        match Guid.TryParse(run.GetString()), generation.TryGetInt64() with
-                                        | (true, runId), (true, modelGeneration) ->
+                                        when generation.ValueKind = JsonValueKind.Number && refusals.ValueKind = JsonValueKind.Array ->
+                                        let runId =
+                                            match run.ValueKind with
+                                            | JsonValueKind.Null -> Some None
+                                            | JsonValueKind.String ->
+                                                match Guid.TryParse(run.GetString()) with
+                                                | true, parsed when parsed <> Guid.Empty -> Some(Some parsed)
+                                                | _ -> None
+                                            | _ -> None
+                                        match runId, generation.TryGetInt64() with
+                                        | Some runId, (true, modelGeneration) when modelGeneration >= 0L ->
                                             let reasons = refusals.EnumerateArray() |> Seq.map (fun reason ->
                                                 if reason.ValueKind = JsonValueKind.String then reason.GetString() else "invalid refusal") |> Seq.toList
                                             yield { RunId = runId; Generation = modelGeneration; Refusals = reasons }
