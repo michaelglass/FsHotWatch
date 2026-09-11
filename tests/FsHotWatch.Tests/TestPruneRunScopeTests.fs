@@ -3131,3 +3131,27 @@ let ``failed durable preparation retains restart debt after a partial sidecar wr
     let restarted = create ":memory:" root (Some [ projConfig "ProjA" ]) None None None None []
     Assert.True(restarted.Init.Debt.RecoveryOutstanding)
     Assert.True((restarted.CacheKey.Value restarted.Init (BuildCompleted BuildSucceeded)).IsNone)
+
+
+[<Fact(Timeout = 15000)>]
+[<Trait("SnapshotEvidence", "PendingDebtRevision")>]
+let ``a completed launch cannot discharge a newer revision of the same symbol`` () =
+    let _, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let changedAgain =
+        { prior with
+            Debt =
+                { prior.Debt with
+                    Revision = 1L
+                    SymbolRevisions = Map.ofList [ symbol, 1L ] } }
+    let completed =
+        handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+    Assert.Contains(symbol, completed.Debt.PendingQueue)
+    Assert.Equal(1L, completed.Debt.SymbolRevisions[symbol])
+    Assert.True((handler.CacheKey.Value completed (BuildCompleted BuildSucceeded)).IsNone)
+
+    let currentLaunch = { launch with SymbolRevisions = changedAgain.Debt.SymbolRevisions }
+    let verified =
+        handler.Update ctx changedAgain (testsFinishedEvent [ "ProjA", passed false ] currentLaunch)
+        |> Async.RunSynchronously
+    Assert.DoesNotContain(symbol, verified.Debt.PendingQueue)

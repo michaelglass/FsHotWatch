@@ -654,8 +654,8 @@ type EarnedEvidence =
     member this.FailureReasons = this.Refusals
 
 module internal EarnedEvidence =
-    /// A stale launch, unavailable model or undischarged successor obligation
-    /// cannot publish evidence. Incomplete execution remains explicit refusal
+    /// A stale launch or unavailable model cannot publish evidence. Pending
+    /// obligations and incomplete execution remain explicit refusal
     /// evidence, allowing the caller to fail promptly rather than invent green.
     let fromCompletion
         (launchRunId: System.Guid)
@@ -671,7 +671,6 @@ module internal EarnedEvidence =
             launched = current
             && launchRunId <> System.Guid.Empty
             && launchRunId = completed.RunId
-            && pendingObligationCount = 0
             ->
             let baselineProjects =
                 baseline
@@ -694,6 +693,9 @@ module internal EarnedEvidence =
                 [ match completed.Outcome with
                   | Normal -> ()
                   | Aborted reason -> yield $"run aborted: {reason}"
+
+                  if pendingObligationCount <> 0 then
+                      yield $"{pendingObligationCount} verification obligation(s) remain pending"
 
                   if expectedProjects.IsEmpty then
                       yield "no project obligations were selected"

@@ -316,7 +316,22 @@ type PluginHost
 
                     // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
                     try
-                        match preprocessor.Process files repoRoot with
+                        let processed =
+                            SupervisedWork.execute
+                                preprocessor.Name
+                                (SupervisedWork.ambientDeadline ())
+                                SupervisedWork.defaultScheduler
+                                (fun failure -> workStore.FailOperation(operation, failure))
+                                System.Threading.CancellationToken.None
+                                (fun _ -> async { return preprocessor.Process files repoRoot })
+                                (fun outcome settleChildren ->
+                                    settleChildren ()
+                                    match outcome with
+                                    | Ok result -> result
+                                    | Result.Error failure -> raise failure)
+                            |> fun work -> Async.RunSynchronously(work, cancellationToken = System.Threading.CancellationToken.None)
+
+                        match processed with
                         | Result.Ok result ->
                             modifiedFiles <- result.Modified @ modifiedFiles
                             let finishedAt = System.DateTime.UtcNow
@@ -331,6 +346,7 @@ type PluginHost
                                 preprocessor.Name
                                 (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
                         | Result.Error reason ->
+                            workStore.FailOperation(operation, System.InvalidOperationException(reason))
                             let finishedAt = System.DateTime.UtcNow
                             let summary = $"%s{preprocessor.Name} refused: %s{reason}"
                             refused <- (preprocessor.Name, reason) :: refused
@@ -340,6 +356,7 @@ type PluginHost
                                 preprocessor.Name
                                 (Failed(reason, finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
                     with ex ->
+                        workStore.FailOperation(operation, ex)
                         let finishedAt = System.DateTime.UtcNow
                         refused <- (preprocessor.Name, ex.Message) :: refused
 

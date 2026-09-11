@@ -590,93 +590,47 @@ let internal registerHandlerWithOwner
         (startedAt: DateTime)
         (w: Async<'Msg>)
         =
-        ProcessRegistry.withChildScopeAsync System.Threading.CancellationToken.None (fun settleChildren ->
-            async {
-                let mutable completion: Result<'Msg, exn> option = None
+        let finish outcome settleChildren =
+            let mutable completion = outcome
+            try
+                settleChildren ()
+            with failure ->
+                completion <- Result.Error failure
 
-                // The work async is plugin-supplied — a third-party-extension
-                // boundary that may raise anything. The broad catch keeps the
-                // `completion` value assignable: without it the `finally` still runs
-                // (resolving the exclusive obligation) but `completion` stays unset and the
-                // agent waits forever for a result. Logged as ex.ToString() so the
-                // type and stack trace survive for diagnosing the offending plugin.
-                try
-                    try
-                        let! msg =
-                            async {
-                                try
-                                    return! w
-                                finally
-                                    settleChildren ()
-                            }
+            sharedRun
+            |> Option.iter (fun (sharedKey, classify) ->
+                let resourceState =
+                    match completion with
+                    | Ok message ->
+                        try classify message
+                        with failure ->
+                            completion <- Result.Error failure
+                            Invalid $"{PluginName.value handler.Name} shared result classifier faulted"
+                    | Result.Error _ -> Invalid $"{PluginName.value handler.Name} shared work faulted"
 
-                        completion <- Some(Result.Ok msg)
-                    with ex ->
-                        completion <- Some(Result.Error ex)
-                        error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
+                try services.ReleaseSharedRun sharedKey resourceState
+                with failure -> completion <- Result.Error failure)
 
-                        // A faulted exclusive run must never STRAND the plugin in a
-                        // non-terminal status. No completion message is posted on this
-                        // path (`completion` retains the failure below) and `runExclusive`
-                        // reported Running at the claim, so without a forced terminal
-                        // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
-                        // report false — `WaitForComplete` then blocks on a plugin that
-                        // will never complete, and idle-exit fires mid-wait. The
-                        // framework knows when this run started (it claimed the slot),
-                        // so the verdict carries a measured elapsed.
-                        reportBypassingGuard (
-                            PluginStatus.Failed(
-                                $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
-                                DateTime.UtcNow,
-                                RunVerdict.create
-                                    $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
-                                    (DateTime.UtcNow - startedAt)
-                            )
-                        )
-                finally
-                    try
-                        try
-                            // The exclusive obligation survives classification and handoff.
-                            // Only the atomic transfer below frees its slot.
-                            sharedRun
-                            |> Option.iter (fun (sharedKey, classify) ->
-                                let resourceState =
-                                    match completion with
-                                    | Some(Result.Ok message) ->
-                                        try
-                                            classify message
-                                        with ex ->
-                                            error
-                                                (PluginName.value handler.Name)
-                                                $"RunExclusiveShared '%s{key}' classifier failed: %s{ex.ToString()}"
+            match completion with
+            | Ok message ->
+                match workOwner.CompleteRun identity with
+                | None -> ()
+                | Some eventIdentity ->
+                    match agentRef with
+                    | Some agent -> agent.Post(Custom message, eventIdentity)
+                    | None -> invalidOp "Plugin executor is unavailable after work admission"
+            | Result.Error failure ->
+                try reportRunFailure key startedAt "work or cleanup failed" failure
+                finally workOwner.FailRun(identity, failure)
 
-                                            Invalid
-                                                $"%s{PluginName.value handler.Name} shared result classifier faulted"
-                                    | Some(Result.Error _)
-                                    | None -> Invalid $"%s{PluginName.value handler.Name} shared work faulted"
-
-                                services.ReleaseSharedRun sharedKey resourceState)
-                        with ex ->
-                            // Cleanup is part of the admitted operation. Its failure
-                            // invalidates the result, so no successful fold is posted.
-                            completion <- Some(Result.Error ex)
-                            reportRunFailure key startedAt "cleanup failed" ex
-                    finally
-                        match completion with
-                        | Some(Result.Ok message) ->
-                            match workOwner.CompleteRun identity with
-                            | None -> ()
-                            | Some eventIdentity ->
-                                match agentRef with
-                                | Some agent -> agent.Post(Custom message, eventIdentity)
-                                | None -> invalidOp "Plugin executor is unavailable after work admission"
-                        | Some(Result.Error failure) -> workOwner.FailRun(identity, failure)
-                        | None ->
-                            workOwner.FailRun(
-                                identity,
-                                InvalidOperationException("Exclusive work ended without an outcome")
-                            )
-            })
+        SupervisedWork.execute
+            (PluginName.value handler.Name + "/" + key)
+            (SupervisedWork.ambientDeadline ())
+            SupervisedWork.defaultScheduler
+            (fun failure -> workOwner.MarkRunFailure(identity, failure))
+            System.Threading.CancellationToken.None
+            (fun _ -> w)
+            finish
 
     let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
         // The owner admits the exclusive obligation before its UI report.

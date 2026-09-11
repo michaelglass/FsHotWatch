@@ -408,3 +408,59 @@ let ``admission after caller timeout still launches and settles its work`` () =
         release.Set()
         awaitResult held
         queue.Close()
+
+[<Fact(Timeout = 15000)>]
+let ``shared execution deadline retains an exclusive capability until real completion`` () =
+    let store = PluginWorkOwner.Store()
+    let owner = PluginWorkOwner.Owner((), store, "exclusive")
+    let identity, _ = owner.TryClaim "run" |> Option.get
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let deadlineCallback = TaskCompletionSource<unit -> unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let execution =
+        SupervisedWork.execute
+            "exclusive"
+            (TimeSpan.FromMinutes 1.0)
+            (fun _ callback ->
+                deadlineCallback.SetResult callback
+                { new IDisposable with member _.Dispose() = () })
+            (fun failure -> owner.MarkRunFailure(identity, failure))
+            CancellationToken.None
+            (fun _ -> async {
+                entered.Set()
+                Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                return () })
+            (fun outcome settleChildren ->
+                settleChildren ()
+                match outcome with
+                | Ok () -> owner.CompleteRun identity |> ignore
+                | Result.Error failure -> owner.FailRun(identity, failure))
+        |> fun work -> Async.StartAsTask(work, cancellationToken = CancellationToken.None)
+
+    try
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        deadlineCallback.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() ()
+        Assert.True(store.Snapshot.IsBusy)
+        Assert.NotEmpty store.Snapshot.Faults
+        Assert.False execution.IsCompleted
+    finally
+        release.Set()
+        awaitResult execution
+
+    Assert.False(store.Snapshot.IsBusy)
+    Assert.NotEmpty store.Snapshot.Faults
+
+[<Fact>]
+let ``failed host operation stays visible after cleanup until a new attempt`` () =
+    let store = PluginWorkOwner.Store()
+    let identity = store.BeginOperation "preprocessor"
+    store.FailOperation(identity, InvalidOperationException("refused input"))
+    let active = store.Snapshot
+    store.EndOperation identity
+    Assert.True active.IsBusy
+    Assert.False store.Snapshot.IsBusy
+    Assert.Single store.Snapshot.OperationFaults |> ignore
+    let retry = store.BeginOperation "preprocessor"
+    Assert.Empty store.Snapshot.OperationFaults
+    Assert.True store.Snapshot.IsBusy
+    store.EndOperation retry

@@ -345,23 +345,11 @@ let ``a symbol covered only by an unlisted test project is REPORTED as owed-but-
         PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
 
         let host = session tmpDir dbPath configs
-        test <@ isCompleted (buildAndSettle host) @>
-
-        // Nothing runnable was selected, so nothing ran ('s drop stands)...
-        test <@ runsOf tmpDir "P1" = 0 @>
-        test <@ not ((PendingQueueHelpers.loadQueue tmpDir).Contains "Lib.orphan") @>
-
-        // ...and the write-off is on the record, naming the project.
-        let report = testScope host
-
-        match report.Scope with
-        | FsHotWatch.Cli.IpcParsing.NoTestsRun(FsHotWatch.Cli.IpcParsing.NoTestsReason.ChangesUncovered(symbols,
-                                                                                                        total,
-                                                                                                        unrunnable)) ->
-            test <@ symbols = [ "Lib.orphan" ] && total = 1 @>
-            test <@ unrunnable.SymbolCount = 1 @>
-            test <@ unrunnable.Projects = [ "Unlisted" ] @>
-        | other -> failwithf "expected a changes-uncovered scope naming the unlisted project, got %A" other)
+        let outcome = buildAndSettle host
+        Assert.Contains("Lib.orphan", PendingQueueHelpers.loadQueue tmpDir)
+        match outcome with
+        | Failed(message, _, _) -> Assert.Contains("Unlisted", message)
+        | other -> Assert.Fail($"known unrunnable obligations must remain non-green: {other}"))
 
 [<Fact(Timeout = 60000)>]
 let ``a symbol with no covering test anywhere is uncovered, and names no unrunnable project`` () =

@@ -391,6 +391,7 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -747,6 +748,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
         test <@ File.Exists ranMarker @>
 
@@ -787,6 +789,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
         let queue = PendingQueueHelpers.loadQueue tmpDir
 
@@ -1226,6 +1229,7 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
         // It RAN the covering tests rather than reporting on them ...
         test <@ File.Exists ranMarker @>
@@ -1302,6 +1306,7 @@ let ``an UNREADABLE ledger widens to the FULL suite rather than greening on noth
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
         // It RAN — an unreadable ledger owes MORE testing, never less ...
         test <@ File.Exists p1Ran @>
@@ -1383,7 +1388,9 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p2Ran) @>)
 
 [<Fact(Timeout = 20000)>]
-let ``a symbol covered only by an unconfigured test project drops instead of wedging the verdict red`` () =
+let ``a symbol covered only by an unconfigured project stays owed``
+    ()
+    =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
     // set of projects fshw is configured to run. A symbol covered only by an unconfigured
     // project can never be proven green: its covering project never executes, so it never
@@ -1421,15 +1428,13 @@ let ``a symbol covered only by an unconfigured test project drops instead of wed
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+        waitForPluginIdle host "test-prune" 20.0
 
-        // Unverifiable by construction, so dropped rather than retained forever.
         let queue = PendingQueueHelpers.loadQueue tmpDir
-        test <@ not (queue.Contains("Lib.orphan")) @>
-
+        Assert.Contains("Lib.orphan", queue)
         match host.GetStatus("test-prune") with
-        | Some(PluginStatus.Failed(msg, _, _)) ->
-            Assert.Fail($"check wedged red on a symbol no runnable test covers: %s{msg}")
-        | _ -> ())
+        | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
+        | other -> Assert.Fail($"unrunnable debt must deny green and name its project: {other}"))
 
 [<Fact(Timeout = 20000)>]
 let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =
