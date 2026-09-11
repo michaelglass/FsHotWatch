@@ -3112,3 +3112,69 @@ let ``loaded configuration identity retains the parsed snapshot across later fil
         File.WriteAllText(path, "{\"lint\":true}")
         Assert.Equal(configContentHash original, identity)
         Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity))
+
+[<Fact(Timeout = 30000)>]
+let ``direct Start publishes its loaded identity and stops on a later config edit`` () =
+    withTempDir "cli-start-config-lifecycle" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+        File.WriteAllText(Path.Combine(root, "src", "Stub.fsproj"), "<Project />")
+        let configPath = Path.Combine(root, ".fshw.json")
+        let source = """{"build":false,"format":false,"lint":false}"""
+        File.WriteAllText(configPath, source)
+        let config, loadedSource = loadConfigWithSource root
+        let identity = configContentHash loadedSource
+        let pipe = computePipeName root
+        let stateDir = Path.Combine(root, ".fshw")
+        let receipt = Path.Combine(stateDir, "config.hash")
+        let pidFile = Path.Combine(stateDir, "daemon.pid")
+        let notifications = Event<Ionide.ProjInfo.Types.WorkspaceProjectState>()
+
+        // This control owns startup and the config watcher, not SDK project loading.
+        // OneShot suppresses the unrelated source watcher; RunWithIpc still stays live.
+        let loader =
+            { new Ionide.ProjInfo.IWorkspaceLoader with
+                member _.LoadProjects(_paths) = Seq.empty
+                member _.LoadProjects(_paths, _properties, _binaryLog) = Seq.empty
+                member _.LoadSln(_path) = Seq.empty
+                member _.LoadSln(_path, _properties, _binaryLog) = Seq.empty
+
+                [<CLIEvent>]
+                member _.Notifications = notifications.Publish }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                (Unchecked.defaultof<_>)
+                root
+                { Daemon.DaemonOptions.defaults with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun _ -> [])
+
+        let run =
+            System.Threading.Tasks.Task.Run(fun () ->
+                executeCommand identity (fun _ -> daemon) defaultIpcOps root pipe Start defaultGlobalOptions config 5.)
+
+        try
+            waitForIpcServer pipe
+            Assert.False(run.IsCompleted)
+            Assert.Equal(identity, File.ReadAllText(receipt))
+            Assert.Equal(string Environment.ProcessId, File.ReadAllText(pidFile))
+
+            // IPC starts after subscription: this edit must reach the real config watcher.
+            File.WriteAllText(configPath, """{"build":false,"format":false,"lint":false,"timeoutSec":42}""")
+            Assert.True(run.Wait(TimeSpan.FromSeconds(10.)), "Config edit did not stop the owned daemon")
+            Assert.Equal(0, run.Result)
+            Assert.False(IpcClient.isRunning pipe)
+            Assert.False(File.Exists pidFile)
+            Assert.True(daemonLockIsFree root)
+            Assert.Equal(identity, File.ReadAllText(receipt))
+            Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity)
+        finally
+            if not run.IsCompleted then
+                waitUntil (fun () -> run.IsCompleted || IpcClient.isRunning pipe) 5000
+
+                if IpcClient.isRunning pipe then
+                    IpcClient.shutdown pipe |> Async.RunSynchronously |> ignore
+
+            Assert.True(run.Wait(TimeSpan.FromSeconds(5.)), "Owned startup task did not settle during cleanup")
+            Assert.False(IpcClient.isRunning pipe))
