@@ -2697,7 +2697,19 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
 
         File.WriteAllText(
             reportPath,
-            """{"results":{"summary":{"tests":7,"passed":6,"failed":0,"pending":0,"skipped":1,"other":0}}}"""
+            JsonSerializer.Serialize
+                {| results =
+                    {| summary =
+                        {| tests = 7
+                           passed = 6
+                           failed = 0
+                           pending = 0
+                           skipped = 1
+                           other = 0 |}
+                       tests =
+                        [| for index in 1..7 ->
+                               {| name = $"Fixture.case{index}"
+                                  status = if index = 7 then "skipped" else "passed" |} |] |} |}
         )
 
         let scriptPath = Path.Combine(tmpDir, "fake-runner.sh")

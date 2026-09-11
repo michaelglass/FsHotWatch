@@ -211,3 +211,31 @@ let ``actual completion preserves every independent refusal reason`` kind expect
         EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expectedProjects 0 None completion
         |> Option.get
     Assert.Contains(proof.FailureReasons, fun reason -> reason.Contains expected)
+
+[<Fact>]
+let ``same-model baseline accounts untouched and no-match siblings without hiding current failures`` () =
+    let expected = Set.ofList [ "Tests.fsproj"; "Sibling.fsproj" ]
+    let baselineCompletion =
+        completed (Guid.NewGuid())
+            (Map.ofList [ "Tests.fsproj", TestsPassed("passed", false, TimeSpan.Zero)
+                          "Sibling.fsproj", TestsPassed("passed", false, TimeSpan.Zero) ])
+    let mint baseline completion =
+        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) expected 0 baseline completion
+        |> Option.get
+    let baseline = mint None baselineCompletion
+    for sibling in [ None; Some(TestsNoMatch("filter found no matching tests", TimeSpan.Zero)) ] do
+        let current =
+            Map.ofList [ "Tests.fsproj", TestsPassed("passed", true, TimeSpan.Zero) ]
+            |> fun results ->
+                match sibling with
+                | None -> results
+                | Some result -> Map.add "Sibling.fsproj" result results
+            |> completed (Guid.NewGuid())
+        Assert.Empty((mint (Some baseline) current).FailureReasons)
+        Assert.NotEmpty((mint None current).FailureReasons)
+    let refused =
+        completed (Guid.NewGuid())
+            (Map.ofList [ "Tests.fsproj", TestsPassed("passed", true, TimeSpan.Zero)
+                          "Sibling.fsproj", TestsDeferred "input changed" ])
+        |> mint (Some baseline)
+    Assert.Contains(refused.FailureReasons, fun reason -> reason.Contains "input changed")
