@@ -58,7 +58,30 @@ let ``analysis-only handler earns completion from a sealed actual analysis witho
         Assert.Empty host.WorkSnapshot.Evidence
         let analysis = Assert.Single host.WorkSnapshot.AnalysisEvidence
         Assert.Empty analysis.FailureReasons
-        Assert.Equal<Set<AbsFilePath>>(files, analysis.CheckedFiles))
+        Assert.Equal<Set<AbsFilePath>>(files, analysis.CheckedFiles)
+        let local = FsHotWatch.Cli.IpcParsing.DaemonEvidence.ofHost host
+        let localReceipt = Assert.Single(FsHotWatch.Cli.IpcParsing.DaemonEvidence.receipts local)
+        Assert.True localReceipt.RunId.IsNone
+        Assert.Equal(1L, localReceipt.Generation)
+        Assert.Empty localReceipt.Refusals
+        let rpcConfig: FsHotWatch.Ipc.DaemonRpcConfig =
+            { Host = host
+              RequestShutdown = ignore
+              RequestScan = ignore
+              GetScanStatus = fun () -> "idle"
+              GetScanGeneration = fun () -> 1L
+              TriggerBuild = fun () -> async.Return ()
+              FormatAll = fun () -> async.Return ""
+              WaitForScanGeneration = fun _ -> Tasks.Task.FromResult(())
+              WaitForAllTerminal = fun _ -> Tasks.Task.FromResult(())
+              RerunPlugin = fun _ -> async.Return (Ok ())
+              InvalidateCache = fun () -> Tasks.Task.FromResult(())
+              GetUncheckedCount = fun () -> 0 }
+        let wire = FsHotWatch.Ipc.DaemonRpcTarget(rpcConfig).GetDiagnostics("")
+        let remote = FsHotWatch.Cli.IpcParsing.DaemonEvidence.parse wire
+        Assert.Equal<FsHotWatch.Cli.IpcParsing.ModelReceipt list>(
+            FsHotWatch.Cli.IpcParsing.DaemonEvidence.receipts local,
+            FsHotWatch.Cli.IpcParsing.DaemonEvidence.receipts remote))
 
 [<Fact(Timeout = 30000)>]
 let ``analysis proof refuses missing stale and failed file outcomes and configured tests`` () =
