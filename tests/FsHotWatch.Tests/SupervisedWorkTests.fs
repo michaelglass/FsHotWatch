@@ -358,7 +358,8 @@ let ``admission after caller timeout still launches and settles its work`` () =
               Value = box ()
               Busy = false
               Completed = 0L
-              Failure = None }
+              Failure = None
+              Evidence = None }
         )
 
     use entered = new ManualResetEventSlim(false)

@@ -249,17 +249,14 @@ let internal waitForVerdictUnlessDiscoveryFailed
 /// number returned by Ionide/MSBuild into the project graph; `Registered` is the
 /// later FCS pipeline count. Keeping both prevents a registration defect from
 /// being mislabeled as the AUTOMATION-290 loader failure.
-type internal DiscoverySnapshot =
-    { Discovered: int
-      Loaded: int
-      OptionsMapped: int
-      Registered: int }
+type internal DiscoverySnapshot = ProjectModel.Counts
 
 /// Serializes every clear/load/map/register transaction and publishes only one
 /// immutable, completed outcome. `InProgress` deliberately hides the preceding
 /// outcome: a check arriving while a repair discovery is running must wait for
 /// that attempt, not fail from either transient empty stores or stale failure.
-type internal DiscoveryCoordinator() =
+type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
+    do ignore publish
     let admission = new SemaphoreSlim(1, 1)
     let stateGate = obj ()
     let mutable generation = 0L
@@ -299,6 +296,17 @@ type internal DiscoveryCoordinator() =
             else
                 None)
 
+    /// Read the published model state without waiting for a slow loader. The
+    /// completed epoch stays hidden while any clear/load transaction is pending.
+    member _.Observation =
+        lock stateGate (fun () ->
+            if pendingAttempts > 0 then
+                ProjectModel.Observation.Rediscovering generation
+            else
+                match completed with
+                | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
+                | None -> ProjectModel.Observation.Unobserved)
+
     member _.RequestedGeneration = lock stateGate (fun () -> generation)
 
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
@@ -308,6 +316,27 @@ type internal DiscoveryCoordinator() =
         }
 
     member _.WaitForStableAdmission() = waitForStableAdmission ()
+
+    /// Copy the scan inputs while no writer can clear or repopulate the model.
+    /// The callback must only copy state: build settlement and FCS checks run after
+    /// this short lease is released, against those immutable inputs.
+    member _.Capture<'T>(read: int64 * DiscoverySnapshot option -> 'T) : Async<'T> =
+        async {
+            let! _ = waitForStableAdmission () |> Async.AwaitTask
+            let! ct = Async.CancellationToken
+            do! admission.WaitAsync(ct) |> Async.AwaitTask
+
+            try
+                let epoch =
+                    lock stateGate (fun () ->
+                        match completed with
+                        | Some(generation, snapshot) -> generation, Some snapshot
+                        | None -> generation, None)
+
+                return read epoch
+            finally
+                admission.Release() |> ignore
+        }
 
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
@@ -1178,15 +1207,6 @@ let formatPluginWait
 
     $"%s{pluginName} (%s{elapsed}){subtaskPart}"
 
-/// Quiescence window applied after the last host activity (event dispatch or
-/// plugin status transition) before WaitForComplete declares the host idle.
-/// Picks up the "plugin transitioned through Idle between cycles" race: a
-/// plugin that's about to start a new cycle in response to a freshly-emitted
-/// event won't have updated its status yet, so the waiter must give the
-/// dispatch pipeline a chance to land before returning.
-let internal waitForAllTerminalQuiescenceWindow =
-    System.TimeSpan.FromMilliseconds(200.0)
-
 /// How long "nothing is Running, yet some plugin still reports work in flight"
 /// may persist before the wait declares that plugin WEDGED and fails.
 ///
@@ -1206,332 +1226,101 @@ let internal waitForAllTerminalBusyStallThreshold = System.TimeSpan.FromMinutes(
 [<Literal>]
 let internal daemonShuttingDownMessage = "daemon shutting down"
 
-/// Wait for all plugins to settle. A plugin "settles" when:
-///   1. It's in a non-Running status (Idle / Completed / Failed) AND its
-///      work-cycle generation has advanced past the snapshot taken at call
-///      time — i.e. it has actually completed at least one cycle since we
-///      started waiting; OR
-///   2. It's been quiet through a 200ms quiescence window measured from the
-///      most recent host activity (event dispatch or status change). This
-///      handles plugins that legitimately have no work to do during this
-///      cycle (don't subscribe to a relevant event), and makes the wait
-///      bounded when nothing is happening.
-///
-/// The quiescence window also closes the race that motivated this design:
-/// without it, WaitForComplete could observe `allTerminal=true` in the brief
-/// window between a plugin emitting BuildCompleted, transitioning Completed,
-/// and a downstream plugin's mailbox actually picking up the BuildCompleted
-/// event and transitioning into Running. Times out with TimeoutException
-/// after the specified timeout.
-///
-/// `ct` is the daemon's shutdown token. When it fires mid-wait, the returned
-/// task faults with OperationCanceledException so the in-flight WaitForComplete
-/// RPC propagates to the client as an error — without this, foreground
-/// processes blocked on the daemon could either hang (in-process callers) or
-/// race the OS pipe teardown for a clean exit.
-///
-/// `requireVerdict`: when true (the `WaitForComplete` verdict path) the host is
-/// only "at rest" once at least one plugin has reached a real terminal state, so a
-/// cold all-Idle daemon that has simply never run cannot resolve as a vacuous "No
-/// errors" exit-0; the wait blocks until a real verdict arrives, faulting on
-/// shutdown/timeout. When false (the in-process `RunOnce`/scan-settling path, and
-/// every other caller) an all-Idle host is tolerated, so the wait cannot hang on a
-/// plugin that legitimately has no work this cycle. `allPluginsAdvancedToTerminal`
-/// already requires Completed/Failed for every plugin, so the guard only constrains
-/// the quiescence (`allPluginsAtRest`) path.
+/// Work completion and evidence observation are distinct contracts. Neither
+/// consumes UI status: all decisions pin one immutable host publication.
+[<RequireQualifiedAccess>]
+type internal WaitPurpose =
+    | Settle
+    | Evidence
+
 let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
-    (requireVerdict: bool)
+    (purpose: WaitPurpose)
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
-    // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
-    // deadline computation entirely in that case and rely on the MaxValue guard in loop.
-    let deadline =
-        if timeout = System.TimeSpan.MaxValue then
-            System.DateTime.MaxValue
-        else
-            System.DateTime.UtcNow + timeout
-
-    let mutable lastLogTime = System.DateTime.UtcNow
-
-    // Snapshot per-plugin generations at call time. A plugin satisfies the
-    // "advanced a generation" leg of the wait condition once its current
-    // generation exceeds the snapshot value AND it's in a non-Running status.
-    // Plugins registered after the snapshot default to 0, which any later
-    // Idle->Running transition will exceed.
-    let snapshotGenerations = host.WorkCycleGenerations()
-
-    let generationOf (name: string) (gens: Map<string, int64>) =
-        Map.tryFind name gens |> Option.defaultValue 0L
-
-    let getRunningPlugins () =
-        let now = System.DateTime.UtcNow
-
-        host.GetAllStatuses()
-        |> Map.toList
-        |> List.choose (fun (name, s) ->
-            match s with
-            | Running since ->
-                let subtasks =
-                    host.GetActivitySnapshot(name).Subtasks
-                    |> List.map (fun t -> t.Key, t.StartedAt)
-
-                Some(formatPluginWait now name since subtasks)
-            | _ -> None)
-
-    /// Is anything Running? `getRunningPlugins` answers this too, but pays for a
-    /// per-plugin activity snapshot (up to 64 log lines and a 16-element history
-    /// array) plus a formatted wait string, all of which the 50ms poll loop throws
-    /// away.
-    let anyRunning () =
-        host.GetAllStatuses()
-        |> Map.exists (fun _ s ->
-            match s with
-            | Running _ -> true
-            | _ -> false)
-
-    let formatTimeoutDetail () =
-        match getRunningPlugins () with
-        | [] ->
-            // Nothing is Running, so the wait died on one of the OTHER legs
-            // `allPluginsAtRest` requires — a stuck inflight counter, a quiescence
-            // window that never closes, or an unmet verdict guard. Name the one
-            // that actually blocked rather than reporting all three at once.
-            let busy = host.BusyPluginNames()
-            let sinceActivity = System.DateTime.UtcNow - host.LastActivityAt()
-
-            let statuses = host.GetAllStatuses()
-
-            let hasVerdict = statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s)
-
-            if statuses.IsEmpty then
-                // The whole answer, and it implies the verdict reason below, which
-                // would otherwise be printed alongside it saying the same thing.
-                "nothing running, and no plugins are registered"
-            else
-                let busyNames = String.concat ", " busy
-
-                let reasons =
-                    [ if not busy.IsEmpty then
-                          $"plugins still BUSY (events queued, or an exclusive run between claim and completion): %s{busyNames}"
-
-                      if sinceActivity < waitForAllTerminalQuiescenceWindow then
-                          $"host activity %.0f{sinceActivity.TotalMilliseconds}ms ago, inside the %.0f{waitForAllTerminalQuiescenceWindow.TotalMilliseconds}ms quiescence window"
-
-                      if requireVerdict && not hasVerdict then
-                          "no plugin has reached a real terminal state (Completed/Failed), so there is no verdict to report" ]
-
-                match reasons with
-                | [] ->
-                    // Every named leg looks satisfiable, yet the loop did not exit:
-                    // report the raw state rather than a reassuring summary.
-                    let dump =
-                        statuses
-                        |> Map.toList
-                        |> List.map (fun (n, s) -> $"%s{n}=%A{s}")
-                        |> String.concat ", "
-
-                    $"all legs appear satisfied yet the wait did not resolve — statuses: %s{dump}"
-                | rs -> "nothing running, but " + String.concat "; " rs
-        | running -> $"""still running: %s{String.concat ", " running}"""
-
-    let logRunningPlugins () =
-        let now = System.DateTime.UtcNow
-
-        if (now - lastLogTime).TotalSeconds >= 10.0 then
-            lastLogTime <- now
-
-            // "still running: X" is progress, which is what someone watching a
-            // check wants, so it stays at info. The "nothing running, but ..."
-            // breakdown is a DIAGNOSTIC at debug: a healthy run emits it for
-            // minutes at a stretch while a plugin drains a large FileChecked
-            // backlog, and it is not the wedge signature (a dead agent is
-            // identified by `FaultedPlugins`). It is still printed in full where it
-            // decides something — the timeout message and the wedge failure below.
-            //
-            // `Logging.debug` takes an ALREADY-BUILT string, so guard the debug arm
-            // on the level: at the default Info level the whole detail would
-            // otherwise be computed every 10s and thrown away — a status
-            // round-trip, an activity snapshot per running plugin, and in the
-            // all-legs-satisfied case a reflection-based `%A` dump of every status.
-            if anyRunning () then
-                Logging.info "wait" (formatTimeoutDetail ())
-            elif Logging.isEnabled Logging.LogLevel.Debug then
-                Logging.debug "wait" (formatTimeoutDetail ())
-
-    let isQuiescent () =
-        System.DateTime.UtcNow - host.LastActivityAt()
-        >= waitForAllTerminalQuiescenceWindow
-
-    let allPluginsAdvancedToTerminal () =
-        let statuses = host.GetAllStatuses()
-        let currentGens = host.WorkCycleGenerations()
-
-        not statuses.IsEmpty
-        // Even when every plugin has reached terminal AND its generation has
-        // advanced past the snapshot, a downstream plugin can still have an
-        // event queued in its mailbox (or be inside a handler that hasn'''t yet
-        // returned). The BuildCompleted -> TestPrune.PendingRerun -> Running
-        // edge is the canonical case: BuildCompleted is dispatched
-        // (inflight=1) while TestPrune is still showing Completed from the
-        // prior FileChecked cycle. Without this gate the wait would resolve
-        // in that window.
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun name s ->
-               match s with
-               | Completed _
-               | Failed _ ->
-                   let snap = generationOf name snapshotGenerations
-                   let cur = generationOf name currentGens
-                   // Plugin must have completed a cycle DURING this wait.
-                   // For plugins already terminal at snapshot with the same
-                   // generation, that means no work happened — fall back to
-                   // quiescence in the caller.
-                   cur > snap
-               | _ -> false)
-
-    let allPluginsAtRest () =
-        // Conservative quiescence-based completion: no plugin is Running, no
-        // plugin has events still inflight (queued or being processed by its
-        // mailbox), and no host-level activity has happened in the quiescence
-        // window. Together these prove there's no work in flight that we could
-        // miss by returning now.
-        let statuses = host.GetAllStatuses()
-
-        not statuses.IsEmpty
-        && not (host.AnyPluginBusy())
-        && statuses
-           |> Map.forall (fun _ s ->
-               match s with
-               | Running _ -> false
-               | _ -> true)
-        // Verdict guard: on the WaitForComplete path at least ONE plugin must have
-        // reached a real terminal state. An all-Idle host is not at rest for
-        // verdict purposes — see `requireVerdict`.
-        && (not requireVerdict
-            || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
-        && isQuiescent ()
-
-    // Wedge detection state: how much work the host had FINISHED when we last
-    // saw progress, and when that was.
-    //
-    // Keyed on progress, NOT on busy-set identity: one plugin draining a long
-    // `FileChecked` backlog is busy continuously with nothing Running, and the busy
-    // set stays exactly `["test-prune"]` for the whole drain, so a clock keyed on
-    // that set never resets and fires on a healthy check of a large repo (observed:
-    // three uninterrupted minutes of it on a green run). `CompletedDispatches` moves
-    // on every event a plugin finishes, so a drain can never look stalled and a
-    // stopped agent always does.
+    let started = System.Diagnostics.Stopwatch.StartNew()
     let mutable lastProgress = -1L
-    let mutable lastProgressAt = System.DateTime.UtcNow
-
-    let checkForWedgedPlugin () =
-        // A supervised operation can fail without its executor dying. Retain
-        // that failure boundary while naming the actual failed work.
-        match host.FailedOperations() with
-        | (name, failure) :: _ ->
-            raise (
-                System.TimeoutException($"WaitForComplete: owned operation '{name}' failed: {failure.Message}", failure)
-            )
-        | [] -> ()
-
-        // A plugin whose message loop died reports work in flight forever, so
-        // waiting on it can only time out. This is the cheapest check and the only
-        // certain one — no threshold, no inference from silence. Everything below
-        // is the heuristic backstop for a stall nobody reported.
-        match host.FaultedPlugins() with
-        | (name, ex) :: _ ->
-            raise (
-                System.TimeoutException(
-                    $"WaitForComplete: plugin '%s{name}' is DEAD — its message loop crashed, so it will report work in flight forever and this wait can never resolve. "
-                    + $"The crash: %s{ex.Message}. "
-                    + "This is a bug in fshw, not in the tree being checked. See logs/daemon.log for the full stack, then `fshw stop` to reclaim the daemon."
-                )
-            )
-        | [] ->
-
-            // Cheapest test first, and the one that is almost always false.
-            // `AnyPluginBusy` is N volatile reads with short-circuiting and no
-            // allocation; everything below it costs a blocking round-trip to the
-            // status agent, and this runs 20x a second for a wait designed to last
-            // up to an hour (~72,000 round-trips, each copying every running
-            // plugin's activity tail).
-            let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
-
-            let progress = host.CompletedDispatches()
-
-            if progress <> lastProgress then
-                lastProgress <- progress
-                lastProgressAt <- System.DateTime.UtcNow
-
-            // Only meaningful when NOTHING is Running: a busy plugin that is also
-            // Running is simply working. `anyRunning` is checked LAST because it is
-            // the dearest of the three and, given no progress for the threshold, the
-            // rarest to change the answer.
-            if
-                not busy.IsEmpty
-                && System.DateTime.UtcNow - lastProgressAt >= stallThreshold
-                && not (anyRunning ())
-            then
-                let joined = String.concat ", " busy
-
-                raise (
-                    System.TimeoutException(
-                        $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %s{formatElapsed stallThreshold} with nothing Running and no event finishing anywhere in the host. "
-                        + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
-                        + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
-                    )
-                )
+    let mutable lastProgressAt = TimeSpan.Zero
+    let mutable lastLogAt = TimeSpan.Zero
 
     let rec loop () =
         async {
-            // Catches the race between cancellation and the first Async.Sleep —
-            // see waitForAllTerminal's doc-comment for the full contract.
             if ct.IsCancellationRequested then
                 raise (System.OperationCanceledException(daemonShuttingDownMessage, ct))
 
-            checkForWedgedPlugin ()
+            let snapshot = host.WorkSnapshot
 
-            if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
-                let detail = formatTimeoutDetail ()
+            match snapshot.Faults with
+            | (name, failure) :: _ ->
+                let kind = if snapshot.ExecutorFaults.IsEmpty then "failed" else "DEAD"
+                raise (TimeoutException($"WaitForComplete: owned work '{name}' {kind}: {failure.Message}", failure))
+            | [] -> ()
 
-                raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
+            if snapshot.CompletedEvents <> lastProgress then
+                lastProgress <- snapshot.CompletedEvents
+                lastProgressAt <- started.Elapsed
 
-            // Two satisfaction paths:
-            //   1. Every plugin started a new cycle since the snapshot AND has
-            //      reached terminal — clearly all the work triggered while we
-            //      were waiting has completed.
-            //   2. No plugin is Running, no plugin has inflight events, and the
-            //      host has been quiet for the quiescence window. This handles
-            //      plugins that legitimately have nothing to do this cycle, and
-            //      bounds the wait when nothing is happening.
-            if allPluginsAdvancedToTerminal () || allPluginsAtRest () then
+            // A finite recovery bound remains for callbacks which never finish.
+            // Reported Running is diagnostic context for this stall classification,
+            // never authority for successfully completing the wait.
+            if snapshot.IsBusy && started.Elapsed - lastProgressAt >= stallThreshold then
+                let hasRunningReport =
+                    host.GetAllStatuses()
+                    |> Map.exists (fun _ status -> match status with Running _ -> true | _ -> false)
+
+                if not hasRunningReport then
+                    let names = String.concat ", " snapshot.BusyNames
+                    raise (TimeoutException($"WaitForComplete: owned work WEDGED — {names}; no completion for {formatElapsed stallThreshold}"))
+
+            let evidence =
+                match snapshot.ProjectModel with
+                | ProjectModel.Observation.Available model ->
+                    snapshot.Evidence |> List.filter (fun proof -> proof.Generation = model.Generation)
+                | _ -> []
+
+            let satisfied =
+                if snapshot.IsBusy then
+                    false
+                else
+                    match purpose with
+                    | WaitPurpose.Settle -> true
+                    | WaitPurpose.Evidence ->
+                        let refusals = evidence |> List.collect (fun proof -> proof.FailureReasons)
+                        if not refusals.IsEmpty then
+                            raise (InvalidOperationException("WaitForComplete: verification refused — " + String.concat "; " refusals))
+                        not evidence.IsEmpty
+
+            if satisfied then
                 return ()
             else
-                logRunningPlugins ()
+                let detail () =
+                    if snapshot.IsBusy then
+                        "owned work remains: " + String.concat ", " snapshot.BusyNames
+                    else
+                        "no earned verdict for the current completed project model"
+
+                if timeout <> TimeSpan.MaxValue && started.Elapsed >= timeout then
+                    raise (TimeoutException($"WaitForComplete timed out after {timeout} — {detail ()}"))
+
+                if started.Elapsed - lastLogAt >= TimeSpan.FromSeconds 10.0 then
+                    lastLogAt <- started.Elapsed
+                    Logging.info "daemon" ("waiting: " + detail ())
+
                 do! Async.Sleep 50
                 return! loop ()
         }
 
     Async.StartAsTask(loop (), cancellationToken = ct)
 
-/// Settling wait that tolerates an all-Idle host (no plugin needed work this
-/// cycle). This is the original `waitForAllTerminal` behavior, preserved for the
-/// in-process `RunOnce`/scan path and every existing caller — it must never hang
-/// on a legitimately never-run plugin. Defers to `waitForAllTerminalCore` with
-/// `requireVerdict=false`.
+/// Wait for all admitted work to settle, including callback completion and cleanup.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout false waitForAllTerminalBusyStallThreshold ct
+    waitForAllTerminalCore host timeout WaitPurpose.Settle waitForAllTerminalBusyStallThreshold ct
 
-/// Verdict-bearing wait used ONLY by the `WaitForComplete` RPC path: resolves
-/// only once at least one plugin has produced a real verdict (Completed/Failed),
-/// so a cold/never-ran daemon does not report a vacuous clean. Defers to
-/// `waitForAllTerminalCore` with `requireVerdict=true`.
+/// Wait for a committed receipt earned by actual outcomes for the current model.
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
-    waitForAllTerminalCore host timeout true waitForAllTerminalBusyStallThreshold ct
+    waitForAllTerminalCore host timeout WaitPurpose.Evidence waitForAllTerminalBusyStallThreshold ct
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by
@@ -1678,7 +1467,8 @@ type Daemon
     // the accessor's contract ("dependents, excluding self") holds.
     do
         host.SetProjectGraph
-            { GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
+            { ObserveModel = fun () -> host.WorkStore.Snapshot.ProjectModel
+              GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
               GetTransitiveDependentProjects =
                 fun fsproj ->
                     let self = AbsProjectPath.create fsproj
@@ -1716,6 +1506,8 @@ type Daemon
     /// attempt has completed or one is currently between clear and completion.
     member internal _.DiscoverySnapshot() : DiscoverySnapshot option = discovery.Completed
 
+    member internal _.ProjectModelObservation() : ProjectModel.Observation = discovery.Observation
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -1739,8 +1531,14 @@ type Daemon
             return
                 { Generation = generation
                   Failure =
-                    completed
-                    |> Option.bind (fun snapshot -> totalDiscoveryFailure snapshot.Discovered snapshot.Loaded) }
+                    match completed with
+                    | None -> ProjectModel.failure ProjectModel.Observation.Unobserved
+                    | Some snapshot ->
+                        // Keep the established loader-failure diagnosis; all later
+                        // zero-model stages have their own typed observation.
+                        match totalDiscoveryFailure snapshot.Discovered snapshot.Loaded with
+                        | Some reason -> Some reason
+                        | None -> ProjectModel.ofCompleted generation snapshot |> ProjectModel.failure }
         }
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
@@ -1823,7 +1621,7 @@ type Daemon
     /// to wait for a run that is already in flight.
     ///
     /// Tolerates an all-Idle host (plugins with no work this cycle) — it must never
-    /// hang on a legitimately never-run plugin (`requireVerdict=false`).
+    /// hang on a legitimately never-run plugin (settling observes owned work).
     member _.Settle() =
         waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
         |> Async.AwaitTask
@@ -1909,15 +1707,6 @@ type Daemon
                 // FormatScanStatus via the daemon-level `liveCoverage`.
                 let getUncheckedCount () = snd (liveCoverage ())
 
-                // Count of in-flight `WaitForComplete`/verdict waits (connected
-                // check clients blocked on the daemon's authoritative settle).
-                // Feeds the idle-exit `Busy` predicate below so the daemon is NEVER
-                // treated as idle while a client is waiting for a verdict — a
-                // client can be blocked on one even while every plugin is
-                // momentarily quiet, and idle-exit firing mid-wait drops it with a
-                // connection error instead of a verdict.
-                let activeVerdictWaits = ref 0
-
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
@@ -1947,27 +1736,14 @@ type Daemon
                                 linked.Cancel()
                                 return ()
                             }
-                      // requireVerdict=true: this is the WaitForComplete RPC
-                      // path — it must not report a vacuous clean on a cold /
-                      // never-ran daemon (block until a real verdict). Bracketed
-                      // with the `activeVerdictWaits` counter so an in-flight
-                      // client wait inhibits idle-exit (see `Busy` below); the
-                      // increment runs synchronously as the task is started and
-                      // the decrement is guaranteed by `finally` on every exit
-                      // (verdict, timeout, or shutdown cancellation).
                       WaitForAllTerminal =
                         fun timeout ->
                             waitForVerdictUnlessDiscoveryFailed
                                 this.WaitForDiscoveryAdmission
                                 (fun timeout ->
                                     task {
-                                        System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
-
-                                        try
-                                            return! waitForVerdict host timeout cts.Token
-                                        finally
-                                            System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents)
-                                            |> ignore
+                                        use _observer = host.ObserveWork()
+                                        return! waitForVerdict host timeout cts.Token
                                     })
                                 timeout
                       RerunPlugin = rerunPlugin
@@ -2031,7 +1807,7 @@ type Daemon
                                 fun () ->
                                     IdleExit.idleInhibitors
                                         (host.AnyPluginBusy())
-                                        (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                        host.WorkSnapshot.ObserverCount
                                         (ScanActivity.ScanLeases.inFlight scanLeases)
                               LastActivityAt = host.LastActivityAt
                               Shutdown = fun () -> cts.Cancel()
@@ -2062,7 +1838,7 @@ type Daemon
                             fun () ->
                                 Heartbeat.runActive
                                     (host.AnyPluginBusy())
-                                    (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
+                                    host.WorkSnapshot.ObserverCount
                                     (ScanActivity.ScanLeases.anyInFlight scanLeases)
                           Write = Heartbeat.writeTo repoRoot
                           Log = Logging.warn "heartbeat"
@@ -2308,7 +2084,25 @@ let private performScan
                 if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
                     lastFingerprint <- currentFingerprint
 
-            let registeredProjects = pipeline.GetRegisteredProjects()
+            // A fingerprint hit skips OUR discovery, not a concurrent writer's.
+            // Capture membership, dependency tiers and options together before that
+            // writer can clear any of them; never revisit the live graph mid-scan.
+            let! _, registeredProjects, registeredFiles, scanTiers =
+                ctx.Discovery.Capture(fun epoch ->
+                    let projects = pipeline.GetRegisteredProjects()
+                    let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
+                    let tiers =
+                        graph.GetParallelTiers()
+                        |> List.map (
+                            List.map (fun project ->
+                                project,
+                                graph.GetSourceFiles(project) |> List.map AbsFilePath.value,
+                                pipeline.GetProjectOptions(AbsProjectPath.value project))
+                        )
+
+                    epoch, projects, files, tiers)
+
 
             // AUTOMATION-300 — PRUNE VANISHED PATHS BEFORE SCANNING.
             //
@@ -2325,8 +2119,6 @@ let private performScan
             // `.fsproj` byte-identical — a glob-matched file — never reaches it.
             // Checking existence here is the backstop that does not depend on how the
             // rename happened to touch the project files.
-            let registeredFiles = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
-
             let files, vanished = partitionVanished System.IO.File.Exists registeredFiles
 
             if not vanished.IsEmpty then
@@ -2382,7 +2174,7 @@ let private performScan
                 let filesToCheckSet = Set.ofList files
 
                 // Check files in parallel tiers based on project dependency graph
-                let tiers = graph.GetParallelTiers()
+                let tiers = scanTiers
 
                 // Bounded retry budget for cancelled/aborted/failed scan checks.
                 // The common case (a single processBatch race per file) converges
@@ -2398,19 +2190,15 @@ let private performScan
                     let tierThunks =
                         System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-                    for proj in tier do
+                    for proj, capturedFiles, capturedOptions in tier do
                         let projPath = AbsProjectPath.value proj
+                        let projFiles = capturedFiles |> List.filter filesToCheckSet.Contains
 
-                        let projFiles =
-                            graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+                        skippedCount <- skippedCount + (capturedFiles.Length - projFiles.Length)
 
                         // Deps-freshness gate — see `applyDepsGate`.
                         if applyDepsGate ctx.DepsGate host projPath then
-                            match pipeline.GetProjectOptions(projPath) with
+                            match capturedOptions with
                             | Some options ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
@@ -2418,7 +2206,9 @@ let private performScan
                             | None ->
                                 for file in projFiles do
                                     let absFile = AbsFilePath.create file
-                                    tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
+                                    // Missing captured options is missing evidence. Do
+                                    // not borrow a different epoch's live registration.
+                                    tierThunks[absFile] <- async { return None }
                         else
                             skippedCount <- skippedCount + projFiles.Length
 
