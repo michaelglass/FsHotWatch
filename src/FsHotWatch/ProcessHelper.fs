@@ -834,104 +834,107 @@ let runProcessTo
     // path where everything else about the child has gone wrong.
     let pid = proc.Id
 
-    // Incremental output capture via explicit stream pumps. The event API
-    // (`BeginOutputReadLine`) is not usable here: draining it requires the
-    // parameterless `WaitForExit()` (the timed overload does NOT flush the async
-    // handlers), which is the unbounded grandchild-pipe-wedging wait we must avoid.
-    // A chunk-at-a-time `Read` loop gives a Task handle we can bound-wait AND flips
-    // a latch on the FIRST byte — the liveness signal the launch deadline keys off
-    // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
-    let output = StringBuilder()
-    let outputLock = obj ()
-    let mutable sawOutput = 0
-    let mutable sinkBroken = false
-
-    // Fed from inside `outputLock`, so the sink sees the chunks in the SAME order
-    // the in-memory capture does and the two pumps' writes are serialised against
-    // each other — a caller's file and `ProcessOutput.text` can never disagree
-    // about what the child said or in what order.
-    let emit (chunk: string) =
-        match sink with
-        | None -> ()
-        | Some write when not sinkBroken ->
-            try
-                write chunk
-            with ex ->
-                sinkBroken <- true
-
-                Logging.warn
-                    "process"
-                    $"output sink for `%s{command}` failed and is now DISABLED for this run: \
-                      %s{ex.GetType().Name}: %s{ex.Message}. The in-memory capture is unaffected, but whatever \
-                      the sink was writing (a streamed run log) is now INCOMPLETE."
-        | Some _ -> ()
-
-    // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
-    //
-    // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
-    // and under a saturated pool — a `check` running the full suite in parallel,
-    // exactly when a spawn's output matters most — the reader may never run, the 2 s
-    // drain window expires having read zero bytes, and the child's output comes back
-    // as `""`: the clock measuring the POOL, not the process.
-    //
-    // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
-    // captured from it is all there ever was. See `pumpReachedEof`.
-    let pump (reader: IO.StreamReader) : Task<bool> =
-        Task.Factory.StartNew(
-            (fun () ->
-                let mutable failure = None
-
-                try
-                    let buf = Array.zeroCreate<char> 4096
-                    let mutable go = true
-
-                    while go do
-                        let n = reader.Read(buf, 0, buf.Length)
-
-                        if n = 0 then
-                            go <- false
-                        else
-                            Volatile.Write(&sawOutput, 1)
-                            let chunk = String(buf, 0, n)
-
-                            lock outputLock (fun () ->
-                                output.Append(chunk) |> ignore
-                                emit chunk)
-                with ex ->
-                    failure <- Some ex
-
-                pumpReachedEof failure),
-            TaskCreationOptions.LongRunning
-        )
-
-    let stdoutTask = pump proc.StandardOutput
-    let stderrTask = pump proc.StandardError
-
-    let drainedOutput () =
-        lock outputLock (fun () -> output.ToString().Trim())
-
-    // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
-    // instant it exits (returns in ms); only a grandchild holding the pipe makes
-    // this block, and then only for the window. An expired window rides out on the
-    // value as `DrainTimedOut` so it cannot be mistaken for a child that said
-    // nothing.
-    let drainPumps () : ProcessOutput =
-        let waitReturned =
-            Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
-
-        classifyDrain
-            waitReturned
-            (fun () -> stdoutTask.Result)
-            (fun () -> stderrTask.Result)
-            (drainedOutput ())
-            PostExitDrainWindow
-
-    let pollMs = 250
-
     let mutable primaryFailure: exn option = None
 
     try
         try
+            // Incremental output capture via explicit stream pumps. The event API
+            // (`BeginOutputReadLine`) is not usable here: draining it requires the
+            // parameterless `WaitForExit()` (the timed overload does NOT flush the async
+            // handlers), which is the unbounded grandchild-pipe-wedging wait we must avoid.
+            // A chunk-at-a-time `Read` loop gives a Task handle we can bound-wait AND flips
+            // a latch on the FIRST byte — the liveness signal the launch deadline keys off
+            // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
+            let output = StringBuilder()
+            let outputLock = obj ()
+            let mutable sawOutput = 0
+            let mutable sinkBroken = false
+
+            // Fed from inside `outputLock`, so the sink sees the chunks in the SAME order
+            // the in-memory capture does and the two pumps' writes are serialised against
+            // each other — a caller's file and `ProcessOutput.text` can never disagree
+            // about what the child said or in what order.
+            let emit (chunk: string) =
+                match sink with
+                | None -> ()
+                | Some write when not sinkBroken ->
+                    try
+                        write chunk
+                    with ex ->
+                        sinkBroken <- true
+
+                        Logging.warn
+                            "process"
+                            $"output sink for `%s{command}` failed and is now DISABLED for this run: \
+                              %s{ex.GetType().Name}: %s{ex.Message}. The in-memory capture is unaffected, but whatever \
+                              the sink was writing (a streamed run log) is now INCOMPLETE."
+                | Some _ -> ()
+
+            // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
+            //
+            // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
+            // and under a saturated pool — a `check` running the full suite in parallel,
+            // exactly when a spawn's output matters most — the reader may never run, the 2 s
+            // drain window expires having read zero bytes, and the child's output comes back
+            // as `""`: the clock measuring the POOL, not the process.
+            //
+            // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
+            // captured from it is all there ever was. See `pumpReachedEof`.
+            let pump (reader: IO.StreamReader) : Task<bool> =
+                Task.Factory.StartNew(
+                    (fun () ->
+                        let mutable failure = None
+
+                        try
+                            let buf = Array.zeroCreate<char> 4096
+                            let mutable go = true
+
+                            while go do
+                                let n = reader.Read(buf, 0, buf.Length)
+
+                                if n = 0 then
+                                    go <- false
+                                else
+                                    Volatile.Write(&sawOutput, 1)
+                                    let chunk = String(buf, 0, n)
+
+                                    lock outputLock (fun () ->
+                                        output.Append(chunk) |> ignore
+                                        emit chunk)
+                        with ex ->
+                            failure <- Some ex
+
+                        pumpReachedEof failure),
+                    TaskCreationOptions.LongRunning
+                )
+
+            let stdoutTask = pump proc.StandardOutput
+            let stderrTask = pump proc.StandardError
+
+            let drainedOutput () =
+                lock outputLock (fun () -> output.ToString().Trim())
+
+            // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
+            // instant it exits (returns in ms); only a grandchild holding the pipe makes
+            // this block, and then only for the window. An expired window rides out on the
+            // value as `DrainTimedOut` so it cannot be mistaken for a child that said
+            // nothing.
+            let drainPumps () : ProcessOutput =
+                let waitReturned =
+                    Task.WaitAll(
+                        [| stdoutTask :> Task; stderrTask :> Task |],
+                        int PostExitDrainWindow.TotalMilliseconds
+                    )
+
+                classifyDrain
+                    waitReturned
+                    (fun () -> stdoutTask.Result)
+                    (fun () -> stderrTask.Result)
+                    (drainedOutput ())
+                    PostExitDrainWindow
+
+            let pollMs = 250
+
             // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
             // the instant the child exits (so completion is observed promptly) but
             // caps at `pollMs` so the launch/overall deadlines are still checked
