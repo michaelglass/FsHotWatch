@@ -190,3 +190,33 @@ let ``a Failed run's history summary comes from the verdict, not a side-channel`
     let r = List.head (host.GetHistory("reporter"))
     test <@ r.Summary = Some "1 passed, 2 failed in 3 projects" @>
     test <@ r.Elapsed = TimeSpan.FromSeconds 9.0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``pipeline activity sink updates its own subtask without changing another reporter`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let pipeline = host.ActivitySinkFor("fcs")
+    let other = host.ActivitySinkFor("test-prune")
+
+    try
+        pipeline.StartSubtask("parse", "reading source")
+        other.StartSubtask("parse", "reading test symbols")
+        let started = (host.GetSubtasks("fcs") |> List.exactlyOne).StartedAt
+        pipeline.UpdateSubtask("parse", "checking source")
+        pipeline.Log "parsed input"
+
+        let current = host.GetActivitySnapshot("fcs")
+        let subtask = current.Subtasks |> List.exactlyOne
+        test <@ subtask.Key = "parse" @>
+        test <@ subtask.Label = "checking source" @>
+        test <@ subtask.StartedAt = started @>
+        test <@ current.ActivityTail = [ "parsed input" ] @>
+        test <@ (host.GetSubtasks("test-prune") |> List.exactlyOne).Label = "reading test symbols" @>
+        test <@ host.GetActivityTail("test-prune") = [] @>
+
+        pipeline.EndSubtask("parse")
+        test <@ host.GetSubtasks("fcs") = [] @>
+        test <@ host.GetSubtasks("test-prune") |> List.length = 1 @>
+        other.EndSubtask("parse")
+        test <@ host.GetSubtasks("test-prune") = [] @>
+    finally
+        host.Teardown()
