@@ -790,8 +790,12 @@ let runProcessTo
     let launchDeadline = bounds.LaunchDeadline
     let psi = makeChildProcessStartInfo command args workDir env
 
-    let assemblyDirectory = IO.Path.GetDirectoryName(typeof<ProcessBounds>.Assembly.Location)
-    let localHost = IO.Path.Combine(assemblyDirectory, "fshw-process-host", "FsHotWatch.ProcessHost.dll")
+    let assemblyDirectory =
+        IO.Path.GetDirectoryName(typeof<ProcessBounds>.Assembly.Location)
+
+    let localHost =
+        IO.Path.Combine(assemblyDirectory, "fshw-process-host", "FsHotWatch.ProcessHost.dll")
+
     let packageHost =
         IO.Path.GetFullPath(
             IO.Path.Combine(assemblyDirectory, "..", "..", "tools", "net10.0", "FsHotWatch.ProcessHost.dll")
@@ -801,7 +805,7 @@ let runProcessTo
 
     let mutable registeredChild: FsHotWatch.ProcessOwnership.OwnedChild option = None
 
-    use owned =
+    let owned =
         try
             FsHotWatch.ProcessOwnership.OwnedChild.Start(
                 psi,
@@ -810,12 +814,15 @@ let runProcessTo
                     registeredChild <- Some child
                     ProcessRegistry.trackOwned child.Process child.Terminate
             )
-        with _ ->
+        with admissionError ->
             match registeredChild with
             | Some child ->
-                child.Terminate()
-                ProcessRegistry.untrack child.Process
-                child.Dispose()
+                try
+                    child.Terminate()
+                    ProcessRegistry.untrack child.Process
+                    child.Dispose()
+                with cleanupError ->
+                    raise (AggregateException("Process admission and cleanup failed.", admissionError, cleanupError))
             | None -> ()
 
             reraise ()
@@ -921,66 +928,77 @@ let runProcessTo
 
     let pollMs = 250
 
+    let mutable primaryFailure: exn option = None
+
     try
-        // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
-        // the instant the child exits (so completion is observed promptly) but
-        // caps at `pollMs` so the launch/overall deadlines are still checked
-        // regularly. `observe` reads the independent liveness handle
-        // (`HasExited`) — the poll that closes the machine-sleep hole where a
-        // single blocking wait never returned.
-        let observe () =
-            proc.HasExited, (Volatile.Read &sawOutput = 1)
+        try
+            // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
+            // the instant the child exits (so completion is observed promptly) but
+            // caps at `pollMs` so the launch/overall deadlines are still checked
+            // regularly. `observe` reads the independent liveness handle
+            // (`HasExited`) — the poll that closes the machine-sleep hole where a
+            // single blocking wait never returned.
+            let observe () =
+                proc.HasExited, (Volatile.Read &sawOutput = 1)
 
-        let sleep ms = proc.WaitForExit(ms: int) |> ignore
+            let sleep ms = proc.WaitForExit(ms: int) |> ignore
 
-        let outcome =
-            launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
+            let outcome =
+                launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
 
-        // A killed tree still needs draining so partial output is reported. The
-        // kill's OUTCOME is returned, never discarded: a tree we could not tear down
-        // is still running. The policy — including the teardown budget that keeps a
-        // blocked kill from wedging the whole run — lives in `killTreeWith`.
-        let killTree () : KillOutcome =
-            killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
-                owned.Terminate())
+            // A killed tree still needs draining so partial output is reported. The
+            // kill's OUTCOME is returned, never discarded: a tree we could not tear down
+            // is still running. The policy — including the teardown budget that keeps a
+            // blocked kill from wedging the whole run — lives in `killTreeWith`.
+            let killTree () : KillOutcome =
+                killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
+                    owned.Terminate())
 
-        match outcome with
-        | LaunchOutcome.Exited ->
-            let out = drainPumps ()
+            match outcome with
+            | LaunchOutcome.Exited ->
+                let out = drainPumps ()
 
-            let exitCode = owned.TargetExitCode
+                let exitCode = owned.TargetExitCode
 
-            if exitCode = 0 then
-                Succeeded out
-            else
-                Failed(exitCode, out)
-        | LaunchOutcome.TimedOut ->
-            let killed = killTree ()
-            TimedOut(timeout, drainPumps (), killed)
-        | LaunchOutcome.Stalled ->
-            // The exception below is the diagnostic; a kill that FAILED here is
-            // still logged by `killTree` itself, so the leaked tree is reported even
-            // though this arm throws.
-            killTree () |> ignore
+                if exitCode = 0 then
+                    Succeeded out
+                else
+                    Failed(exitCode, out)
+            | LaunchOutcome.TimedOut ->
+                let killed = killTree ()
+                TimedOut(timeout, drainPumps (), killed)
+            | LaunchOutcome.Stalled ->
+                // The exception below is the diagnostic; a kill that FAILED here is
+                // still logged by `killTree` itself, so the leaked tree is reported even
+                // though this arm throws.
+                killTree () |> ignore
 
-            // A stall is DEFINED as "not one byte within the launch deadline", so
-            // there is no capture to report: this runs only to let the pumps close
-            // their pipes, and the (necessarily empty) result is discarded.
-            drainPumps () |> ignore
+                // A stall is DEFINED as "not one byte within the launch deadline", so
+                // there is no capture to report: this runs only to let the pumps close
+                // their pipes, and the (necessarily empty) result is discarded.
+                drainPumps () |> ignore
 
-            raise (
-                LaunchStalledException(
-                    $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                raise (
+                    LaunchStalledException(
+                        $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                    )
                 )
-            )
+        with failure ->
+            primaryFailure <- Some failure
+            reraise ()
     finally
         try
             owned.Terminate()
-        with failure ->
-            ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (failure.ToString())
-            reraise ()
+        with cleanupError ->
+            ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (cleanupError.ToString())
+
+            match primaryFailure with
+            | Some failure ->
+                raise (AggregateException("Process operation and containment cleanup failed.", failure, cleanupError))
+            | None -> reraise ()
 
         ProcessRegistry.untrack proc
+        owned.Dispose()
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
 /// caller that only wants the child's verdict and its capture should use.
