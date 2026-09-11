@@ -799,12 +799,26 @@ let runProcessTo
 
     let hostPath = if IO.File.Exists localHost then localHost else packageHost
 
+    let mutable registeredChild: FsHotWatch.ProcessOwnership.OwnedChild option = None
+
     use owned =
-        FsHotWatch.ProcessOwnership.OwnedChild.Start(
-            psi,
-            hostPath,
-            fun child -> ProcessRegistry.trackOwned child.Process child.Terminate
-        )
+        try
+            FsHotWatch.ProcessOwnership.OwnedChild.Start(
+                psi,
+                hostPath,
+                fun child ->
+                    registeredChild <- Some child
+                    ProcessRegistry.trackOwned child.Process child.Terminate
+            )
+        with _ ->
+            match registeredChild with
+            | Some child ->
+                child.Terminate()
+                ProcessRegistry.untrack child.Process
+                child.Dispose()
+            | None -> ()
+
+            reraise ()
 
     let proc = owned.Process
 
