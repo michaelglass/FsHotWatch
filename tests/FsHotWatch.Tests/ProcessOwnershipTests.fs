@@ -642,11 +642,13 @@ let ``ownership failure diagnostics omit message and payload while retaining ori
     let original = InvalidOperationException("secret-argument secret-environment secret-payload")
     original.Data["command"] <- "secret-command"
     let mutable diagnostic = ""
+    let mutable throwingStack = ""
     let observed =
         Assert.Throws<InvalidOperationException>(fun () ->
             try
                 raise original
             with error ->
+                throwingStack <- error.StackTrace
                 ChildProtocol.reportFailureWith
                     (fun text -> diagnostic <- text)
                     "exit-receipt"
@@ -662,7 +664,8 @@ let ``ownership failure diagnostics omit message and payload while retaining ori
     Assert.Contains("helperPid=123", diagnostic)
     Assert.Contains("receipt=WaitingForActivation", diagnostic)
     Assert.Contains("exceptionType=System.InvalidOperationException", diagnostic)
-    Assert.Contains(original.StackTrace, diagnostic)
+    Assert.False(String.IsNullOrEmpty throwingStack)
+    Assert.Contains(throwingStack, diagnostic)
     Assert.DoesNotContain("secret-", diagnostic)
 
 [<Fact>]
