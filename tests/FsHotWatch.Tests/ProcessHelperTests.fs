@@ -1646,8 +1646,8 @@ type private HeldProcessCallerContext() =
 
 [<Fact(Timeout = 40000)>]
 let ``runProcess preserves target exit and output without pumping the caller context`` () =
-    // Hypothesis: the target receipt captures the synchronous caller's context.
-    // This proves that scheduling dependency, not the cause of a private daemon timeout.
+    // Synchronous process completion must not require pumping the caller's context.
+    // Like the other real-process controls in this class, the target uses a Unix shell.
     // F# task continuations use SynchronizationContext.Current when present:
     // https://learn.microsoft.com/en-us/dotnet/fsharp/language-reference/task-expressions#background-tasks
     withTempDir "process-caller-context" (fun root ->
@@ -1675,7 +1675,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
                         let outcome =
                             runProcessTo
                                 (Some sink)
-                                "/bin/sh"
+                                "sh"
                                 "-c \"echo target-ready; i=0; while [ ! -f release-target ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -f release-target ] || exit 91; echo target-finished; exit 7\""
                                 root
                                 []
