@@ -72,6 +72,7 @@ let private runSummary (lastRun: RunRecord) : string =
     | FailedRun err, None -> summariseError err
     | TimedOut reason, None -> summariseError reason
     | VerifiedNothing detail, None -> RunSummary.nothingVerified detail
+    | NotEvaluated reason, None -> reason
 
 let private latestActivity (tail: string list) =
     match tail |> List.tryLast with
@@ -125,6 +126,7 @@ let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStat
     | StatusView.Completed _ when
         DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
         || ParsedPluginStatus.verifiedNothing parsed
+        || ParsedPluginStatus.notEvaluated parsed
         ->
         Glyph.warn
     | StatusView.Completed _ -> Glyph.check
@@ -494,6 +496,8 @@ module private Agent =
                     $"timed out: %s{summary}"
 
             $"%s{name}: %s{tokenOf state} summary=\"%s{display}\""
+        | State.NotEvaluated reason ->
+            $"%s{name}: %s{tokenOf state} summary=\"%s{escapeSummary reason}\""
         | State.Fail
         | State.Warn ->
             match summaryFor parsed |> Option.map escapeSummary with

@@ -3103,3 +3103,55 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
     Assert.True(reply.Task.IsCompletedSuccessfully, "the original owner request must have completed")
     Assert.True((handler.CacheKey.Value forced event).IsNone)
     Assert.Equal<ContentHash option>(original, handler.CacheKey.Value handler.Init event)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``a dependency decline revokes prior satisfaction and preserves pending build work`` () =
+    withTempDir "a481-build-dependency" (fun root ->
+        let input = System.IO.Path.Combine(root, "Input.fs")
+        let marker = System.IO.Path.Combine(root, "build-count")
+        System.IO.File.WriteAllText(input, "module Input\nlet value = 1\n")
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(root, "build-probe.sh"),
+            "printf x >> build-count\necho built\n"
+        )
+
+        let host = PluginHost(Unchecked.defaultof<_>, root)
+
+        let handler =
+            BuildPlugin.create "sh" "build-probe.sh" [] (ProjectGraph()) [] None [ "setup" ] (Some 5)
+
+        let snapshot = registerBuildSnapshot host handler
+
+        let settle () =
+            Assert.True(
+                waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 5000,
+                "the real owner must publish its event"
+            )
+
+        host.EmitCommandCompleted
+            { Name = "setup"
+              Outcome = CommandSucceeded "setup evaluated" }
+
+        settle ()
+        Assert.Contains("setup", (snapshot ()).SatisfiedDeps)
+
+        host.EmitCommandCompleted
+            { Name = "setup"
+              Outcome = CommandNotEvaluated "inputs unavailable" }
+
+        settle ()
+        Assert.DoesNotContain("setup", (snapshot ()).SatisfiedDeps)
+        host.EmitFileChanged(SourceChanged [ input ])
+        settle ()
+        Assert.Single((snapshot ()).PendingFiles) |> ignore
+        Assert.False(System.IO.File.Exists marker, "declined dependency must not admit a build")
+
+        host.EmitCommandCompleted
+            { Name = "setup"
+              Outcome = CommandSucceeded "setup evaluated again" }
+
+        settle ()
+        Assert.Empty((snapshot ()).PendingFiles)
+        Assert.Equal("x", System.IO.File.ReadAllText marker))

@@ -1113,7 +1113,8 @@ let ``AUTOMATION-339: a Completed plugin whose run VERIFIED NOTHING is not a fai
             Some
                 { StartedAt = DateTime.UtcNow
                   Elapsed = TimeSpan.Zero
-                  Outcome = FsHotWatch.Events.VerifiedNothing "0 test project(s) ran, no test executed"
+                  Outcome = FsHotWatch.Events.RunOutcome.VerifiedNothing "0 test project(s) ran, no test executed"
+                  Provenance = FsHotWatch.Events.RunProvenance.Observed
                   Summary = Some "NOTHING VERIFIED: 0 test project(s) ran, no test executed"
                   ActivityTail = [] }
           Diagnostics = DiagnosticCounts.empty }

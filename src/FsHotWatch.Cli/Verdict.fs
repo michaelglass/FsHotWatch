@@ -72,6 +72,7 @@ module Invocation =
 [<RequireQualifiedAccess>]
 type PluginOutcome =
     | Ok
+    | NotEvaluated of reason: string
     | Warn
     | Fail
     | TimedOut
@@ -86,6 +87,7 @@ module PluginOutcome =
     let token (o: PluginOutcome) : string =
         match o with
         | PluginOutcome.Ok -> "ok"
+        | PluginOutcome.NotEvaluated _ -> "not-evaluated"
         | PluginOutcome.Warn -> "warn"
         | PluginOutcome.Fail -> "fail"
         | PluginOutcome.TimedOut -> "timed-out"
@@ -104,6 +106,7 @@ module PluginOutcome =
         | PluginOutcome.TimedOut
         | PluginOutcome.Wedged -> true
         | PluginOutcome.Ok
+        | PluginOutcome.NotEvaluated _
         | PluginOutcome.Warn
         | PluginOutcome.Running -> false
 
@@ -139,6 +142,11 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         | PluginOutcome.Ok -> PluginOutcome.Warn
         | other -> other
 
+    let declinedUnlessDiagnosed reason =
+        match okOrDiag () with
+        | PluginOutcome.Ok -> PluginOutcome.NotEvaluated reason
+        | other -> other
+
     let timedOutLastRun () =
         match parsed.LastRun with
         | Some r ->
@@ -166,9 +174,12 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
     //     executed nothing, and an absence of evidence is not a pass.
     // Either way a clean ledger downgrades to `warn`; failing diagnostics still take
     // precedence, so nothing here can hide a red.
-    | StatusView.Completed _ when parsed.LastRun.IsNone || ParsedPluginStatus.verifiedNothing parsed ->
-        Some(warnUnlessDiagnosed ())
-    | StatusView.Completed _ -> Some(okOrDiag ())
+    | StatusView.Completed _ ->
+        match parsed.LastRun with
+        | None
+        | Some { Outcome = VerifiedNothing _ } -> Some(warnUnlessDiagnosed ())
+        | Some { Outcome = NotEvaluated reason } -> Some(declinedUnlessDiagnosed reason)
+        | Some _ -> Some(okOrDiag ())
     | StatusView.Idle ->
         parsed.LastRun
         |> Option.map (fun r ->
@@ -178,6 +189,7 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
             // The same rule as the `Completed` arm: an idle plugin whose last run
             // verified nothing has no pass to report either.
             | VerifiedNothing _ -> warnUnlessDiagnosed ()
+            | NotEvaluated reason -> declinedUnlessDiagnosed reason
             | CompletedRun -> okOrDiag ())
 
 /// One plugin's line in the verdict.
@@ -188,6 +200,7 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
 type PluginVerdict =
     { Name: string
       Outcome: PluginOutcome
+      Provenance: RunProvenance
       ElapsedMs: int64 option
       Summary: string option }
 
@@ -296,11 +309,7 @@ module TimingSpan =
         (name: string)
         (run: RunRecord)
         : TimingSpan option =
-        let cached =
-            run.Summary
-            |> Option.exists (fun summary -> summary.EndsWith(" (cached)", StringComparison.Ordinal))
-
-        if cached then
+        if run.Provenance <> RunProvenance.Observed then
             None
         else
             clipped invocation observedElapsedMs ("plugin." + name) run.StartedAt run.Elapsed run.Summary
@@ -1468,6 +1477,18 @@ let private validate (v: Verdict) : Result<Verdict, string> =
         | Incomplete _ -> Ok v
         | Red when isUnexplainedRed v -> Error $"a RED verdict is unexplained — %s{UnexplainedRedReason}."
         | Red -> Ok v
+        | Green _ when
+            (v.Command = Confirm
+             || (match v.Scope with
+                 | FullSuite _ -> true
+                 | _ -> false))
+            && (v.Plugins
+                |> List.exists (fun p ->
+                    match p.Outcome with
+                    | PluginOutcome.NotEvaluated _ -> true
+                    | _ -> false))
+            ->
+            Error "a full GREEN verdict contains a gate that explicitly declined evaluation"
         | Green _ ->
             match v.Plugins |> List.filter (fun p -> PluginOutcome.isFailing p.Outcome) with
             | [] -> Ok v
@@ -1840,6 +1861,15 @@ let serialize (v: Verdict) : string =
             [ for p in v.Plugins ->
                   {| name = p.Name
                      outcome = PluginOutcome.token p.Outcome
+                     replayed =
+                      p.Provenance
+                      |> RunProvenance.replayed
+                      |> Option.map box
+                      |> Option.defaultValue null
+                     reason =
+                      (match p.Outcome with
+                       | PluginOutcome.NotEvaluated reason -> box reason
+                       | _ -> null)
                      elapsedMs =
                       (match p.ElapsedMs with
                        | Some ms -> box ms
@@ -2614,9 +2644,10 @@ let private parseCheckComparison (root: JsonElement) : CheckComparison =
 
 /// A plugin outcome token this build does not recognize is NOT dropped and NOT
 /// rounded to `Ok` — it becomes `Fail`. An unknown state is not a passing state.
-let private parsePluginOutcome (token: string option) : PluginOutcome =
+let private parsePluginOutcome (reason: string option) (token: string option) : PluginOutcome =
     match token with
     | Some "ok" -> PluginOutcome.Ok
+    | Some "not-evaluated" -> PluginOutcome.NotEvaluated(Option.defaultValue "evaluation was declined" reason)
     | Some "warn" -> PluginOutcome.Warn
     | Some "running" -> PluginOutcome.Running
     | Some "wedged" -> PluginOutcome.Wedged
@@ -2637,7 +2668,12 @@ let private parsePlugins (root: JsonElement) : Result<PluginVerdict list, string
                     | Some name ->
                         Ok(
                             { Name = name
-                              Outcome = parsePluginOutcome (tryString el "outcome")
+                              Outcome = parsePluginOutcome (tryString el "reason") (tryString el "outcome")
+                              Provenance =
+                                match el.TryGetProperty("replayed") with
+                                | true, value when value.ValueKind = JsonValueKind.True -> RunProvenance.Replayed
+                                | true, value when value.ValueKind = JsonValueKind.False -> RunProvenance.Observed
+                                | _ -> RunProvenance.Unknown
                               // Absent (or `null`) = NOT MEASURED. Never 0.
                               ElapsedMs = tryInt64 el "elapsedMs"
                               Summary = tryString el "summary" }
@@ -3238,6 +3274,10 @@ let pluginVerdicts
         |> Option.map (fun outcome ->
             { Name = name
               Outcome = outcome
+              Provenance =
+                parsed.LastRun
+                |> Option.map (fun r -> r.Provenance)
+                |> Option.defaultValue RunProvenance.Unknown
               // No `LastRun` (a plugin still Running, or a synthetic terminal from a
               // cache replay) means NO MEASUREMENT — not a zero-length run.
               ElapsedMs = parsed.LastRun |> Option.map (fun r -> int64 r.Elapsed.TotalMilliseconds)
@@ -3261,6 +3301,7 @@ let pluginVerdicts
                     | None, FailedRun err -> nonEmpty err
                     | None, TimedOut reason -> nonEmpty reason
                     | None, VerifiedNothing detail -> nonEmpty (RunSummary.nothingVerified detail)
+                    | None, NotEvaluated reason -> nonEmpty reason
                     | None, CompletedRun -> None) }))
 
 /// The CTRF reports THIS RUN produced — the files in the run's own directory.

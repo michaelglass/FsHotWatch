@@ -1883,3 +1883,44 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
         // A run in which nothing executed — which the bool could not express at all: it had
         // to be reported as either a full suite or a filtered run, neither of which happened.
         test <@ evt.Value.Verification = NothingExecuted @>)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("Issue", "AUTOMATION-481")>]
+let ``persisted declined evidence rehydrates as declined instead of becoming success or failure`` () =
+    withTempDir "a481-cache-evidence-codec" (fun root ->
+        let key = ckPlugin "declined-evidence"
+        let content = hash "declined"
+
+        let original =
+            RunVerdict.notEvaluated "reports were not regenerated" (TimeSpan.FromMilliseconds 17.0)
+
+        let cache = FileTaskCache(root) :> ITaskCache
+        // Exercise the storage boundary independently of the framework's refusal
+        // to cache declined command executions. Decoding older/external entries
+        // must preserve their typed evidence too.
+        cache.Set
+            key
+            content
+            { CacheKey = content
+              Errors = []
+              Status = CachedRunCompleted original
+              EmittedEvents =
+                [ CachedCommandCompleted
+                      { Name = "gate"
+                        Outcome = CommandNotEvaluated "reports unavailable" } ] }
+
+        let reloaded = (FileTaskCache(root) :> ITaskCache).TryGet key content
+        Assert.True(reloaded.IsSome)
+
+        match reloaded.Value.Status with
+        | CachedRunCompleted verdict ->
+            Assert.Equal(original.Evaluation, verdict.Evaluation)
+            Assert.Equal(original.Elapsed, verdict.Elapsed)
+            let replayed = RunVerdict.asReplayed verdict
+            Assert.Equal(original.Evaluation, replayed.Evaluation)
+            Assert.Equal(RunProvenance.Replayed, replayed.Provenance)
+        | other -> failwithf "expected declined terminal evidence: %A" other
+
+        match Assert.Single(reloaded.Value.EmittedEvents) with
+        | CachedCommandCompleted result -> Assert.Equal(CommandNotEvaluated "reports unavailable", result.Outcome)
+        | other -> failwithf "expected typed command evidence: %A" other)
