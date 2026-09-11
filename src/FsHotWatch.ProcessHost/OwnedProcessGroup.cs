@@ -8,20 +8,33 @@ internal sealed class OwnedProcessGroup
 {
     private readonly SafeFileHandle? job;
     public int? ProcessGroup { get; }
+    public string? JobName { get; }
 
     private OwnedProcessGroup(int processGroup) => ProcessGroup = processGroup;
-    private OwnedProcessGroup(SafeFileHandle job) => this.job = job;
+    private OwnedProcessGroup(SafeFileHandle job, string jobName)
+    {
+        this.job = job;
+        JobName = jobName;
+    }
 
-    public static OwnedProcessGroup Create()
+    public static OwnedProcessGroup Create(string jobName)
     {
         if (OperatingSystem.IsWindows())
         {
-            var job = CreateJobObjectW(IntPtr.Zero, null);
+            var job = CreateJobObjectW(IntPtr.Zero, jobName);
+            var createError = Marshal.GetLastPInvokeError();
             if (job.IsInvalid)
             {
-                var error = new Win32Exception(Marshal.GetLastPInvokeError());
+                var error = new Win32Exception(createError);
                 job.Dispose();
                 throw error;
+            }
+
+            // The pipe-derived nonce identifies OUR new job; never adopt a pre-existing job.
+            if (createError == 183) // ERROR_ALREADY_EXISTS
+            {
+                job.Dispose();
+                throw new IOException("Process containment job already exists.");
             }
 
             try
@@ -35,7 +48,7 @@ internal sealed class OwnedProcessGroup
                 // Assignment precedes spawn. Children inherit this job with no breakaway flags.
                 if (!AssignProcessToJobObject(job, GetCurrentProcess()))
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
-                return new OwnedProcessGroup(job);
+                return new OwnedProcessGroup(job, jobName);
             }
             catch { job.Dispose(); throw; }
         }
@@ -55,7 +68,9 @@ internal sealed class OwnedProcessGroup
         {
             if (!TerminateJobObject(job, 137))
             {
-                // Closing the last non-inheritable handle provides the same containment cleanup.
+                // Close our handle; kill-on-close cleans up if the parent is also gone.
+                // A live parent retains its handle and must detect this abnormal helper exit
+                // and finish termination through that stable job handle.
                 job.Dispose();
                 Environment.Exit(125);
             }

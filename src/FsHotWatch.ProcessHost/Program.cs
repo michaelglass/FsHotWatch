@@ -25,8 +25,11 @@ internal static class Program
 
             using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 1024, true);
             writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, true);
-            ownership = OwnedProcessGroup.Create();
-            await SendAsync(writer, new { kind = "ready", processGroup = ownership.ProcessGroup });
+            ownership = OwnedProcessGroup.Create(args[1] + "-job");
+            await SendAsync(writer, new
+            {
+                kind = "ready", processGroup = ownership.ProcessGroup, jobName = ownership.JobName
+            });
 
             using (var admission = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
             {
