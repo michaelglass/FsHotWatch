@@ -780,8 +780,8 @@ module internal AnalysisFileEvidence =
         let refusals =
             [ match result.CheckResults with
               | ParseOnly -> yield "type checking did not complete"
-              | FullCheck checked ->
-                  for diagnostic in checked.Diagnostics do
+              | FullCheck checkedResult ->
+                  for diagnostic in checkedResult.Diagnostics do
                       if diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error then
                           yield diagnostic.Message
 
