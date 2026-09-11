@@ -2910,14 +2910,28 @@ let ``superseded owned change retries its admitted source against the current mo
         let assets = FsHotWatch.DepsFreshness.assetsPath project
         Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
         File.WriteAllText(assets, "{}")
-        let checker = sharedChecker.Value
+        // Own script resolution and FCS caches: other fixtures use the shared
+        // checker concurrently, while this test requires an actual full-check result.
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
 
-        let options, _ =
+        let options, optionDiagnostics =
             checker.GetProjectOptionsFromScript(
                 source,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source)
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source),
+                assumeDotNetFramework = false
             )
             |> Async.RunSynchronously
+
+        Assert.Empty(
+            optionDiagnostics
+            |> List.filter (fun diagnostic ->
+                diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        )
 
         let options =
             { options with
