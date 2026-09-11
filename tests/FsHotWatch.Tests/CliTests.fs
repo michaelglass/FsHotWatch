@@ -2934,3 +2934,59 @@ module ``beforeRun failure reporting`` =
                 test <@ contents.Contains "three" @>
         finally
             cleanup repo
+
+
+[<Fact(Timeout = 15000)>]
+let ``check reach transport preserves the recorded failing suite and run identity`` () =
+    let mutable requests = []
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun pipe name args -> async {
+                requests <- (pipe, name, args) :: requests
+                return """{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e","scope":"full","ranProjects":3,"totalProjects":3,"reach":"reached-a-failure","failingSuites":["Lib.Tests"],"reason":null}"""
+            } }
+    match readCheckReach ipc "projection-pipe" with
+    | IpcParsing.ReachRecorded reading ->
+        test <@ reading.RunId = Some(Guid.Parse "5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e") @>
+        test <@ reading.Scope = IpcParsing.FullSuite 3 @>
+        test <@ reading.Reach = IpcParsing.ReachedAFailure [ "Lib.Tests" ] @>
+    | other -> failwithf "expected recorded reach, got %A" other
+    test <@ requests = [ ("projection-pipe", IpcParsing.CheckReachCommand, "") ] @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``check reach transport keeps missing command and transport fault unavailable`` fault =
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ name _ -> async {
+                if fault then return failwith "projection connection lost"
+                else return FsHotWatch.Ipc.unknownCommandReply name
+            } }
+    match readCheckReach ipc "projection-pipe" with
+    | IpcParsing.ReachUnavailable reason ->
+        test <@ reason.Contains IpcParsing.CheckReachCommand @>
+        if fault then test <@ reason.Contains "projection connection lost" @>
+        else test <@ reason.Contains "no" @>
+    | other -> failwithf "missing projection must not become agreement: %A" other
+
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("System.OutOfMemoryException")>]
+[<InlineData("System.OverflowException")>]
+[<InlineData("System.TimeoutException")>]
+[<InlineData("System.AggregateException")>]
+let ``remote fault without frame evidence preserves the original failure and never restarts`` typeName =
+    let fault = remoteIpcFault typeName "remote operation failed" null
+    let mutable restarts = 0
+    let mutable attempts = 0
+    let mutable reported = None
+    let result =
+        runIpcWithSelfHeal
+            (fun () -> restarts <- restarts + 1; true)
+            (fun error -> reported <- Some error; 71)
+            (fun () -> attempts <- attempts + 1; raise fault)
+    test <@ result = 71 @>
+    test <@ attempts = 1 @>
+    test <@ restarts = 0 @>
+    test <@ reported |> Option.exists (fun error -> Object.ReferenceEquals(error, fault)) @>
