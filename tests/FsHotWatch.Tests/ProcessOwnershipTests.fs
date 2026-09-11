@@ -521,7 +521,7 @@ let ``successful cleanup leaves the original operation exception intact`` () =
         Record.Exception(fun () ->
             try
                 try
-                    raise primary
+                    (raise primary : unit)
                 with failure ->
                     pending <- Some failure
                     reraise ()
