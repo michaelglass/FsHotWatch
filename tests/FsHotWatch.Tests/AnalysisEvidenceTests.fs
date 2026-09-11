@@ -116,38 +116,42 @@ let ``model replacement atomically retires previous checkable membership`` () =
     Assert.Equal(Some(1L, oldFiles), before.ProjectModelFiles)
 
 
+let private analysisContext root (result: FileCheckResult) generation =
+    let graph =
+        { ProjectGraphAccessor.none with
+            ObserveModel = fun () -> available generation
+            ObserveCheckableFiles = fun () -> Some(generation, Set.singleton result.File) }
+    let ctx: PluginCtx<FsHotWatch.TestPrune.TestPrunePlugin.TestPruneMsg> =
+        { ReportStatus = ignore
+          ReportErrors = fun _ _ -> ()
+          ClearErrors = ignore
+          ClearAllErrors = ignore
+          EmitBuildCompleted = ignore
+          EmitTestRunStarted = ignore
+          EmitTestProgress = ignore
+          EmitTestRunCompleted = ignore
+          EmitCommandCompleted = ignore
+          Checker = sharedChecker.Value
+          RepoRoot = root
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> Tasks.Task.FromResult(())
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = ignore
+          Log = ignore
+          CompleteWithTimeout = ignore
+          RunExclusive = fun _ _ -> Claimed
+          RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
+          IsRunning = fun _ -> false
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = graph }
+    ctx
+
 [<Fact(Timeout = 30000)>]
 let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
     withCheckedSource (fun root result ->
         let update generation name =
-            let graph =
-                { ProjectGraphAccessor.none with
-                    ObserveModel = fun () -> available generation
-                    ObserveCheckableFiles = fun () -> Some(generation, Set.singleton result.File) }
-            let ctx: PluginCtx<FsHotWatch.TestPrune.TestPrunePlugin.TestPruneMsg> =
-                { ReportStatus = ignore
-                  ReportErrors = fun _ _ -> ()
-                  ClearErrors = ignore
-                  ClearAllErrors = ignore
-                  EmitBuildCompleted = ignore
-                  EmitTestRunStarted = ignore
-                  EmitTestProgress = ignore
-                  EmitTestRunCompleted = ignore
-                  EmitCommandCompleted = ignore
-                  Checker = sharedChecker.Value
-                  RepoRoot = root
-                  Post = ignore
-                  EnqueueExclusiveIntent = fun _ _ _ -> Tasks.Task.FromResult(())
-                  StartSubtask = fun _ _ -> ()
-                  UpdateSubtask = fun _ _ -> ()
-                  EndSubtask = ignore
-                  Log = ignore
-                  CompleteWithTimeout = ignore
-                  RunExclusive = fun _ _ -> Claimed
-                  RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
-                  IsRunning = fun _ -> false
-                  FcsSuppressedCodes = Set.empty
-                  ProjectGraph = graph }
+            let ctx = analysisContext root result generation
             let handler =
                 FsHotWatch.TestPrune.TestPrunePlugin.create
                     (Path.Combine(root, name + ".db")) root None None None None None []
@@ -165,3 +169,29 @@ let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
         Assert.True(stale.PendingAnalysis.IsEmpty)
         Assert.True(stale.AnalysisFiles.IsEmpty)
         Assert.True(stale.AnalysisReceipt.IsNone))
+
+
+[<Fact(Timeout = 30000)>]
+let ``new-model BuildCompleted cannot persist accepted old-model pending analysis`` () =
+    let persistedNames afterGeneration =
+        withCheckedSource (fun root result ->
+            let dbPath = Path.Combine(root, "pending.db")
+            let handler =
+                FsHotWatch.TestPrune.TestPrunePlugin.create
+                    dbPath root None None None None None []
+            let accepted =
+                handler.Update (analysisContext root result 1L) handler.Init (FileChecked result)
+                |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+            Assert.False(accepted.PendingAnalysis.IsEmpty)
+            let db = TestPrune.Database.Database.create dbPath
+            Assert.Empty(db.GetAllSymbolNames())
+            handler.Update (analysisContext root result afterGeneration) accepted (BuildCompleted BuildSucceeded)
+            |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+            |> ignore
+            db.GetAllSymbolNames())
+
+    // Same-model BuildCompleted really flushes the real FCS symbols into this database.
+    Assert.NotEmpty(persistedNames 1L)
+    // Cold scan ordering sends the new build before the new FCS results. The old
+    // pending cohort must be retired before that build can flush into the new model.
+    Assert.Empty(persistedNames 2L)
