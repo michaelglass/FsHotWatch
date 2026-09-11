@@ -62,6 +62,7 @@
     <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />
+    <Compile Include="TestPruneRatchetTransactionTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
