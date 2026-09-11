@@ -711,3 +711,42 @@ let ``settlement failure remains owned until its failed receipt is published`` s
         Assert.Same(failure, snd store.Snapshot.OperationFaults.Head)
     finally
         queue.Close()
+
+[<Fact>]
+let ``foreign and wrong-kind capabilities cannot retire another owners work`` () =
+    let owner = PluginWorkOwner.Owner(0)
+    let other = PluginWorkOwner.Owner(0)
+    let active, _ = owner.TryClaim "tests" |> Option.get
+    let foreign, _ = other.TryClaim "tests" |> Option.get
+    let event = owner.AdmitEvent()
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun foreign |> ignore) |> ignore
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CompleteRun event |> ignore) |> ignore
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(active, 1)) |> ignore
+    Assert.True owner.Snapshot.IsBusy
+    Assert.Equal(0, owner.Snapshot.State)
+    owner.CommitEvent(event, 1)
+    let completion = owner.TransferToCompletion active
+    owner.CommitEvent(completion, 2)
+    Assert.Throws<InvalidOperationException>(fun () -> owner.CommitEvent(completion, 3)) |> ignore
+    Assert.Equal(2, owner.Snapshot.State)
+    Assert.False owner.Snapshot.IsBusy
+    let otherCompletion = other.TransferToCompletion foreign
+    other.CommitEvent(otherCompletion, 0)
+
+[<Fact>]
+let ``executor failure is immutable while outstanding worker capabilities drain`` () =
+    let store = PluginWorkOwner.Store()
+    let owner = PluginWorkOwner.Owner(0, store, "failed-owner")
+    let event, receipt = owner.AdmitTrackedEvent()
+    owner.PublishEventState(event, 1)
+    let run, _ = owner.TryClaim "tests" |> Option.get
+    let first = InvalidOperationException("executor failed first")
+    owner.FaultExecutor first
+    owner.FaultExecutor(InvalidOperationException("later report must not replace cause"))
+    Assert.Same(first, Assert.Throws<InvalidOperationException>(fun () -> awaitResult receipt))
+    Assert.Same(first, owner.Snapshot.ExecutorFault.Value)
+    Assert.Same(first, snd (Assert.Single store.Snapshot.ExecutorFaults))
+    Assert.True store.Snapshot.IsBusy
+    Assert.Throws<InvalidOperationException>(fun () -> owner.TransferToCompletion run |> ignore) |> ignore
+    Assert.False store.Snapshot.IsBusy
+    Assert.Equal(1, owner.Snapshot.State)
