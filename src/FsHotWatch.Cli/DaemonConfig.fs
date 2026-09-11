@@ -1701,14 +1701,20 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let excludedProjects =
-            t.Excluded
-            |> List.map (fun exclusion ->
-                let project = SolutionScope.normalisePath exclusion.Project |> Path.GetFileName
-                project, exclusion.Reason)
-            |> Map.ofList
+            SolutionScope.createExclusionResolver repoRoot t.Solution t.Excluded (fun () ->
+                daemon.Graph.GetAllProjects() |> List.map AbsProjectPath.value)
 
         let handler =
-            createWithScope excludedProjects dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths t.DependsOn
+            createWithScope
+                excludedProjects
+                dbPath
+                repoRoot
+                (Some testConfigs)
+                buildExtensions
+                beforeRun
+                None
+                coveragePaths
+                t.DependsOn
 
         daemon.RegisterHandler(handler)
     | None ->
