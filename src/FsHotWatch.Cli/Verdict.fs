@@ -2131,6 +2131,7 @@ let private terminalVerdict
     (reason: string)
     : Verdict =
     create
+        FsHotWatch.ProjectModel.Observation.Unobserved
         command
         (TestRunReport.ofScopeOnly (ScopeUnreadable reason))
         (TreeHash.compute repoRoot excludePatterns)
