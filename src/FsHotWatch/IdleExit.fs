@@ -266,10 +266,12 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
 
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
 
-        match decide threshold idleFor inhibitors (FireLatch.hasFired latch) with
+        // Eligible ticks claim atomically, without a separate latch read that can
+        // race the claim. Noneligible ticks still give an already-fired latch veto.
+        match decide threshold idleFor inhibitors false with
         | TickOutcome.Fired ->
-            // Even if the pure check above raced past for several threads, only one
-            // wins tryFire.
+            // Exactly one eligible tick wins; later and concurrent ticks share the
+            // same AlreadyFired path.
             if FireLatch.tryFire latch then
                 let pressureNote =
                     if pressure && effectiveMin < deps.BaseThresholdMin then
@@ -284,6 +286,7 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
                 TickOutcome.Fired
             else
                 TickOutcome.AlreadyFired
+        | _ when FireLatch.hasFired latch -> TickOutcome.AlreadyFired
         | TickOutcome.Inhibited reasons as outcome ->
             deps.Log
                 $"[idle-exit] %d{effectiveMin}min window elapsed but work is in flight — staying up: %s{IdleInhibitor.describeAll reasons}"
