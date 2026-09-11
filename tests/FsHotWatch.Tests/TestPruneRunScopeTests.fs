@@ -66,6 +66,7 @@ let private makeTestPruneRecordingCtx () =
           Checker = Unchecked.defaultof<_>
           RepoRoot = ""
           Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
@@ -105,6 +106,7 @@ let ``set-scope replies only after the owner applies its intent`` (scope: string
             { RepoRoot = "/tmp"
               Log = ignore
               Post = posted.Add
+              EnqueueExclusiveIntent = fun _ _ message -> posted.Add message; System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = ProjectGraphAccessor.none }
 
@@ -940,6 +942,7 @@ let ``AUTOMATION-67 completion publishes real CTRF recall through check-reach IP
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = pluginCtx.ProjectGraph }
 
@@ -1589,6 +1592,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
@@ -1645,6 +1649,7 @@ let ``test-scope declares EVERY run the session completed, not only the one the 
             { RepoRoot = repoRoot
               Log = ignore
               Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               IsRunning = fun _ -> false
               ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
@@ -1679,39 +1684,30 @@ let ``only-failed resolves current owner failures instead of the command snapsho
 
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
+    let mutable selectedProjects = []
     let ownerCtx =
         { recordingCtx with
-            RunExclusiveShared = fun _ _ _ _ _ -> LocalSlotBusy }
-
-    let mutable admittedState = ownerState
+            RunExclusiveShared = fun _ _ workFor _ _ ->
+                let outcome = workFor Ready |> Async.RunSynchronously
+                match outcome with
+                | TestsFinished(_, completed, _) -> selectedProjects <- completed.Results |> Map.keys |> Seq.toList
+                | other -> Assert.Fail($"expected a completed owned run, got {other}")
+                SharedClaimed }
 
     let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
         { RepoRoot = "/tmp"
           Log = ignore
-          IsRunning = fun _ -> true
+          IsRunning = fun _ -> false
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
-          Post =
-            fun message ->
-                admittedState <- handler.Update ownerCtx admittedState (Custom message) |> Async.RunSynchronously
-
-                match message with
-                | RunTestsRequested(_, _, reply) ->
-                    // No worker is launched by this busy-slot fixture. Complete its
-                    // caller after inspecting the real owner's queued selection.
-                    reply.TrySetResult("{\"fixture\":\"queued\"}") |> ignore
-                | _ -> failwith "unexpected command message" }
-
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ message ->
+              handler.Update ownerCtx ownerState (Custom message) |> Async.RunSynchronously |> ignore
+              System.Threading.Tasks.Task.FromResult(()) }
     let command = handler.Commands |> List.find (fst >> (=) "run-tests") |> snd
-
     FsHotWatch.PluginFramework.PluginCommand.invoke command commandCtx snapshot [| "{\"only-failed\":true}" |]
     |> Async.RunSynchronously
     |> ignore
-
-    let queuedProjects =
-        admittedState.QueuedCommandRuns
-        |> List.collect (fun (configs, _, _) -> configs |> List.map (fun config -> config.Project))
-
-    test <@ queuedProjects = [ "ProjB" ] @>
+    Assert.Equal<string list>([ "ProjB" ], selectedProjects)
 
 [<Fact(Timeout = 20000)>]
 let ``a queued manual filtered force-run clears the prior full receipt when its FIFO drain launches`` () =
@@ -1726,11 +1722,13 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
             [ "ProjA", impactSkipped; "ProjB", passed true ]
             (filteredLaunch [ "ProjB", [ "ProjBTests" ] ])
 
+    let queued = ResizeArray<TestPruneMsg>()
     let mutable claims = [ LocalSlotBusy; SharedClaimed ]
     let recordingCtx, _, _ = makeTestPruneRecordingCtx ()
 
     let ctx =
         { recordingCtx with
+            EnqueueExclusiveIntent = fun _ _ message -> queued.Add message; System.Threading.Tasks.Task.FromResult(())
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     match claims with
@@ -1759,15 +1757,13 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
         |> Async.RunSynchronously
 
     test <@ queuedState.EvidenceReceipt.IsSome @>
-    test <@ queuedState.QueuedCommandRuns.Length = 1 @>
+    Assert.Single queued |> ignore
 
     // `narrowRun` completes the pre-existing in-flight run. Its terminal handler must
     // dequeue and LAUNCH the explicit manual filter as a new top-level receipt boundary.
-    let drainedState =
-        handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
-
+    let completedState = handler.Update ctx queuedState narrowRun |> Async.RunSynchronously
+    let drainedState = handler.Update ctx completedState (Custom queued[0]) |> Async.RunSynchronously
     test <@ drainedState.EvidenceReceipt.IsNone @>
-    test <@ drainedState.QueuedCommandRuns.IsEmpty @>
     test <@ claims.IsEmpty @>
 
 [<Fact(Timeout = 15000)>]
@@ -1809,7 +1805,7 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
     test <@ reply.Task.Wait 5000 @>
     test <@ reply.Task.Result.Contains("test host could not start") @>
     test <@ reply.Task.Result.Contains("host start fault") @>
-    test <@ finalState.PendingRerun @>
+    test <@ finalState.Earned.IsNone @>
 
 [<Fact(Timeout = 20000)>]
 let ``a run receipt keeps its launch seeds when a later cohort flushes while it runs`` () =
@@ -2905,6 +2901,7 @@ let ``completion observations remain bound to their supplied owner snapshot`` (c
         { RepoRoot = root
           Log = ignore
           Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           IsRunning = fun _ -> false
           ProjectGraph = ctx.ProjectGraph }
 
@@ -3085,6 +3082,7 @@ let ``a retained owner cannot learn a full suite baseline earned by a later comp
         { RepoRoot = root
           Log = ignore
           Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           IsRunning = fun _ -> false
           ProjectGraph = ctx.ProjectGraph }
 
@@ -3203,6 +3201,7 @@ let private receiptScope repoRoot (handler: PluginHandler<TestPruneState, TestPr
         { RepoRoot = repoRoot
           Log = ignore
           Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           IsRunning = fun _ -> false
           ProjectGraph = ProjectGraphAccessor.none }
 
