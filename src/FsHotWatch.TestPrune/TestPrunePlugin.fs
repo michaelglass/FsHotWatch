@@ -1413,13 +1413,6 @@ type TestPruneState =
         /// tell "nothing needed running" from "nothing ran" goes looking for a bug
         /// in the selector.
         LastSeeds: string list
-        /// True if a BuildCompleted arrived while a test run was in flight.
-        /// The synchronous `Custom(TestsFinished)` handler reads this AFTER
-        /// the run completes — at which point `state.ChangedSymbols` reflects
-        /// every FileChecked that landed during the run, including ones that
-        /// arrived between the queueing BuildCompleted and TestsFinished.
-        /// Cleared when the rerun is dispatched.
-        PendingRerun: bool
         /// Symbols established by a BootScan cohort while a requested full-suite run was
         /// already in flight. The run covers the built tree being baselined, but these
         /// symbols are absent from its immutable launch snapshot. They may be committed
@@ -1469,16 +1462,6 @@ type TestPruneState =
         /// self-clearing. NOT persisted: a cold scan re-checks every file and
         /// repopulates the map from scratch.
         UnanalyzableFiles: Map<string, UnanalyzableFile>
-        /// `run-tests` force-runs that arrived while another run held the
-        /// "tests" slot. A force-run is OWED work — `test-rerun`
-        /// is the explicit "prove it ran" verb, so a busy slot must QUEUE the
-        /// run, never refuse it (a refusal that exits 0 is a vacuous green).
-        /// Drained FIFO by the `TestsFinished` handler, one per completed run
-        /// (each queued run's own TestsFinished drains the next). Each entry
-        /// carries the reply TCS the IPC command is awaiting — the command
-        /// bounds that wait (`waitSec`), so an entry stranded by daemon
-        /// teardown cannot hang the client.
-        QueuedCommandRuns: (TestConfig list * string option * Tasks.TaskCompletionSource<string>) list
         /// The reds no COVERING run has passed since. Rewritten on
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
         /// it passes. The shared error ledger is a projection of this list.
@@ -1748,6 +1731,7 @@ type RunTestsSelection =
 [<NoComparison; NoEquality>]
 type TestPruneMsg =
     | ScopeRequested of fullSuite: bool * reply: Tasks.TaskCompletionSource<string>
+    | ImpactRunRequested
     | RuntimeCoverageFailed of CoverageIngestFailure
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
     | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
@@ -4974,6 +4958,9 @@ let internal createWithLaunchDeadline
         | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
         | _ -> None
 
+    let enqueueImpact (ctx: PluginCtx<TestPruneMsg>) =
+        ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
+
     let markRunLaunched (state: TestPruneState) =
         let symbols = Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
         { state with PendingAges = bumpSeedAges state.PendingAges (Set.toList symbols) }
@@ -5396,7 +5383,6 @@ let internal createWithLaunchDeadline
           CompletedRuns = []
           CheckReach = None
           LastSeeds = []
-          PendingRerun = false
           BootScanDebtDuringFullRun = Set.empty
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
@@ -5404,7 +5390,6 @@ let internal createWithLaunchDeadline
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = UncoveredChanges.No
           UnanalyzableFiles = Map.empty
-          QueuedCommandRuns = []
           // The previous session's reds, quarantined into the first run.
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
@@ -6371,7 +6356,7 @@ let internal createWithLaunchDeadline
                                         Tasks.TaskCreationOptions.RunContinuationsAsynchronously
                                     )
 
-                                ctx.Post(
+                                let admission = ctx.EnqueueExclusiveIntent "tests" None (
                                     RunTestsRequested(
                                         { OnlyFailed = onlyFailed
                                           Projects = projectFilter },
@@ -6385,12 +6370,16 @@ let internal createWithLaunchDeadline
                                 // mailbox and possibly behind a run already in
                                 // flight — so an unbounded wait here could pin the
                                 // IPC caller for as long as the daemon is wedged.
+                                let result = async {
+                                    do! admission |> Async.AwaitTask
+                                    return! reply.Task |> Async.AwaitTask
+                                } |> Async.StartAsTask
                                 let! winner =
-                                    Tasks.Task.WhenAny(reply.Task, Tasks.Task.Delay(waitForResultMs))
+                                    Tasks.Task.WhenAny(result, Tasks.Task.Delay(waitForResultMs))
                                     |> Async.AwaitTask
 
-                                if winner = (reply.Task :> Tasks.Task) then
-                                    return reply.Task.Result
+                                if winner = (result :> Tasks.Task) then
+                                    return! result |> Async.AwaitTask
                                 else
                                     return
                                         JsonSerializer.Serialize(
@@ -6780,7 +6769,12 @@ let internal createWithLaunchDeadline
                         // the same treatment.
                         return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
 
-                | PluginEvent.BatchChecked batch ->
+                | Custom ImpactRunRequested
+                | PluginEvent.BatchChecked _ ->
+                    let bootScan =
+                        match event with
+                        | PluginEvent.BatchChecked batch -> batch.Trigger = BootScan
+                        | _ -> false
                     // Cohort-complete flush. The mailbox is FIFO and the daemon emits
                     // BatchChecked strictly after the last FileChecked, so every
                     // FileChecked from this cohort is already folded into
@@ -6819,7 +6813,7 @@ let internal createWithLaunchDeadline
                         // ledger leaves the in-memory queue empty because we cannot name
                         // what it held, and reading that as "nothing to drain" lets a
                         // corrupt sidecar run ZERO tests and still go green.
-                        if nothingOwed flushedState.Debt then
+                        if nothingOwed flushedState.Debt && Set.isEmpty flushedState.PendingForceRunProjects then
                             return flushedState
                         else
                             match testConfigs with
@@ -6864,7 +6858,7 @@ let internal createWithLaunchDeadline
                                     Logging.info "test-prune" $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
 
                                     return markRunLaunched drainedState
-                                | SlotBusy when batch.Trigger = BootScan && flushedState.FullSuiteRequested ->
+                                | SlotBusy when bootScan && flushedState.FullSuiteRequested ->
                                     // The requested full-suite run already covers the built
                                     // tree that this cold cohort is baselining. Remember the
                                     // late-discovered symbols, but do not schedule a duplicate
@@ -6888,9 +6882,8 @@ let internal createWithLaunchDeadline
                                         "test-prune"
                                         $"BatchChecked: %s{owedDescription flushedState.Debt} still outstanding while a run is in flight — queueing re-run"
 
-                                    return
-                                        { flushedState with
-                                            PendingRerun = true }
+                                    enqueueImpact ctx
+                                    return flushedState
                             | _ ->
                                 // Analysis-only (no test configs): nothing can verify
                                 // these symbols, so there is nothing to drain.
@@ -6978,9 +6971,9 @@ let internal createWithLaunchDeadline
 
                             // Stash the fanout so the rerun runs it (don't lose a
                             // mid-run dependency change).
+                            enqueueImpact ctx
                             return
                                 { state with
-                                    PendingRerun = true
                                     PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
                         else
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
@@ -7040,10 +7033,9 @@ let internal createWithLaunchDeadline
                                             "test-prune"
                                             "BuildSucceeded: tests slot already held — queueing re-run"
 
+                                        enqueueImpact ctx
                                         return
-                                            { stateWithAffected with
-                                                PendingRerun = true
-                                                PendingForceRunProjects = forceRunProjects }
+                                            { stateWithAffected with PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected
@@ -7209,7 +7201,9 @@ let internal createWithLaunchDeadline
                     // DISCHARGED by a project that executed nothing, and left
                     // pending-verification.json unverified. `verifiedGreen` is `Verified`
                     // only, so a project that ran nothing can no longer retire anything.
+                    let modelMatches = launch.ModelGeneration = observeModelGeneration ctx
                     let aborted =
+                        not modelMatches ||
                         match completed.Outcome with
                         | Aborted _ -> true
                         | Normal -> false
@@ -7303,8 +7297,7 @@ let internal createWithLaunchDeadline
                                     SymbolRevisions = state.Debt.SymbolRevisions |> Map.filter (fun symbol _ -> not (Set.contains symbol committedSymbols))
                                     RecoveryOutstanding = state.Debt.RecoveryOutstanding && not recovered
                                     RuntimeObligations =
-                                        if recovered then Map.empty
-                                        elif aborted then state.Debt.RuntimeObligations
+                                        if aborted then state.Debt.RuntimeObligations
                                         else retireRuntimeCoverageObligations state.Debt.RuntimeObligations launch.RuntimeProjectsByFile projectPassed } }
 
                     // the full-suite WATERMARK. Written when a full-suite
@@ -7730,164 +7723,17 @@ let internal createWithLaunchDeadline
                                             results.Elapsed
                                     )
 
-                    // Drain order after a completed run:
-                    //   1. a queued `run-tests` force-run — an IPC caller is WAITING
-                    //      on its reply (bounded, but waiting), so it goes first;
-                    //      FIFO, one per completed run (each queued run's own
-                    //      TestsFinished drains the next);
-                    //   2. the impact rerun (`PendingRerun`) — no waiter; it survives
-                    //      across queued command runs and drains when the queue is
-                    //      empty;
-                    //   3. idle.
-                    match state.QueuedCommandRuns with
-                    | (queuedConfigs, queuedFilter, queuedReply) :: laterRuns ->
-                        recordRunOutcome testResults
-
-                        let dequeuedState =
-                            { state with
-                                LastResults = Some testResults
-                                LastRunId = Some completed.RunId
-                                ChangedFiles = []
-                                ChangedSymbols = remainingChangedSymbols
-                                AffectedTests = Analyzed []
-                                EvidenceReceipt = None
-                                QueuedCommandRuns = laterRuns }
-
-                        match
-                            runTestHostExclusive
-                                ctx
-                                (Some queuedReply)
-                                (commandForceRun ctx queuedConfigs queuedFilter queuedReply)
-                        with
-                        | Claimed ->
-                            Logging.info "test-prune" "Launching queued run-tests force-run"
-                            return dequeuedState
-                        | SlotBusy ->
-                            // Unreachable in practice — every "tests" claim happens on
-                            // this mailbox thread, and the slot was freed before this
-                            // TestsFinished was posted — but typed anyway: keep the
-                            // run QUEUED rather than dropping owed work.
-                            return
-                                { dequeuedState with
-                                    QueuedCommandRuns = state.QueuedCommandRuns }
-                    | [] when state.PendingRerun ->
-                        Logging.info "test-prune" "Re-running tests (queued during previous run)"
-
-                        // Flush any new pending analysis against CURRENT state — picking up any
-                        // FileChecked symbols that landed between the queueing BuildCompleted
-                        // and now. ChangedSymbols is reset to the POST-COMMIT queue
-                        // (committed symbols removed, still-pending + mid-run arrivals
-                        // retained) so the rerun re-selects exactly what hasn't been
-                        // proven green. flushAndQueryAffected unions this with the durable
-                        // queue, so the rerun keeps testing the unverified symbols. If the
-                        // DB errors out here the rerun never happens, so we must bail back
-                        // to idle (capturing testResults) instead of leaving PendingRerun
-                        // stuck and the slot already freed.
-                        match
-                            (try
-                                Ok(
-                                    flushAndQueryAffected
-                                        { state with
-                                            PendingRerun = false
-                                            ChangedSymbols = remainingChangedSymbols }
-                                )
-                             with ex ->
-                                 Error ex)
-                        with
-                        | Error ex ->
-                            Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
-                            tryRepairSchemaDrift ex
-
-                            ctx.ReportStatus(
-                                PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero
-                            )
-
-                            return
-                                { state with
-                                    LastResults = Some testResults
-                                    LastRunId = Some completed.RunId
-                                    PendingRerun = false
-                                    ChangedFiles = []
-                                    ChangedSymbols = remainingChangedSymbols
-                                    AffectedTests = Analyzed [] }
-                        | Ok rerunState ->
-                            recordRunOutcome testResults
-
-                            // Consume the deferred dependency-fanout: a build that
-                            // landed mid-run stashed its changed test projects here
-                            // (it couldn't run them then). The rerun runs them now,
-                            // alongside the queued symbols. Clear so a later rerun
-                            // doesn't re-run them.
-                            let deferredFanout = rerunState.PendingForceRunProjects
-
-                            let rerunState =
-                                { rerunState with
-                                    LastResults = Some testResults
-                                    LastRunId = Some completed.RunId
-                                    PendingRerun = false
-                                    PendingForceRunProjects = Set.empty }
-
-                            // PendingRerun is a hint captured while the
-                            // previous run was still in flight, not proof that work remains
-                            // after it completes. BatchChecked can re-observe exactly the
-                            // debt that active run is about to clear and set the hint; once
-                            // the run passes, launching it blindly produces a second,
-                            // zero-project lifecycle whose NoProjectsSelected result erases
-                            // the passing evidence. Flush above first so genuine mid-run
-                            // arrivals are visible, then ask the durable queue and deferred
-                            // fanout whether anything is still owed.
-                            if nothingOwed state.Debt && Set.isEmpty deferredFanout then
-                                Logging.info
-                                    "test-prune"
-                                    "Queued impact rerun is stale — the completed run cleared all verification debt and no dependency fanout remains"
-
-                                return
-                                    { rerunState with
-                                        ChangedFiles = []
-                                        ChangedSymbols = remainingChangedSymbols
-                                        AffectedTests = Analyzed [] }
-                            else
-                                match testConfigs with
-                                | Some configs when not configs.IsEmpty ->
-                                    // A run just completed (LastResults set above), so the
-                                    // baseline exists — hasCachedResults = true. The
-                                    // deferred fanout force-runs any test project whose
-                                    // dependency fingerprint changed during the prior run.
-                                    match
-                                        runTestHostExclusive
-                                            ctx
-                                            None
-                                            (runTestsWithImpact
-                                                ctx
-                                                configs
-                                                (TestRunInputs.ofState (observeModelGeneration ctx) rerunState)
-                                                true
-                                                deferredFanout)
-                                    with
-                                    | Claimed -> return markRunLaunched rerunState
-                                    | SlotBusy ->
-                                        // Another launch site won the slot; ITS
-                                        // TestsFinished will drain this rerun — keep it
-                                        // queued and the fanout un-consumed.
-                                        return
-                                            { rerunState with
-                                                PendingRerun = true
-                                                PendingForceRunProjects = deferredFanout }
-                                | _ -> return rerunState
-                    | [] ->
-                        // Clear ONLY the committed symbols from the hot view; the
-                        // durable queue (post-commit) is the source of truth and is
-                        // mirrored into the cache-key snapshot so a non-empty queue
-                        // keeps a cached green from replaying (see CacheKey below).
-                        recordRunOutcome testResults
-
-                        return
-                            { state with
-                                LastResults = Some testResults
-                                LastRunId = Some completed.RunId
-                                ChangedFiles = []
-                                ChangedSymbols = remainingChangedSymbols
-                                AffectedTests = Analyzed [] }
+                    // Queued intent capabilities stay owned through this result
+                    // publication. The framework delivers them afterward; each selects
+                    // against this newly committed state, not a launch-time mirror.
+                    recordRunOutcome testResults
+                    return
+                        { state with
+                            LastResults = Some testResults
+                            LastRunId = Some completed.RunId
+                            ChangedFiles = []
+                            ChangedSymbols = remainingChangedSymbols
+                            AffectedTests = Analyzed [] }
 
                 | Custom(ArtifactsUnavailable(reason, reply)) ->
                     let message =
@@ -7900,9 +7746,7 @@ let internal createWithLaunchDeadline
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
-                        { state with
-                            PendingRerun = true
-                            EvidenceReceipt = None }
+                        { state with EvidenceReceipt = None; Earned = None }
 
                 | Custom(TestHostUnavailable(reason, reply)) ->
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
@@ -7914,10 +7758,11 @@ let internal createWithLaunchDeadline
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
-                        { state with
-                            PendingRerun = true
-                            EvidenceReceipt = None }
+                        { state with EvidenceReceipt = None; Earned = None }
 
+                | Custom(RunTestsRequested(selection, filter, reply)) when ctx.IsRunning "tests" ->
+                    ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply)) |> ignore
+                    return state
                 | Custom(RunTestsRequested(selection, filter, reply)) ->
                     let allConfigs = testConfigs |> Option.defaultValue []
                     let onlyFailed = selection.OnlyFailed
@@ -7996,14 +7841,10 @@ let internal createWithLaunchDeadline
                         match runTestHostExclusive ctx (Some reply) (commandForceRun ctx configs filter reply) with
                         | Claimed -> return { state with EvidenceReceipt = None }
                         | SlotBusy ->
-                            // A busy slot QUEUES the run, never refuses it: a refusal that
-                            // reads as success is a vacuous green. TestsFinished drains FIFO,
-                            // and the IPC command bounds its own wait on `reply`.
-                            ctx.Log "  ↳ queued run-tests force-run (tests already running)"
-
-                            return
-                                { state with
-                                    QueuedCommandRuns = state.QueuedCommandRuns @ [ (configs, filter, reply) ] }
+                            // Selection will be resolved again after the predecessor
+                            // commits; only the request is queued, never these configs.
+                            ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply)) |> ignore
+                            return state
 
                 | _ -> return state
             }

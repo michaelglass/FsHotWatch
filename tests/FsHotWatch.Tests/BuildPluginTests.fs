@@ -2155,6 +2155,7 @@ let ``force-rebuild replies only after the owner applies its intent`` () =
         let commandCtx: CommandCtx<BuildMsg> =
             { RepoRoot = "/tmp"
               Log = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
               Post = posted.Add
               IsRunning = fun _ -> false
               ProjectGraph = ProjectGraphAccessor.none }
