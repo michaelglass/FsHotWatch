@@ -1698,7 +1698,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
                 Assert.Contains("target-ready", text)
                 Assert.Contains("target-finished", text)
             | Ok other -> Assert.Fail $"Expected target exit 7 and complete output, got {other}"
-            | Result.Error error -> raise error
+            | Result.Error error -> Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw()
         finally
             // Release queued receipt continuations even on the expected red path.
             // KillAll uses only this fixture's captured ownership capabilities.
