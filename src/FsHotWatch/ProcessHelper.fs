@@ -837,12 +837,13 @@ let runProcessTo
         with admissionError ->
             match registeredChild with
             | Some child ->
-                try
-                    child.Terminate()
-                    ProcessRegistry.untrack child.Process
-                    child.Dispose()
-                with cleanupError ->
-                    raise (AggregateException("Process admission and cleanup failed.", admissionError, cleanupError))
+                FsHotWatch.ProcessOwnership.ChildProtocol.cleanupAfterFailure
+                    "Process admission and cleanup failed."
+                    admissionError
+                    (fun () ->
+                        child.Terminate()
+                        ProcessRegistry.untrack child.Process
+                        child.Dispose())
             | None -> ()
 
             reraise ()
