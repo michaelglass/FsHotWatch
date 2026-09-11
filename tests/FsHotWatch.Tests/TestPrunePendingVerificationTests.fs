@@ -668,9 +668,12 @@ let fooTest () = assert (foo 1 = 2)
         if editAfterSeal then
             let sources =
                 [ "module Lib\nlet foo (x: int) = x + 3\n"
-                  if restoreAfterEdit then libSource2 ]
+                  if restoreAfterEdit then
+                      libSource2 ]
+
             for source in sources do
                 File.WriteAllText(libFile, source)
+
                 match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
                 | Some result ->
                     host.EmitFileCheckedTracked(result)
@@ -728,7 +731,8 @@ let ``a failing full run cannot discharge boot-scan debt`` () =
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``a source edit after a boot cohort seal cannot borrow the held full run`` restoreAfterEdit =
-    let outcome = runCohortScenario "tp-boot-seal-edited" BootScan 0 true restoreAfterEdit
+    let outcome =
+        runCohortScenario "tp-boot-seal-edited" BootScan 0 true restoreAfterEdit
     // No successor cohort was sealed yet. The old run must leave this new
     // revision owed until that cohort can select and execute its covering tests.
     Assert.Equal(1, outcome.RunCount)

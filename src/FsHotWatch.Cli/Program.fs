@@ -974,7 +974,6 @@ let startFreshDaemonWith
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (_currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
@@ -1005,12 +1004,11 @@ let private startFreshDaemon
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
-    (currentHash: string)
     (extraArgs: string)
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 let private ensureDaemon
     (ipc: IpcOps)
@@ -1026,7 +1024,7 @@ let private ensureDaemon
 
     if not (ipc.IsRunning pipeName) then
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+        startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
     else
         let storedHash =
             if File.Exists hashPath then
@@ -1052,7 +1050,7 @@ let private ensureDaemon
                 eprintfn "  Shutdown request failed: %s" ex.Message
 
             killStaleDaemon repoRoot
-            startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate.
@@ -1644,8 +1642,8 @@ let withRunHooksFor
     : int =
     withRunHooksForInvocation verb repoRoot config (fun _ -> action ())
 
-/// Execute a parsed command with injectable dependencies.
-let internal executeCommandWithConfigIdentity
+/// Execute a parsed command with the identity captured from its loaded configuration source.
+let executeCommand
     (loadedConfigHash: string)
     (createDaemon: string -> Daemon)
     (ipc: IpcOps)
@@ -1749,14 +1747,7 @@ let internal executeCommandWithConfigIdentity
 
             killStaleDaemon repoRoot
 
-            startFreshDaemon
-                ipc
-                repoRoot
-                pipeName
-                (computeConfigHash repoRoot)
-                opts.DaemonExtraArgs
-                config.LogDir
-                startupTimeoutSeconds
+            startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
@@ -2247,19 +2238,6 @@ let internal executeCommandWithConfigIdentity
             eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
             0
 
-/// Execute a command for callers that already loaded the current on-disk config.
-let executeCommand createDaemon ipc repoRoot pipeName command opts config startupTimeoutSeconds =
-    executeCommandWithConfigIdentity
-        (computeConfigHash repoRoot)
-        createDaemon
-        ipc
-        repoRoot
-        pipeName
-        command
-        opts
-        config
-        startupTimeoutSeconds
-
 /// Outcome of forwarding a root-level unknown command to the daemon.
 ///   `Handled exitCode` — the daemon recognized and ran the command (a real plugin
 ///     command); `exitCode` is its rendered result.
@@ -2482,7 +2460,7 @@ let private runMain args =
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
-                executeCommandWithConfigIdentity
+                executeCommand
                     (configContentHash loadedConfigSource)
                     createDaemon
                     defaultIpcOps
