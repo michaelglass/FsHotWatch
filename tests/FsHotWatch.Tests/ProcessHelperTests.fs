@@ -1654,14 +1654,15 @@ let ``runProcess preserves target exit and output without pumping the caller con
         let context = HeldProcessCallerContext()
         let registry = FsHotWatch.ProcessRegistry.Registry()
         let result =
-            Threading.Tasks.TaskCompletionSource<Result<ProcessResult, exn>>(
+            Threading.Tasks.TaskCompletionSource<Result<ProcessOutcome, exn>>(
                 Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
         let output = Text.StringBuilder()
         let marker = IO.Path.Combine(root, "release-target")
-        let sink chunk =
-            output.Append(chunk) |> ignore
-            if output.ToString().Contains("target-ready") then
-                IO.File.WriteAllText(marker, "release")
+        let sink (chunk: string) =
+            lock output (fun () ->
+                output.Append(chunk) |> ignore
+                if output.ToString().Contains("target-ready") then
+                    IO.File.WriteAllText(marker, "release"))
 
         let caller =
             Threading.Thread(Threading.ThreadStart(fun () ->
@@ -1693,7 +1694,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
             Assert.Empty(registry.Snapshot())
             Assert.Empty(registry.Leaks)
             match result.Task.Result with
-            | Ok(Failed(7, Drained text)) ->
+            | Ok(Failed(7, ProcessOutput.Drained text)) ->
                 Assert.Contains("target-ready", text)
                 Assert.Contains("target-finished", text)
             | Ok other -> Assert.Fail $"Expected target exit 7 and complete output, got {other}"
