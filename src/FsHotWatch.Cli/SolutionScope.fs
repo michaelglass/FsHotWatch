@@ -224,7 +224,13 @@ let solutionProjects (solutionText: string) : string list =
 
         Regex.Matches(solutionText, pattern, RegexOptions.IgnoreCase)
         |> Seq.cast<Match>
-        |> Seq.map (fun m -> m.Groups[1].Value.Replace('\\', '/').Trim().TrimStart('.', '/'))
+        |> Seq.map (fun m ->
+            let path = m.Groups[1].Value.Replace('\\', '/').Trim()
+
+            if path.StartsWith("./", StringComparison.Ordinal) then
+                path.Substring(2)
+            else
+                path)
         |> Seq.distinct
         |> List.ofSeq
 
@@ -433,6 +439,14 @@ let private tryReadProject (repoRoot: string) (relative: string) : string option
     | :? IOException -> None
     | :? UnauthorizedAccessException -> None
 
+/// Interpret authored project paths at their declaring directory, then expose
+/// one repository-relative identity to reconciliation and verification scope.
+let private projectPathRelativeToRepo (repoRoot: string) (baseDirectory: string) (path: string) =
+    let absolute =
+        Path.GetFullPath(Path.Combine(baseDirectory, path.Replace('\\', '/')))
+
+    Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
+
 /// Reconcile `.fshw.json`'s test scope with the solution on disk.
 ///
 /// `[]` means the config's scope covers every test project in the solution, or
@@ -472,7 +486,9 @@ let reconcile
                 with :? IOException ->
                     ""
 
-            let allProjects = solutionProjects text
+            let allProjects =
+                solutionProjects text
+                |> List.map (projectPathRelativeToRepo repoRoot (Path.GetDirectoryName solutionPath))
 
             let testProjects =
                 allProjects
@@ -648,19 +664,15 @@ let internal createExclusionResolver
         let solutionPath = Path.GetFullPath(Path.Combine(repoRoot, solutionName))
         let solutionRoot = Path.GetDirectoryName solutionPath
 
-        let toRelative (baseDirectory: string) (path: string) =
-            let absolute =
-                Path.GetFullPath(Path.Combine(baseDirectory, path.Replace('\\', '/')))
-
-            Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
-
         let projects =
             File.ReadAllText solutionPath
             |> solutionProjects
-            |> List.map (toRelative solutionRoot)
+            |> List.map (projectPathRelativeToRepo repoRoot solutionRoot)
 
         fun () ->
-            let inventory = getDiscoveredProjects () |> List.map (toRelative repoRoot)
+            let inventory =
+                getDiscoveredProjects ()
+                |> List.map (projectPathRelativeToRepo repoRoot repoRoot)
 
             resolveExcludedProjectNames projects inventory excluded
             |> Result.defaultWith (fun error -> invalidOp $"Test scope exclusion is unsafe: {error}")

@@ -633,3 +633,123 @@ let ``case-insensitive solution alias returns the actual discovered filename spe
                 Reason = "owned harness" } ]
 
     test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Theory>]
+[<InlineData("")>]
+[<InlineData("   ")>]
+let ``a resolved exclusion still requires its written reason`` reason =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    match resolveExcludedProjectNames [ project ] [ project ] [ { Project = project; Reason = reason } ] with
+    | Error error -> Assert.Contains("requires a non-empty reason", error)
+    | Ok _ -> Assert.Fail "A known project alone cannot authorize an unexplained exclusion."
+
+[<Fact>]
+let ``a discovered project outside the authority cannot be declared excluded`` () =
+    let project = "other/UnknownTests.fsproj"
+
+    match
+        resolveExcludedProjectNames
+            [ "tests/KnownTests.fsproj" ]
+            [ project ]
+            [ { Project = project
+                Reason = "claimed harness" } ]
+    with
+    | Error error -> Assert.Contains("does not resolve to an authoritative solution project", error)
+    | Ok _ -> Assert.Fail "Discovery does not grant authority to invent an exclusion."
+
+[<Fact>]
+let ``dot relative exclusion aliases preserve the actual project owner`` () =
+    let project = "tests/Fixture/RealRulesTests.fsproj"
+
+    let result =
+        resolveExcludedProjectNames
+            [ "./" + project ]
+            [ project ]
+            [ { Project = "./" + project
+                Reason = "owned harness" } ]
+
+    test <@ result = Ok(Map.ofList [ "RealRulesTests", "owned harness" ]) @>
+
+[<Fact>]
+let ``no declared exclusions need neither solution nor discovered inventory`` () =
+    let missing = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    let resolver =
+        createExclusionResolver missing None [] (fun () -> failwith "inventory must not be consulted")
+
+    test <@ resolver () = Map.empty @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``nonempty exclusions refuse an absent or ambiguous solution authority`` ambiguous =
+    withTempDir "scope-exclusion-authority" (fun root ->
+        if ambiguous then
+            File.WriteAllText(Path.Combine(root, "One.slnx"), "<Solution />")
+            File.WriteAllText(Path.Combine(root, "Two.slnx"), "<Solution />")
+
+        let error =
+            Assert.Throws<System.InvalidOperationException>(fun () ->
+                createExclusionResolver
+                    root
+                    None
+                    [ { Project = "Fixture"
+                        Reason = "owned harness" } ]
+                    (fun () -> [])
+                |> ignore)
+
+        Assert.Contains("one unambiguous authoritative solution", error.Message))
+
+[<Fact(Timeout = 15000)>]
+let ``explicit solution authority resolves paths relative to its own directory`` () =
+    withTempDir "scope-exclusion-override" (fun root ->
+        let solutionDirectory = Directory.CreateDirectory(Path.Combine(root, "solutions"))
+        File.WriteAllText(Path.Combine(root, "Unrelated.slnx"), "<Solution />")
+
+        File.WriteAllText(
+            Path.Combine(solutionDirectory.FullName, "Chosen.slnx"),
+            "<Solution><Project Path=\"../tests/Fixture/RealRulesTests.fsproj\" /></Solution>"
+        )
+
+        let project = Path.Combine(root, "tests/Fixture/RealRulesTests.fsproj")
+
+        let resolve =
+            createExclusionResolver
+                root
+                (Some "solutions/Chosen.slnx")
+                [ { Project = "Fixture"
+                    Reason = "owned harness" } ]
+                (fun () -> [ project ])
+
+        test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>)
+
+[<Theory>]
+[<InlineData("../tests/Fixture.fsproj", "../tests/Fixture.fsproj")>]
+[<InlineData("/repo/tests/Fixture.fsproj", "/repo/tests/Fixture.fsproj")>]
+[<InlineData("./tests/Fixture.fsproj", "tests/Fixture.fsproj")>]
+let ``solution project parsing preserves path roots and parent traversal`` (declared: string) (expected: string) =
+    let xml = $"<Solution><Project Path=\"{declared}\" /></Solution>"
+    Assert.Equal<string list>([ expected ], solutionProjects xml)
+
+[<Fact(Timeout = 15000)>]
+let ``nested solution reconciliation refuses omitted real test projects`` () =
+    withTempDir "scope-nested-reconcile" (fun root ->
+        stageRepo root "Repo.slnx" [ "tests/P1", testProjectXml; "tests/P2", testProjectXml ]
+        let nested = Path.Combine(root, "solutions", "Chosen.slnx")
+        Directory.CreateDirectory(Path.GetDirectoryName nested) |> ignore
+        let original = Path.Combine(root, "Repo.slnx")
+        File.WriteAllText(nested, File.ReadAllText(original).Replace("Path=\"tests/", "Path=\"../tests/"))
+        File.Delete original
+        let configured = [ gated "P1" "run --project tests/P1 --" ]
+        let findings = reconcile root (Some "solutions/Chosen.slnx") configured []
+        Assert.Contains(UndeclaredTestProject "tests/P2", findings)
+
+        let governed =
+            reconcile
+                root
+                (Some "solutions/Chosen.slnx")
+                configured
+                [ excluded "tests/P2" "separate integration gate" ]
+
+        Assert.Empty(governed))

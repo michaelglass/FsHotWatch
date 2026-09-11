@@ -1999,20 +1999,33 @@ let ``registered test owner honors the actual declared project identity`` () =
         Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
         File.WriteAllText(project, "<Project />")
         File.WriteAllText(Path.Combine(tmpDir, "Repo.slnx"), $"<Solution><Project Path=\"{relative}\" /></Solution>")
+
         let config =
             parseConfig
                 """{"tests":{"projects":[{"project":"P1","command":"sh","args":"-c \"exit 0\"","coverage":false,"timeoutSec":5}],"excluded":[{"project":"tests/Alias","reason":"separate harness gate"}]}}"""
                 (stripConfig defaults)
+
         let config = { config with Format = Off }
         let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root tmpDir, "test-impact.db")
         Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore
         let db = TestPrune.Database.Database.create dbPath
+
         FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.seedCoveredSymbol
-            db "Lib.owned" "Lib.fs" "RealRulesTests" "RulesTests" "checksRules"
+            db
+            "Lib.owned"
+            "Lib.fs"
+            "RealRulesTests"
+            "RulesTests"
+            "checksRules"
+
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.singleton "Lib.owned")
-        let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
         daemon.Graph.RegisterProject(FsHotWatch.Events.AbsProjectPath.create project, [], [])
         registerPlugins daemon tmpDir config
+
         try
             let terminal = beginAwaitNextTerminal daemon.Host "test-prune"
             daemon.Host.EmitBuildCompleted(FsHotWatch.Events.BuildSucceeded)
