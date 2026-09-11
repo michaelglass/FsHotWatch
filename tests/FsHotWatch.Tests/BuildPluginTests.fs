@@ -3111,11 +3111,15 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
 let ``public verdict wait reports current failed build without inventing test evidence`` (transition: string) =
     withTempDir "failed-build-verdict-wait" (fun root ->
         let source = System.IO.Path.Combine(root, "Source.fs")
+        let project = System.IO.Path.Combine(root, "ManualTests.fsproj")
+        let graph = ProjectGraph()
+        graph.RegisterProject(AbsProjectPath.create project, [ AbsFilePath.create source ], [])
+        System.IO.File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
         let buildScript = System.IO.Path.Combine(root, "build.sh")
         let testScript = System.IO.Path.Combine(root, "test.sh")
         let testStarted = System.IO.Path.Combine(root, "test-started")
         System.IO.File.WriteAllText(source, "module Source\nlet value = 1\n")
-        System.IO.File.WriteAllText(buildScript, "echo 'error FS0001: current-build-refusal'\nexit 1\n")
+        System.IO.File.WriteAllText(buildScript, $"echo '{source}(1,1): error FS0001: current-build-refusal'\nexit 1\n")
         System.IO.File.WriteAllText(testScript, $"touch '{testStarted}'\n")
         let host = PluginHost.create (Unchecked.defaultof<_>) root
         let available generation =
@@ -3137,7 +3141,7 @@ let ``public verdict wait reports current failed build without inventing test ev
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
                 None None None None []
         host.RegisterHandler tests
-        host.RegisterHandler(BuildPlugin.create "sh" buildScript [] (ProjectGraph()) [] None [] (Some 5))
+        host.RegisterHandler(BuildPlugin.create "sh" buildScript [] graph [] None [] (Some 5))
         host.EmitFileChanged(SourceChanged [ source ])
         waitUntil
             (fun () ->
