@@ -1076,6 +1076,72 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
+[<Fact(Timeout = 15000)>]
+let ``dependency success preserves queued input while the build slot is held`` () =
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None
+
+    let mutable running = true
+    let claims = ResizeArray<string * string>()
+    let completed = ResizeArray<BuildResult>()
+
+    let ctx: PluginCtx<BuildMsg> =
+        { ReportStatus = ignore
+          ReportErrors = fun _ _ -> ()
+          ClearErrors = ignore
+          ClearAllErrors = ignore
+          EmitBuildCompleted = completed.Add
+          EmitTestRunStarted = ignore
+          EmitTestProgress = ignore
+          EmitTestRunCompleted = ignore
+          EmitCommandCompleted = ignore
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = "/tmp"
+          Post = ignore
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = ignore
+          Log = ignore
+          CompleteWithTimeout = ignore
+          RunExclusive = fun _ _ -> failwith "build must use the shared artifact lease"
+          RunExclusiveShared =
+            fun key resource _ _ _ ->
+                claims.Add(key, resource)
+                running <- true
+                SharedClaimed
+          IsRunning = fun key -> key = "build" && running
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = ProjectGraphAccessor.none }
+
+    let update state event = handler.Update ctx state event |> Async.RunSynchronously
+    let change = SourceChanged [ "/tmp/queued.fs" ]
+    let buffered = update handler.Init (FileChanged change)
+    Assert.Equal<FileChangeKind list>([ change ], buffered.PendingFiles)
+    Assert.Empty claims
+
+    let dependency =
+        CommandCompleted
+            { Name = "setup"
+              Outcome = CommandSucceeded "ok" }
+
+    let satisfied = update buffered dependency
+    Assert.Equal<FileChangeKind list>([ change ], satisfied.PendingFiles)
+    Assert.Equal<Set<string>>(Set.singleton "setup", satisfied.SatisfiedDeps)
+    Assert.Empty claims
+
+    // The owner releases its local slot before folding its completion. The
+    // dependency notification above must leave the later input owed until here.
+    running <- false
+    let drained = update satisfied (Custom(BuildDone(BuildPassed "original", [], TimeSpan.Zero)))
+    Assert.Empty drained.PendingFiles
+    Assert.Equal<(string * string) list>([ "build", "build-artifacts" ], Seq.toList claims)
+    Assert.Equal<BuildResult list>([ BuildSucceeded ], Seq.toList completed)
+
+    let duplicate = update drained dependency
+    Assert.Empty duplicate.PendingFiles
+    Assert.Single claims |> ignore
+
 [<Fact(Timeout = 20000)>]
 let ``build with dependsOn proceeds immediately when deps already satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
