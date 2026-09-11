@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run one unit test class directly after compiling, without starting a daemon"
+#MISE depends=["compile"]
+set -euo pipefail
+if [[ $# -ne 1 || -z "$1" ]]; then
+  echo "usage: mise run test-focused <fully-qualified-test-class>" >&2
+  exit 2
+fi
+dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj --filter-class "$1"
