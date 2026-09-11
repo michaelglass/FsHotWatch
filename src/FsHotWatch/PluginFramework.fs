@@ -486,14 +486,11 @@ let internal ledgerSummary (diagnosticsByFile: Map<string, ErrorEntry list>) : s
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
-let internal registerHandlerWithOwner
-    (store: PluginWorkOwner.Store)
+let internal registerHandlerForOwner
+    (workOwner: PluginWorkOwner.Owner<'State>)
     (services: PluginHostServices)
     (handler: PluginHandler<'State, 'Msg>)
     : RegisteredPlugin =
-
-    let workOwner =
-        PluginWorkOwner.Owner(handler.Init, store, PluginName.value handler.Name)
 
     // Dispatch may arrive from a short-lived scan/batch scope. An exclusive
     // worker belongs to this registered plugin and can outlive that trigger.
@@ -568,25 +565,18 @@ let internal registerHandlerWithOwner
     let reportBypassingGuard (s: PluginStatus) =
         lock statusLock (fun () -> services.ReportStatus handler.Name s)
 
-    // Forward reference to the agent so `post` and `runOne` can route completion
-    // messages back without an inbox closure. Set immediately after Start returns;
-    // any access before then is impossible by construction (no caller can invoke
-    // ctx until registerHandler returns the RegisteredPlugin).
-    let mutable agentRef: MailboxProcessor<PluginEvent<'Msg> * PluginWorkOwner.WorkId> option =
-        None
+    // Tie delivery to the mailbox before exposing command or dispatch closures.
+    // No worker can start before one of those closures admits it, so uninitialized
+    // delivery is a construction error, not an optional executor state.
+    let mutable deliverEvent: PluginEvent<'Msg> * PluginWorkOwner.WorkId -> unit =
+        fun _ -> invalidOp "Plugin executor delivery has not been initialized"
 
     let post (msg: 'Msg) =
-        match agentRef with
-        | Some a ->
-            let identity = workOwner.AdmitEvent()
-            a.Post(Custom msg, identity)
-        | None -> ()
+        let identity = workOwner.AdmitEvent()
+        deliverEvent (Custom msg, identity)
 
     let enqueueExclusiveIntent key coalescingKey message =
-        workOwner.EnqueueIntent(key, coalescingKey, fun identity ->
-            match agentRef with
-            | Some agent -> agent.Post(Custom message, identity)
-            | None -> invalidOp "Plugin executor is unavailable after intent admission")
+        workOwner.EnqueueIntent(key, coalescingKey, fun identity -> deliverEvent (Custom message, identity))
 
     let reportRunFailure key startedAt stage (ex: exn) =
         let summary = $"RunExclusive '%s{key}' %s{stage}: %s{ex.ToString()}"
@@ -609,6 +599,7 @@ let internal registerHandlerWithOwner
         =
         let finish outcome settleChildren =
             let mutable completion = outcome
+
             try
                 settleChildren ()
             with failure ->
@@ -619,26 +610,28 @@ let internal registerHandlerWithOwner
                 let resourceState =
                     match completion with
                     | Ok message ->
-                        try classify message
+                        try
+                            classify message
                         with failure ->
                             completion <- Result.Error failure
                             Invalid $"{PluginName.value handler.Name} shared result classifier faulted"
                     | Result.Error _ -> Invalid $"{PluginName.value handler.Name} shared work faulted"
 
-                try services.ReleaseSharedRun sharedKey resourceState
-                with failure -> completion <- Result.Error failure)
+                try
+                    services.ReleaseSharedRun sharedKey resourceState
+                with failure ->
+                    completion <- Result.Error failure)
 
             match completion with
             | Ok message ->
                 match workOwner.CompleteRun identity with
                 | None -> ()
-                | Some eventIdentity ->
-                    match agentRef with
-                    | Some agent -> agent.Post(Custom message, eventIdentity)
-                    | None -> invalidOp "Plugin executor is unavailable after work admission"
+                | Some eventIdentity -> deliverEvent (Custom message, eventIdentity)
             | Result.Error failure ->
-                try reportRunFailure key startedAt "work or cleanup failed" failure
-                finally workOwner.FailRun(identity, failure)
+                try
+                    reportRunFailure key startedAt "work or cleanup failed" failure
+                finally
+                    workOwner.FailRun(identity, failure)
 
         SupervisedWork.execute
             (PluginName.value handler.Name + "/" + key)
@@ -730,10 +723,7 @@ let internal registerHandlerWithOwner
 
                             match workOwner.CompleteRun identity with
                             | None -> ()
-                            | Some eventIdentity ->
-                                match agentRef with
-                                | Some agent -> agent.Post(Custom message, eventIdentity)
-                                | None -> invalidOp "Plugin executor is unavailable after shared start failure"
+                            | Some eventIdentity -> deliverEvent (Custom message, eventIdentity)
                         with failure ->
                             try
                                 reportRunFailure key startedAt "startup completion failed" failure
@@ -1069,11 +1059,17 @@ let internal registerHandlerWithOwner
                     /// `cacheKeyOpt` is the same key the preceding `tryReplayCache`
                     /// lookup used (computed once per event in the dispatch loop)
                     /// — never recompute it here.
-                    let runAndCache identity (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
+                    let runAndCache
+                        identity
+                        (event: PluginEvent<'Msg>)
+                        (state: 'State)
+                        (cacheKeyOpt: ContentHash option)
+                        =
                         let eventCtx =
                             { ctx with
                                 RunExclusive = runExclusive (Some identity)
                                 RunExclusiveShared = runExclusiveShared (Some identity) }
+
                         async {
                             match services.TaskCache, cacheKeyOpt with
                             | Some cache, Some cacheKey ->
@@ -1158,7 +1154,15 @@ let internal registerHandlerWithOwner
                                             | SlotBusy -> SlotBusy
                                       RunExclusiveShared =
                                         fun key sharedKey workFor classify failureMessage ->
-                                            match runExclusiveShared (Some identity) key sharedKey workFor classify failureMessage with
+                                            match
+                                                runExclusiveShared
+                                                    (Some identity)
+                                                    key
+                                                    sharedKey
+                                                    workFor
+                                                    classify
+                                                    failureMessage
+                                            with
                                             | SharedClaimed ->
                                                 launchedRunInWindow <- true
                                                 SharedClaimed
@@ -1301,7 +1305,7 @@ let internal registerHandlerWithOwner
                             return! loop nextState
                         }
 
-                    loop handler.Init)
+                    loop workOwner.Snapshot.State)
             )
 
     // Fail accepted event receipts, but preserve exclusive workers until their
@@ -1313,7 +1317,7 @@ let internal registerHandlerWithOwner
             (PluginName.value handler.Name)
             $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
-    agentRef <- Some agent
+    deliverEvent <- agent.Post
 
     // Register commands
     for (cmdName, cmdHandler) in handler.Commands do
@@ -1363,6 +1367,17 @@ let internal registerHandlerWithOwner
       CompletedDispatches = fun () -> workOwner.Snapshot.CompletedEvents
       Subscriptions = handler.Subscriptions
       Fault = fun () -> workOwner.Snapshot.Fault }
+
+/// Register one plugin owner in the host publication before wiring its executor.
+let internal registerHandlerWithOwner
+    (store: PluginWorkOwner.Store)
+    (services: PluginHostServices)
+    (handler: PluginHandler<'State, 'Msg>)
+    : RegisteredPlugin =
+    let workOwner =
+        PluginWorkOwner.Owner(handler.Init, store, PluginName.value handler.Name)
+
+    registerHandlerForOwner workOwner services handler
 
 /// Standalone registration with a private owner publication.
 let registerHandler (services: PluginHostServices) (handler: PluginHandler<'State, 'Msg>) : RegisteredPlugin =

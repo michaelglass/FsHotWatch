@@ -65,6 +65,7 @@
     <Compile Include="PathFilter.fs" />
     <Compile Include="SafeWalk.fs" />
     <Compile Include="ProcessRegistry.fs" />
+    <Compile Include="WindowsProcessJob.fs" />
     <Compile Include="ProcessContainment.fs" />
     <Compile Include="OwnedChild.fs" />
     <Compile Include="ProcessHelper.fs" />
