@@ -3617,3 +3617,287 @@ let ``terminal reported by an update that later fails cannot prepare or populate
     )
 
     Assert.Equal(0L, registration.CompletedDispatches())
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "SharedCompletionFailure")>]
+let ``shared classification or release failure retires work without folding a success`` releaseFails =
+    let failure = System.IO.IOException("shared completion failed")
+    let released = System.Threading.Tasks.TaskCompletionSource<SharedResourceState>()
+    let folded = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let scheduler = SharedRunScheduler()
+
+    let original =
+        sharedWakeHandlerWithClassifier "shared-completion-failure" (fun _ -> async.Return SharedFinished) (fun _ ->
+            if releaseFails then Ready else raise failure)
+
+    let handler =
+        { original with
+            Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | Custom _ -> folded.TrySetResult(()) |> ignore
+                        | _ -> ()
+
+                        return! original.Update ctx state event
+                    } }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+                ReleaseSharedRun =
+                    fun key state ->
+                        scheduler.Release(key, state)
+                        released.TrySetResult(state) |> ignore
+
+                        if releaseFails then
+                            raise failure }
+            handler
+
+    dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+
+    let resource =
+        released.Task.WaitAsync(System.TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
+    Assert.False(registration.IsBusy(), "failed shared completion must retire its local obligation")
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.False(folded.Task.IsCompleted, "a failed classifier or handoff cannot publish the success result")
+
+    match resource with
+    | Ready -> Assert.True(releaseFails)
+    | Invalid reason -> Assert.Contains("classifier faulted", reason)
+
+    Assert.Equal(Some resource, scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted))
+    scheduler.Release("artifacts", Ready)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Owner", "SharedReleaseFailure")>]
+let ``failed shared launch retains cleanup failure instead of publishing mapped completion`` () =
+    let failure = System.IO.IOException("shared launch cleanup failed")
+    let mapped = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let original =
+        sharedWakeHandler "launch-release-failure" (fun _ -> async.Return SharedFinished)
+
+    let handler =
+        { original with
+            Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            let claim =
+                                ctx.RunExclusiveShared
+                                    "work"
+                                    "artifacts"
+                                    (fun _ -> async.Return SharedFinished)
+                                    (fun _ -> Ready)
+                                    (fun _ ->
+                                        mapped.TrySetResult(()) |> ignore
+                                        SharedFinished)
+
+                            Assert.Equal(SharedClaimed, claim)
+                        | _ -> ()
+
+                        return state
+                    } }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                StartAsync = fun _ -> raise (System.InvalidOperationException("launcher failed"))
+                ReleaseSharedRun = fun _ _ -> raise failure }
+            handler
+
+    dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+    Assert.False(registration.IsBusy())
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.False(mapped.Task.IsCompleted, "failed cleanup must not mint a completion message")
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "CacheWriteFailure")>]
+let ``cache write failure preserves published state and faults the actual event receipt`` prepared =
+    let failure = System.IO.IOException("cache persistence failed")
+    let inner = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+
+    let cache =
+        { new TaskCache.ITaskCache with
+            member _.TryGet composite key = inner.TryGet composite key
+            member _.Lookup composite key = inner.Lookup composite key
+            member _.Set _ _ _ = raise failure
+            member _.Clear() = inner.Clear()
+            member _.ClearPlugin name = inner.ClearPlugin name
+            member _.ClearFile file = inner.ClearFile file
+            member _.ClearPluginFile name file = inner.ClearPluginFile name file }
+
+    let mutable readCommand: CommandHandler option = None
+    let key = ContentHash.create "failed-cache-write"
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "failed-cache-write"
+          Init = 1
+          Update =
+            fun ctx state _ ->
+                async {
+                    ctx.ReportStatus(PluginStatus.completedNow "candidate" System.TimeSpan.Zero)
+                    return state + 1
+                }
+          PrepareCommit =
+            if prepared then
+                Some(fun _ _ -> async.Return { Finalize = async.Return() })
+            else
+                None
+          Commands = [ "read", PluginCommand.Observe(fun _ state _ -> async.Return(string state)) ]
+          Subscriptions = Set.singleton SubscribeBuildCompleted
+          CacheKey = Some(fun _ _ -> Some key)
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache
+                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+            handler
+
+    let receipt =
+        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 5.)
+
+    Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
+    Assert.Equal("2", readCommand.Value [||] |> Async.RunSynchronously)
+    Assert.Same(failure, registration.Fault().Value)
+    Assert.False(registration.IsBusy())
+    Assert.Equal(0L, registration.CompletedDispatches())
+
+    Assert.True(
+        (cache.TryGet
+            { Plugin = "failed-cache-write"
+              File = None }
+            key)
+            .IsNone
+    )
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A106Supervision", "SuppressedOwnerContext")>]
+let ``registration with suppressed execution context still owns and completes exclusive work`` () =
+    let completed = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let original =
+        sharedWakeHandler "suppressed-owner-context" (fun _ -> async.Return SharedFinished)
+
+    let handler =
+        { original with
+            Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | Custom SharedFinished -> completed.TrySetResult(()) |> ignore
+                        | _ -> ()
+
+                        return! original.Update ctx state event
+                    } }
+
+    let registration =
+        use suppression = System.Threading.ExecutionContext.SuppressFlow()
+        Assert.True(System.Threading.ExecutionContext.IsFlowSuppressed())
+        registerDefault handler
+
+    dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+    completed.Task.WaitAsync(System.TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
+    Assert.False(registration.IsBusy())
+    Assert.True(registration.Fault().IsNone)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+[<Trait("A104Owner", "SharedCacheOwnership")>]
+let ``a terminal before shared admission cannot cache work that is claimed or queued`` queued =
+    let scheduler = SharedRunScheduler()
+
+    if queued then
+        Assert.Equal(Some Ready, scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted))
+
+    let release = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let key = ContentHash.create "shared-cache-owner"
+
+    let handler: PluginHandler<int, unit> =
+        { Name = PluginName.create "shared-cache-owner"
+          Init = 0
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(PluginStatus.completedNow "prior result" System.TimeSpan.Zero)
+
+                        let work _ =
+                            async {
+                                entered.TrySetResult(()) |> ignore
+                                do! release.Task |> Async.AwaitTask
+                                return ()
+                            }
+
+                        let claim =
+                            ctx.RunExclusiveShared "work" "artifacts" work (fun _ -> Ready) (fun ex -> raise ex)
+
+                        Assert.Equal((if queued then SharedQueued else SharedClaimed), claim)
+
+                        let refused =
+                            ctx.RunExclusiveShared "work" "artifacts" work (fun _ -> Ready) (fun ex -> raise ex)
+
+                        Assert.Equal(LocalSlotBusy, refused)
+                    | Custom _ -> ctx.ReportStatus(PluginStatus.completedNow "actual work" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state + 1
+                }
+          PrepareCommit = None
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey =
+            Some(fun _ event ->
+                match event with
+                | FileChanged _ -> Some key
+                | _ -> None)
+          Teardown = None }
+
+    let registration =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache
+                ClaimOrQueueSharedRun = fun resource start -> scheduler.ClaimOrQueue(resource, start)
+                ReleaseSharedRun = fun resource state -> scheduler.Release(resource, state) }
+            handler
+
+    try
+        dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
+        Assert.True(registration.IsBusy())
+
+        Assert.True(
+            (cache.TryGet
+                { Plugin = "shared-cache-owner"
+                  File = None }
+                key)
+                .IsNone
+        )
+
+        if queued then
+            Assert.False(entered.Task.IsCompleted, "a queued worker must wait for its shared resource")
+    finally
+        if queued then
+            scheduler.Release("artifacts", Ready)
+
+        release.TrySetResult(()) |> ignore
+        waitUntil (fun () -> not (registration.IsBusy())) 5000
+
+    Assert.True(entered.Task.IsCompleted, "the admitted worker must actually run")
+    Assert.False(registration.IsBusy())
+    Assert.True(registration.Fault().IsNone)
