@@ -121,7 +121,11 @@ let ``set-scope replies only after the owner applies its intent`` (scope: string
         Assert.False(reply.IsCompleted, "set-scope acknowledged before its owner applied the intent")
 
         let pluginCtx, _, _ = makeTestPruneRecordingCtx ()
-        let! _ = handler.Update pluginCtx handler.Init (Custom posted.[0]) |> Async.StartAsTask
+        let! candidate = handler.Update pluginCtx handler.Init (Custom posted.[0]) |> Async.StartAsTask
+        Assert.False(reply.IsCompleted, "set-scope acknowledged an unpublished candidate")
+        let! prepared = handler.PrepareCommit.Value handler.Init candidate |> Async.StartAsTask
+        Assert.False(reply.IsCompleted, "set-scope acknowledged before publication")
+        do! prepared.Finalize |> Async.StartAsTask
         let! response = reply.WaitAsync(TimeSpan.FromSeconds 2.0)
         use json = JsonDocument.Parse response
         Assert.Equal(scope, json.RootElement.GetProperty("scope").GetString())
@@ -3081,3 +3085,51 @@ let ``a retained owner cannot learn a full suite baseline earned by a later comp
     Assert.NotEqual<string>("null", fst current)
     Assert.Equal("null", snd current)
     Assert.Equal(initial, read handler.Init)
+
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtPublication")>]
+let ``pending debt persistence follows the successful proposal and precedes acknowledgement`` () =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Contains(symbol, queue)
+    | other -> Assert.Fail($"proposal must not discharge durable debt: {other}")
+
+    let prepared = handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously
+    match PendingVerification.load root with
+    | PendingVerification.LoadedQueue.Loaded queue -> Assert.Empty queue
+    | other -> Assert.Fail($"successful preparation writes the candidate: {other}")
+
+    let interrupted = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+    Assert.True(interrupted.Init.Debt.RecoveryOutstanding, "before publication, restart must see unknown debt")
+    prepared.Finalize |> Async.RunSynchronously
+    let published = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+    Assert.False(published.Init.Debt.RecoveryOutstanding)
+    Assert.Empty published.Init.Debt.PendingQueue
+    Assert.Contains(symbol, prior.Debt.PendingQueue)
+
+[<Fact(Timeout = 15000)>]
+[<Trait("A104Evidence", "PendingDebtPublication")>]
+let ``failed durable preparation retains restart debt after a partial sidecar write`` () =
+    let root, symbol, handler, ctx, prior, launch = pendingDebtOwnerFixture ()
+    let candidate =
+        handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false ] launch)
+        |> Async.RunSynchronously
+
+    // Queue persistence precedes the baseline. Refuse the later write to model a
+    // partially prepared owner transaction, not a failure before anything happened.
+    let baselinePath = FullSuiteBaseline.sidecarPath root
+    if File.Exists baselinePath then File.Delete baselinePath
+    Directory.CreateDirectory baselinePath |> ignore
+    Assert.ThrowsAny<IOException>(fun () ->
+        handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously |> ignore)
+    |> ignore
+
+    Assert.Contains(symbol, prior.Debt.PendingQueue)
+    let restarted = create ":memory:" root (Some [ a125Config "ProjA" ]) None None None None []
+    Assert.True(restarted.Init.Debt.RecoveryOutstanding)
+    Assert.True((restarted.CacheKey.Value restarted.Init (BuildCompleted BuildSucceeded)).IsNone)
