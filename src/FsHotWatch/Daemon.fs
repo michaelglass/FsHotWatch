@@ -121,7 +121,15 @@ let internal applyDepsGate
 let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string list) =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
-    Discovery.findFsprojFiles repoRoot
+    // C# projects can be loaded transitively by an F# root. Their project
+    // edits must invalidate the scan plan even when no watcher event arrived.
+    // They remain dependency inputs, not additional F# discovery roots.
+    let csharpProjects =
+        Discovery.existingDiscoveryRoots repoRoot
+        |> List.collect (fun directory ->
+            SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*.csproj" directory |> List.ofSeq)
+
+    (Discovery.findFsprojFiles repoRoot @ csharpProjects)
     |> List.filter (fun f -> not (isExcluded f))
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
@@ -1055,7 +1063,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 | None ->
                     sourceFilesFor project
                     |> List.map AbsFilePath.value
-                    |> List.filter (fun file -> not (PathFilter.isGeneratedPath file)))
+                    |> List.filter (fun file -> PathFilter.isFSharpSource file && not (PathFilter.isGeneratedPath file)))
             |> List.distinct
 
         if not projFilesChanged.IsEmpty || hasSolution then
@@ -1169,7 +1177,8 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
         let dispatchedFiles = ResizeArray<AbsFilePath>()
 
         if not allSourceFiles.IsEmpty then
-            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            let modifiedByPreprocessors =
+                ctx.Host.RunPreprocessors(allSourceFiles |> List.filter PathFilter.isFSharpSource).Modified
 
             let newSuppressed =
                 Set.union remainingSuppressed (Set.ofList modifiedByPreprocessors)
@@ -1195,11 +1204,13 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             let allFilesToCheck =
                 (allSourceFiles @ dependentProjectFiles)
+                |> List.filter PathFilter.isFSharpSource
                 |> List.map AbsFilePath.create
                 |> List.distinct
 
             publishCurrent (fun () ->
-                ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
+                ctx.Host.EmitFileChanged(
+                    SourceChanged((allSourceFiles @ (allFilesToCheck |> List.map AbsFilePath.value)) |> List.distinct)))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
@@ -1265,21 +1276,17 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
                 emitResults results
 
-            // Empty cohorts (every file filtered as content-unchanged or no
-            // results from the pipeline) skip the emit — there's nothing to
-            // "flush and decide" against.
-            if dispatchedFiles.Count > 0 then
-                let nextGen =
-                    System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
-
-                publishCurrent (fun () ->
-                    ctx.Host.EmitBatchChecked
-                        { Trigger = InSessionBatch changes
-                          Files = dispatchedFiles |> List.ofSeq
-                          Generation = nextGen
-                          ModelGeneration = modelGeneration ()
-                          StartedAt = batchStartedAt
-                          CompletedAt = System.DateTime.UtcNow })
+            // A non-F# build input can change without an FCS result. Seal that
+            // accepted cohort so analysis and runtime-debt owners can settle it.
+            let nextGen = System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+            publishCurrent (fun () ->
+                ctx.Host.EmitBatchChecked
+                    { Trigger = InSessionBatch changes
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = nextGen
+                      ModelGeneration = modelGeneration ()
+                      StartedAt = batchStartedAt
+                      CompletedAt = System.DateTime.UtcNow })
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
             return newSuppressed
@@ -2238,7 +2245,7 @@ let private performScan
             // A fingerprint hit skips OUR discovery, not a concurrent writer's.
             // Capture membership, dependency tiers and options together before that
             // writer can clear any of them; never revisit the live graph mid-scan.
-            let! capturedModel, registeredProjects, registeredFiles, scanTiers =
+            let! capturedModel, registeredProjects, registeredFiles, buildOnlyFiles, scanTiers =
                 ctx.Discovery.Capture(fun epoch ->
                     let projects = pipeline.GetRegisteredProjects()
                     let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
@@ -2252,7 +2259,13 @@ let private performScan
                                 pipeline.GetProjectOptions(AbsProjectPath.value project))
                         )
 
-                    epoch, projects, files, tiers)
+                    let buildOnlyFiles =
+                        graph.GetAllProjects()
+                        |> List.collect graph.GetSourceFiles
+                        |> List.map AbsFilePath.value
+                        |> List.filter (fun file -> not (PathFilter.isFSharpSource file) && not (PathFilter.isGeneratedPath file))
+                        |> List.distinct
+                    epoch, projects, files, buildOnlyFiles, tiers)
 
             let modelGeneration = snd capturedModel |> Option.map (fun _ -> fst capturedModel)
 
@@ -2308,14 +2321,15 @@ let private performScan
             // `if` so the metrics record can read it on an empty scan too.
             let mutable checkedTotal = 0
 
-            if not files.IsEmpty then
-                // Run preprocessors (e.g., formatter) before dispatching
+            let buildInputs = List.distinct (files @ buildOnlyFiles)
+            if not buildInputs.IsEmpty then
+                // Run preprocessors (e.g., formatter) only on FCS-supported inputs.
                 let modified = host.RunPreprocessors(files).Modified
 
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
+                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged buildInputs))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
                 // read the obj/ refs it rewrites. See
