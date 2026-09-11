@@ -10,10 +10,26 @@ open FsHotWatch.Events
 type WorkId = private WorkId of Guid
 
 [<NoComparison; NoEquality>]
+type private QueuedIntent =
+    { Id: WorkId
+      CoalescingKey: string option
+      Deliver: WorkId -> unit
+      Receipt: TaskCompletionSource<unit> }
+
+/// A slot owns its pending intent capabilities, not precomputed work.
+[<NoComparison; NoEquality>]
+type private ExclusiveSlot =
+    | Running
+    | RunningQueued of first: QueuedIntent * rest: QueuedIntent list
+
+[<NoComparison; NoEquality>]
 type private WorkKind =
-    | Event of TaskCompletionSource<unit> option
-    | Committing of TaskCompletionSource<unit> option
-    | Exclusive of string
+    | Event of TaskCompletionSource<unit> option * (string * ExclusiveSlot) option
+    | Committing of TaskCompletionSource<unit> option * (string * ExclusiveSlot) option
+    | Exclusive of string * ExclusiveSlot
+
+let private queued = function Running -> [] | RunningQueued(first, rest) -> first :: rest
+let private slot = function [] -> Running | first :: rest -> RunningQueued(first, rest)
 
 /// Working cannot contain zero obligations. Construction stays inside this module.
 [<NoComparison; NoEquality>]
@@ -65,7 +81,7 @@ type Snapshot<'State> =
             function
             | Event _
             | Committing _ -> false
-            | Exclusive candidate -> candidate = key
+            | Exclusive(candidate, _) -> candidate = key
 
         match this.Phase with
         | Resting -> false
@@ -286,7 +302,7 @@ type Store() =
 
 /// Typed capability into the shared publication. Standalone handlers get a private
 /// store; a host supplies the same store to every handler it registers.
-type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
+type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) as this =
     let store =
         match store with
         | Some shared -> shared
@@ -322,6 +338,26 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 row next, result
         )
 
+    let retireEvent id snapshot =
+        let receipt, continuation =
+            match Map.find id (entries snapshot.Phase) with
+            | Event(receipt, continuation)
+            | Committing(receipt, continuation) -> receipt, continuation
+            | _ -> invalidOp "Expected event obligation"
+        let pending = continuation |> Option.map (snd >> queued) |> Option.defaultValue []
+        let work =
+            pending |> List.fold (fun work intent -> Map.add intent.Id (Event(Some intent.Receipt, None)) work)
+                (entries snapshot.Phase |> Map.remove id)
+        work, receipt, pending
+
+    let deliverIntents pending =
+        try
+            for intent in pending do
+                intent.Deliver intent.Id
+        with failure ->
+            this.FaultExecutor failure
+            raise failure
+
     member _.Snapshot = unbox<Snapshot<'State>> (store.Read(id).Value)
 
     member _.AdmitTrackedEvent() : WorkId * Task<unit> =
@@ -332,14 +368,14 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
             let receipt =
                 TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            let work = entries snapshot.Phase |> Map.add id (Event(Some receipt))
+            let work = entries snapshot.Phase |> Map.add id (Event(Some receipt, None))
             { snapshot with Phase = phase work }, (id, receipt.Task))
 
     member _.AdmitEvent() : WorkId =
         mutate (fun snapshot ->
             snapshot.ExecutorFault |> Option.iter raise
             let id = WorkId(Guid.NewGuid())
-            let work = entries snapshot.Phase |> Map.add id (Event None)
+            let work = entries snapshot.Phase |> Map.add id (Event(None, None))
             { snapshot with Phase = phase work }, id)
 
     member _.TryClaim(key: string) : (WorkId * DateTime) option =
@@ -350,26 +386,66 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 snapshot, None
             else
                 let id = WorkId(Guid.NewGuid())
-                let work = entries snapshot.Phase |> Map.add id (Exclusive key)
+                let work = entries snapshot.Phase |> Map.add id (Exclusive(key, Running))
                 { snapshot with Phase = phase work }, Some(id, DateTime.UtcNow))
 
-    member _.CommitEvent(id: WorkId, state: 'State) =
-        let receipt =
+    /// Admit intent under a live slot or its result fold. Coalescing replaces
+    /// only the payload of an equal pending intent, retaining its exact receipt.
+    member _.EnqueueIntent(key: string, coalescingKey: string option, deliver: WorkId -> unit) : Task<unit> =
+        let immediate, receipt =
             mutate (fun snapshot ->
-                requireKind
-                    id
-                    (function
-                    | Event _ -> true
-                    | _ -> false)
-                    snapshot
+                snapshot.ExecutorFault |> Option.iter raise
+                let work = entries snapshot.Phase
+                let candidate =
+                    work |> Map.toList |> List.tryPick (fun (id, kind) ->
+                        match kind with
+                        | Exclusive(candidate, pending) when candidate = key -> Some(id, kind, pending)
+                        | _ -> None)
+                    |> Option.orElseWith (fun () ->
+                        work |> Map.toList |> List.tryPick (fun (id, kind) ->
+                            match kind with
+                            | Event(_, Some(candidate, pending))
+                            | Committing(_, Some(candidate, pending)) when candidate = key -> Some(id, kind, pending)
+                            | _ -> None))
 
-                let receipt =
-                    match Map.find id (entries snapshot.Phase) with
-                    | Event receipt -> receipt
-                    | _ -> invalidOp "Expected event obligation"
+                let existing =
+                    candidate |> Option.bind (fun (_, _, pending) ->
+                        coalescingKey |> Option.bind (fun requested ->
+                            queued pending |> List.tryFind (fun intent -> intent.CoalescingKey = Some requested)))
+                let intent =
+                    match existing with
+                    | Some prior -> { prior with Deliver = deliver }
+                    | None ->
+                        { Id = WorkId(Guid.NewGuid())
+                          CoalescingKey = coalescingKey
+                          Deliver = deliver
+                          Receipt = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously) }
 
-                let work = entries snapshot.Phase |> Map.remove id
+                match candidate with
+                | None ->
+                    { snapshot with Phase = Map.add intent.Id (Event(Some intent.Receipt, None)) work |> phase },
+                    (Some intent, intent.Receipt.Task)
+                | Some(id, kind, pending) ->
+                    let next =
+                        (match existing with
+                         | None -> queued pending @ [ intent ]
+                         | Some prior -> queued pending |> List.map (fun item -> if item.Id = prior.Id then intent else item))
+                        |> slot
+                    let kind =
+                        match kind with
+                        | Exclusive(key, _) -> Exclusive(key, next)
+                        | Event(receipt, _) -> Event(receipt, Some(key, next))
+                        | Committing(receipt, _) -> Committing(receipt, Some(key, next))
+                    { snapshot with Phase = Map.add id kind work |> phase }, (None, intent.Receipt.Task))
 
+        immediate |> Option.iter (fun intent -> deliverIntents [ intent ])
+        receipt
+
+    member _.CommitEvent(id: WorkId, state: 'State) =
+        let receipt, pending =
+            mutate (fun snapshot ->
+                requireKind id (function Event _ -> true | _ -> false) snapshot
+                let work, receipt, pending = retireEvent id snapshot
                 { snapshot with
                     Domain = state
                     Phase = phase work
@@ -378,8 +454,8 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                         match snapshot.Failure with
                         | Some(UpdateFailure _) -> None
                         | other -> other },
-                receipt)
-
+                (receipt, pending))
+        deliverIntents pending
         receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
 
     /// Publish a prepared candidate without settling its original event obligation.
@@ -392,21 +468,21 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 | _ -> false)
                 snapshot
 
-            let receipt =
+            let receipt, continuation =
                 match Map.find id (entries snapshot.Phase) with
-                | Event receipt -> receipt
+                | Event(receipt, continuation) -> receipt, continuation
                 | _ -> invalidOp "Expected event obligation"
 
             { snapshot with
                 Domain = state
-                Phase = entries snapshot.Phase |> Map.add id (Committing receipt) |> phase },
+                Phase = entries snapshot.Phase |> Map.add id (Committing(receipt, continuation)) |> phase },
             ())
 
     /// Only the exact prepared event can acknowledge successful finalization.
     member _.SettleEvent(id: WorkId, ?preparedCommit: bool) =
         let preparedCommit = defaultArg preparedCommit false
 
-        let receipt =
+        let receipt, pending =
             mutate (fun snapshot ->
                 requireKind
                     id
@@ -415,13 +491,10 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     | _ -> false)
                     snapshot
 
-                let receipt =
-                    match Map.find id (entries snapshot.Phase) with
-                    | Committing receipt -> receipt
-                    | _ -> invalidOp "Expected prepared event obligation"
+                let work, receipt, pending = retireEvent id snapshot
 
                 { snapshot with
-                    Phase = entries snapshot.Phase |> Map.remove id |> phase
+                    Phase = phase work
                     Completed = snapshot.Completed + 1L
                     Failure =
                         match snapshot.Failure with
@@ -429,8 +502,9 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                         | Some(CommitFailure _)
                         | Some(RunFailure _) when preparedCommit -> None
                         | other -> other },
-                receipt)
+                (receipt, pending))
 
+        deliverIntents pending
         receipt |> Option.iter (fun completion -> completion.TrySetResult(()) |> ignore)
 
     /// A failed fold cannot acknowledge success or discard unrelated live workers.
@@ -439,7 +513,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
         | ExecutorFailure _ -> invalidArg "failure" "Use FaultExecutor for executor termination"
         | _ -> ()
 
-        let receipt =
+        let receipt, pending =
             mutate (fun snapshot ->
                 requireKind
                     id
@@ -449,11 +523,7 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     | _ -> false)
                     snapshot
 
-                let receipt =
-                    match Map.find id (entries snapshot.Phase) with
-                    | Event receipt
-                    | Committing receipt -> receipt
-                    | _ -> invalidOp "Expected event obligation"
+                let work, receipt, pending = retireEvent id snapshot
 
                 let retainedFailure =
                     match snapshot.Failure, failure with
@@ -462,9 +532,11 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     | _ -> failure
 
                 { snapshot with
-                    Phase = entries snapshot.Phase |> Map.remove id |> phase
+                    Phase = phase work
                     Failure = Some retainedFailure },
-                receipt)
+                (receipt, pending))
+
+        deliverIntents pending
 
         receipt
         |> Option.iter (fun completion -> completion.TrySetException(failure.Exception) |> ignore)
@@ -490,7 +562,11 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                 None
             | None ->
                 let completion = WorkId(Guid.NewGuid())
-                let work = remaining |> Map.add completion (Event None)
+                let continuation =
+                    match Map.find id (entries snapshot.Phase) with
+                    | Exclusive(key, pending) -> Some(key, pending)
+                    | _ -> invalidOp "Expected exclusive operation"
+                let work = remaining |> Map.add completion (Event(None, continuation))
                 { snapshot with Phase = phase work }, Some completion)
 
     member this.TransferToCompletion(id: WorkId) : WorkId =
@@ -508,11 +584,13 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                         |> Map.fold
                             (fun (remaining, receipts) id kind ->
                                 match kind with
-                                | Exclusive _ -> Map.add id kind remaining, receipts
-                                | Event None
-                                | Committing None -> remaining, receipts
-                                | Event(Some receipt)
-                                | Committing(Some receipt) -> remaining, receipt :: receipts)
+                                | Exclusive(key, pending) ->
+                                    let queuedReceipts = queued pending |> List.map (fun intent -> intent.Receipt)
+                                    Map.add id (Exclusive(key, Running)) remaining, queuedReceipts @ receipts
+                                | Event(receipt, pending)
+                                | Committing(receipt, pending) ->
+                                    let queuedReceipts = pending |> Option.map (snd >> queued >> List.map (fun intent -> intent.Receipt)) |> Option.defaultValue []
+                                    remaining, (Option.toList receipt) @ queuedReceipts @ receipts)
                             (Map.empty, [])
 
                     { snapshot with
@@ -536,20 +614,21 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
             | _ -> snapshot, ())
 
     member _.FailRun(id: WorkId, failure: exn) =
-        mutate (fun snapshot ->
-            requireKind
-                id
-                (function
-                | Exclusive _ -> true
-                | Event _
-                | Committing _ -> false)
-                snapshot
-
-            { snapshot with
-                Phase = entries snapshot.Phase |> Map.remove id |> phase
-                Failure =
-                    match snapshot.Failure with
-                    | Some(ExecutorFailure _ as prior)
-                    | Some(CommitFailure _ as prior) -> Some prior
-                    | _ -> Some(RunFailure failure) },
-            ())
+        let pending =
+            mutate (fun snapshot ->
+                requireKind id (function Exclusive _ -> true | _ -> false) snapshot
+                let pending =
+                    match Map.find id (entries snapshot.Phase) with
+                    | Exclusive(_, pending) -> queued pending
+                    | _ -> invalidOp "Expected exclusive operation"
+                let work =
+                    pending |> List.fold (fun work intent -> Map.add intent.Id (Event(Some intent.Receipt, None)) work)
+                        (entries snapshot.Phase |> Map.remove id)
+                { snapshot with
+                    Phase = phase work
+                    Failure =
+                        match snapshot.Failure with
+                        | Some(ExecutorFailure _ as prior)
+                        | Some(CommitFailure _ as prior) -> Some prior
+                        | _ -> Some(RunFailure failure) }, pending)
+        deliverIntents pending
