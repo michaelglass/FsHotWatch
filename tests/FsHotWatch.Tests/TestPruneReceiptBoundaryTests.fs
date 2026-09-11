@@ -88,17 +88,22 @@ let private withFixture action =
                 RepoRoot = root
                 ProjectGraph =
                     { ProjectGraphAccessor.none with
-                        ObserveModel = fun () -> FsHotWatch.ProjectModel.ofCompleted 1L
-                            { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 } }
+                        ObserveModel =
+                            fun () ->
+                                FsHotWatch.ProjectModel.ofCompleted 1L
+                                    { Discovered = 1; Loaded = 1; OptionsMapped = 1; Registered = 1 } }
                 RunExclusiveShared = fun _ _ work _ _ -> scheduled.Enqueue work; SharedClaimed }
         action root ctx scheduled)
 
 let private scope root (ctx: PluginCtx<TestPruneMsg>) (handler: PluginHandler<TestPruneState, TestPruneMsg>) state =
     let command = handler.Commands |> List.find (fst >> (=) "test-scope") |> snd
     let commandCtx: CommandCtx<TestPruneMsg> =
-        { RepoRoot = root; Log = ignore; Post = ignore
+        { RepoRoot = root
+          Log = ignore
+          Post = ignore
           EnqueueExclusiveIntent = fun _ _ _ -> Task.FromResult(())
-          IsRunning = fun _ -> false; ProjectGraph = ctx.ProjectGraph }
+          IsRunning = fun _ -> false
+          ProjectGraph = ctx.ProjectGraph }
     PluginCommand.invoke command commandCtx state [||]
     |> Async.RunSynchronously
     |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
