@@ -790,161 +790,218 @@ let runProcessTo
     let launchDeadline = bounds.LaunchDeadline
     let psi = makeChildProcessStartInfo command args workDir env
 
-    use proc = Process.Start(psi)
-    // Register so a daemon shutdown can tear down in-flight children.
-    ProcessRegistry.track proc
+    let assemblyDirectory =
+        IO.Path.GetDirectoryName(typeof<ProcessBounds>.Assembly.Location)
+
+    let localHost =
+        IO.Path.Combine(assemblyDirectory, "fshw-process-host", "FsHotWatch.ProcessHost.dll")
+
+    let packageHost =
+        IO.Path.GetFullPath(
+            IO.Path.Combine(assemblyDirectory, "..", "..", "tools", "net10.0", "FsHotWatch.ProcessHost.dll")
+        )
+
+    let hostPath = if IO.File.Exists localHost then localHost else packageHost
+
+    let mutable registeredChild: FsHotWatch.ProcessOwnership.OwnedChild option = None
+
+    let owned =
+        try
+            FsHotWatch.ProcessOwnership.OwnedChild.Start(
+                psi,
+                hostPath,
+                fun child ->
+                    registeredChild <- Some child
+                    ProcessRegistry.trackOwned child.Process child.Terminate
+            )
+        with admissionError ->
+            match registeredChild with
+            | Some child ->
+                try
+                    child.Terminate()
+                    ProcessRegistry.untrack child.Process
+                    child.Dispose()
+                with cleanupError ->
+                    raise (AggregateException("Process admission and cleanup failed.", admissionError, cleanupError))
+            | None -> ()
+
+            reraise ()
+
+    let proc = owned.Process
 
     // Read ONCE, while the handle is certainly live: this is what an operator needs
     // to hunt down a tree we failed to kill, and it must still be reportable on the
     // path where everything else about the child has gone wrong.
     let pid = proc.Id
 
-    // Incremental output capture via explicit stream pumps. The event API
-    // (`BeginOutputReadLine`) is not usable here: draining it requires the
-    // parameterless `WaitForExit()` (the timed overload does NOT flush the async
-    // handlers), which is the unbounded grandchild-pipe-wedging wait we must avoid.
-    // A chunk-at-a-time `Read` loop gives a Task handle we can bound-wait AND flips
-    // a latch on the FIRST byte — the liveness signal the launch deadline keys off
-    // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
-    let output = StringBuilder()
-    let outputLock = obj ()
-    let mutable sawOutput = 0
-    let mutable sinkBroken = false
-
-    // Fed from inside `outputLock`, so the sink sees the chunks in the SAME order
-    // the in-memory capture does and the two pumps' writes are serialised against
-    // each other — a caller's file and `ProcessOutput.text` can never disagree
-    // about what the child said or in what order.
-    let emit (chunk: string) =
-        match sink with
-        | None -> ()
-        | Some write when not sinkBroken ->
-            try
-                write chunk
-            with ex ->
-                sinkBroken <- true
-
-                Logging.warn
-                    "process"
-                    $"output sink for `%s{command}` failed and is now DISABLED for this run: \
-                      %s{ex.GetType().Name}: %s{ex.Message}. The in-memory capture is unaffected, but whatever \
-                      the sink was writing (a streamed run log) is now INCOMPLETE."
-        | Some _ -> ()
-
-    // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
-    //
-    // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
-    // and under a saturated pool — a `check` running the full suite in parallel,
-    // exactly when a spawn's output matters most — the reader may never run, the 2 s
-    // drain window expires having read zero bytes, and the child's output comes back
-    // as `""`: the clock measuring the POOL, not the process.
-    //
-    // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
-    // captured from it is all there ever was. See `pumpReachedEof`.
-    let pump (reader: IO.StreamReader) : Task<bool> =
-        Task.Factory.StartNew(
-            (fun () ->
-                let mutable failure = None
-
-                try
-                    let buf = Array.zeroCreate<char> 4096
-                    let mutable go = true
-
-                    while go do
-                        let n = reader.Read(buf, 0, buf.Length)
-
-                        if n = 0 then
-                            go <- false
-                        else
-                            Volatile.Write(&sawOutput, 1)
-                            let chunk = String(buf, 0, n)
-
-                            lock outputLock (fun () ->
-                                output.Append(chunk) |> ignore
-                                emit chunk)
-                with ex ->
-                    failure <- Some ex
-
-                pumpReachedEof failure),
-            TaskCreationOptions.LongRunning
-        )
-
-    let stdoutTask = pump proc.StandardOutput
-    let stderrTask = pump proc.StandardError
-
-    let drainedOutput () =
-        lock outputLock (fun () -> output.ToString().Trim())
-
-    // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
-    // instant it exits (returns in ms); only a grandchild holding the pipe makes
-    // this block, and then only for the window. An expired window rides out on the
-    // value as `DrainTimedOut` so it cannot be mistaken for a child that said
-    // nothing.
-    let drainPumps () : ProcessOutput =
-        let waitReturned =
-            Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], int PostExitDrainWindow.TotalMilliseconds)
-
-        classifyDrain
-            waitReturned
-            (fun () -> stdoutTask.Result)
-            (fun () -> stderrTask.Result)
-            (drainedOutput ())
-            PostExitDrainWindow
-
-    let pollMs = 250
+    let mutable primaryFailure: exn option = None
 
     try
-        // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
-        // the instant the child exits (so completion is observed promptly) but
-        // caps at `pollMs` so the launch/overall deadlines are still checked
-        // regularly. `observe` reads the independent liveness handle
-        // (`HasExited`) — the poll that closes the machine-sleep hole where a
-        // single blocking wait never returned.
-        let observe () =
-            proc.HasExited, (Volatile.Read &sawOutput = 1)
+        try
+            // Incremental output capture via explicit stream pumps. The event API
+            // (`BeginOutputReadLine`) is not usable here: draining it requires the
+            // parameterless `WaitForExit()` (the timed overload does NOT flush the async
+            // handlers), which is the unbounded grandchild-pipe-wedging wait we must avoid.
+            // A chunk-at-a-time `Read` loop gives a Task handle we can bound-wait AND flips
+            // a latch on the FIRST byte — the liveness signal the launch deadline keys off
+            // (`ReadToEnd` only returns at EOF, which a wedged launch never reaches).
+            let output = StringBuilder()
+            let outputLock = obj ()
+            let mutable sawOutput = 0
+            let mutable sinkBroken = false
 
-        let sleep ms = proc.WaitForExit(ms: int) |> ignore
+            // Fed from inside `outputLock`, so the sink sees the chunks in the SAME order
+            // the in-memory capture does and the two pumps' writes are serialised against
+            // each other — a caller's file and `ProcessOutput.text` can never disagree
+            // about what the child said or in what order.
+            let emit (chunk: string) =
+                match sink with
+                | None -> ()
+                | Some write when not sinkBroken ->
+                    try
+                        write chunk
+                    with ex ->
+                        sinkBroken <- true
 
-        let outcome =
-            launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
+                        Logging.warn
+                            "process"
+                            $"output sink for `%s{command}` failed and is now DISABLED for this run: \
+                              %s{ex.GetType().Name}: %s{ex.Message}. The in-memory capture is unaffected, but whatever \
+                              the sink was writing (a streamed run log) is now INCOMPLETE."
+                | Some _ -> ()
 
-        // A killed tree still needs draining so partial output is reported. The
-        // kill's OUTCOME is returned, never discarded: a tree we could not tear down
-        // is still running. The policy — including the teardown budget that keeps a
-        // blocked kill from wedging the whole run — lives in `killTreeWith`.
-        let killTree () : KillOutcome =
-            killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
-                proc.Kill(entireProcessTree = true))
+            // Each pump owns a DEDICATED thread (`LongRunning`) and reads SYNCHRONOUSLY.
+            //
+            // A `task {}` over `ReadAsync` schedules every continuation on the thread pool,
+            // and under a saturated pool — a `check` running the full suite in parallel,
+            // exactly when a spawn's output matters most — the reader may never run, the 2 s
+            // drain window expires having read zero bytes, and the child's output comes back
+            // as `""`: the clock measuring the POOL, not the process.
+            //
+            // Returns TRUE iff the loop ended at EOF — the stream is exhausted and what we
+            // captured from it is all there ever was. See `pumpReachedEof`.
+            let pump (reader: IO.StreamReader) : Task<bool> =
+                Task.Factory.StartNew(
+                    (fun () ->
+                        let mutable failure = None
 
-        match outcome with
-        | LaunchOutcome.Exited ->
-            let out = drainPumps ()
+                        try
+                            let buf = Array.zeroCreate<char> 4096
+                            let mutable go = true
 
-            if proc.ExitCode = 0 then
-                Succeeded out
-            else
-                Failed(proc.ExitCode, out)
-        | LaunchOutcome.TimedOut ->
-            let killed = killTree ()
-            TimedOut(timeout, drainPumps (), killed)
-        | LaunchOutcome.Stalled ->
-            // The exception below is the diagnostic; a kill that FAILED here is
-            // still logged by `killTree` itself, so the leaked tree is reported even
-            // though this arm throws.
-            killTree () |> ignore
+                            while go do
+                                let n = reader.Read(buf, 0, buf.Length)
 
-            // A stall is DEFINED as "not one byte within the launch deadline", so
-            // there is no capture to report: this runs only to let the pumps close
-            // their pipes, and the (necessarily empty) result is discarded.
-            drainPumps () |> ignore
+                                if n = 0 then
+                                    go <- false
+                                else
+                                    Volatile.Write(&sawOutput, 1)
+                                    let chunk = String(buf, 0, n)
 
-            raise (
-                LaunchStalledException(
-                    $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                                    lock outputLock (fun () ->
+                                        output.Append(chunk) |> ignore
+                                        emit chunk)
+                        with ex ->
+                            failure <- Some ex
+
+                        pumpReachedEof failure),
+                    TaskCreationOptions.LongRunning
                 )
-            )
+
+            let stdoutTask = pump proc.StandardOutput
+            let stderrTask = pump proc.StandardError
+
+            let drainedOutput () =
+                lock outputLock (fun () -> output.ToString().Trim())
+
+            // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
+            // instant it exits (returns in ms); only a grandchild holding the pipe makes
+            // this block, and then only for the window. An expired window rides out on the
+            // value as `DrainTimedOut` so it cannot be mistaken for a child that said
+            // nothing.
+            let drainPumps () : ProcessOutput =
+                let waitReturned =
+                    Task.WaitAll(
+                        [| stdoutTask :> Task; stderrTask :> Task |],
+                        int PostExitDrainWindow.TotalMilliseconds
+                    )
+
+                classifyDrain
+                    waitReturned
+                    (fun () -> stdoutTask.Result)
+                    (fun () -> stderrTask.Result)
+                    (drainedOutput ())
+                    PostExitDrainWindow
+
+            let pollMs = 250
+
+            // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
+            // the instant the child exits (so completion is observed promptly) but
+            // caps at `pollMs` so the launch/overall deadlines are still checked
+            // regularly. `observe` reads the independent liveness handle
+            // (`HasExited`) — the poll that closes the machine-sleep hole where a
+            // single blocking wait never returned.
+            let observe () =
+                proc.HasExited, (Volatile.Read &sawOutput = 1)
+
+            let sleep ms = proc.WaitForExit(ms: int) |> ignore
+
+            let outcome =
+                launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
+
+            // A killed tree still needs draining so partial output is reported. The
+            // kill's OUTCOME is returned, never discarded: a tree we could not tear down
+            // is still running. The policy — including the teardown budget that keeps a
+            // blocked kill from wedging the whole run — lives in `killTreeWith`.
+            let killTree () : KillOutcome =
+                killTreeWith TeardownBudget pid (fun () -> $"`%s{command} %s{args}` (pid %d{pid})") (fun () ->
+                    owned.Terminate())
+
+            match outcome with
+            | LaunchOutcome.Exited ->
+                let out = drainPumps ()
+
+                let exitCode = owned.TargetExitCode
+
+                if exitCode = 0 then
+                    Succeeded out
+                else
+                    Failed(exitCode, out)
+            | LaunchOutcome.TimedOut ->
+                let killed = killTree ()
+                TimedOut(timeout, drainPumps (), killed)
+            | LaunchOutcome.Stalled ->
+                // The exception below is the diagnostic; a kill that FAILED here is
+                // still logged by `killTree` itself, so the leaked tree is reported even
+                // though this arm throws.
+                killTree () |> ignore
+
+                // A stall is DEFINED as "not one byte within the launch deadline", so
+                // there is no capture to report: this runs only to let the pumps close
+                // their pipes, and the (necessarily empty) result is discarded.
+                drainPumps () |> ignore
+
+                raise (
+                    LaunchStalledException(
+                        $"launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                    )
+                )
+        with failure ->
+            primaryFailure <- Some failure
+            reraise ()
     finally
+        try
+            owned.Terminate()
+        with cleanupError ->
+            ProcessRegistry.reportLeak pid ($"`{command} {args}` (pid {pid})") (cleanupError.ToString())
+
+            match primaryFailure with
+            | Some failure ->
+                raise (AggregateException("Process operation and containment cleanup failed.", failure, cleanupError))
+            | None -> reraise ()
+
         ProcessRegistry.untrack proc
+        owned.Dispose()
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every
 /// caller that only wants the child's verdict and its capture should use.

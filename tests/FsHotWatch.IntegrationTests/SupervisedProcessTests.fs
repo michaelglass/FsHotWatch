@@ -324,3 +324,117 @@ let ``exclusive completion cannot retire before its tracked child exits`` (failW
 
         parent.KillAll()
         host.Teardown()
+
+[<Fact(Timeout = 60000)>]
+[<Trait("ProcessSupervision", "ExitedParentDescendant")>]
+let ``successful process retirement reaps a descendant after its parent exits`` () =
+    let directory = IO.Directory.CreateTempSubdirectory("fshw-descendant-")
+    let releasePath = IO.Path.Combine(directory.FullName, "release")
+    let scriptPath = IO.Path.Combine(directory.FullName, "parent.sh")
+    // Redirect ALL descendant streams: the process runner can finish draining
+    // immediately after the parent exits, despite this descendant still living.
+    // Both the handshake and the child have natural bounds if setup fails.
+    IO.File.WriteAllText(
+        scriptPath,
+        """/bin/sleep 30 </dev/null >/dev/null 2>&1 &
+child=$!
+printf '%s %s\n' "$$" "$child"
+attempt=0
+while [ ! -f "$FSHW_FIXTURE_RELEASE" ] && [ "$attempt" -lt 200 ]; do
+    /bin/sleep 0.05
+    attempt=$((attempt + 1))
+done
+exit 0
+"""
+    )
+
+    let store = PluginWorkOwner.Store()
+    let registry = ProcessRegistry.Registry()
+    use scope = ProcessRegistry.install registry
+    let observed =
+        TaskCompletionSource<Diagnostics.Process * Diagnostics.Process>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let announcement = Text.StringBuilder()
+
+    let capture chunk =
+        if not observed.Task.IsCompleted then
+            announcement.Append(chunk: string) |> ignore
+            let text = announcement.ToString()
+            if text.Contains('\n') then
+                try
+                    let ids = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    // Resolve these fixture-announced identities while the parent
+                    // is held at our handshake. Cleanup retains these exact handles;
+                    // it never resolves a historical PID after the parent exits.
+                    let child = Diagnostics.Process.GetProcessById(Int32.Parse(ids[1]))
+                    try
+                        let parent = Diagnostics.Process.GetProcessById(Int32.Parse(ids[0]))
+                        observed.TrySetResult((parent, child)) |> ignore
+                    with _ ->
+                        child.Dispose()
+                        reraise ()
+                with failure ->
+                    observed.TrySetException(failure) |> ignore
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "exited-parent",
+            None,
+            TimeSpan.FromSeconds 20.0,
+            (fun state (_: unit) -> state),
+            (fun _ _ -> None),
+            ignore,
+            (fun _ _ _ _ -> async {
+                let outcome =
+                    ProcessHelper.runProcessTo
+                        (Some capture)
+                        "/bin/sh"
+                        "parent.sh"
+                        directory.FullName
+                        [ "FSHW_FIXTURE_RELEASE", releasePath ]
+                        (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 15.0))
+                return Some outcome
+            })
+        )
+
+    let active = queue.Submit((), CancellationToken.None)
+
+    try
+        Task.WhenAny(observed.Task :> Task, active :> Task).WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult() |> ignore
+        if active.IsCompleted then awaitResult active
+        let parent, child = observed.Task.GetAwaiter().GetResult()
+        Assert.False(parent.HasExited, "parent must be held until both exact handles are captured")
+        Assert.False(child.HasExited, "positive control: the descendant exists before releasing its parent")
+        Assert.True(store.Snapshot.IsBusy)
+        IO.File.WriteAllText(releasePath, "release")
+        awaitResult active
+        Assert.True(parent.HasExited, "the launched parent must actually exit before the cleanup assertion")
+        Assert.False(store.Snapshot.IsBusy)
+        match queue.State with
+        | Some(ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained _)) -> ()
+        | other -> Assert.Fail $"fixture parent did not complete successfully with drained streams: {other}"
+        Assert.True(child.HasExited, "successful retirement left the exited parent's descendant alive")
+    finally
+        try
+            queue.Close()
+        finally
+            try
+                // If announcement failed, reap the still-held parent tree before
+                // releasing its handshake. No test failure abandons known children.
+                registry.KillAll()
+                IO.File.WriteAllText(releasePath, "release")
+                if observed.Task.IsCompletedSuccessfully then
+                    let parent, child = observed.Task.Result
+                    try
+                        if not child.HasExited then child.Kill(entireProcessTree = true)
+                        Assert.True(child.WaitForExit(5000), "fixture must reap its exact descendant handle")
+                        if not parent.HasExited then parent.Kill(entireProcessTree = true)
+                        Assert.True(parent.WaitForExit(5000), "fixture must reap its exact parent handle")
+                    finally
+                        child.Dispose()
+                        parent.Dispose()
+            finally
+                let winner = Task.WhenAny([| active :> Task; Task.Delay(5000) |]).GetAwaiter().GetResult()
+                Assert.True(obj.ReferenceEquals(active, winner), "the original operation must settle during fixture cleanup")
+                if active.IsFaulted then active.Exception |> ignore
+                directory.Delete(true)
