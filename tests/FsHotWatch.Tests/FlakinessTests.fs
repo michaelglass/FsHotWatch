@@ -343,22 +343,18 @@ let ``appendRecords expires a test that has not run inside the retention window`
         test <@ history |> Map.containsKey "Current.Test" @>
         test <@ not (history |> Map.containsKey "Ancient.Test") @>)
 
-// A617: this adapter starts at the existing production summary reader to prove
-// the clean-report acceptance defect before switching to the validated boundary.
 let private parseVerdictSummary json =
-    match FsHotWatch.Ctrf.trySummary json with
-    | Some summary -> Ok summary
-    | None -> Error "no report"
+    FsHotWatch.Ctrf.tryVerdictReport json |> Result.map FsHotWatch.Ctrf.VerdictReport.summary
 
 [<Fact>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence rejects a partial clean report`` () =
     let json =
         """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
     Assert.True(Result.isError (parseVerdictSummary json))
 
 [<Fact>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence requires all counters to be nonnegative integers`` () =
     let valid =
         """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
@@ -375,7 +371,7 @@ let ``verdict evidence requires all counters to be nonnegative integers`` () =
 [<InlineData("failed")>]
 [<InlineData("future-status")>]
 [<InlineData("")>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence rejects rows contradicting a clean summary`` (status: string) =
     let json =
         $"""{{"results":{{"summary":{{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0}},"tests":[{{"name":"One","status":"{status}"}}]}}}}"""
@@ -387,7 +383,7 @@ let ``verdict evidence rejects rows contradicting a clean summary`` (status: str
 [<InlineData("42")>]
 [<InlineData("{\"status\":null}")>]
 [<InlineData("{\"status\":3}")>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence rejects incomplete clean rows`` (row: string) =
     let json =
         $"""{{"results":{{"summary":{{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0}},"tests":[{row}]}}}}"""
@@ -397,7 +393,7 @@ let ``verdict evidence rejects incomplete clean rows`` (row: string) =
 [<InlineData("passed")>]
 [<InlineData("pending")>]
 [<InlineData("skipped")>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence reconciles each clean counter with actual rows`` (key: string) =
     let root = System.Text.Json.Nodes.JsonNode.Parse
                     """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
@@ -410,12 +406,12 @@ let ``verdict evidence reconciles each clean counter with actual rows`` (key: st
 [<InlineData("[]")>]
 [<InlineData("{}")>]
 [<InlineData("{\"results\":{\"summary\":{}}}")>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence rejects absent or malformed report structure`` (json: string) =
     Assert.True(Result.isError (parseVerdictSummary json))
 
 [<Fact>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence preserves captured raw exception red summary`` () =
     match parseVerdictSummary realCtrf with
     | Ok summary ->
@@ -427,7 +423,7 @@ let ``verdict evidence preserves captured raw exception red summary`` () =
 [<Theory>]
 [<InlineData(true)>]
 [<InlineData(false)>]
-[<Trait("Issue", "AUTOMATION-617")>]
+[<Trait("Issue", "AUTOMATION-104")>]
 let ``verdict evidence preserves coherent nested and flattened clean reports`` (nested: bool) =
     let contents =
         """"summary":{"tests":3,"passed":1,"failed":0,"pending":1,"skipped":1,"other":0},"tests":[{"name":"Pass","status":"passed"},{"name":"Pending","status":"pending"},{"name":"Skip","status":"skipped"}]"""
