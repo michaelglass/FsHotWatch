@@ -21,9 +21,12 @@
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="build/AnalyzerProvenanceTask.cs" Pack="true" PackagePath="build/" />
+    <None Include="build/FsHotWatch.AnalyzerProvenance.targets" Pack="true" PackagePath="build/FsHotWatch.Analyzers.targets" />
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="AnalyzerProvenance.fs" />
     <Compile Include="AnalyzersPlugin.fs" />
   </ItemGroup>
 

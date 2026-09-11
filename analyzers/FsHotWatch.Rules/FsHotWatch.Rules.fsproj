@@ -24,4 +24,6 @@
     <PackageReference Include="FSharp.Analyzers.SDK" Version="0.37.2" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.12.400" />
   </ItemGroup>
+  <PropertyGroup><FsHotWatchAnalyzerProvenance>true</FsHotWatchAnalyzerProvenance></PropertyGroup>
+  <Import Project="../../src/FsHotWatch.Analyzers/build/FsHotWatch.AnalyzerProvenance.targets" />
 </Project>

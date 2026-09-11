@@ -31,4 +31,6 @@
   <ItemGroup>
     <PackageReference Include="FSharpLintAnalyzerShim" Version="0.3.0-alpha.7" />
   </ItemGroup>
+  <PropertyGroup><FsHotWatchPackageProvenance>true</FsHotWatchPackageProvenance></PropertyGroup>
+  <Import Project="../../src/FsHotWatch.Analyzers/build/FsHotWatch.AnalyzerProvenance.targets" />
 </Project>
