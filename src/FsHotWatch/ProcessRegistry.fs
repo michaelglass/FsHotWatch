@@ -170,8 +170,8 @@ type Registry(?parent: Registry) =
 
         for child in children do
             try
-                let process, ownedTermination = child.Value
-                terminate child.Key process ownedTermination
+                let childProcess, ownedTermination = child.Value
+                terminate child.Key childProcess ownedTermination
             finally
                 parent |> Option.iter (fun owner -> owner.Untrack(fst child.Value))
 
