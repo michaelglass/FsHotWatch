@@ -947,7 +947,7 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
     test <@ isFailed result @>
 
 [<Fact(Timeout = 5000)>]
-let ``classify: clean exit with no report is PASSED`` () =
+let ``classify: clean exit with a missing requested report verifies nothing`` () =
     let result =
         classifyTestOutcome
             (ReportRequested None)
@@ -955,7 +955,8 @@ let ``classify: clean exit with no report is PASSED`` () =
             TimeSpan.Zero
             (ProcessOutcome.Succeeded(ProcessOutput.Drained "ok"))
 
-    test <@ TestResult.verifiedGreen result @>
+    test <@ TestResult.isErrored result @>
+    test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = 5000)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
@@ -2009,3 +2010,14 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
             // Let the daemon-side run finish so the temp dir can be cleaned.
             File.WriteAllText(release, "")
             waitUntil (fun () -> not (host.AnyPluginBusy())) 30000)
+
+[<Fact(Timeout = 5000)>]
+let ``classify: clean unfiltered zero-test report verifies nothing`` () =
+    let result =
+        classifyTestOutcome
+            (ReportRequested(Some(rep 0 0 0 0 0)))
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Succeeded(ProcessOutput.Drained "no tests"))
+    Assert.True(TestResult.isErrored result)
+    Assert.False(TestResult.verifiedGreen result)
