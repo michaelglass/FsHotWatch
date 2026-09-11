@@ -1394,6 +1394,7 @@ type TestPruneState =
         PendingAges: Map<string, int>
         FullSuiteRequested: bool
         ScopeReply: (bool * Tasks.TaskCompletionSource<string>) option
+        RunReply: (Tasks.TaskCompletionSource<string> * string) option
         PendingAnalysis: Map<string, AnalysisResult list>
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
@@ -1752,6 +1753,7 @@ type TestPruneMsg =
     | ImpactRunRequested
     | RuntimeCoverageFailed of CoverageIngestFailure
     | TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
+    | CommandTestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch * reply: Tasks.TaskCompletionSource<string> * response: string
     | ArtifactsUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     | TestHostUnavailable of reason: string * reply: Tasks.TaskCompletionSource<string> option
     /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
@@ -4687,7 +4689,8 @@ let internal cacheKeyFor
         | _, true, _
         | _, _, false -> None
         | None, false, true -> Some(outcomeKey "succeeded")
-    | Custom(TestsFinished(_, completed, _)) ->
+    | Custom(TestsFinished(_, completed, _))
+    | Custom(CommandTestsFinished(_, completed, _, _, _)) ->
         // A FAILED test outcome must never be served from cache as a current verdict.
         // Unlike BuildPlugin — whose result is a pure function of its content-merkle
         // inputs — a test outcome is NOT pinned by the changed-symbols merkle: the same
@@ -5391,6 +5394,7 @@ let internal createWithLaunchDeadline
           PendingAges = Map.empty
           FullSuiteRequested = false
           ScopeReply = None
+          RunReply = None
           PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
@@ -5923,61 +5927,54 @@ let internal createWithLaunchDeadline
                 ctx.EmitTestRunStarted started
 
             try
-                try
-                    let! results, started, completed =
-                        executeTests
-                            db
-                            None
-                            emitStarted
-                            repoRoot
-                            launchDeadline
-                            beforeRun
-                            coveragePaths
-                            (coverageIngestFailed ctx)
-                            afterRun
-                            configuredTestProjects
-                            configs
-                            Map.empty
-                            filter
+                let! results, started, completed =
+                    executeTests
+                        db
+                        None
+                        emitStarted
+                        repoRoot
+                        launchDeadline
+                        beforeRun
+                        coveragePaths
+                        (coverageIngestFailed ctx)
+                        afterRun
+                        configuredTestProjects
+                        configs
+                        Map.empty
+                        filter
 
-                    // The counts come from the CTRF reports THIS RUN wrote, located by
-                    // the run id the daemon just handed back — declared membership, never
-                    // an mtime scan of a shared pile. An empty list from an existing
-                    // run-dir means the run executed no tests, and that is exactly the
-                    // fact the CLI has to be able to state.
-                    let runReports =
-                        FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
-                        |> List.map (fun r -> r.Project, r.Summary)
-                        |> Map.ofList
+                // The counts come from the CTRF reports THIS RUN wrote, located by
+                // the run id the daemon just handed back — declared membership, never
+                // an mtime scan of a shared pile. An empty list from an existing
+                // run-dir means the run executed no tests, and that is exactly the
+                // fact the CLI has to be able to state.
+                let runReports =
+                    FsHotWatch.Ctrf.reportsForRun repoRoot started.RunId
+                    |> List.map (fun r -> r.Project, r.Summary)
+                    |> Map.ofList
 
-                    reply.TrySetResult(formatTestResultsJson filter runReports results) |> ignore
+                let response = formatTestResultsJson filter runReports results
 
-                    // Returned (not Posted) so the framework's completion path
-                    // delivers it: the synchronous TestsFinished handler does
-                    // the error reporting and status updates a bare emit would
-                    // skip.
-                    return TestsFinished(started, completed, commandLaunch)
-                with ex ->
-                    // a `beforeRun` throw / `executeTests` fault
-                    // means the suite it guards NEVER RAN — that must surface
-                    // as a failure, never a stale prior green. The Aborted
-                    // lifecycle drives the TestsFinished handler to a Failed
-                    // status.
-                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle emittedStart ex.Message
+                // Returned (not Posted) so the framework's completion path
+                // delivers it: the synchronous TestsFinished handler does
+                // the error reporting and status updates a bare emit would
+                // skip.
+                return CommandTestsFinished(started, completed, commandLaunch, reply, response)
+            with ex ->
+                // a `beforeRun` throw / `executeTests` fault
+                // means the suite it guards NEVER RAN — that must surface
+                // as a failure, never a stale prior green. The Aborted
+                // lifecycle drives the TestsFinished handler to a Failed
+                // status.
+                Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                let started, completed = abortedRunLifecycle emittedStart ex.Message
 
-                    if emittedStart.IsNone then
-                        emitStarted started
+                if emittedStart.IsNone then
+                    emitStarted started
 
-                    reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
+                let response = JsonSerializer.Serialize({| error = ex.Message |})
 
-                    return TestsFinished(started, completed, commandLaunch)
-            finally
-                // Cancellation (daemon teardown) skips `with` but runs
-                // `finally`: never leave the IPC client awaiting a reply that
-                // cannot come. No-op when a result was already set.
-                reply.TrySetResult(JsonSerializer.Serialize({| error = "daemon shut down before the run completed" |}))
-                |> ignore
+                return CommandTestsFinished(started, completed, commandLaunch, reply, response)
         }
 
     let commands =
@@ -6455,6 +6452,9 @@ let internal createWithLaunchDeadline
                     | Some(fullSuite, reply) ->
                         let scope = if fullSuite then "full" else "impact"
                         reply.TrySetResult(JsonSerializer.Serialize({| scope = scope |})) |> ignore
+                    | None -> ()
+                    match candidate.RunReply with
+                    | Some(reply, response) -> reply.TrySetResult(response) |> ignore
                     | None -> ()
                   } }
         })
@@ -7110,7 +7110,8 @@ let internal createWithLaunchDeadline
                                     return stateWithAffected
                     | BuildFailed _ -> return state
 
-                | Custom(TestsFinished(started, completed, launch)) ->
+                | Custom(TestsFinished(started, completed, launch))
+                | Custom(CommandTestsFinished(started, completed, launch, _, _)) ->
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
                     // and re-fire on cache replay — subscribers that key off
@@ -7807,6 +7808,10 @@ let internal createWithLaunchDeadline
                     recordRunOutcome testResults
                     return
                         { state with
+                            RunReply =
+                                match event with
+                                | Custom(CommandTestsFinished(_, _, _, reply, response)) -> Some(reply, response)
+                                | _ -> None
                             LastResults = Some testResults
                             LastRunId = Some completed.RunId
                             ChangedFiles = []
@@ -7817,26 +7822,24 @@ let internal createWithLaunchDeadline
                     let message =
                         $"Tests did not run because the preceding build left invalid artifacts: %s{reason}"
 
-                    reply
-                    |> Option.iter (fun target ->
-                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
-
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
-                        { state with EvidenceReceipt = None; Earned = None }
+                        { state with
+                            EvidenceReceipt = None
+                            Earned = None
+                            RunReply = reply |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
                 | Custom(TestHostUnavailable(reason, reply)) ->
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
 
-                    reply
-                    |> Option.iter (fun target ->
-                        target.TrySetResult(JsonSerializer.Serialize {| error = message |}) |> ignore)
-
                     ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
                     return
-                        { state with EvidenceReceipt = None; Earned = None }
+                        { state with
+                            EvidenceReceipt = None
+                            Earned = None
+                            RunReply = reply |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |}) }
 
                 | Custom(RunTestsRequested(selection, filter, reply)) when ctx.IsRunning "tests" ->
                     ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(selection, filter, reply)) |> ignore
@@ -7891,8 +7894,7 @@ let internal createWithLaunchDeadline
 
                     match configsResult with
                     | Error msg ->
-                        reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
-                        return state
+                        return { state with RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
                     | Ok configs when configs.IsEmpty ->
                         // Name what was asked for and what exists. A bare
                         // "no matching test projects" is unactionable for the
@@ -7910,8 +7912,7 @@ let internal createWithLaunchDeadline
                                 $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
                             | None -> "no matching test projects"
 
-                        reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
-                        return state
+                        return { state with RunReply = Some(reply, JsonSerializer.Serialize({| error = msg |})) }
                     | Ok configs ->
                         // Launched from the mailbox so it is serialised with every other
                         // launch site and holds the `RunExclusive "tests"` slot for its whole
