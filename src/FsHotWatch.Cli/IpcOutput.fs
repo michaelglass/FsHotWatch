@@ -863,6 +863,25 @@ module internal TestRunEvidence =
             | _ -> current, None
         | _ -> current, None
 
+/// The application error code and versioned data carry model failure over RPC.
+let internal modelUnavailable (error: exn) =
+    match error with
+    | :? FsHotWatch.ProjectModel.UnavailableException as unavailable -> Some unavailable.Observation
+    | :? StreamJsonRpc.RemoteInvocationException as remote when remote.ErrorCode = FsHotWatch.ProjectModelWire.ErrorCode ->
+        try
+            let json =
+                match remote.ErrorData with
+                | :? System.Text.Json.JsonElement as element -> element.GetRawText()
+                | null -> "null"
+                | data -> data.ToString()
+            use document = System.Text.Json.JsonDocument.Parse json
+            FsHotWatch.ProjectModelWire.tryRead document.RootElement
+            |> Option.filter (FsHotWatch.ProjectModel.failure >> Option.isSome)
+            |> Option.defaultValue FsHotWatch.ProjectModel.Observation.Unobserved
+            |> Some
+        with :? System.Text.Json.JsonException -> Some FsHotWatch.ProjectModel.Observation.Unobserved
+    | _ -> None
+
 /// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is reading
 /// (stdout not a TTY) — print the steering block that names it. The file and the exit
 /// code are two renderings of ONE `CheckOutcome`, never a second computation.
@@ -917,6 +936,26 @@ let private publishVerdictWithReason
         let runs = Verdict.runSuites repoRoot runReport
         let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
         let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
+
+        let projectModel = IpcParsing.DaemonEvidence.model daemonEvidence
+        let terminalIncompleteReason =
+            match outcome, terminalIncompleteReason with
+            | CheckVerdict.CheckOutcome.Clean CheckVerdict.Baseline.NoTestSuite, None ->
+                FsHotWatch.ProjectModel.failure projectModel
+            | CheckVerdict.CheckOutcome.Clean _, None ->
+                match FsHotWatch.ProjectModel.failure projectModel with
+                | Some reason -> Some reason
+                | None ->
+                    let witnessed =
+                        match projectModel, runReport.RunId with
+                        | FsHotWatch.ProjectModel.Observation.Available model, Some runId ->
+                            IpcParsing.DaemonEvidence.receipts daemonEvidence
+                            |> List.exists (fun receipt ->
+                                receipt.RunId = runId && receipt.Generation = model.Generation && receipt.Refusals.IsEmpty)
+                        | _ -> false
+                    if witnessed then None
+                    else Some "the graded test run has no earned receipt for the observed project model"
+            | _ -> terminalIncompleteReason
 
         let verdictOutcome, exitCode =
             match terminalIncompleteReason, settledTree with
@@ -1036,7 +1075,7 @@ let private publishVerdictWithReason
         // to explain surfaces as the derived coverage gap, not as a silence.
         let daemonSpans =
             match daemonEvidence with
-            | IpcParsing.DaemonEvidence.Served phases ->
+            | IpcParsing.DaemonEvidence.Served(phases, _, _) ->
                 phases
                 |> List.choose (Verdict.TimingSpan.ofDaemonPhase invocation observedSoFar)
             | IpcParsing.DaemonEvidence.NotServed ->
@@ -1058,7 +1097,7 @@ let private publishVerdictWithReason
               InvocationId = Some invocation.Id }
 
         let v =
-            Verdict.create command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
+            Verdict.create projectModel command runReport atWrite excluded verdictOutcome exitCode plugins runs comparison redCauses
             |> Verdict.withAttribution attribution
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
@@ -1145,6 +1184,7 @@ let internal publishVerdictForInvocation
 /// `publishVerdictForInvocation` for a publish that no CLI bracket wraps — tests and
 /// embedders. Production check/confirm paths always pass their invocation through.
 let internal publishVerdict
+    (projectModel: FsHotWatch.ProjectModel.Observation)
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -1165,7 +1205,11 @@ let internal publishVerdict
         runReport
         checkScoped
         statuses
-        IpcParsing.DaemonEvidence.NotServed
+        IpcParsing.DaemonEvidence.Served([], projectModel,
+            match projectModel, runReport.RunId with
+            | FsHotWatch.ProjectModel.Observation.Available model, Some runId ->
+                [ { RunId = runId; Generation = model.Generation; Refusals = [] } ]
+            | _ -> [])
         redCauses
         settledTree
         outcome
@@ -1195,6 +1239,21 @@ let internal publishTerminalIncompleteForInvocation
         settledTree
         (CheckVerdict.CheckOutcome.Incomplete -1)
         (Some reason)
+
+/// Publish a typed unavailable model without asking the failed daemon for another observation.
+let internal publishModelUnavailableForInvocation
+    (invocation: Verdict.Invocation)
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (observation: FsHotWatch.ProjectModel.Observation)
+    (settledTree: SettledTree)
+    : int =
+    let reason = (FsHotWatch.ProjectModel.UnavailableException observation).Message
+    publishVerdictWithReason invocation repoRoot excludePatterns checkMode false
+        (TestRunReport.ofScopeOnly (ScopeUnreadable reason)) Verdict.NoReading Map.empty
+        (IpcParsing.DaemonEvidence.Served([], observation, [])) [] settledTree
+        (CheckVerdict.CheckOutcome.Incomplete -1) (Some reason)
 
 /// `publishTerminalIncompleteForInvocation` for a publish that no CLI bracket wraps.
 let internal publishTerminalIncomplete
@@ -1474,22 +1533,11 @@ let pollAndRenderForInvocation
 
         publishedExitCode
     with
-    | ex when FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message ->
-        // StreamJsonRpc preserves the message but not the concrete ConfigError
-        // type. This is the daemon-backed twin of RunOnceCheck's early terminal:
-        // no convergence, no forced suite, and no stale green left on disk.
-        let reason = ex.Message
-
+    | ex when modelUnavailable ex |> Option.isSome ->
+        let observation = modelUnavailable ex |> Option.get
         let exitCode =
-            publishTerminalIncompleteForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                reason
-                settledTree.Value
-
-        UI.fail reason
+            publishModelUnavailableForInvocation invocation repoRoot excludePatterns checkMode observation settledTree.Value
+        UI.fail ex.Message
         exitCode
     // Memory exhaustion — here or in the daemon — AFTER the run
     // settled.

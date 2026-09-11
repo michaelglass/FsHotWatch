@@ -660,6 +660,33 @@ let ``WaitForGeneration does not hang when scan completes before waiter is regis
     test <@ task.IsCompleted @>
 
 [<Fact(Timeout = 15000)>]
+let ``model failure crosses RPC as versioned data without relying on diagnostic prose`` () =
+    let pipeName = $"fshw-model-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cancellation = new CancellationTokenSource()
+    let observation =
+        FsHotWatch.ProjectModel.ofCompleted 7L
+            { Discovered = 1; Loaded = 1; OptionsMapped = 0; Registered = 0 }
+    let config =
+        { defaultRpcConfig host with
+            WaitForAllTerminal = fun _ -> Task.FromException<unit>(FsHotWatch.ProjectModel.UnavailableException observation) }
+    let server = Async.StartAsTask(IpcServer.start pipeName config cancellation)
+    waitForServer pipeName
+    try
+        let fault =
+            Assert.Throws<StreamJsonRpc.RemoteInvocationException>(fun () ->
+                (IpcClient.waitForComplete pipeName 1000 |> Async.StartAsTask).GetAwaiter().GetResult() |> ignore)
+        Assert.Equal(523, fault.ErrorCode)
+        match FsHotWatch.Cli.IpcOutput.modelUnavailable fault with
+        | Some(FsHotWatch.ProjectModel.Observation.Unavailable(snapshot, FsHotWatch.ProjectModel.UnavailableReason.MappingFailed)) ->
+            Assert.Equal(7L, snapshot.Generation)
+            Assert.Equal(0, snapshot.Counts.Registered)
+        | other -> failwithf "Expected structured mapping refusal, got %A" other
+    finally
+        cancellation.Cancel()
+        try server.GetAwaiter().GetResult() with :? OperationCanceledException -> ()
+
+[<Fact(Timeout = 15000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
     let tcs = TaskCompletionSource<unit>()
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

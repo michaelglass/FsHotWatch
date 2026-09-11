@@ -244,7 +244,12 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
                 else
                     // Cancel the timer so its registration doesn't outlive the call.
                     timeoutCts.Cancel()
-                    return! work
+                    try
+                        return! work
+                    with :? ProjectModel.UnavailableException as unavailable ->
+                        return raise (LocalRpcException(unavailable.Message,
+                            ErrorCode = ProjectModelWire.ErrorCode,
+                            ErrorData = ProjectModelWire.payload unavailable.Observation))
             finally
                 match watchdog, token with
                 | Some w, Some t -> w.End t
@@ -400,11 +405,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
         // currently lack a valid full-check result. The CLI parses it into a `Coverage`
         // verdict (0 -> Complete, n>0 -> Incomplete n, absent -> Unknown). A number,
         // not a parsed string, so the verdict cannot be misread.
+        let modelSnapshot = config.Host.WorkSnapshot
         let result =
             {| count = count
                files = allErrors
                statuses = statuses
                daemonPhases = daemonPhases
+               projectModel = ProjectModelWire.payload modelSnapshot.ProjectModel
+               modelReceipts =
+                   modelSnapshot.Evidence |> List.map (fun proof ->
+                       {| runId = proof.RunId.ToString("N")
+                          modelGeneration = proof.Generation
+                          refusals = proof.FailureReasons |})
                unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)

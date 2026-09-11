@@ -34,7 +34,7 @@ open FsHotWatch.Cli.IpcParsing
 /// Identifies the on-disk contract. Consumers depend on this file now; a
 /// breaking change to its shape MUST bump this string.
 [<Literal>]
-let Schema = "fshw-verdict-v1"
+let Schema = "fshw-verdict-v2"
 
 /// ONE `check`/`confirm` invocation as seen by the CLI wrapper that
 /// brackets it: the identity the verdict is stamped with, and the ONE origin every
@@ -1237,6 +1237,7 @@ module Command =
 type Verdict =
     private
         {
+            projectModel: FsHotWatch.ProjectModel.Observation
             producedAt: DateTime
             command: Command
             producer: Producer
@@ -1306,6 +1307,7 @@ type Verdict =
             attribution: Attribution
         }
 
+    member this.ProjectModel = this.projectModel
     member this.ProducedAt = this.producedAt
     member this.Command = this.command
 
@@ -1509,6 +1511,10 @@ let private validate (v: Verdict) : Result<Verdict, string> =
 
     scopeAgreesWithCommand ()
     |> Result.bind (fun _ -> outcomeAgreesWithPlugins ())
+    |> Result.bind (fun _ ->
+        match v.Outcome, FsHotWatch.ProjectModel.failure v.ProjectModel with
+        | Green _, Some reason -> Error reason
+        | _ -> Ok v)
     |> Result.bind (fun _ -> baselineAgreesWithScope v)
     |> Result.bind (fun _ -> divergenceAgreesWithRecord ())
 
@@ -1546,6 +1552,7 @@ let scopeToRecord (command: Command) (scope: TestScope) : TestScope =
 /// process doing the constructing, and a caller that could supply them is a caller that
 /// could lie about them.
 let create
+    (projectModel: FsHotWatch.ProjectModel.Observation)
     (command: Command)
     (runReport: TestRunReport)
     (tree: TreeHash.Tree)
@@ -1571,7 +1578,8 @@ let create
     (redCauses: RedCause list)
     : Verdict =
     let candidate =
-        { producedAt = DateTime.UtcNow
+        { projectModel = projectModel
+          producedAt = DateTime.UtcNow
           command = command
           producer = Producer.current ()
           runId = runReport.RunId
@@ -1809,6 +1817,7 @@ let private suiteJson (s: SuiteVerdict) : obj =
 let serialize (v: Verdict) : string =
     let payload =
         {| schema = Schema
+           projectModel = FsHotWatch.ProjectModelWire.payload v.ProjectModel
            producedAt = v.ProducedAt.ToString("O")
            command = Command.token v.Command
            producer =
@@ -2776,7 +2785,11 @@ let read (repoRoot: string) : Reading =
                     // `validate`), so a hand-edited green over a failing plugin is
                     // refused on the way in.
                     let rehydrated =
-                        { producedAt =
+                        { projectModel =
+                            tryProp root "projectModel"
+                            |> Option.bind FsHotWatch.ProjectModelWire.tryRead
+                            |> Option.defaultValue FsHotWatch.ProjectModel.Observation.Unobserved
+                          producedAt =
                             tryString root "producedAt"
                             |> Option.bind (fun s ->
                                 match
