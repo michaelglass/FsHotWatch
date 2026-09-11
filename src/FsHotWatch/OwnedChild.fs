@@ -15,11 +15,20 @@ module internal ChildProtocol =
     // locally captured metadata, concrete type and the original throwing stack.
     let reportFailureWith (write: string -> unit) phase elapsedMs pid receiptStatus startupCancelled (error: exn) =
         try
-            write $"phase={phase} elapsedMs={elapsedMs} helperPid={pid} receipt={receiptStatus} startupCancelled={startupCancelled} exceptionType={error.GetType().FullName}\n{error.StackTrace}"
-        with _ -> () // Diagnostics must never replace the boundary failure.
+            write
+                $"phase={phase} elapsedMs={elapsedMs} helperPid={pid} receipt={receiptStatus} startupCancelled={startupCancelled} exceptionType={error.GetType().FullName}\n{error.StackTrace}"
+        with _ ->
+            () // Diagnostics must never replace the boundary failure.
 
     let reportFailure phase elapsedMs pid receiptStatus startupCancelled error =
-        reportFailureWith (FsHotWatch.Logging.error "process-ownership") phase elapsedMs pid receiptStatus startupCancelled error
+        reportFailureWith
+            (FsHotWatch.Logging.error "process-ownership")
+            phase
+            elapsedMs
+            pid
+            receiptStatus
+            startupCancelled
+            error
 
     // A previous bounded termination attempt may still own this monitor. Retrying
     // must report uncertainty, rather than turn the outer timeout into an infinite wait.
@@ -178,20 +187,32 @@ type internal OwnedChild
             ObjectDisposedException.ThrowIf(disposed, this)
             let elapsed = Stopwatch.StartNew()
             let mutable phase = "host-exit"
+
             try
                 this.WaitForHost elapsed
                 phase <- "exit-receipt"
+
                 let code =
                     receipt.WaitAsync(ChildProtocol.remaining elapsed).GetAwaiter().GetResult()
+
                 phase <- "host-exit-status"
+
                 if proc.ExitCode <> 137 then
                     raise (IOException($"Unexpected process host exit {proc.ExitCode}; target result is unconfirmed."))
+
                 phase <- "containment-empty"
                 ChildProtocol.waitForContainment containment elapsed
                 cleanupVerified <- true
                 code
             with error ->
-                ChildProtocol.reportFailure phase elapsed.ElapsedMilliseconds helperPid (string receipt.Status) "not-applicable" error
+                ChildProtocol.reportFailure
+                    phase
+                    elapsed.ElapsedMilliseconds
+                    helperPid
+                    (string receipt.Status)
+                    "not-applicable"
+                    error
+
                 reraise ())
 
     member this.Terminate() =
@@ -281,6 +302,7 @@ type internal OwnedChild
             writer <- Some controlWriter
 
             phase <- "ready-read"
+
             use ready =
                 ChildProtocol.parse (controlReader.ReadLineAsync(startup.Token).AsTask().GetAwaiter().GetResult())
 
@@ -298,6 +320,7 @@ type internal OwnedChild
             register.Invoke child
 
             phase <- "start-send"
+
             ChildProtocol.withLock child.Sync (fun () ->
                 if child.Stopped then
                     raise (OperationCanceledException("The proc owner was stopped before target admission."))
@@ -306,7 +329,14 @@ type internal OwnedChild
 
             child
         with startupError ->
-            ChildProtocol.reportFailure phase elapsed.ElapsedMilliseconds knownPid "not-observed" (string startupToken.IsCancellationRequested) startupError
+            ChildProtocol.reportFailure
+                phase
+                elapsed.ElapsedMilliseconds
+                knownPid
+                "not-observed"
+                (string startupToken.IsCancellationRequested)
+                startupError
+
             match owned with
             | Some child ->
                 ChildProtocol.cleanupAfterFailure

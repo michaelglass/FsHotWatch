@@ -639,25 +639,33 @@ let ``successful boundary cleanup leaves original error propagation with caller`
 
 [<Fact>]
 let ``ownership failure diagnostics omit message and payload while retaining original stack`` () =
-    let original = InvalidOperationException("secret-argument secret-environment secret-payload")
+    let original =
+        InvalidOperationException("secret-argument secret-environment secret-payload")
+
     original.Data["command"] <- "secret-command"
     let mutable diagnostic = ""
     let mutable throwingStack = ""
+
     let observed =
-        Assert.Throws<InvalidOperationException>(fun () ->
-            try
-                raise original
-            with error ->
-                throwingStack <- error.StackTrace
-                ChildProtocol.reportFailureWith
-                    (fun text -> diagnostic <- text)
-                    "exit-receipt"
-                    5000L
-                    123
-                    "WaitingForActivation"
-                    "not-applicable"
-                    error
-                reraise ())
+        Assert.Throws<InvalidOperationException>(
+            Action(fun () ->
+                try
+                    raise original
+                with error ->
+                    throwingStack <- error.StackTrace
+
+                    ChildProtocol.reportFailureWith
+                        (fun text -> diagnostic <- text)
+                        "exit-receipt"
+                        5000L
+                        123
+                        "WaitingForActivation"
+                        "not-applicable"
+                        error
+
+                    reraise ())
+        )
+
     Assert.Same(original, observed)
     Assert.Contains("phase=exit-receipt", diagnostic)
     Assert.Contains("elapsedMs=5000", diagnostic)
@@ -671,18 +679,23 @@ let ``ownership failure diagnostics omit message and payload while retaining ori
 [<Fact>]
 let ``ownership diagnostic writer failure cannot replace the original cancellation`` () =
     let original = OperationCanceledException("sensitive cancellation context")
+
     let observed =
-        Assert.Throws<OperationCanceledException>(fun () ->
-            try
-                raise original
-            with error ->
-                ChildProtocol.reportFailureWith
-                    (fun _ -> raise (IOException("diagnostic sink failed")))
-                    "connect"
-                    5000L
-                    123
-                    "not-observed"
-                    "True"
-                    error
-                reraise ())
+        Assert.Throws<OperationCanceledException>(
+            Action(fun () ->
+                try
+                    raise original
+                with error ->
+                    ChildProtocol.reportFailureWith
+                        (fun _ -> raise (IOException("diagnostic sink failed")))
+                        "connect"
+                        5000L
+                        123
+                        "not-observed"
+                        "True"
+                        error
+
+                    reraise ())
+        )
+
     Assert.Same(original, observed)
