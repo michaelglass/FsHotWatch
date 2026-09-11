@@ -43,6 +43,7 @@
     <Compile Include="PluginHostActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
+    <Compile Include="ProjectModelTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
