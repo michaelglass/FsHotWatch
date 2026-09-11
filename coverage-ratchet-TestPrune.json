@@ -31,6 +31,12 @@
         "branch": 69,
         "platform": "macos",
         "reason": "SDK 10.0.400 compiler instrumentation rebaseline (2026-09-11): identical source, tests, all resolved package identities (including FSharp.Core 10.1.401, FCS 43.12.401 and collector 18.10.0), coverage settings and 905-test corpus reproduce SDK 10.0.301 at 38/52 branches (73.0769%) versus SDK 10.0.400 at 73/105 (69.5238%). All 203 source-line hit counts are identical, 187 covered. The existing untested ProjectSelectionReason.describe now contributes 11 reported branches; it is not generated impossible code. Scoped coverageratchet 0.15.0-alpha.12 loosen derives integer branch floor 69 and retains line 92. No extra margin; other-platform and platform-less fallback floors are unchanged."
+      },
+      {
+        "line": 92,
+        "branch": 69,
+        "platform": "linux",
+        "reason": "Measured Ubuntu 24.04.5 / SDK 10.0.401 coverage from CI run 34593007698 at exact commit e4660d43efd2c08d995c625726583380acd997f2: 73/105 branches (69.5238%), 904 tests passed and one explicit optional-sibling skip. All 332 source lines in the HTML report match that commit's CoverageImpact.fs exactly. Imported only this file from the actual Linux coverage-thresholds artifact 10260656875 using pinned CoverageRatchet 0.15.0-alpha.12 parseCiThresholds/mergeFromCi; the workflow's check-json artifact supplies line 92 and branch 69. No macOS-value inference or extra margin; existing macOS and platform-less fallback entries remain unchanged."
       }
     ],
     "Database.fs": {
