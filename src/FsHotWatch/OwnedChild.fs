@@ -48,7 +48,9 @@ module internal ChildProtocol =
 
     let receipt (reader: StreamReader) =
         task {
-            let! line = reader.ReadLineAsync()
+            // A synchronous process caller may own a context it cannot pump.
+            // Receipt completion must follow pipe I/O independently of that context.
+            let! line = reader.ReadLineAsync().ConfigureAwait(false)
             use message = parse line
             let root = message.RootElement
 
@@ -56,7 +58,7 @@ module internal ChildProtocol =
                 raise (failure root)
 
             let code = root.GetProperty("exitCode").GetInt32()
-            let! trailing = reader.ReadLineAsync()
+            let! trailing = reader.ReadLineAsync().ConfigureAwait(false)
 
             if not (isNull trailing) then
                 raise (IOException("Unexpected data after the target exit receipt."))
