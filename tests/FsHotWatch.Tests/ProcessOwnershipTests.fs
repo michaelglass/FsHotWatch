@@ -315,7 +315,10 @@ let ``detached launch bounds and reaps a stuck helper`` () =
 [<InlineData("{\"kind\":\"ready\"}\n", "Unexpected process host protocol")>]
 [<InlineData("{\"kind\":\"error\",\"message\":\"target failed\"}\n", "target failed")>]
 [<InlineData("{\"kind\":\"exit\",\"exitCode\":7}\nextra\n", "Unexpected data after")>]
-let ``process receipt protocol refuses missing malformed and duplicate terminal records`` (payload: string) (expected: string) =
+let ``process receipt protocol refuses missing malformed and duplicate terminal records``
+    (payload: string)
+    (expected: string)
+    =
     use bytes = new MemoryStream(System.Text.Encoding.UTF8.GetBytes payload)
     use reader = new StreamReader(bytes)
 
@@ -361,7 +364,7 @@ let ``ownership retry never waits forever behind an outstanding cleanup`` () =
 let ``ownership monitor is released when protected operation throws`` () =
     let gate = obj ()
 
-    Assert.Throws<IOException>(fun () -> ChildProtocol.withLock gate (fun () -> raise (IOException("original")) : unit))
+    Assert.Throws<IOException>(fun () -> ChildProtocol.withLock gate (fun () -> raise (IOException("original")): unit))
     |> ignore
 
     Assert.Equal(42, ChildProtocol.withLock gate (fun () -> 42))
@@ -405,3 +408,68 @@ let ``real admitted target retains its output and exit separately from containme
     finally
         child.Terminate()
         child.Dispose()
+
+[<Fact(Timeout = 15000)>]
+let ``invalid helper image cannot admit target and startup remains bounded`` () =
+    let directory = Directory.CreateTempSubdirectory("fshw-invalid-host-")
+    let image = Path.Combine(directory.FullName, "invalid.dll")
+    File.WriteAllText(image, "This is not a managed process host.")
+    let mutable admitted = false
+    let clock = Stopwatch.StartNew()
+
+    try
+        Assert.ThrowsAny<OperationCanceledException>(fun () ->
+            OwnedChild.Start(target (), image, Action<OwnedChild>(fun _ -> admitted <- true))
+            |> ignore)
+        |> ignore
+
+        Assert.False(admitted, "a helper without a ready receipt cannot release the target")
+        Assert.InRange(clock.Elapsed.TotalSeconds, 4., 12.)
+    finally
+        directory.Delete(true)
+
+[<Fact(Timeout = 15000)>]
+let ``containment wait spends its existing deadline while retaining live ownership`` () =
+    let child =
+        OwnedChild.Start(ProcessStartInfo("/bin/sleep", "30", UseShellExecute = false), hostPath, noAdmission)
+
+    try
+        use ready =
+            JsonDocument.Parse(sprintf "{\"processGroup\":%d,\"jobName\":null}" child.Process.Id)
+
+        use boundary =
+            Containment.Open(ready.RootElement, child.Process.Id, "unused-on-unix")
+
+        let elapsed = Stopwatch.StartNew()
+
+        let error =
+            Assert.Throws<TimeoutException>(fun () -> ChildProtocol.waitForContainment boundary elapsed)
+
+        Assert.Contains("within five seconds", error.Message)
+        Assert.InRange(elapsed.Elapsed.TotalSeconds, 4., 10.)
+        Assert.False(boundary.IsEmpty(), "waiting cannot turn a live group into positive cleanup evidence")
+        child.Terminate()
+        Assert.True(boundary.IsEmpty())
+    finally
+        child.Terminate()
+        child.Dispose()
+
+[<Fact(Timeout = 15000)>]
+let ``child scope refuses retirement when retained ownership reports uncertainty`` () =
+    let parent = ProcessRegistry.Registry()
+    use installed = ProcessRegistry.install parent
+
+    use leader =
+        Process.Start(ProcessStartInfo("/bin/sh", "-c \"exit 0\"", UseShellExecute = false))
+
+    Assert.True(leader.WaitForExit(5000))
+
+    let error =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            ProcessRegistry.withChildScope CancellationToken.None (fun settle ->
+                ProcessRegistry.trackOwned leader (fun () -> raise (IOException("owned descendants unconfirmed")))
+                settle ()))
+
+    Assert.Contains("could not establish termination", error.Message)
+    Assert.Contains("owned descendants unconfirmed", (Assert.Single parent.Leaks).Reason)
+    Assert.Same(parent, ProcessRegistry.currentOpt().Value)
