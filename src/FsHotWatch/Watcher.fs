@@ -67,7 +67,16 @@ let internal isProjectAssetsJson (path: string) =
 /// the predicate and from both glob lists, so a signature-only edit raised no
 /// event at all and selection saw an empty change set).
 let internal relevantExtensions =
-    set [ ".fs"; ".fsi"; ".fsx"; ".fsproj"; ".cs"; ".csproj"; ".sln"; ".slnx"; ".props" ]
+    set
+        [ ".fs"
+          ".fsi"
+          ".fsx"
+          ".fsproj"
+          ".cs"
+          ".csproj"
+          ".sln"
+          ".slnx"
+          ".props" ]
 
 /// Excluded from `watchedSourceGlobs` rather than absent from the extension set:
 /// these reach the daemon by a different route on each platform. On the

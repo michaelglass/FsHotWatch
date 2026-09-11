@@ -10,7 +10,9 @@ let private normalize (path: string) = path.Replace('\\', '/')
 /// filter: other MSBuild sources remain in the dependency graph and tree hash.
 let isFSharpSource (path: string) =
     match Path.GetExtension(path).ToLowerInvariant() with
-    | ".fs" | ".fsi" | ".fsx" -> true
+    | ".fs"
+    | ".fsi"
+    | ".fsx" -> true
     | _ -> false
 
 /// True if the path is inside an obj/ or bin/ directory.

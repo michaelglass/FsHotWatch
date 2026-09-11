@@ -6562,14 +6562,30 @@ let internal createWithLaunchDeadline
                         | SourceChanged paths when not runnableProjects.IsEmpty ->
                             (state, paths)
                             ||> List.fold (fun current path ->
-                                if not (String.Equals(Path.GetExtension path, ".cs", StringComparison.OrdinalIgnoreCase)) then
+                                if
+                                    not (
+                                        String.Equals(
+                                            Path.GetExtension path,
+                                            ".cs",
+                                            StringComparison.OrdinalIgnoreCase
+                                        )
+                                    )
+                                then
                                     current
                                 else
                                     let absolute =
-                                        if Path.IsPathRooted path then path else Path.Combine(repoRoot, path)
+                                        if Path.IsPathRooted path then
+                                            path
+                                        else
+                                            Path.Combine(repoRoot, path)
+
                                     let relative = Path.GetRelativePath(repoRoot, absolute).Replace('\\', '/')
                                     let hash = ContentHash.ofFile absolute
-                                    if ContentHash.isReadable hash && Map.tryFind relative current.CSharpInputs = Some hash then
+
+                                    if
+                                        ContentHash.isReadable hash
+                                        && Map.tryFind relative current.CSharpInputs = Some hash
+                                    then
                                         current
                                     else
                                         // CSharp has no FCS symbol result. Only an actual unfiltered
@@ -6580,9 +6596,11 @@ let internal createWithLaunchDeadline
                                             Debt =
                                                 { current.Debt with
                                                     RuntimeObligations =
-                                                        mergeRuntimeCoverageObligations current.Debt.RuntimeObligations
+                                                        mergeRuntimeCoverageObligations
+                                                            current.Debt.RuntimeObligations
                                                             (Map.ofList [ relative, runnableProjects ]) } })
                         | _ -> state
+
                     let files =
                         match change with
                         | SourceChanged paths ->

@@ -1,5 +1,29 @@
 {
   "overrides": {
+    "DetachedLaunch.fs": [
+      {
+        "line": 97,
+        "branch": 75,
+        "reason": "initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
+    "ProcessContainment.fs": [
+      {
+        "line": 85,
+        "branch": 75,
+        "reason": "initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
+    "OwnedChild.fs": [
+      {
+        "line": 95,
+        "branch": 71,
+        "reason": "initial macOS boundary baseline after actual descendant, admission, deadline, cleanup and native-orchestration controls. Residuals include unexecuted Windows paths and defensive native failures; not all are platform-only. No Linux or Windows execution claim. See docs/adr/process-boundary-coverage.md.",
+        "platform": "macos"
+      }
+    ],
     "AnalyzersPlugin.fs": [
       {
         "line": 81,
