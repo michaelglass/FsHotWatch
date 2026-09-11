@@ -599,7 +599,10 @@ let ``exclusion authority refuses a newly discovered name collision`` () =
         test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
         test <@ resolve () = Map.ofList [ "RealRulesTests", "owned harness" ] @>
         inventory <- inventory @ [ Path.Combine(root, "other/RealRulesTests.fsproj") ]
-        let error = Assert.Throws<System.InvalidOperationException>(fun () -> resolve () |> ignore)
+
+        let error =
+            Assert.Throws<System.InvalidOperationException>(fun () -> resolve () |> ignore)
+
         Assert.Contains("ambiguous indexed identity", error.Message))
 
 [<Fact>]
