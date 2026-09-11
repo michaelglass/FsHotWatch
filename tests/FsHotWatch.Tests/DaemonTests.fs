@@ -1595,7 +1595,7 @@ let ``verdict admission restarts when discovery begins after the host wait start
 [<InlineData(false, false)>]
 [<InlineData(true, false)>]
 [<InlineData(true, true)>]
-let ``unchanged fingerprint scan uses a coherent model across rediscovery``
+let ``scan waits for discovery and refuses a model invalidated after capture``
     (hasSource: bool, rediscoverAfterCapture: bool)
     =
     withTempDir "daemon-scan-discovery-race" (fun tmpDir ->
@@ -1699,19 +1699,23 @@ let ``unchanged fingerprint scan uses a coherent model across rediscovery``
             let completedWhileCleared = obj.ReferenceEquals(first, runningScan)
             loader.Resume(1)
             rediscovery.Value.GetAwaiter().GetResult()
-            runningScan.GetAwaiter().GetResult()
+            if rediscoverAfterCapture then
+                Assert.Throws<InvalidOperationException>(fun () -> runningScan.GetAwaiter().GetResult()) |> ignore
+                test <@ daemon.Host.WorkSnapshot.OperationFaults |> List.exists (fun (name, _) -> name = "scan") @>
+            else
+                runningScan.GetAwaiter().GetResult()
 
             test <@ File.ReadAllBytes(projectPath) = originalProject @>
             test <@ File.GetLastWriteTimeUtc(projectPath) = originalWriteTime @>
             test <@ daemon.Pipeline.GetRegisteredProjects().Length = 1 @>
             // A scan issued during the clear must wait; one whose immutable plan
-            // was captured beforehand must finish without retaining the writer lease.
+            // was captured beforehand must refuse stale publication without retaining the writer lease.
             test <@ completedWhileCleared = rediscoverAfterCapture @>
 
             let scans =
                 FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
 
-            test <@ scans.Length = 2 @>
+            test <@ scans.Length = (if rediscoverAfterCapture then 1 else 2) @>
 
             for sample in scans do
                 test <@ sample.FilesRegistered = sources.Length @>
@@ -1721,7 +1725,9 @@ let ``unchanged fingerprint scan uses a coherent model across rediscovery``
             preprocessorResume.Set()
             loader.Resume(1)
             rediscovery |> Option.iter (fun running -> running.GetAwaiter().GetResult())
-            scan |> Option.iter (fun running -> running.GetAwaiter().GetResult()))
+            scan |> Option.iter (fun running ->
+                try running.GetAwaiter().GetResult()
+                with :? InvalidOperationException when rediscoverAfterCapture -> ()))
 
 [<Fact(Timeout = 15000)>]
 let ``a loaded project that maps or registers as zero is not a loader failure`` () =
