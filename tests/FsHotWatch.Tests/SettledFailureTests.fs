@@ -159,6 +159,15 @@ let ``public verdict wait reports current failed build without inventing test ev
                     Assert.True(verdict.RunId.IsNone)
                     Assert.False(FsHotWatch.Cli.IpcParsing.TestScope.isFullSuite verdict.Scope)
                 | reading -> failwithf "expected a published explicit failed verdict, got %A" reading
+            if transition = "current" then
+                // Serialization is not the consumer boundary. An edit after this
+                // real diagnostics response must revoke its failure authority too.
+                let original = System.IO.File.ReadAllText source
+                try
+                    System.IO.File.WriteAllText(source, "module Source\nlet value = 3\n")
+                    Assert.False(FsHotWatch.Cli.IpcParsing.hasCurrentCompletedFailure root diagnostics)
+                finally
+                    System.IO.File.WriteAllText(source, original)
         else
             // An earlier red is not authority to settle a different model/tree.
             Assert.Throws<TimeoutException>(fun () -> target.WaitForComplete(1000).GetAwaiter().GetResult() |> ignore)
