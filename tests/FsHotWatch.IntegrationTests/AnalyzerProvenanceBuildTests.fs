@@ -426,3 +426,24 @@ type AnalyzerProvenanceBuildTests() =
                 reference.ReplaceWith(XElement(otherReceipt.Element(XName.Get "Evaluation")))
             receipt.Save path
             Assert.True((AnalyzerProvenanceBuildFixture.key producer "Mini").IsNone))
+
+
+    [<Fact(Timeout = 300000)>]
+    member _.``producer rejects another valid private context before publication comparison``() =
+        withTempDir "a564-publish-context-binding" (fun root ->
+            let producer = Path.Combine(root, "Producer")
+            let other = Path.Combine(root, "Other")
+            for directory in [ producer; other ] do
+                AnalyzerProvenanceBuildFixture.prepare directory "Mini" "module MiniRules\nlet answer = 1" None false None
+                AnalyzerProvenanceBuildFixture.build directory "Mini" ""
+                |> AnalyzerProvenanceBuildFixture.succeeds
+            let receiptPath = AnalyzerProvenanceBuildFixture.output producer "Mini" + ".fshw-analyzer.xml"
+            let original = File.ReadAllText receiptPath
+            let otherReceipt = XElement.Load(AnalyzerProvenanceBuildFixture.output other "Mini" + ".fshw-analyzer.xml")
+            let compiledPath = Path.Combine(producer, "obj", "Debug", "net10.0", "Mini.fshw-inputs.xml.compiled")
+            let compiled = XElement.Load compiledPath
+            compiled.Element(XName.Get "Evaluation").ReplaceWith(XElement(otherReceipt.Element(XName.Get "Evaluation")))
+            compiled.Save compiledPath
+            AnalyzerProvenanceBuildFixture.build producer "Mini" "-t:_FshwPublishAnalyzerProvenance"
+            |> AnalyzerProvenanceBuildFixture.fails "Analyzer producer evaluated source membership changed or could not be verified"
+            Assert.Equal(original, File.ReadAllText receiptPath))

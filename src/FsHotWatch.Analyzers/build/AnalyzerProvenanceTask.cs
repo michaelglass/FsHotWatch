@@ -74,7 +74,7 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
     static void Validate(XElement root, HashSet<string> seen, Dictionary<string, bool> evaluations = null)
     {
         if (evaluations == null) evaluations = new Dictionary<string, bool>();
-        ValidateEvaluation(root.Element("Evaluation"), evaluations);
+        ValidateEvaluation(root, evaluations);
         string output = A(root, "output");
         if (!seen.Add(output)) throw new InvalidDataException("Cyclic analyzer project reference " + output);
         Verify(output, A(root, "outputHash"));
@@ -133,13 +133,30 @@ public sealed class FsHotWatchAnalyzerProvenance : Task
         }
         catch { throw new InvalidDataException("Could not capture the analyzer producer invocation context"); }
     }
-    static void ValidateEvaluation(XElement reference, Dictionary<string, bool> evaluations)
+    static void ValidateEvaluation(XElement receipt, Dictionary<string, bool> evaluations)
     {
         try
         {
-            string key = A(reference, "id") + ":" + A(reference, "hash");
-            if (evaluations.ContainsKey(key)) return;
+            var reference = receipt.Elements("Evaluation").Single();
             var context = AnalyzerReplayStore.Read(reference);
+            if (receipt.Name != "AnalyzerProvenance" || A(receipt, "version") != "1" ||
+                context.Name != "AnalyzerEvaluationContext" || A(context, "version") != "1") throw new InvalidDataException();
+            var inputs = receipt.Elements("Inputs").Single().Elements("File").ToList();
+            var projects = inputs.Where(p => A(p, "key").StartsWith("project:", StringComparison.Ordinal)).Select(p => Path.GetFullPath(A(p, "path"))).ToList();
+            var sources = inputs.Where(p => A(p, "key").StartsWith("source:", StringComparison.Ordinal)).Select(p => Path.GetFullPath(A(p, "path"))).ToList();
+            string producer = Path.GetFullPath(A(context, "project"));
+            var compiledSources = context.Elements("CompilerSources").Single().Elements("Item").Select(p => Path.GetFullPath(A(p, "path"))).ToList();
+            if (!projects.Contains(producer) || !sources.SequenceEqual(compiledSources)) throw new InvalidDataException();
+            var membership = context.Elements("Membership").Single();
+            var effective = membership.Elements("Effective").Single().Elements().ToList();
+            var expectedNames = new[] { "MSBuildVersion", "NETCoreSdkVersion", "Configuration", "TargetFramework", "Platform" };
+            if (effective.Any(p => p.Name != "Property") ||
+                !effective.Select(p => A(p, "name")).OrderBy(p => p, StringComparer.Ordinal).SequenceEqual(expectedNames.OrderBy(p => p, StringComparer.Ordinal))) throw new InvalidDataException();
+            var values = effective.ToDictionary(p => A(p, "name"), p => A(p, "value"));
+            if (string.IsNullOrWhiteSpace(values["MSBuildVersion"]) || string.IsNullOrWhiteSpace(values["NETCoreSdkVersion"]) ||
+                values["NETCoreSdkVersion"] != A(context, "sdkVersion")) throw new InvalidDataException();
+            string key = Encode(new[] { A(reference, "id"), A(reference, "hash"), Encode(projects), Encode(sources) });
+            if (evaluations.ContainsKey(key)) return;
             var globals = context.Element("Globals").Elements("Property").ToDictionary(p => A(p, "name"), p => (string)p.Attribute("value"), StringComparer.OrdinalIgnoreCase);
             if (!XNode.DeepEquals(context.Element("Membership"), EvaluateMembership(A(context, "project"), globals)))
                 throw new InvalidDataException();
